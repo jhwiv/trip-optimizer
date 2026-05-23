@@ -1817,7 +1817,9 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
             const parsed = toolBlock.input;
             const expectedDays = (parseInt(basics.nights, 10) || 3) + 1;
             if (!Array.isArray(parsed.days) || parsed.days.length === 0) {
-              throw new Error("The AI didn't produce a day-by-day plan. Tap Build again.");
+              const keys = Object.keys(parsed).join(", ");
+              const buildId = (typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "unknown";
+              throw new Error(`No day-by-day plan (non-stream path, build ${buildId}). Got keys: ${keys}. Tap Build again.`);
             }
             setResult(parsed);
             setStep(3);
