@@ -1,9 +1,0 @@
-name = "trip-optimizer-api"
-main = "worker/index.js"
-compatibility_date = "2024-01-01"
-
-[vars]
-
-[[routes]]
-pattern = "trip-optimizer.pages.dev/api/*"
-zone_name = "pages.dev"
