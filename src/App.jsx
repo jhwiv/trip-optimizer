@@ -1689,7 +1689,11 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
       const expectedDays = (parseInt(basics.nights, 10) || 3) + 1;
       const gotDays = Array.isArray(parsed?.days) ? parsed.days.length : 0;
       if (gotDays === 0) {
-        throw new Error("The AI returned a summary instead of a day-by-day plan. Tap Build again — this usually works on the second try.");
+        // Self-diagnosing error: surface what we actually received so we can debug from a screenshot.
+        const keys = parsed ? Object.keys(parsed).join(", ") : "(no object)";
+        const truncFlag = parsed?._truncated ? " [truncated]" : "";
+        const buildId = (typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "unknown";
+        throw new Error(`No day-by-day plan returned (build ${buildId}${truncFlag}). Got keys: ${keys}. Tap Build again.`);
       }
       if (gotDays < Math.max(2, expectedDays - 1) && !parsed._truncated) {
         // Allow off-by-one (some models skip the arrival half-day), but anything shorter is broken.
@@ -1932,6 +1936,9 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
 
         <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", textAlign: "center", paddingTop: "1.25rem", borderTop: "0.5px solid var(--color-border-tertiary)", marginTop: "1.75rem", letterSpacing: "0.06em" }}>
           Powered by <span style={{ color: GOLD, fontWeight: "500" }}>Barrier Island Digital</span>
+          <span style={{ marginLeft: "8px", color: "var(--color-text-tertiary)", fontSize: "10px" }}>
+            · build {(typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "dev"}
+          </span>
         </div>
 
       </div>
