@@ -1603,12 +1603,12 @@ const DAY_SCHEMA = {
   type: "object",
   properties: {
     label: { type: "string", description: "e.g. 'Day 1 · Thu Jun 4 · Arrive Santa Fe'" },
-    headline: { type: "string", description: "If you only do one thing today, this. 6–10 words, opinionated. e.g. 'Sunset margaritas on the Anasazi rooftop'." },
-    weather: { type: "string", description: "One-line seasonal expectation for this destination/date: high/low + sky + any caveat. e.g. 'High 82°F / low 52°F · sun w/ 30% PM thunderstorm risk'. Use seasonal norms; never fabricate live forecasts." },
+    headline: { type: "string", description: "REQUIRED. The one signature moment of the day, written as a vivid 6–10 word phrase. Examples: 'Sunset margaritas on the Anasazi rooftop' · 'Walk Canyon Road slowly before the galleries close' · 'Drive to Abiquiú for the Pedernal light'. Never leave blank." },
+    weather: { type: "string", description: "REQUIRED. Seasonal expectation for this destination/date: high/low + sky + any caveat. e.g. 'High 82°F / low 52°F · sun w/ 30% PM thunderstorm risk'. Use seasonal norms; never fabricate live forecasts." },
     pace_note: { type: "string", description: "Optional 1-line pacing call: 'easy arrival', 'big driving day', 'spa & slow', etc." },
     items: { type: "array", items: DAY_ITEM_SCHEMA, minItems: 3 },
   },
-  required: ["label", "items"],
+  required: ["label", "headline", "weather", "items"],
 };
 
 // IMPORTANT: property declaration order matters here. Anthropic models tend to
@@ -1726,14 +1726,15 @@ TRIP REQUIREMENTS:
 • For Activity items, fill "location" with a specific venue or address.
 • For Transport items between activities, the "text" should include estimated drive/walk time (e.g. 'Drive to Abiquiú — 1h 15min via US-84').
 
-VARIETY RULES — STRICT:
-• Each unique restaurant may appear AT MOST ONCE in days[]. Never schedule the same restaurant for two meals across the trip. If a place is a true must-revisit, mention it in snobs[] instead.
-• The hotel restaurant may appear for at most ONE in-house meal across the entire trip. Vary breakfasts — use named local breakfast/brunch spots, not the hotel by default.
-• Never repeat the same activity venue across days (e.g. 'Canyon Road' may anchor one day; subsequent gallery time should be a different neighborhood or pueblo).
+VARIETY RULES — STRICT, NON-NEGOTIABLE:
+• Each unique restaurant name MUST appear AT MOST ONCE across ALL days. Before emitting any restaurant, mentally check: have I already used this name on an earlier day? If yes, pick a different one. The same name for breakfast Day 2 AND breakfast Day 4 is a violation. The same name for dinner Day 1 AND lunch Day 2 is a violation.
+• The hotel's in-house restaurant counts as a restaurant. It may appear AT MOST ONCE across the entire trip. For other breakfasts, pick named local spots (e.g. Tia Sophia's, Café Pasqual's, Clafoutis) — never default to the hotel restaurant.
+• If the user asked for a specific cuisine focus, give each day a different EXPRESSION of that cuisine: a market café, an institution, a chef-driven spot, a wine bar, a hole-in-the-wall.
+• Never repeat the same activity venue across days. Vary neighborhoods — Plaza one day, Railyard another, Tesuque another.
 
 FLIGHTS — PREFER NONSTOP, ALWAYS STRUCTURED:
 • Every Flight item MUST include the full "flight" object: carrier, flight_number (realistic, e.g. 'UA 1234' — use a flight number the carrier is known to operate on this exact route), from_airport (IATA), to_airport (IATA), depart_time, arrive_time, duration, nonstop (boolean), cabin, aircraft, confirmation_note.
-• Flight numbers and times are STARTING POINTS for booking, not guarantees. The confirmation_note MUST end with: "Verify flight number, times, and equipment at booking — schedules change." Use real flight numbers from the carrier's published schedule when you can recall them; otherwise pick a plausible number in that carrier's range for that route.
+• Flight numbers and times are STARTING POINTS for booking, not guarantees. Every confirmation_note MUST literally end with this exact sentence: "Verify flight number, times and equipment at booking — schedules change." Use real flight numbers from the carrier's published schedule when you can recall them; otherwise pick a plausible number in that carrier's range for that route.
 • Search for nonstop service from the home airport to the destination's primary airport first.
 • If no nonstop exists to the requested airport but one exists to a nearby airport in the same metro (e.g., ABQ ~60min from Santa Fe instead of SAF), RECOMMEND THE NONSTOP and add a flags[] note mentioning the drive time.
 • Only return a connecting itinerary if no nonstop exists to any reasonable nearby airport. Set nonstop=false and fill "connection" with the connecting airport IATA.
