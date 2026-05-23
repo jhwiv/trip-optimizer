@@ -1410,7 +1410,16 @@ Include sections: ${active}`;
       setLoadingMsg(prev => prev.includes("longer") ? prev : "Still working — detailed plans can take 1–3 minutes…");
     }, 60000);
 
+    // Keep iOS Safari from sleeping the screen and dropping the stream.
+    let wakeLock = null;
     try {
+      if ("wakeLock" in navigator && navigator.wakeLock?.request) {
+        wakeLock = await navigator.wakeLock.request("screen");
+      }
+    } catch { /* not available; safe to ignore */ }
+
+    // One inner attempt that runs the fetch + stream-reading. Returns parsed plan or throws.
+    const attemptOnce = async () => {
       const apiUrl = (typeof __API_BASE__ !== "undefined" ? __API_BASE__ : "") + "/api/chat";
       const response = await fetch(apiUrl, {
         method: "POST",
@@ -1423,6 +1432,39 @@ Include sections: ${active}`;
           messages: [{ role: "user", content: buildUserPrompt() }],
         }),
       });
+      return response;
+    };
+
+    // Classify whether an error looks like a transient network drop worth retrying.
+    const isTransientNetworkError = (err) => {
+      if (!err) return false;
+      if (err.name === "AbortError") return false; // user-cancelled or timed out
+      const msg = String(err.message || err).toLowerCase();
+      return (
+        err instanceof TypeError ||              // Safari "Load failed" / Chrome "Failed to fetch"
+        msg.includes("load failed") ||
+        msg.includes("failed to fetch") ||
+        msg.includes("network") ||
+        msg.includes("connection") ||
+        msg.includes("stream")
+      );
+    };
+
+    try {
+      let response;
+      try {
+        response = await attemptOnce();
+      } catch (initialErr) {
+        if (isTransientNetworkError(initialErr) && navigator.onLine !== false) {
+          // Brief pause then one retry. Safari occasionally drops the very first
+          // streaming request when the network's on cellular.
+          setLoadingMsg("Retrying… connection dropped");
+          await new Promise(r => setTimeout(r, 800));
+          response = await attemptOnce();
+        } else {
+          throw initialErr;
+        }
+      }
 
       // Non-streaming error path: server returned JSON error.
       if (!response.ok) {
@@ -1440,11 +1482,15 @@ Include sections: ${active}`;
       // Collect the full text from either an SSE stream or a plain JSON response.
       let fullText = "";
 
+      // Stream-level retry: if the SSE connection drops mid-flight without
+      // a clean message_stop, we attempt once more (only if nothing useful streamed yet).
+      let sawMessageStop = false;
       if (ctype.includes("text/event-stream") && response.body) {
         // Parse Anthropic SSE: data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"…"}}
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
+        try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -1498,6 +1544,7 @@ Include sections: ${active}`;
                     setProgressLabel("Insider notes & Plan B…");
                   }
                 } else if (evt.type === "message_stop") {
+                  sawMessageStop = true;
                   setProgress(1);
                   setProgressLabel("Finalizing…");
                 } else if (evt.type === "error" || evt.error) {
@@ -1508,6 +1555,45 @@ Include sections: ${active}`;
               }
             }
           }
+        }
+        } catch (streamErr) {
+          // Stream broke mid-flight. If we never saw message_stop AND nothing
+          // useful was buffered, attempt one retry of the whole request.
+          if (!sawMessageStop && fullText.length < 200 && isTransientNetworkError(streamErr) && navigator.onLine !== false) {
+            setLoadingMsg("Connection dropped — retrying…");
+            await new Promise(r => setTimeout(r, 800));
+            const retryResponse = await attemptOnce();
+            if (!retryResponse.ok) throw streamErr;
+            const retryReader = retryResponse.body?.getReader();
+            if (!retryReader) throw streamErr;
+            buf = "";
+            while (true) {
+              const { done, value } = await retryReader.read();
+              if (done) break;
+              buf += decoder.decode(value, { stream: true });
+              let nl2;
+              while ((nl2 = buf.indexOf("\n\n")) !== -1) {
+                const event = buf.slice(0, nl2);
+                buf = buf.slice(nl2 + 2);
+                for (const line of event.split("\n")) {
+                  if (!line.startsWith("data:")) continue;
+                  const payload = line.slice(5).trim();
+                  if (!payload || payload === "[DONE]") continue;
+                  try {
+                    const evt = JSON.parse(payload);
+                    if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+                      fullText += evt.delta.text || "";
+                    } else if (evt.type === "message_stop") {
+                      sawMessageStop = true;
+                    }
+                  } catch {}
+                }
+              }
+            }
+          } else if (fullText.length < 200) {
+            throw streamErr;
+          }
+          // Otherwise we have a decent amount of text — try to salvage what we got.
         }
       } else {
         // Fallback: server returned non-streamed JSON.
@@ -1549,11 +1635,20 @@ Include sections: ${active}`;
       setResult(parsed);
       setStep(3);
     } catch (err) {
-      const msg = err?.name === "AbortError"
-        ? "Generation cancelled or timed out. Try again."
-        : (err?.message || "Something went wrong generating the plan. Please try again.");
+      let msg;
+      if (err?.name === "AbortError") {
+        msg = "Generation cancelled or timed out. Try again.";
+      } else if (isTransientNetworkError(err)) {
+        // Safari's generic "Load failed" / Chrome's "Failed to fetch".
+        msg = navigator.onLine === false
+          ? "You appear to be offline. Reconnect and try again."
+          : "Connection dropped before the plan finished. This often happens on cellular or if the screen locked — try again, keep the screen on, or switch to Wi-Fi.";
+      } else {
+        msg = err?.message || "Something went wrong generating the plan. Please try again.";
+      }
       setError(msg);
     } finally {
+      try { if (wakeLock) await wakeLock.release(); } catch {}
       clearInterval(phaseTimer);
       clearInterval(elapsedTimer);
       clearTimeout(hardTimeout);

@@ -22,15 +22,40 @@
         --border-radius-lg: 6px;
       }
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body {
+        max-width: 100%;
+        overflow-x: hidden;
+      }
       body {
         font-family: var(--font-sans);
         background: #F4F2EE;
         color: var(--color-text-primary);
         min-height: 100vh;
+        -webkit-text-size-adjust: 100%;
+        overflow-wrap: break-word;
+        word-wrap: break-word;
+      }
+      #root {
+        max-width: 100%;
+        overflow-x: clip;
+      }
+      /* Prevent any long word/URL from blowing out a container and shifting layout */
+      p, span, label, h1, h2, h3, h4, div {
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
       input, select, button, textarea {
         font-family: inherit;
         color: var(--color-text-primary);
+        max-width: 100%;
+      }
+      /* iOS Safari date input refuses to shrink below its intrinsic width;
+         strip native appearance and force it to fit the grid column. */
+      input[type="date"] {
+        -webkit-appearance: none;
+        appearance: none;
+        min-width: 0;
+        width: 100%;
       }
       input::placeholder {
         font-style: italic;
