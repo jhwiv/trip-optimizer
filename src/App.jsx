@@ -895,6 +895,18 @@ function CityAutocomplete({ value, onChange, placeholder }) {
   );
 }
 
+// Look up an airport record by IATA code, city, or name fragment.
+function lookupAirport(value) {
+  if (!value) return null;
+  const v = value.trim().toLowerCase();
+  return (
+    AIRPORTS.find(a => a.code.toLowerCase() === v) ||
+    AIRPORTS.find(a => a.city.toLowerCase() === v) ||
+    AIRPORTS.find(a => a.code.toLowerCase().startsWith(v) || a.city.toLowerCase().startsWith(v)) ||
+    null
+  );
+}
+
 function AirportAutocomplete({ value, onChange, placeholder }) {
   return (
     <Autocomplete
@@ -1508,7 +1520,7 @@ Include sections: ${active}`;
               <p style={ctStyle}>Where & when</p>
               <div style={g2}>
                 <Field label="Destination"><CityAutocomplete value={basics.destination} onChange={e => setB({ ...basics, destination: e.target.value })} placeholder="Start typing a city…" /></Field>
-                <Field label="Home airport"><AirportAutocomplete value={flights.homeAirport} onChange={e => setF({ ...flights, homeAirport: e.target.value })} placeholder="e.g. EWR" /></Field>
+                <Field label="Home airport" hint={lookupAirport(flights.homeAirport) ? `${lookupAirport(flights.homeAirport).city} · ${lookupAirport(flights.homeAirport).name}` : null}><AirportAutocomplete value={flights.homeAirport} onChange={e => setF({ ...flights, homeAirport: e.target.value })} placeholder="e.g. EWR" /></Field>
               </div>
               <div style={g3}>
                 <Field label="Start date"><DateInput value={basics.startDate} onChange={e => setB({ ...basics, startDate: e.target.value })} /></Field>
