@@ -1004,6 +1004,91 @@ function QualityBadge({ qc }) {
   );
 }
 
+// PDF / Print: triggers the OS print dialog. On iOS Chrome this opens the
+// share sheet → 'Print' or 'Save as PDF'. On desktop it opens the native
+// print dialog with PDF option. Zero new dependencies.
+function PrintButton() {
+  return (
+    <button
+      onClick={() => window.print()}
+      className="no-print"
+      style={{
+        background: "var(--color-text-primary)",
+        color: "var(--color-background-primary)",
+        border: "none",
+        borderRadius: "var(--border-radius-md)",
+        padding: "10px 16px",
+        fontSize: "11px",
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        cursor: "pointer",
+        fontFamily: "inherit",
+        fontWeight: 600,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "8px",
+      }}
+      aria-label="Save itinerary as PDF"
+    >
+      <span aria-hidden="true">⤓</span> Save as PDF
+    </button>
+  );
+}
+
+// Input summary — shown ONLY in print output. Recaps the form inputs that
+// produced this plan so the printed PDF is a complete record of inputs+output.
+function InputSummary({ inputs }) {
+  if (!inputs) return null;
+  const { basics, flights, hotel, transport, dining, restaurants, activities, interests, outputs } = inputs;
+  const citiesText = Array.isArray(basics?.cities) && basics.cities.length > 1
+    ? basics.cities.map((c, i) => `${i + 1}) ${c.name} — ${c.nights} ${Number(c.nights) === 1 ? "night" : "nights"}${c.focus ? ` (${c.focus})` : ""}`).join("   ")
+    : null;
+  const rows = [
+    ["Destination", basics?.destination],
+    ...(citiesText ? [["Route", citiesText]] : []),
+    ["Base area", basics?.baseArea || "—"],
+    ["Start date", basics?.startDate],
+    ["Nights", basics?.nights],
+    ["Travelers", basics?.travelers],
+    ["Style", basics?.style],
+    ["Pace", basics?.pace],
+    ["Budget", basics?.budget],
+    ["Home airport", flights?.homeAirport],
+    ["Preferred airline", flights?.airline || "—"],
+    ["Cabin", flights?.cabin || "—"],
+    ["Date flex", flights?.flex || "—"],
+    ["Hotel brand", hotel?.brand || "—"],
+    ["Hotel tier", hotel?.tier || "—"],
+    ["Hotel must-have", hotel?.mustHave || "—"],
+    ["Transport", transport?.type + (transport?.company ? ` · ${transport.company}` : "")],
+    ["Vehicle", transport?.vehicle || "—"],
+    ["Cuisine focus", dining?.cuisine || "—"],
+    ["Dinner budget", dining?.budget || "—"],
+    ["Requested restaurants", (restaurants && restaurants.length) ? restaurants.join(", ") : "—"],
+    ["Requested activities", (activities && activities.length) ? activities.join(", ") : "—"],
+    ["Interest level", interests?.level || "—"],
+    ["Interest detail", interests?.text || "—"],
+    ["Sections requested", outputs ? Object.entries(outputs).filter(([, v]) => v).map(([k]) => k).join(", ") : "—"],
+  ].filter(([, v]) => v !== undefined && v !== null && v !== "");
+
+  return (
+    <div className="print-only" style={{ display: "none" }}>
+      <h2 style={{ fontSize: "14px", letterSpacing: "0.08em", textTransform: "uppercase", color: "#000", margin: "0 0 10px", borderBottom: "1px solid #ccc", paddingBottom: "6px" }}>Input summary</h2>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "10.5px", marginBottom: "16px" }}>
+        <tbody>
+          {rows.map(([k, v]) => (
+            <tr key={k} style={{ borderBottom: "0.5px solid #eee" }}>
+              <td style={{ padding: "4px 8px 4px 0", color: "#666", verticalAlign: "top", width: "38%", textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "9px", fontWeight: 600 }}>{k}</td>
+              <td style={{ padding: "4px 0", color: "#000" }}>{v}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p style={{ fontSize: "9px", color: "#888", margin: "0 0 20px", fontStyle: "italic" }}>Generated {new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })} · trip-optimizer-6og.pages.dev</p>
+    </div>
+  );
+}
+
 function TripHero({ data }) {
   // Pull flight + hotel summary directly from days[].
   const items = (data.days || []).flatMap(d => (d.items || []));
@@ -1049,6 +1134,31 @@ function TripHero({ data }) {
         </div>
       )}
 
+      {Array.isArray(data.cities) && data.cities.length > 1 && (
+        <div style={{ marginBottom: "14px", padding: "12px 14px", border: `1px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
+          <p style={{ fontSize: "10px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 8px" }}>Trip route · {data.cities.length} cities</p>
+          {data.cities.map((c, i) => (
+            <div key={i} style={{ borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none", paddingTop: i > 0 ? "8px" : 0, marginTop: i > 0 ? "8px" : 0 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "baseline" }}>
+                <span style={{ fontSize: "13.5px", color: "var(--color-text-primary)", fontWeight: 500 }}>
+                  <span style={{ color: GOLD, fontWeight: 700, marginRight: "6px" }}>{i + 1}.</span>{c.name}
+                </span>
+                <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", letterSpacing: "0.04em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{c.nights} {Number(c.nights) === 1 ? "night" : "nights"}{c.days_range ? ` · ${c.days_range}` : ""}</span>
+              </div>
+              {c.transport_in && (
+                <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "3px 0 0", lineHeight: 1.5 }}>→ {c.transport_in}</p>
+              )}
+              {c.focus && (
+                <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "3px 0 0", lineHeight: 1.5, fontStyle: "italic" }}>{c.focus}</p>
+              )}
+              {c.stay && (
+                <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "3px 0 0" }}>Stay: {c.stay}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {Array.isArray(data.logistics) && data.logistics.length > 0 && (
         <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
           {data.logistics.map((l, i) => (
@@ -1077,7 +1187,7 @@ function DayNav({ days }) {
   );
 }
 
-function ItineraryView({ data: rawData, onBack }) {
+function ItineraryView({ data: rawData, inputs, onBack }) {
   const [menuRestaurant, setMenuRestaurant] = useState(null);
   // Apply the pass-three quality layer once before render. This dedupes
   // restaurants, fills verify microcopy, and computes a QC summary.
@@ -1085,8 +1195,12 @@ function ItineraryView({ data: rawData, onBack }) {
   const sortedTonight = Array.isArray(data.tonight)
     ? [...data.tonight].map((t, i) => ({ t, i, p: tonightPriority(t) })).sort((a, b) => a.p.rank - b.p.rank || a.i - b.i)
     : [];
+  // Multi-city: track which day starts a new leg so we can render a divider.
+  const cityByDay = (data.days || []).map(d => d.city || null);
+  const isMultiCityPlan = Array.isArray(data.cities) && data.cities.length > 1;
   return (
     <div>
+      <InputSummary inputs={inputs} />
       <MenuModal restaurant={menuRestaurant} onClose={() => setMenuRestaurant(null)} />
       <TripHero data={data} />
       <QualityBadge qc={qc} />
@@ -1130,7 +1244,22 @@ function ItineraryView({ data: rawData, onBack }) {
       {data.days && data.days.length > 0 && (
         <Section title="Day-by-day">
           <DayNav days={data.days} />
-          {data.days.map((d, i) => <DayBlock key={i} day={d} dayIndex={i} onOpenMenu={setMenuRestaurant} />)}
+          {data.days.map((d, i) => {
+            const prevCity = i > 0 ? cityByDay[i - 1] : null;
+            const showLegHeader = isMultiCityPlan && d.city && d.city !== prevCity;
+            const legIndex = showLegHeader ? (cityByDay.slice(0, i + 1).filter((c, k, arr) => c && c !== arr[k - 1]).length) : null;
+            return (
+              <div key={i}>
+                {showLegHeader && (
+                  <div style={{ margin: "0 0 14px", padding: "10px 12px", background: "#0F0F0F", color: "#FFFFFF", borderRadius: "var(--border-radius-md)", display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, color: GOLD }}>Leg {legIndex}</span>
+                    <span style={{ fontSize: "15px", fontFamily: "var(--font-serif)", fontStyle: "italic", letterSpacing: "-0.2px" }}>{d.city}</span>
+                  </div>
+                )}
+                <DayBlock day={d} dayIndex={i} onOpenMenu={setMenuRestaurant} />
+              </div>
+            );
+          })}
         </Section>
       )}
 
@@ -1164,10 +1293,13 @@ function ItineraryView({ data: rawData, onBack }) {
         </Section>
       )}
 
-      <button
-        onClick={onBack}
-        style={{ background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", color: "var(--color-text-secondary)", marginTop: "0.5rem" }}
-      >← Plan another trip</button>
+      <div className="no-print" style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "0.5rem" }}>
+        <button
+          onClick={onBack}
+          style={{ background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", color: "var(--color-text-secondary)" }}
+        >← Plan another trip</button>
+        <PrintButton />
+      </div>
     </div>
   );
 }
@@ -1713,6 +1845,7 @@ const DAY_SCHEMA = {
   type: "object",
   properties: {
     label: { type: "string", description: "e.g. 'Day 1 · Thu Jun 4 · Arrive Santa Fe'" },
+    city: { type: "string", description: "Which city this day belongs to on multi-city trips (e.g. 'Santa Fe, NM'). Match the spelling in the cities[] array. Transit days that span two cities use 'From→To' format (e.g. 'Santa Fe → Taos')." },
     headline: { type: "string", description: "REQUIRED. The one signature moment of the day, written as a vivid 6–10 word phrase. Examples: 'Sunset margaritas on the Anasazi rooftop' · 'Walk Canyon Road slowly before the galleries close' · 'Drive to Abiquiú for the Pedernal light'. Never leave blank." },
     weather: { type: "string", description: "REQUIRED. Seasonal expectation for this destination/date: high/low + sky + any caveat. e.g. 'High 82°F / low 52°F · sun w/ 30% PM thunderstorm risk'. Use seasonal norms; never fabricate live forecasts." },
     pace_note: { type: "string", description: "Optional 1-line pacing call: 'easy arrival', 'big driving day', 'spa & slow', etc." },
@@ -1732,8 +1865,25 @@ const TRIP_PLAN_TOOL = {
   input_schema: {
     type: "object",
     properties: {
-      destination: { type: "string", description: "WRITE FIRST." },
-      meta: { type: "string", description: "WRITE SECOND. One-line summary: Dates · N nights · N travelers · Style" },
+      destination: { type: "string", description: "WRITE FIRST. For multi-city trips, join cities with arrows: 'Santa Fe → Taos → Albuquerque'." },
+      meta: { type: "string", description: "WRITE SECOND. One-line summary: Dates · N nights · N travelers · Style. For multi-city, indicate the leg structure too (e.g. 'Sat–Sat · 3+2+2 nights')." },
+      cities: {
+        type: "array",
+        description: "REQUIRED for multi-city trips, omit for single-city. One entry per leg in travel order. Inter-city transport (drive/fly time + distance) is captured in each city's transport_in field. Day count per city should match the user-requested nights for that city.",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "City name as the user entered it (e.g. 'Santa Fe, NM')." },
+            nights: { type: "integer", description: "Nights at this city." },
+            days_range: { type: "string", description: "e.g. 'Day 1–Day 3' or 'Day 4–Day 5'." },
+            focus: { type: "string", description: "What this leg is FOR — the why. e.g. 'Galleries + food on Canyon Road', 'Skiing & mountain lunches', 'Day trips to Bandelier'." },
+            transport_in: { type: "string", description: "How the traveler ARRIVES at this city. For Leg 1: 'Fly EWR→ABQ · 4h 30m nonstop · then 1h drive to Santa Fe'. For later legs: 'Drive Santa Fe→Taos · 1h 15m · 70 miles via US-285' or 'Fly SFO→LAX · 1h 25m'. Include time AND distance for drives, time only for flights." },
+            stay: { type: "string", description: "The recommended hotel/lodging name for this leg." },
+          },
+          required: ["name", "nights", "days_range"],
+        },
+        maxItems: 3,
+      },
       days: {
         type: "array",
         description: "WRITE THIRD — THIS IS THE MAIN DELIVERABLE. Day-by-day plan. Must have exactly nights+1 entries. Never empty. Write this BEFORE logistics/flags/planb/snobs/tonight.",
@@ -1776,7 +1926,7 @@ export default function TripOptimizer() {
 
   // Sample prefill — June 4, 6 nights, United, Hertz, Marriott, food + wine focus.
   const DEFAULTS = {
-    basics: { destination: "Santa Fe, NM", startDate: "2026-06-04", nights: "6", travelers: "2 adults", baseArea: "", style: "Food & wine", pace: "Moderate (2–3 things/day)", budget: "$$$ — mid range" },
+    basics: { destination: "Santa Fe, NM", cities: [{ name: "Santa Fe, NM", nights: "6", focus: "" }], startDate: "2026-06-04", nights: "6", travelers: "2 adults", baseArea: "", style: "Food & wine", pace: "Moderate (2–3 things/day)", budget: "$$$ — mid range" },
     flights: { homeAirport: "EWR", airline: "United", cabin: "Business / Polaris", flex: "Exact date only" },
     hotel: { brand: "Marriott / Bonvoy", tier: "", mustHave: "" },
     transport: { type: "Rental car", company: "Hertz", vehicle: "" },
@@ -1796,7 +1946,13 @@ export default function TripOptimizer() {
   const [error, setError] = useState("");
   const abortRef = useRef(null);
 
-  const [basics, setB] = useState(saved.basics || DEFAULTS.basics);
+  // Normalize basics: ensure cities[] exists even for saved sessions from before multi-city support.
+  const normalizeBasics = (b) => {
+    const src = b || DEFAULTS.basics;
+    if (Array.isArray(src.cities) && src.cities.length > 0) return src;
+    return { ...src, cities: [{ name: src.destination || "", nights: src.nights || "", focus: "" }] };
+  };
+  const [basics, setB] = useState(normalizeBasics(saved.basics));
   const [flights, setF] = useState(saved.flights || DEFAULTS.flights);
   const [hotel, setH] = useState(saved.hotel || DEFAULTS.hotel);
   const [transport, setT] = useState(saved.transport || DEFAULTS.transport);
@@ -1814,18 +1970,75 @@ export default function TripOptimizer() {
   const [outputs, setOut] = useState({ itinerary: true, weather: true, navigation: true, logistics: true, tonight: true, menus: true, flags: true, planb: true, snobs: true, practical: false, badges: false, pronunciation: false });
 
   const togOut = k => setOut(o => ({ ...o, [k]: !o[k] }));
-  const missing = [!basics.destination.trim() && "Destination", !basics.startDate.trim() && "Start date", !basics.nights.trim() && "Nights", !flights.homeAirport.trim() && "Home airport"].filter(Boolean);
+
+  // Multi-city helpers. cities[] is the source of truth when length > 1.
+  // For single-city, basics.destination/nights are authoritative for back-compat.
+  const cities = (basics.cities && basics.cities.length > 0) ? basics.cities : [{ name: basics.destination || "", nights: basics.nights || "", focus: "" }];
+  const isMultiCity = cities.length > 1;
+  const totalNightsFromCities = cities.reduce((s, c) => s + (parseInt(c.nights, 10) || 0), 0);
+  const updateCity = (idx, patch) => {
+    const next = cities.map((c, i) => i === idx ? { ...c, ...patch } : c);
+    const newTotal = next.reduce((s, c) => s + (parseInt(c.nights, 10) || 0), 0);
+    setB({
+      ...basics,
+      cities: next,
+      destination: next.map(c => c.name).filter(Boolean).join(" → ") || basics.destination,
+      nights: next.length > 1 ? String(newTotal) : (next[0]?.nights || basics.nights),
+    });
+  };
+  const addCity = () => {
+    if (cities.length >= 3) return;
+    const next = [...cities, { name: "", nights: "2", focus: "" }];
+    const newTotal = next.reduce((s, c) => s + (parseInt(c.nights, 10) || 0), 0);
+    setB({ ...basics, cities: next, destination: next.map(c => c.name).filter(Boolean).join(" → ") || basics.destination, nights: String(newTotal) });
+  };
+  const removeCity = (idx) => {
+    if (cities.length <= 1) return;
+    const next = cities.filter((_, i) => i !== idx);
+    const newTotal = next.reduce((s, c) => s + (parseInt(c.nights, 10) || 0), 0);
+    setB({
+      ...basics,
+      cities: next,
+      destination: next.length > 1 ? next.map(c => c.name).filter(Boolean).join(" → ") : (next[0]?.name || ""),
+      nights: next.length > 1 ? String(newTotal) : (next[0]?.nights || basics.nights),
+    });
+  };
+
+  const cityNamesValid = cities.every(c => c.name && c.name.trim());
+  const cityNightsValid = cities.every(c => (parseInt(c.nights, 10) || 0) >= 1);
+  const missing = [
+    !cityNamesValid && (isMultiCity ? "All city names" : "Destination"),
+    !basics.startDate.trim() && "Start date",
+    !cityNightsValid && (isMultiCity ? "Nights for each city" : "Nights"),
+    !flights.homeAirport.trim() && "Home airport",
+  ].filter(Boolean);
   const ready = missing.length === 0;
-  const areaHint = getAreaHint(basics.destination);
+  const areaHint = getAreaHint(cities[0]?.name || basics.destination);
   const activeCount = Object.values(outputs).filter(Boolean).length;
 
   const buildSystemPrompt = () => {
-    const totalDays = (parseInt(basics.nights, 10) || 3) + 1;
+    const totalNights = isMultiCity ? totalNightsFromCities : (parseInt(basics.nights, 10) || 3);
+    const totalDays = totalNights + 1;
+    const multiCityBlock = isMultiCity ? `
+
+MULTI-CITY TRIP — STRUCTURE THIS CAREFULLY:
+This is a ${cities.length}-city trip: ${cities.map((c, i) => `Leg ${i + 1} = ${c.name} (${c.nights} nights)`).join(", ")}.
+Total: ${totalNights} nights = ${totalDays} days.
+• Emit a cities[] array with ${cities.length} entries in this exact order: ${cities.map(c => c.name).join(" → ")}. Each entry needs name, nights, days_range, focus, transport_in, stay.
+• Day allocation: Leg 1 gets ${cities[0]?.nights || 0} nights but ${(parseInt(cities[0]?.nights, 10) || 0) + 1} days (arrival day + nights). Subsequent legs get N nights = N days each (the inter-city transit happens AT THE START of the leg's first day). Final departure happens on the last day of the last leg (no extra day).
+• Compute days_range for each leg: Leg 1 = Day 1–Day ${(parseInt(cities[0]?.nights, 10) || 0) + 1}. ${cities.length >= 2 ? `Leg 2 starts Day ${(parseInt(cities[0]?.nights, 10) || 0) + 2}.` : ""} ${cities.length === 3 ? `Leg 3 starts Day ${(parseInt(cities[0]?.nights, 10) || 0) + (parseInt(cities[1]?.nights, 10) || 0) + 2}.` : ""}
+• Each day MUST have a "city" field with the city name. Transit days (the first day of legs 2 and 3) use "From→To" format (e.g. "Santa Fe → Taos").
+• PACING for transit days: the first day of legs 2/3 is a transit day. Front-load the morning with checkout + drive/fly, then a relaxed arrival lunch in the new city, then a light afternoon activity. Don't pack a transit day full — the user is moving with luggage.
+• INTER-CITY TRANSPORT: For each leg after Leg 1, include a Transport item at the START of that leg's first day with: realistic drive time, distance in miles AND km if international, route (highway/road number), and any pacing notes (rest stops, scenic detours). For flight transfers between cities, treat it as a Flight item.
+• LUGGAGE / LOGISTICS REALITY: When the route is drive-based, the same rental car follows the whole trip — don't return it between cities. When the route mixes drive + fly, call out the rental car return + new pickup in flags[]. Hotel checkout times (usually 11:00–12:00) constrain how early you can hit the road; plan transit departures for 10:00–11:00 unless you note a late checkout.
+• MINIMUM 2 NIGHTS per city when cities.length === 3 — if the user gave 1 night for a leg in a 3-city trip, set a flags[] warning that one night doesn't leave time to enjoy that city and suggest a re-balance.
+• HOTEL ITEMS: One check-in Hotel item per leg (at arrival) and a check-out item on the last morning of each leg EXCEPT the final leg's check-out which is on the very last day before flying home. Each leg's stay must be a DIFFERENT hotel (different city = different hotel).
+• weather and weather_window: if cities are in very different climates (mountain vs coast vs desert), call this out in weather_window AND give per-day weather that reflects the city's actual climate for that day.` : "";
     return `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.
 
 FIELD EMISSION ORDER — CRITICAL:
-Write the tool input in this exact order: destination, meta, days, logistics, flags, planb, snobs, tonight.
-days[] is the main deliverable. Write the entire days[] array BEFORE writing logistics, flags, planb, snobs, or tonight. Never write logistics/flags/planb first and then days — if anything gets cut off, we lose the whole plan. Always write days first.
+Write the tool input in this exact order: destination, meta, ${isMultiCity ? "cities, " : ""}days, logistics, flags, planb, snobs, tonight.
+days[] is the main deliverable. Write the entire days[] array BEFORE writing logistics, flags, planb, snobs, or tonight. Never write logistics/flags/planb first and then days — if anything gets cut off, we lose the whole plan. Always write days first.${multiCityBlock}
 
 TRIP REQUIREMENTS:
 • days[] must contain exactly ${totalDays} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). Compute the correct weekday for each day starting from the start date.
@@ -1885,11 +2098,14 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
 
   const buildUserPrompt = () => {
     const active = Object.entries(outputs).filter(([, v]) => v).map(([k]) => k).join(", ");
+    const cityLine = isMultiCity
+      ? `Route: ${cities.map((c, i) => `${i + 1}) ${c.name} — ${c.nights} nights`).join("  →  ")}`
+      : `Destination: ${basics.destination}`;
     return `Plan this trip:
-Destination: ${basics.destination}
-Base area: ${basics.baseArea || "suggest best area"}
+${cityLine}
+Base area: ${basics.baseArea || (isMultiCity ? "—" : "suggest best area")}
 Start date: ${formatDateForDisplay(basics.startDate) || basics.startDate}
-Nights: ${basics.nights}
+Nights: ${isMultiCity ? totalNightsFromCities : basics.nights}${isMultiCity ? "  (" + cities.map(c => `${c.nights} in ${c.name}`).join(" + ") + ")" : ""}
 Travelers: ${basics.travelers}
 Style: ${basics.style} · Pace: ${basics.pace} · Budget: ${basics.budget}
 Home airport: ${flights.homeAirport} · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin}
@@ -1901,8 +2117,9 @@ Activities requested: ${activities.length ? activities.join(", ") : "suggest bas
 Interests: ${interests.text || "not specified"} · Level: ${interests.level}
 Include sections: ${active}
 
-IMPORTANT: Prefer NONSTOP flights. If ${flights.homeAirport} has no nonstop to the primary airport for ${basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.
-IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3) + 1} entries (arrival day + ${parseInt(basics.nights,10)||3} nights). Do not collapse the plan into the logistics chip list.
+IMPORTANT: Prefer NONSTOP flights. If ${flights.homeAirport} has no nonstop to the primary airport for ${isMultiCity ? cities[0]?.name : basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.
+IMPORTANT: Return a complete days[] array with ${(isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)) + 1} entries (arrival day + ${isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)} nights). Do not collapse the plan into the logistics chip list.${isMultiCity ? `
+IMPORTANT: This is a ${cities.length}-city trip. Emit cities[] with ${cities.length} entries. Each day's "city" field must match a city in cities[] (or use From→To format for transit days). Inter-city transit is a Transport item at the start of legs 2+ with realistic drive time + distance.` : ""}
 IMPORTANT: Write days[] BEFORE logistics, flags, planb, snobs, or tonight. days[] comes immediately after destination + meta in the tool input.
 IMPORTANT: NO RESTAURANT MAY APPEAR TWICE. Each named restaurant gets ONE meal slot across the entire trip. Vary breakfasts — use real local spots, not the hotel restaurant on repeat.
 IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "weather" line (seasonal expectation). Top-level MUST include weather_window, pack[≥3], planb[≥5], tonight (with priority prefixes).`;
@@ -2292,17 +2509,45 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
             <div style={cardStyle}>
               <p style={ctStyle}>Where & when</p>
               <div style={g2}>
-                <Field label="Destination"><CityAutocomplete value={basics.destination} onChange={e => setB({ ...basics, destination: e.target.value })} placeholder="Start typing a city…" /></Field>
+                <Field label={isMultiCity ? "Trip route" : "Destination"} hint={isMultiCity ? `${cities.length}-city trip · ${totalNightsFromCities} nights total` : null}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                    {cities.map((c, i) => (
+                      <div key={i} style={{ display: "flex", gap: "6px", alignItems: "flex-end" }}>
+                        {isMultiCity && (
+                          <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.1em", textTransform: "uppercase", padding: "6px 7px 0", whiteSpace: "nowrap" }}>Leg {i + 1}</span>
+                        )}
+                        <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+                          <CityAutocomplete value={c.name} onChange={e => updateCity(i, { name: e.target.value })} placeholder={i === 0 ? "Start typing a city…" : "Next city…"} />
+                        </div>
+                        {isMultiCity && (
+                          <div style={{ flex: "0 0 56px" }}>
+                            <input type="number" min="1" max="14" value={c.nights} onChange={e => updateCity(i, { nights: e.target.value })} placeholder="nts" aria-label={`Nights in ${c.name || `city ${i + 1}`}`} style={{ fontSize: "14px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", textAlign: "center" }} />
+                          </div>
+                        )}
+                        {isMultiCity && cities.length > 1 && (
+                          <button onClick={() => removeCity(i)} aria-label={`Remove ${c.name || `city ${i + 1}`}`} style={{ background: "none", border: "none", color: "var(--color-text-tertiary)", fontSize: "18px", cursor: "pointer", padding: "4px 6px", lineHeight: 1 }}>×</button>
+                        )}
+                      </div>
+                    ))}
+                    {cities.length < 3 && (
+                      <button onClick={addCity} style={{ background: "none", border: `0.5px dashed ${GOLD}`, color: GOLD, fontSize: "10.5px", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", padding: "7px 10px", borderRadius: "4px", cursor: "pointer", alignSelf: "flex-start", fontFamily: "inherit" }}>+ Add city{cities.length === 1 ? " (multi-city trip)" : ""}</button>
+                    )}
+                  </div>
+                </Field>
                 <Field label="Home airport" hint={lookupAirport(flights.homeAirport) ? `${lookupAirport(flights.homeAirport).city} · ${lookupAirport(flights.homeAirport).name}` : null}><AirportAutocomplete value={flights.homeAirport} onChange={e => setF({ ...flights, homeAirport: e.target.value })} placeholder="e.g. EWR" /></Field>
               </div>
               <div style={g3}>
                 <Field label="Start date"><DateInput value={basics.startDate} onChange={e => setB({ ...basics, startDate: e.target.value })} /></Field>
-                <Field label="Nights"><Inp value={basics.nights} onChange={e => setB({ ...basics, nights: e.target.value })} placeholder="7" /></Field>
+                <Field label={isMultiCity ? "Total nights" : "Nights"} hint={isMultiCity ? "Auto-summed from cities" : null}>
+                  <Inp value={isMultiCity ? String(totalNightsFromCities) : basics.nights} onChange={e => !isMultiCity && setB({ ...basics, nights: e.target.value })} placeholder="7" />
+                </Field>
                 <Field label="Travelers"><TravelersAutocomplete value={basics.travelers} onChange={e => setB({ ...basics, travelers: e.target.value })} placeholder="2 adults" /></Field>
               </div>
-              <Field label="Base area or neighborhood" hint={areaHint}>
-                <BaseAreaAutocomplete value={basics.baseArea} onChange={e => setB({ ...basics, baseArea: e.target.value })} placeholder="Where in the destination?" destination={basics.destination} />
-              </Field>
+              {!isMultiCity && (
+                <Field label="Base area or neighborhood" hint={areaHint}>
+                  <BaseAreaAutocomplete value={basics.baseArea} onChange={e => setB({ ...basics, baseArea: e.target.value })} placeholder="Where in the destination?" destination={basics.destination} />
+                </Field>
+              )}
             </div>
 
             <button disabled={!ready} onClick={() => ready && setStep(2)}
@@ -2425,7 +2670,11 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
         )}
 
         {step === 3 && result && (
-          <ItineraryView data={result} onBack={() => { setStep(1); setResult(null); }} />
+          <ItineraryView
+            data={result}
+            inputs={{ basics, flights, hotel, transport, dining, restaurants, activities, interests, outputs }}
+            onBack={() => { setStep(1); setResult(null); }}
+          />
         )}
 
         {step !== 3 && (

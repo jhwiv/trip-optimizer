@@ -118,6 +118,16 @@
         0% { transform: translateX(-100%); }
         100% { transform: translateX(250%); }
       }
+      /* Print: hide controls, show the input summary, force colors. */
+      @media print {
+        html, body { background: #fff !important; overflow: visible !important; }
+        body { font-size: 11px; }
+        .no-print { display: none !important; }
+        .print-only { display: block !important; }
+        * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        .pageBreakAvoid, .day-block, .meal-card, .flight-card, .hotel-card { break-inside: avoid; page-break-inside: avoid; }
+        a { color: #000 !important; text-decoration: none !important; }
+      }
     </style>
   </head>
   <body>
