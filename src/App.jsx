@@ -1644,9 +1644,6 @@ Include sections: ${active}`;
                   )}
                 </div>
                 <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "6px 0 0" }}>{loadingMsg}</p>
-                {streamPreview && (
-                  <p style={{ fontSize: "10px", lineHeight: 1.5, color: "var(--color-text-tertiary, #999)", margin: "8px 0 0", fontFamily: "var(--font-mono, ui-monospace, monospace)", whiteSpace: "pre-wrap", maxHeight: "60px", overflow: "hidden" }}>…{streamPreview}</p>
-                )}
               </div>
             )}
             {error && <p style={{ fontSize: "12px", color: "var(--color-text-danger, #c0392b)", marginTop: "8px", textAlign: "center" }}>{error}</p>}
