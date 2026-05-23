@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Fragment } from "react";
 
 const GOLD = "#C4A862";
 const GOLD_LIGHT = "#F5EDD6";
@@ -536,10 +536,11 @@ function formatTime(t) {
 }
 
 // Sort key: convert '08:30' → 830, '14:05' → 1405. Items without time sink to the end.
+// Returns -1 when no time so callers can fall back to original index for a stable sort.
 function timeKey(t) {
-  if (!t || typeof t !== "string") return 99999;
+  if (!t || typeof t !== "string") return -1;
   const m = t.trim().match(/^(\d{1,2}):(\d{2})/);
-  if (!m) return 99999;
+  if (!m) return -1;
   return parseInt(m[1], 10) * 100 + parseInt(m[2], 10);
 }
 
@@ -617,8 +618,20 @@ function HotelCard({ type, time, end_time, hotel: h, text }) {
 }
 
 function DayBlock({ day, onOpenMenu }) {
-  // Sort items chronologically by `time`. Items without a time go last.
-  const sortedItems = [...(day.items || [])].sort((a, b) => timeKey(a?.time) - timeKey(b?.time));
+  // Sort items chronologically by `time`. Items without a time keep their
+  // original order and sink to the end. Index is the stable tiebreaker.
+  const sortedItems = (day?.items || [])
+    .map((item, idx) => ({ item, idx }))
+    .sort((a, b) => {
+      const ka = timeKey(a.item?.time);
+      const kb = timeKey(b.item?.time);
+      if (ka === -1 && kb === -1) return a.idx - b.idx;
+      if (ka === -1) return 1;
+      if (kb === -1) return -1;
+      if (ka !== kb) return ka - kb;
+      return a.idx - b.idx;
+    })
+    .map(x => x.item);
   return (
     <div style={{ borderLeft: `2px solid ${GOLD}`, paddingLeft: "1rem", marginBottom: "1.5rem", borderRadius: 0 }}>
       <p style={{ fontSize: "13px", fontWeight: "600", color: "var(--color-text-primary)", margin: "0 0 10px", letterSpacing: "0.02em" }}>{day.label}</p>
@@ -823,11 +836,13 @@ function ItineraryView({ data, onBack }) {
         <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "600", margin: "0 0 6px" }}>Your trip</p>
         <p style={{ fontSize: "22px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)", letterSpacing: "-0.3px" }}>{data.destination}</p>
         <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "0 0 1rem" }}>{data.meta}</p>
-        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-          {data.logistics.map((l, i) => (
-            <span key={i} style={{ fontSize: "12px", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "4px 10px", color: "var(--color-text-secondary)" }}>{l}</span>
-          ))}
-        </div>
+        {Array.isArray(data.logistics) && data.logistics.length > 0 && (
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            {data.logistics.map((l, i) => (
+              <span key={i} style={{ fontSize: "12px", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "4px 10px", color: "var(--color-text-secondary)" }}>{l}</span>
+            ))}
+          </div>
+        )}
       </div>
 
       {data.days && data.days.length > 0 && (
@@ -1052,15 +1067,15 @@ function salvageTruncatedJSON(str) {
   // Truncate after the last safe close and append closers for whatever remains open.
   let head = str.slice(start, lastSafeClose + 1);
   // Walk head to figure out what's still open.
-  let d = 0; let s = false; let esc = false;
+  let s = false; let esc = false;
   const stack = [];
   for (let k = 0; k < head.length; k++) {
     const c = head[k];
     if (esc) { esc = false; continue; }
     if (s) { if (c === "\\") { esc = true; continue; } if (c === '"') s = false; continue; }
     if (c === '"') { s = true; continue; }
-    if (c === "{" || c === "[") { stack.push(c); d++; }
-    else if (c === "}" || c === "]") { stack.pop(); d--; }
+    if (c === "{" || c === "[") { stack.push(c); }
+    else if (c === "}" || c === "]") { stack.pop(); }
   }
   // Remove a trailing comma if present, then close remaining open structures.
   head = head.replace(/,\s*$/, "");
@@ -1481,7 +1496,6 @@ export default function TripOptimizer() {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
-  const [streamPreview, setStreamPreview] = useState("");
   const [progress, setProgress] = useState(0);          // 0–1 estimated fraction
   const [progressLabel, setProgressLabel] = useState("");
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -1573,13 +1587,11 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} }
     setLoading(false);
     setLoadingMsg("");
-    setStreamPreview("");
   };
 
   const handleBuild = async () => {
     setLoading(true);
     setError("");
-    setStreamPreview("");
     setProgress(0);
     setProgressLabel("");
     setElapsedSec(0);
@@ -1723,7 +1735,6 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
                   const evt = JSON.parse(payload);
                   if (evt.type === "content_block_delta" && evt.delta?.type === "input_json_delta") {
                     toolJson += evt.delta.partial_json || "";
-                    setStreamPreview(toolJson.slice(-400));
 
                     // Progress: estimate by character count vs expected budget. Cap at 95%.
                     const estTokens = toolJson.length / 3.5;
@@ -1731,8 +1742,12 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
                     setProgress(frac);
 
                     // Friendly progress label based on what's been generated so far.
+                    // Count "label":" occurrences — those only appear inside days[]
+                    // (the schema has no other `label` field), so this matches every
+                    // label format the model might emit (e.g. "Day 1 · Thu" or
+                    // "Wednesday, Jun 4 – Arrival").
                     const totalDays = nightsNum + 1;
-                    const dayMatches = toolJson.match(/"label"\s*:\s*"Day\s+\d+/g) || [];
+                    const dayMatches = toolJson.match(/"label"\s*:\s*"/g) || [];
                     const daysSeen = dayMatches.length;
                     const restaurantMatches = toolJson.match(/"reservation"\s*:/g) || [];
                     const restaurantsDone = restaurantMatches.length;
@@ -1741,11 +1756,18 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
                       setProgressLabel("Starting plan…");
                     } else if (daysSeen === 0) {
                       setProgressLabel("Planning structure…");
-                    } else if (daysSeen < totalDays) {
+                    } else if (daysSeen <= totalDays) {
+                      // daysSeen == N means the model just opened Day N's object
+                      // (the label of day N is the latest one written).
                       const currentDay = daysSeen;
-                      if (restaurantsDone > 0 && toolJson.lastIndexOf("menu") > toolJson.lastIndexOf(`"Day ${currentDay}`)) {
+                      // Find where this day's block starts so we can tell whether
+                      // the most recent activity inside it is restaurant/menu work.
+                      const lastLabelIdx = toolJson.lastIndexOf('"label"');
+                      const restIdx = toolJson.lastIndexOf('"restaurant"');
+                      const menuIdx = toolJson.lastIndexOf('"menu"');
+                      if (restaurantsDone > 0 && menuIdx > lastLabelIdx) {
                         setProgressLabel(`Day ${currentDay} of ${totalDays} · menu`);
-                      } else if (toolJson.lastIndexOf("restaurant") > toolJson.lastIndexOf(`"Day ${currentDay}`)) {
+                      } else if (restIdx > lastLabelIdx) {
                         setProgressLabel(`Day ${currentDay} of ${totalDays} · dining`);
                       } else {
                         setProgressLabel(`Day ${currentDay} of ${totalDays} · activities`);
@@ -1762,7 +1784,7 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
                   } else if (evt.type === "error" || evt.error) {
                     throw new Error(evt.error?.message || evt.message || "Stream error");
                   }
-                } catch (e) {
+                } catch {
                   // Ignore unparseable keepalive lines.
                 }
               }
@@ -1815,7 +1837,6 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
           if (toolBlock?.input) {
             // Already parsed object — short-circuit.
             const parsed = toolBlock.input;
-            const expectedDays = (parseInt(basics.nights, 10) || 3) + 1;
             if (!Array.isArray(parsed.days) || parsed.days.length === 0) {
               const keys = Object.keys(parsed).join(", ");
               const buildId = (typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "unknown";
@@ -1837,18 +1858,18 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
       let parsed;
       try {
         parsed = JSON.parse(toolJson || serverFinalText);
-      } catch (e1) {
+      } catch (parseErr) {
         // Salvage path — should be rare with tool_use, but keep it as a backstop.
         const salvaged = salvageTruncatedJSON(toolJson || serverFinalText);
         if (salvaged) {
           try {
             parsed = JSON.parse(salvaged);
             parsed._truncated = true;
-          } catch {
-            throw new Error("The plan was cut off before it finished. Try again — keep the screen on if you're on cellular.");
+          } catch (salvageErr) {
+            throw new Error("The plan was cut off before it finished. Try again — keep the screen on if you're on cellular.", { cause: salvageErr });
           }
         } else {
-          throw new Error("The plan was cut off before it finished. Try again — keep the screen on if you're on cellular.");
+          throw new Error("The plan was cut off before it finished. Try again — keep the screen on if you're on cellular.", { cause: parseErr });
         }
       }
 
@@ -1862,9 +1883,10 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
         const buildId = (typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "unknown";
         throw new Error(`No day-by-day plan returned (build ${buildId}${truncFlag}). Got keys: ${keys}. Tap Build again.`);
       }
+      // Off-by-one (some models skip the arrival half-day) is acceptable; anything
+      // shorter than that means the day list got truncated. We still surface it.
       if (gotDays < Math.max(2, expectedDays - 1) && !parsed._truncated) {
-        // Allow off-by-one (some models skip the arrival half-day), but anything shorter is broken.
-        console.warn(`Expected ~${expectedDays} days, got ${gotDays}`);
+        parsed._dayCountWarning = `Expected ~${expectedDays} days, got ${gotDays}`;
       }
 
       setResult(parsed);
@@ -1891,7 +1913,6 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
       abortRef.current = null;
       setLoading(false);
       setLoadingMsg("");
-      setStreamPreview("");
       setProgress(0);
       setProgressLabel("");
       setElapsedSec(0);
@@ -1927,11 +1948,11 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
 
         <div style={{ display: "flex", alignItems: "center", gap: "7px", marginBottom: "1.75rem", fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--color-text-secondary)" }}>
           {["Essentials", "Details", "Your plan"].map((s, i) => (
-            <>
-              <span key={s + "dot"} style={{ width: "8px", height: "8px", borderRadius: "50%", background: step >= i + 1 ? GOLD : "var(--color-border-secondary)", display: "inline-block", flexShrink: 0 }} />
-              <span key={s} style={{ color: step >= i + 1 ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}>{s}</span>
-              {i < 2 && <span key={s + "sep"} style={{ color: "var(--color-border-secondary)", margin: "0 2px" }}>·</span>}
-            </>
+            <Fragment key={s}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: step >= i + 1 ? GOLD : "var(--color-border-secondary)", display: "inline-block", flexShrink: 0 }} />
+              <span style={{ color: step >= i + 1 ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}>{s}</span>
+              {i < 2 && <span style={{ color: "var(--color-border-secondary)", margin: "0 2px" }}>·</span>}
+            </Fragment>
           ))}
         </div>
 
