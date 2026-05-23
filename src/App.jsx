@@ -1,8 +1,462 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 const GOLD = "#C4A862";
 const GOLD_LIGHT = "#F5EDD6";
 const GOLD_DARK = "#A08845";
+
+// Curated city list for autocomplete. Free-text entries are still allowed.
+const CITIES = [
+  { name: "Lisbon", country: "Portugal" },
+  { name: "Porto", country: "Portugal" },
+  { name: "Madrid", country: "Spain" },
+  { name: "Barcelona", country: "Spain" },
+  { name: "Seville", country: "Spain" },
+  { name: "San Sebastián", country: "Spain" },
+  { name: "Paris", country: "France" },
+  { name: "Nice", country: "France" },
+  { name: "Bordeaux", country: "France" },
+  { name: "Provence", country: "France" },
+  { name: "Rome", country: "Italy" },
+  { name: "Florence", country: "Italy" },
+  { name: "Venice", country: "Italy" },
+  { name: "Milan", country: "Italy" },
+  { name: "Amalfi Coast", country: "Italy" },
+  { name: "Lake Como", country: "Italy" },
+  { name: "Sicily", country: "Italy" },
+  { name: "London", country: "United Kingdom" },
+  { name: "Edinburgh", country: "United Kingdom" },
+  { name: "Dublin", country: "Ireland" },
+  { name: "Amsterdam", country: "Netherlands" },
+  { name: "Brussels", country: "Belgium" },
+  { name: "Bruges", country: "Belgium" },
+  { name: "Copenhagen", country: "Denmark" },
+  { name: "Stockholm", country: "Sweden" },
+  { name: "Oslo", country: "Norway" },
+  { name: "Helsinki", country: "Finland" },
+  { name: "Reykjavik", country: "Iceland" },
+  { name: "Berlin", country: "Germany" },
+  { name: "Munich", country: "Germany" },
+  { name: "Vienna", country: "Austria" },
+  { name: "Salzburg", country: "Austria" },
+  { name: "Zurich", country: "Switzerland" },
+  { name: "Geneva", country: "Switzerland" },
+  { name: "Lucerne", country: "Switzerland" },
+  { name: "St. Moritz", country: "Switzerland" },
+  { name: "Prague", country: "Czechia" },
+  { name: "Budapest", country: "Hungary" },
+  { name: "Krakow", country: "Poland" },
+  { name: "Athens", country: "Greece" },
+  { name: "Santorini", country: "Greece" },
+  { name: "Mykonos", country: "Greece" },
+  { name: "Crete", country: "Greece" },
+  { name: "Istanbul", country: "Turkey" },
+  { name: "Dubrovnik", country: "Croatia" },
+  { name: "Split", country: "Croatia" },
+  { name: "Hvar", country: "Croatia" },
+  { name: "Tokyo", country: "Japan" },
+  { name: "Kyoto", country: "Japan" },
+  { name: "Osaka", country: "Japan" },
+  { name: "Hakone", country: "Japan" },
+  { name: "Seoul", country: "South Korea" },
+  { name: "Hong Kong", country: "China" },
+  { name: "Singapore", country: "Singapore" },
+  { name: "Bangkok", country: "Thailand" },
+  { name: "Chiang Mai", country: "Thailand" },
+  { name: "Bali", country: "Indonesia" },
+  { name: "Hanoi", country: "Vietnam" },
+  { name: "Ho Chi Minh City", country: "Vietnam" },
+  { name: "Dubai", country: "UAE" },
+  { name: "Abu Dhabi", country: "UAE" },
+  { name: "Marrakech", country: "Morocco" },
+  { name: "Cape Town", country: "South Africa" },
+  { name: "Nairobi", country: "Kenya" },
+  { name: "Sydney", country: "Australia" },
+  { name: "Melbourne", country: "Australia" },
+  { name: "Auckland", country: "New Zealand" },
+  { name: "Queenstown", country: "New Zealand" },
+  { name: "New York", country: "USA" },
+  { name: "Boston", country: "USA" },
+  { name: "Washington DC", country: "USA" },
+  { name: "Chicago", country: "USA" },
+  { name: "Miami", country: "USA" },
+  { name: "New Orleans", country: "USA" },
+  { name: "Charleston", country: "USA" },
+  { name: "Nashville", country: "USA" },
+  { name: "Austin", country: "USA" },
+  { name: "Santa Fe", country: "USA" },
+  { name: "Aspen", country: "USA" },
+  { name: "Jackson Hole", country: "USA" },
+  { name: "San Francisco", country: "USA" },
+  { name: "Los Angeles", country: "USA" },
+  { name: "Napa Valley", country: "USA" },
+  { name: "Seattle", country: "USA" },
+  { name: "Hawaii — Maui", country: "USA" },
+  { name: "Hawaii — Kauai", country: "USA" },
+  { name: "Naples", country: "USA" },
+  { name: "Vancouver", country: "Canada" },
+  { name: "Toronto", country: "Canada" },
+  { name: "Montreal", country: "Canada" },
+  { name: "Quebec City", country: "Canada" },
+  { name: "Mexico City", country: "Mexico" },
+  { name: "Cabo San Lucas", country: "Mexico" },
+  { name: "Tulum", country: "Mexico" },
+  { name: "Buenos Aires", country: "Argentina" },
+  { name: "Rio de Janeiro", country: "Brazil" },
+  { name: "Lima", country: "Peru" },
+  { name: "Cusco", country: "Peru" },
+  { name: "Cartagena", country: "Colombia" },
+];
+
+// Airports — major US + key international hubs. Keyed by code; searchable by code, city, or name.
+const AIRPORTS = [
+  { code: "EWR", city: "Newark", name: "Newark Liberty Intl" },
+  { code: "JFK", city: "New York", name: "John F. Kennedy Intl" },
+  { code: "LGA", city: "New York", name: "LaGuardia" },
+  { code: "BOS", city: "Boston", name: "Logan Intl" },
+  { code: "PHL", city: "Philadelphia", name: "Philadelphia Intl" },
+  { code: "BWI", city: "Baltimore", name: "Baltimore/Washington" },
+  { code: "DCA", city: "Washington DC", name: "Reagan National" },
+  { code: "IAD", city: "Washington DC", name: "Dulles Intl" },
+  { code: "ATL", city: "Atlanta", name: "Hartsfield-Jackson" },
+  { code: "MIA", city: "Miami", name: "Miami Intl" },
+  { code: "FLL", city: "Fort Lauderdale", name: "Hollywood Intl" },
+  { code: "MCO", city: "Orlando", name: "Orlando Intl" },
+  { code: "TPA", city: "Tampa", name: "Tampa Intl" },
+  { code: "RSW", city: "Fort Myers", name: "Southwest Florida" },
+  { code: "CLT", city: "Charlotte", name: "Douglas Intl" },
+  { code: "RDU", city: "Raleigh-Durham", name: "Raleigh-Durham Intl" },
+  { code: "CHS", city: "Charleston", name: "Charleston Intl" },
+  { code: "SAV", city: "Savannah", name: "Savannah/Hilton Head" },
+  { code: "BNA", city: "Nashville", name: "Nashville Intl" },
+  { code: "MSY", city: "New Orleans", name: "Louis Armstrong" },
+  { code: "AUS", city: "Austin", name: "Bergstrom Intl" },
+  { code: "DFW", city: "Dallas", name: "Dallas/Fort Worth" },
+  { code: "IAH", city: "Houston", name: "Bush Intercontinental" },
+  { code: "ORD", city: "Chicago", name: "O’Hare Intl" },
+  { code: "MDW", city: "Chicago", name: "Midway Intl" },
+  { code: "DTW", city: "Detroit", name: "Metro Wayne County" },
+  { code: "MSP", city: "Minneapolis", name: "Minneapolis-St. Paul" },
+  { code: "DEN", city: "Denver", name: "Denver Intl" },
+  { code: "PHX", city: "Phoenix", name: "Sky Harbor" },
+  { code: "LAS", city: "Las Vegas", name: "Harry Reid Intl" },
+  { code: "SLC", city: "Salt Lake City", name: "Salt Lake City Intl" },
+  { code: "LAX", city: "Los Angeles", name: "Los Angeles Intl" },
+  { code: "SAN", city: "San Diego", name: "San Diego Intl" },
+  { code: "SFO", city: "San Francisco", name: "San Francisco Intl" },
+  { code: "OAK", city: "Oakland", name: "Oakland Intl" },
+  { code: "SJC", city: "San Jose", name: "Norman Y. Mineta" },
+  { code: "SEA", city: "Seattle", name: "Seattle-Tacoma" },
+  { code: "PDX", city: "Portland", name: "Portland Intl" },
+  { code: "HNL", city: "Honolulu", name: "Daniel K. Inouye" },
+  { code: "OGG", city: "Maui", name: "Kahului" },
+  { code: "LIH", city: "Kauai", name: "Lihue" },
+  { code: "ABQ", city: "Albuquerque", name: "Albuquerque Intl Sunport" },
+  { code: "SAF", city: "Santa Fe", name: "Santa Fe Regional" },
+  { code: "ASE", city: "Aspen", name: "Pitkin County" },
+  { code: "JAC", city: "Jackson Hole", name: "Jackson Hole Airport" },
+  { code: "YYZ", city: "Toronto", name: "Pearson Intl" },
+  { code: "YUL", city: "Montreal", name: "Pierre Elliott Trudeau" },
+  { code: "YVR", city: "Vancouver", name: "Vancouver Intl" },
+  { code: "LHR", city: "London", name: "Heathrow" },
+  { code: "LGW", city: "London", name: "Gatwick" },
+  { code: "CDG", city: "Paris", name: "Charles de Gaulle" },
+  { code: "ORY", city: "Paris", name: "Orly" },
+  { code: "AMS", city: "Amsterdam", name: "Schiphol" },
+  { code: "FRA", city: "Frankfurt", name: "Frankfurt am Main" },
+  { code: "MUC", city: "Munich", name: "Franz Josef Strauss" },
+  { code: "ZRH", city: "Zurich", name: "Zürich Airport" },
+  { code: "GVA", city: "Geneva", name: "Cointrin" },
+  { code: "FCO", city: "Rome", name: "Fiumicino" },
+  { code: "MXP", city: "Milan", name: "Malpensa" },
+  { code: "VCE", city: "Venice", name: "Marco Polo" },
+  { code: "BCN", city: "Barcelona", name: "El Prat" },
+  { code: "MAD", city: "Madrid", name: "Barajas" },
+  { code: "LIS", city: "Lisbon", name: "Humberto Delgado" },
+  { code: "OPO", city: "Porto", name: "Francisco Sá Carneiro" },
+  { code: "CPH", city: "Copenhagen", name: "Kastrup" },
+  { code: "ARN", city: "Stockholm", name: "Arlanda" },
+  { code: "DUB", city: "Dublin", name: "Dublin Airport" },
+  { code: "EDI", city: "Edinburgh", name: "Edinburgh Airport" },
+  { code: "KEF", city: "Reykjavik", name: "Keflavík Intl" },
+  { code: "IST", city: "Istanbul", name: "Istanbul Airport" },
+  { code: "ATH", city: "Athens", name: "Eleftherios Venizelos" },
+  { code: "DBV", city: "Dubrovnik", name: "Dubrovnik Airport" },
+  { code: "NRT", city: "Tokyo", name: "Narita Intl" },
+  { code: "HND", city: "Tokyo", name: "Haneda" },
+  { code: "KIX", city: "Osaka", name: "Kansai Intl" },
+  { code: "ICN", city: "Seoul", name: "Incheon Intl" },
+  { code: "HKG", city: "Hong Kong", name: "Hong Kong Intl" },
+  { code: "SIN", city: "Singapore", name: "Changi" },
+  { code: "BKK", city: "Bangkok", name: "Suvarnabhumi" },
+  { code: "DXB", city: "Dubai", name: "Dubai Intl" },
+  { code: "AUH", city: "Abu Dhabi", name: "Zayed Intl" },
+  { code: "DOH", city: "Doha", name: "Hamad Intl" },
+  { code: "SYD", city: "Sydney", name: "Kingsford Smith" },
+  { code: "MEL", city: "Melbourne", name: "Tullamarine" },
+  { code: "AKL", city: "Auckland", name: "Auckland Airport" },
+  { code: "CPT", city: "Cape Town", name: "Cape Town Intl" },
+  { code: "GRU", city: "São Paulo", name: "Guarulhos" },
+  { code: "EZE", city: "Buenos Aires", name: "Ministro Pistarini" },
+  { code: "MEX", city: "Mexico City", name: "Benito Juárez" },
+  { code: "SJD", city: "Cabo San Lucas", name: "Los Cabos Intl" },
+  { code: "CUN", city: "Cancun", name: "Cancún Intl" },
+];
+
+// Airlines — major carriers globally.
+const AIRLINES = [
+  "United", "American", "Delta", "JetBlue", "Alaska", "Southwest", "Spirit", "Frontier", "Hawaiian",
+  "Air Canada", "WestJet",
+  "British Airways", "Virgin Atlantic", "Lufthansa", "Swiss", "Austrian", "Brussels Airlines",
+  "Air France", "KLM", "Iberia", "TAP Air Portugal", "Aer Lingus",
+  "ITA Airways", "Alitalia", "Finnair", "SAS", "Icelandair", "Norwegian",
+  "Turkish Airlines", "Emirates", "Etihad", "Qatar Airways", "Saudia",
+  "Japan Airlines", "ANA", "Korean Air", "Asiana", "Cathay Pacific", "Singapore Airlines",
+  "Thai Airways", "EVA Air", "China Airlines",
+  "Qantas", "Air New Zealand", "Fiji Airways",
+  "LATAM", "Aeroméxico", "Avianca", "Copa",
+  "Ethiopian", "South African Airways", "Kenya Airways",
+];
+
+// Rental-car companies with regional coverage. Most majors operate at virtually all
+// commercial airports in their listed regions — so we filter the suggestion list by
+// the *region* of the chosen home airport, and label brands that are airport-specialist
+// vs. only available downtown.
+// regions: us, eu, uk, asia, oceania, mideast, latam, africa, global
+const RENTAL_COMPANIES = [
+  { name: "Hertz", regions: ["global"], airportDesks: true, note: "Gold Plus Rewards" },
+  { name: "Hertz Dream Cars", regions: ["us", "eu"], airportDesks: true, note: "Exotic / luxury — select airports" },
+  { name: "Enterprise", regions: ["us", "uk", "eu", "latam"], airportDesks: true },
+  { name: "National", regions: ["us", "uk", "eu", "latam"], airportDesks: true, note: "Emerald Club" },
+  { name: "Alamo", regions: ["us", "eu", "latam"], airportDesks: true },
+  { name: "Avis", regions: ["global"], airportDesks: true, note: "Preferred" },
+  { name: "Budget", regions: ["global"], airportDesks: true },
+  { name: "Sixt", regions: ["global"], airportDesks: true, note: "Strong in Europe" },
+  { name: "Sixt Black", regions: ["eu", "us", "mideast"], airportDesks: true, note: "Premium tier" },
+  { name: "Europcar", regions: ["eu", "uk", "africa", "asia", "oceania"], airportDesks: true },
+  { name: "Thrifty", regions: ["global"], airportDesks: true },
+  { name: "Dollar", regions: ["global"], airportDesks: true },
+  { name: "Silvercar by Audi", regions: ["us"], airportDesks: true, note: "Audi only, select US airports" },
+  { name: "Auto Europe", regions: ["eu", "uk"], airportDesks: true, note: "Aggregator — best European rates" },
+  { name: "Kemwel", regions: ["eu"], airportDesks: true, note: "European specialist" },
+  { name: "Turo", regions: ["us", "uk", "eu"], airportDesks: false, note: "Peer-to-peer — some airport delivery" },
+  { name: "Times Car Rental", regions: ["asia"], airportDesks: true, note: "Japan" },
+  { name: "Nippon Rent-A-Car", regions: ["asia"], airportDesks: true, note: "Japan" },
+  { name: "Lotte Rent-a-Car", regions: ["asia"], airportDesks: true, note: "Korea" },
+];
+
+// Map of airport IATA code → region key, used to filter rental-company suggestions.
+const AIRPORT_REGIONS = {
+  // US
+  EWR:"us", JFK:"us", LGA:"us", BOS:"us", PHL:"us", BWI:"us", DCA:"us", IAD:"us", ATL:"us",
+  MIA:"us", FLL:"us", MCO:"us", TPA:"us", RSW:"us", CLT:"us", RDU:"us", CHS:"us", SAV:"us",
+  BNA:"us", MSY:"us", AUS:"us", DFW:"us", IAH:"us", ORD:"us", MDW:"us", DTW:"us", MSP:"us",
+  DEN:"us", PHX:"us", LAS:"us", SLC:"us", LAX:"us", SAN:"us", SFO:"us", OAK:"us", SJC:"us",
+  SEA:"us", PDX:"us", HNL:"us", OGG:"us", LIH:"us", ABQ:"us", SAF:"us", ASE:"us", JAC:"us",
+  // Canada
+  YYZ:"us", YUL:"us", YVR:"us",
+  // UK / Europe
+  LHR:"uk", LGW:"uk",
+  CDG:"eu", ORY:"eu", AMS:"eu", FRA:"eu", MUC:"eu", ZRH:"eu", GVA:"eu", FCO:"eu", MXP:"eu",
+  VCE:"eu", BCN:"eu", MAD:"eu", LIS:"eu", OPO:"eu", CPH:"eu", ARN:"eu", DUB:"eu", EDI:"uk",
+  KEF:"eu", IST:"eu", ATH:"eu", DBV:"eu",
+  // Asia
+  NRT:"asia", HND:"asia", KIX:"asia", ICN:"asia", HKG:"asia", SIN:"asia", BKK:"asia",
+  // Middle East
+  DXB:"mideast", AUH:"mideast", DOH:"mideast",
+  // Oceania / Africa / LatAm
+  SYD:"oceania", MEL:"oceania", AKL:"oceania",
+  CPT:"africa",
+  GRU:"latam", EZE:"latam", MEX:"latam", SJD:"latam", CUN:"latam",
+};
+
+function getAirportRegion(airportInput) {
+  if (!airportInput) return null;
+  // Accept full code or first 3 chars of input.
+  const code = airportInput.trim().toUpperCase().slice(0, 3);
+  return AIRPORT_REGIONS[code] || null;
+}
+
+function getRentalCompanies(airportInput) {
+  const region = getAirportRegion(airportInput);
+  if (!region) return RENTAL_COMPANIES; // unknown — show all
+  return RENTAL_COMPANIES.filter(c =>
+    c.regions.includes("global") || c.regions.includes(region)
+  );
+}
+
+// Vehicle types for rental car / ground transport.
+const VEHICLE_TYPES = [
+  "Sedan", "Compact", "Midsize SUV", "Full-size SUV", "Luxury SUV",
+  "Luxury sedan", "Convertible", "Sports car", "Minivan", "Pickup truck",
+  "EV — Tesla Model 3", "EV — Tesla Model Y", "EV — Tesla Model S",
+  "Wagon / estate", "7-seater", "4WD / off-road",
+];
+
+// Universal restaurant / dining types.
+const RESTAURANT_TYPES_BASE = [
+  "Michelin-starred", "Fine dining", "Wine bar", "Tasting menu",
+  "Local seafood", "Steakhouse", "Sushi / omakase", "Italian — trattoria",
+  "Italian — osteria", "French bistro", "Brasserie", "Tapas / pintxos",
+  "Farm-to-table", "Waterfront dining", "Rooftop bar", "Speakeasy",
+  "Hotel bar", "Cafe / breakfast", "Brunch spot", "Bakery / pastries",
+  "Market hall", "Street food", "Beer garden", "Casual lunch",
+];
+
+// Destination-specific restaurant suggestions (matched by substring of destination string).
+const RESTAURANT_BY_DEST = {
+  lisbon:    ["Petiscos / tasca", "Pastel de nata stop", "Seafood marisqueira", "Fado dinner", "Port wine bar"],
+  porto:     ["Francesinha lunch", "Port wine cellar tasting", "Riverside seafood", "Tasca / petiscos"],
+  paris:     ["Classic brasserie", "Bistrot de quartier", "Boulangerie breakfast", "Wine bar / cave à manger", "Café terrace", "Steak frites"],
+  rome:      ["Trastevere trattoria", "Roman carbonara / cacio e pepe", "Aperitivo bar", "Gelateria", "Wood-fired pizza al taglio"],
+  florence:  ["Bistecca alla Fiorentina", "Enoteca", "Tuscan trattoria", "Aperitivo at sunset", "Gelateria"],
+  venice:    ["Cicchetti bacaro crawl", "Seafood risotto", "Spritz on the canal", "Osteria for fresh pasta"],
+  milan:     ["Aperitivo Navigli", "Risotto alla Milanese", "Brera enoteca", "Panzerotti lunch"],
+  barcelona: ["Tapas crawl", "Pintxos bar", "Catalan seafood", "Vermut hour", "Boqueria market lunch"],
+  madrid:    ["Tapas crawl La Latina", "Cocido madrile\u00f1o", "Jam\u00f3n ib\u00e9rico bar", "Mercado de San Miguel"],
+  london:    ["Sunday roast", "Indian curry house", "Gastropub", "Afternoon tea", "Pie & mash", "Cocktail bar"],
+  edinburgh: ["Scottish seafood", "Whisky bar", "Gastropub", "Modern Scottish tasting menu"],
+  amsterdam: ["Brown caf\u00e9", "Rijsttafel (Indonesian)", "Canal-side bistro", "Bitterballen bar"],
+  copenhagen:["New Nordic tasting menu", "Smushi / sm\u00f8rrebr\u00f8d lunch", "Natural wine bar", "Bakery (Hart, Juno)"],
+  zurich:    ["Z\u00fcrcher Geschnetzeltes", "Swiss fondue / raclette", "Lake-view bistro", "Caf\u00e9 / Confiserie"],
+  tokyo:     ["Sushi omakase", "Tempura counter", "Tonkatsu specialist", "Ramen shop", "Izakaya", "Kaiseki dinner", "Yakitori alley"],
+  kyoto:     ["Kaiseki ryokan dinner", "Tofu specialist", "Kyo-kaiseki lunch", "Matcha tea house", "Pontoch\u014d alley dining"],
+  osaka:     ["Okonomiyaki", "Takoyaki stand", "Kushikatsu bar", "Dotonbori street food"],
+  "new york": ["Steakhouse classic", "Pizza slice joint", "Bagel + lox breakfast", "Omakase counter", "Speakeasy cocktail bar", "Italian red sauce"],
+  "new orleans": ["Creole classic", "Po-boy lunch", "Beignets at Caf\u00e9 du Monde", "Jazz brunch", "Cajun seafood boil"],
+  miami:     ["Cuban sandwich lunch", "Stone crab", "Cuban steakhouse", "Wynwood food hall", "Cafecito stop"],
+  charleston:["Lowcountry seafood", "She-crab soup", "Southern fine dining", "Shrimp & grits brunch"],
+  napa:      ["Winery tasting room lunch", "Michelin tasting menu", "Farm-to-table bistro"],
+  "santa fe":["New Mexican \u2014 red & green chile", "Modern Southwestern", "Margarita & rooftop", "Posole / sopaipillas"],
+  naples:    ["Old Naples bistro", "Gulf seafood", "Fifth Avenue South dining", "Beach club lunch"],
+  dubrovnik: ["Konoba (tavern)", "Adriatic seafood", "Peka (under the bell)", "Sea-view fine dining"],
+  split:     ["Riva caf\u00e9 stop", "Dalmatian seafood", "Konoba dinner", "Marjan hill bistro"],
+  sydney:    ["Modern Australian tasting menu", "Harbour-view dining", "Coffee culture caf\u00e9", "Bondi brunch"],
+  "cape town":["Cape Malay cuisine", "Wine farm lunch", "Braai (BBQ)", "Camps Bay sunset dining"],
+};
+
+function getRestaurantSuggestions(destination) {
+  const d = (destination || "").toLowerCase();
+  const extra = [];
+  for (const [k, list] of Object.entries(RESTAURANT_BY_DEST)) {
+    if (d.includes(k)) { extra.push(...list); break; }
+  }
+  return [...extra, ...RESTAURANT_TYPES_BASE];
+}
+
+// Universal activities.
+const ACTIVITY_TYPES_BASE = [
+  "Private city walking tour", "Food tour", "Wine tasting", "Cooking class",
+  "Museum — skip-the-line", "Art gallery visit", "Architecture tour",
+  "Sunset boat cruise", "Private driver day trip", "Day trip to nearby town",
+  "Golf — 18 holes", "Spa day", "Hot springs / thermal bath",
+  "Hiking — half day", "Bike tour", "E-bike rental",
+  "Live music / jazz club", "Theater / opera", "Local market visit",
+  "Photography walk", "Beach day", "Snorkeling", "Helicopter tour",
+  "Hot air balloon", "Horseback riding", "Ski / snowboard day",
+];
+
+// Destination-specific iconic activities.
+const ACTIVITY_BY_DEST = {
+  lisbon:   ["Tram 28 ride", "Day trip to Sintra", "Belem & Jer\u00f3nimos Monastery", "Time Out Market", "LX Factory afternoon"],
+  porto:    ["Douro Valley wine day", "Port wine cellar tour", "Livraria Lello visit", "S\u00e3o Bento azulejos"],
+  paris:    ["Louvre \u2014 timed entry", "Mus\u00e9e d'Orsay", "Versailles day trip", "Seine evening cruise", "Montmartre walk", "Wine cellar tasting"],
+  rome:     ["Vatican Museums + Sistine", "Colosseum underground tour", "Trastevere food walk", "Borghese Gallery (book ahead)", "Aperitivo at sunset"],
+  florence: ["Uffizi reserved entry", "Accademia \u2014 see David", "Chianti wine day", "Boboli Gardens", "Duomo dome climb"],
+  venice:   ["Doge's Palace early", "Gondola at sunset", "Murano + Burano boat", "Cicchetti crawl"],
+  barcelona:["Sagrada Fam\u00edlia timed entry", "Park G\u00fcell", "Tapas walking tour", "Picasso Museum"],
+  madrid:   ["Prado timed entry", "Royal Palace + Almudena", "Toledo day trip", "Flamenco show"],
+  london:   ["Westminster + Churchill War Rooms", "British Museum highlights", "West End show", "Borough Market", "Afternoon tea"],
+  edinburgh:["Edinburgh Castle", "Royal Mile walk", "Whisky tasting", "Arthur's Seat hike"],
+  amsterdam:["Rijksmuseum", "Van Gogh Museum (book)", "Anne Frank House (book early)", "Canal cruise"],
+  copenhagen:["Tivoli Gardens evening", "Nyhavn stroll", "Louisiana Museum day trip", "Bike the city"],
+  zurich:   ["Lake Zurich boat", "Uetliberg sunset", "Day trip to Lucerne / Rigi", "Lindt Home of Chocolate"],
+  tokyo:    ["teamLab digital art", "Tsukiji outer market breakfast", "Meiji Shrine + Harajuku", "Shibuya crossing + Hachiko", "Day trip to Hakone"],
+  kyoto:    ["Fushimi Inari sunrise", "Arashiyama bamboo + monkeys", "Kinkaku-ji + Ryoan-ji", "Gion geisha walk", "Tea ceremony"],
+  osaka:    ["Osaka Castle", "Dotonbori night walk", "Day trip to Nara (deer + Todai-ji)"],
+  "new york": ["Broadway show", "Top of the Rock at sunset", "MoMA + Frick", "High Line walk", "Yankee / Mets game"],
+  "new orleans": ["Frenchmen Street jazz", "Garden District walk", "Steamboat Natchez", "Cooking class"],
+  miami:     ["South Beach Art Deco walk", "Vizcaya Museum", "Wynwood walls", "Everglades airboat"],
+  napa:      ["3-winery tasting day", "Hot air balloon at dawn", "Castello di Amorosa", "Calistoga mud bath"],
+  "santa fe":["Canyon Road galleries", "Georgia O'Keeffe Museum", "Bandelier ruins day trip", "Ten Thousand Waves spa"],
+  naples:    ["Naples Pier sunset", "Marco Island day", "Naples Botanical Garden", "Tin City", "Beach club day"],
+  aspen:     ["Maroon Bells", "Ski / snowboard", "Snowmass gondola", "Apr\u00e8s-ski at Aj\u0061x Tavern"],
+  dubrovnik: ["Walk the City Walls early", "Lokrum island ferry", "Game of Thrones tour", "Kayak around Old Town"],
+  sydney:    ["Sydney Harbour Bridge climb", "Opera House tour + show", "Bondi-to-Coogee walk", "Manly ferry day"],
+  "cape town": ["Table Mountain cable car", "Cape Point / Boulders penguins", "Stellenbosch wine day", "Robben Island"],
+};
+
+function getActivitySuggestions(destination) {
+  const d = (destination || "").toLowerCase();
+  const extra = [];
+  for (const [k, list] of Object.entries(ACTIVITY_BY_DEST)) {
+    if (d.includes(k)) { extra.push(...list); break; }
+  }
+  return [...extra, ...ACTIVITY_TYPES_BASE];
+}
+
+// Cuisine preferences suggestions (single-field, comma-friendly).
+const CUISINE_SUGGESTIONS = [
+  "Local / traditional", "Seafood-focused", "Wine-focused",
+  "Vegetarian-friendly", "Pescatarian", "Gluten-free options",
+  "Adventurous / chef's choice", "Family-style sharing", "Romantic dinners",
+  "Light lunches, big dinners", "Bakeries & caf\u00e9s", "Street food",
+  "Michelin-focused", "Mixed — casual + a few splurges",
+];
+
+// Hotel must-have suggestions.
+const HOTEL_MUSTHAVE_SUGGESTIONS = [
+  "Walkable to dining", "Pool / rooftop pool", "Spa on-site",
+  "Lounge access / club level", "Suite upgrade preferred", "Connecting rooms",
+  "Late check-out", "Kitchenette / full kitchen", "Quiet floor",
+  "Sea view", "City view", "Old Town location", "Fitness center",
+  "Free breakfast", "24-hour room service", "Family-friendly",
+  "Pet-friendly", "Concierge desk", "Valet parking",
+];
+
+// Travelers / party-composition presets.
+const TRAVELER_PRESETS = [
+  "1 adult", "2 adults", "2 adults + 1 child", "2 adults + 2 children",
+  "Family of 4", "Family of 5", "3 adults", "4 adults",
+  "Couple's getaway", "Solo trip", "Group of friends",
+];
+
+// Interests free-text suggestions.
+const INTEREST_SUGGESTIONS = [
+  "Art & architecture", "Wine & food", "History & ruins", "Modern art / galleries",
+  "Golf", "Beach & relaxation", "Hiking & nature", "Shopping",
+  "Photography", "Music & nightlife", "Family-friendly activities", "Spa & wellness",
+  "Adventure / outdoor sports", "Off-the-beaten-path",
+];
+
+// Hotel brands / sub-brands across major loyalty families.
+const HOTEL_TIERS = [
+  // Marriott family
+  "Ritz-Carlton", "Ritz-Carlton Reserve", "St. Regis", "JW Marriott", "Edition", "Bvlgari Hotels",
+  "W Hotels", "Luxury Collection", "Marriott", "Sheraton", "Westin", "Le Méridien",
+  "Autograph Collection", "Tribute Portfolio", "Renaissance", "Marriott Bonvoy",
+  "Courtyard", "Residence Inn", "Aloft", "Moxy",
+  // Hilton family
+  "Waldorf Astoria", "Conrad", "LXR", "Canopy", "Hilton", "DoubleTree", "Embassy Suites",
+  "Curio Collection", "Tapestry Collection", "Hampton Inn",
+  // Hyatt family
+  "Park Hyatt", "Andaz", "Grand Hyatt", "Hyatt Regency", "Hyatt Centric", "Alila", "Thompson",
+  "Miraval", "Hyatt House",
+  // IHG family
+  "Six Senses", "Regent", "InterContinental", "Vignette Collection", "Kimpton", "Hotel Indigo",
+  "Crowne Plaza", "voco",
+  // Independent / boutique
+  "Aman", "Belmond", "Four Seasons", "Mandarin Oriental", "Peninsula", "Rosewood",
+  "Soho House", "Auberge Resorts", "Oetker Collection", "Cheval Blanc", "Capella",
+];
+
+function formatDateForDisplay(iso) {
+  if (!iso) return "";
+  // iso like "2027-06-03" — keep it locale-independent
+  const [y, m, d] = iso.split("-");
+  if (!y || !m || !d) return iso;
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return `${months[parseInt(m,10)-1]} ${parseInt(d,10)}, ${y}`;
+}
 
 const areaHints = {
   default: "e.g. Old Town, waterfront, city center, suburbs, hillside",
@@ -171,8 +625,252 @@ function Field({ label, children, hint }) {
   );
 }
 
-function Inp({ value, onChange, placeholder }) {
-  return <input value={value} onChange={onChange} placeholder={placeholder} style={{ fontSize: "14px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", lineHeight: "1.4" }} />;
+function Inp({ value, onChange, placeholder, type = "text" }) {
+  return <input type={type} value={value} onChange={onChange} placeholder={placeholder} style={{ fontSize: "14px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", lineHeight: "1.4" }} />;
+}
+
+function DateInput({ value, onChange }) {
+  // Native date input opens the OS calendar picker on click/tap.
+  return (
+    <input
+      type="date"
+      value={value}
+      onChange={onChange}
+      style={{
+        fontSize: "14px",
+        padding: "9px 0",
+        border: "none",
+        borderBottom: "0.5px solid var(--color-border-primary)",
+        background: "transparent",
+        color: value ? "var(--color-text-primary)" : "var(--color-text-tertiary)",
+        width: "100%",
+        boxSizing: "border-box",
+        outline: "none",
+        fontFamily: "inherit",
+        lineHeight: "1.4",
+      }}
+    />
+  );
+}
+
+// Generic autocomplete: free-text input + filtered dropdown.
+// `getSuggestions(q)` returns an array of items; `renderItem(item)` renders each row;
+// `itemToValue(item)` converts a picked item to the string written into the input.
+function Autocomplete({ value, onChange, placeholder, getSuggestions, renderItem, itemToValue, itemKey, openOnFocusEmpty = false, minChars = 1 }) {
+  const [open, setOpen] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(-1);
+  const wrapRef = useRef(null);
+
+  const q = value.trim().toLowerCase();
+  const suggestions = (q.length >= minChars || (openOnFocusEmpty && q.length === 0))
+    ? getSuggestions(q).slice(0, 8)
+    : [];
+
+  useEffect(() => {
+    function handleClick(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  const pick = (item) => {
+    onChange({ target: { value: itemToValue(item) } });
+    setOpen(false);
+    setActiveIdx(-1);
+  };
+
+  const onKeyDown = (e) => {
+    if (!open || suggestions.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIdx(i => Math.min(i + 1, suggestions.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIdx(i => Math.max(i - 1, 0));
+    } else if (e.key === "Enter" && activeIdx >= 0) {
+      e.preventDefault();
+      pick(suggestions[activeIdx]);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <input
+        value={value}
+        onChange={(e) => { onChange(e); setOpen(true); setActiveIdx(-1); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKeyDown}
+        placeholder={placeholder}
+        autoComplete="off"
+        style={{ fontSize: "14px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", lineHeight: "1.4" }}
+      />
+      {open && suggestions.length > 0 && (
+        <div className="city-suggestions" role="listbox">
+          {suggestions.map((item, i) => (
+            <div
+              key={itemKey(item)}
+              role="option"
+              aria-selected={i === activeIdx}
+              className={`city-suggestion${i === activeIdx ? " active" : ""}`}
+              onMouseEnter={() => setActiveIdx(i)}
+              onMouseDown={(e) => { e.preventDefault(); pick(item); }}
+            >
+              {renderItem(item)}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CityAutocomplete({ value, onChange, placeholder }) {
+  return (
+    <Autocomplete
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      getSuggestions={(q) => CITIES.filter(c =>
+        c.name.toLowerCase().includes(q) || c.country.toLowerCase().includes(q)
+      )}
+      renderItem={(c) => <>{c.name}<span className="country">{c.country}</span></>}
+      itemToValue={(c) => `${c.name}, ${c.country}`}
+      itemKey={(c) => `${c.name}-${c.country}`}
+    />
+  );
+}
+
+function AirportAutocomplete({ value, onChange, placeholder }) {
+  return (
+    <Autocomplete
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      getSuggestions={(q) => AIRPORTS.filter(a =>
+        a.code.toLowerCase().includes(q) ||
+        a.city.toLowerCase().includes(q) ||
+        a.name.toLowerCase().includes(q)
+      )}
+      renderItem={(a) => <>{a.code}<span className="country">{a.city} · {a.name}</span></>}
+      itemToValue={(a) => a.code}
+      itemKey={(a) => a.code}
+    />
+  );
+}
+
+function AirlineAutocomplete({ value, onChange, placeholder }) {
+  return (
+    <Autocomplete
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      getSuggestions={(q) => AIRLINES.filter(a => a.toLowerCase().includes(q))}
+      renderItem={(a) => <>{a}</>}
+      itemToValue={(a) => a}
+      itemKey={(a) => a}
+    />
+  );
+}
+
+function HotelTierAutocomplete({ value, onChange, placeholder }) {
+  return (
+    <Autocomplete
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      openOnFocusEmpty={true}
+      minChars={0}
+      getSuggestions={(q) => q ? HOTEL_TIERS.filter(h => h.toLowerCase().includes(q)) : HOTEL_TIERS}
+      renderItem={(h) => <>{h}</>}
+      itemToValue={(h) => h}
+      itemKey={(h) => h}
+    />
+  );
+}
+
+function VehicleAutocomplete({ value, onChange, placeholder }) {
+  return (
+    <Autocomplete
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      openOnFocusEmpty={true}
+      minChars={0}
+      getSuggestions={(q) => q ? VEHICLE_TYPES.filter(v => v.toLowerCase().includes(q)) : VEHICLE_TYPES}
+      renderItem={(v) => <>{v}</>}
+      itemToValue={(v) => v}
+      itemKey={(v) => v}
+    />
+  );
+}
+
+// Rental company — filters by region of the chosen home airport.
+function RentalCompanyAutocomplete({ value, onChange, placeholder, airport }) {
+  const list = getRentalCompanies(airport);
+  return (
+    <Autocomplete
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      openOnFocusEmpty={true}
+      minChars={0}
+      getSuggestions={(q) => q ? list.filter(c => c.name.toLowerCase().includes(q)) : list}
+      renderItem={(c) => <>{c.name}{c.note && <span className="country">{c.note}</span>}</>}
+      itemToValue={(c) => c.name}
+      itemKey={(c) => c.name}
+    />
+  );
+}
+
+// Simple wrappers for plain string lists.
+function makeSimpleAutocomplete(getList) {
+  return function SimpleAutocomplete({ value, onChange, placeholder }) {
+    return (
+      <Autocomplete
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        openOnFocusEmpty={true}
+        minChars={0}
+        getSuggestions={(q) => {
+          const list = typeof getList === "function" ? getList() : getList;
+          return q ? list.filter(s => s.toLowerCase().includes(q)) : list;
+        }}
+        renderItem={(s) => <>{s}</>}
+        itemToValue={(s) => s}
+        itemKey={(s) => s}
+      />
+    );
+  };
+}
+
+const TravelersAutocomplete = makeSimpleAutocomplete(TRAVELER_PRESETS);
+const CuisineAutocomplete = makeSimpleAutocomplete(CUISINE_SUGGESTIONS);
+const HotelMustHaveAutocomplete = makeSimpleAutocomplete(HOTEL_MUSTHAVE_SUGGESTIONS);
+const InterestsAutocomplete = makeSimpleAutocomplete(INTEREST_SUGGESTIONS);
+
+// Suggests neighborhoods/base areas for the chosen destination from the existing areaHints list.
+function BaseAreaAutocomplete({ value, onChange, placeholder, destination }) {
+  // Parse the hint string for the destination into an array of area names.
+  const hint = getAreaHint(destination || "");
+  // Strip the leading "e.g. " and split on commas.
+  const areas = hint.replace(/^e\.g\.\s*/i, "").split(/,\s*/).map(s => s.trim()).filter(Boolean);
+  return (
+    <Autocomplete
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      openOnFocusEmpty={true}
+      minChars={0}
+      getSuggestions={(q) => q ? areas.filter(a => a.toLowerCase().includes(q)) : areas}
+      renderItem={(a) => <>{a}</>}
+      itemToValue={(a) => a}
+      itemKey={(a) => a}
+    />
+  );
 }
 
 function Sel({ value, onChange, opts }) {
@@ -183,15 +881,73 @@ function Sel({ value, onChange, opts }) {
   );
 }
 
-function TagInput({ placeholder, tags, setTags }) {
+function TagInput({ placeholder, tags, setTags, suggestions = [] }) {
   const [val, setVal] = useState("");
-  const add = () => { const v = val.trim(); if (v) { setTags([...tags, v]); setVal(""); } };
+  const [open, setOpen] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(-1);
+  const wrapRef = useRef(null);
+
+  const q = val.trim().toLowerCase();
+  const filtered = (suggestions || [])
+    .filter(s => !tags.includes(s))
+    .filter(s => q ? s.toLowerCase().includes(q) : true)
+    .slice(0, 8);
+
+  useEffect(() => {
+    function handleClick(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  const add = (v) => {
+    const trimmed = (v || val).trim();
+    if (trimmed && !tags.includes(trimmed)) setTags([...tags, trimmed]);
+    setVal("");
+    setOpen(false);
+    setActiveIdx(-1);
+  };
+
+  const onKeyDown = (e) => {
+    if (open && filtered.length > 0) {
+      if (e.key === "ArrowDown") { e.preventDefault(); setActiveIdx(i => Math.min(i + 1, filtered.length - 1)); return; }
+      if (e.key === "ArrowUp")   { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, 0)); return; }
+      if (e.key === "Enter" && activeIdx >= 0) { e.preventDefault(); add(filtered[activeIdx]); return; }
+      if (e.key === "Escape")    { setOpen(false); return; }
+    }
+    if (e.key === "Enter") { e.preventDefault(); add(); }
+  };
+
   return (
     <div>
-      <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
-        <input value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} placeholder={placeholder}
-          style={{ flex: 1, fontSize: "13px", padding: "8px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", outline: "none", fontFamily: "inherit" }} />
-        <button onClick={add} style={{ background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "6px 12px", fontSize: "12px", cursor: "pointer", fontFamily: "inherit", color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>+ Add</button>
+      <div ref={wrapRef} style={{ display: "flex", gap: "8px", marginBottom: "8px", position: "relative" }}>
+        <div style={{ position: "relative", flex: 1 }}>
+          <input
+            value={val}
+            onChange={e => { setVal(e.target.value); setOpen(true); setActiveIdx(-1); }}
+            onFocus={() => setOpen(true)}
+            onKeyDown={onKeyDown}
+            placeholder={placeholder}
+            autoComplete="off"
+            style={{ width: "100%", fontSize: "13px", padding: "8px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", outline: "none", fontFamily: "inherit" }}
+          />
+          {open && filtered.length > 0 && (
+            <div className="city-suggestions" role="listbox">
+              {filtered.map((s, i) => (
+                <div
+                  key={s}
+                  role="option"
+                  aria-selected={i === activeIdx}
+                  className={`city-suggestion${i === activeIdx ? " active" : ""}`}
+                  onMouseEnter={() => setActiveIdx(i)}
+                  onMouseDown={(e) => { e.preventDefault(); add(s); }}
+                >{s}</div>
+              ))}
+            </div>
+          )}
+        </div>
+        <button onClick={() => add()} style={{ background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "6px 12px", fontSize: "12px", cursor: "pointer", fontFamily: "inherit", color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>+ Add</button>
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "4px" }}>
         {tags.map(t => (
@@ -223,19 +979,46 @@ const g2 = { display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)"
 const g3 = { display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)", gap: "14px", marginBottom: "16px" };
 
 export default function TripOptimizer() {
+  // Persisted form state — survives reloads and accidental tab closes.
+  const LS_KEY = "trip-optimizer-form-v2";
+  const loadSaved = () => { try { return JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch { return {}; } };
+  const saved = loadSaved();
+
+  // Sample prefill — June 4, 6 nights, United, Hertz, Marriott, food + wine focus.
+  const DEFAULTS = {
+    basics: { destination: "", startDate: "2026-06-04", nights: "6", travelers: "2 adults", baseArea: "", style: "Food & wine", pace: "Moderate (2–3 things/day)", budget: "$$$ — mid range" },
+    flights: { homeAirport: "EWR", airline: "United", cabin: "Business / Polaris", flex: "Exact date only" },
+    hotel: { brand: "Marriott / Bonvoy", tier: "", mustHave: "" },
+    transport: { type: "Rental car", company: "Hertz", vehicle: "" },
+    dining: { cuisine: "Local / regional", budget: "$$$ — mid ($60–120pp)" },
+    restaurants: [],
+    activities: [],
+    interests: { level: "Easy — mostly walking", text: "Good local food, food and wine culture focus" },
+  };
+
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState("");
+  const [streamPreview, setStreamPreview] = useState("");
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+  const abortRef = useRef(null);
 
-  const [basics, setB] = useState({ destination: "", startDate: "", nights: "", travelers: "2 adults", baseArea: "", style: "Mixed", pace: "Moderate (2–3 things/day)", budget: "$$$ — mid range" });
-  const [flights, setF] = useState({ homeAirport: "", airline: "", cabin: "Business / Polaris", flex: "Exact date only" });
-  const [hotel, setH] = useState({ brand: "Marriott / Bonvoy", tier: "", mustHave: "" });
-  const [transport, setT] = useState({ type: "Rental car", company: "", vehicle: "" });
-  const [dining, setD] = useState({ cuisine: "", budget: "$$$ — mid ($60–120pp)" });
-  const [restaurants, setRest] = useState([]);
-  const [activities, setActs] = useState([]);
-  const [interests, setInt] = useState({ level: "Easy — mostly walking", text: "" });
+  const [basics, setB] = useState(saved.basics || DEFAULTS.basics);
+  const [flights, setF] = useState(saved.flights || DEFAULTS.flights);
+  const [hotel, setH] = useState(saved.hotel || DEFAULTS.hotel);
+  const [transport, setT] = useState(saved.transport || DEFAULTS.transport);
+  const [dining, setD] = useState(saved.dining || DEFAULTS.dining);
+  const [restaurants, setRest] = useState(saved.restaurants || DEFAULTS.restaurants);
+  const [activities, setActs] = useState(saved.activities || DEFAULTS.activities);
+  const [interests, setInt] = useState(saved.interests || DEFAULTS.interests);
+
+  // Auto-save form on every change.
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify({ basics, flights, hotel, transport, dining, restaurants, activities, interests }));
+    } catch {}
+  }, [basics, flights, hotel, transport, dining, restaurants, activities, interests]);
   const [outputs, setOut] = useState({ itinerary: true, weather: true, navigation: true, logistics: true, tonight: true, menus: true, flags: true, planb: true, snobs: true, practical: false, badges: false, pronunciation: false });
 
   const togOut = k => setOut(o => ({ ...o, [k]: !o[k] }));
@@ -275,7 +1058,7 @@ Generate ${basics.nights || 3} days. Be specific, opinionated, insider-toned. Re
     return `Plan this trip:
 Destination: ${basics.destination}
 Base area: ${basics.baseArea || "suggest best area"}
-Start date: ${basics.startDate}
+Start date: ${formatDateForDisplay(basics.startDate) || basics.startDate}
 Nights: ${basics.nights}
 Travelers: ${basics.travelers}
 Style: ${basics.style} · Pace: ${basics.pace} · Budget: ${basics.budget}
@@ -289,30 +1072,139 @@ Interests: ${interests.text || "not specified"} · Level: ${interests.level}
 Include sections: ${active}`;
   };
 
+  const handleCancel = () => {
+    if (abortRef.current) { try { abortRef.current.abort(); } catch {} }
+    setLoading(false);
+    setLoadingMsg("");
+    setStreamPreview("");
+  };
+
   const handleBuild = async () => {
     setLoading(true);
     setError("");
+    setStreamPreview("");
+    setLoadingMsg("Researching destination…");
+
+    // Rotating progress messages so users see motion during the long generation.
+    const phases = [
+      "Researching destination…",
+      "Selecting hotels and neighborhoods…",
+      "Building day-by-day itinerary…",
+      "Picking restaurants and reservations…",
+      "Adding insider notes and Plan B…",
+      "Finalizing your plan…",
+    ];
+    let phaseIdx = 0;
+    const phaseTimer = setInterval(() => {
+      phaseIdx = Math.min(phaseIdx + 1, phases.length - 1);
+      setLoadingMsg(phases[phaseIdx]);
+    }, 7000);
+
+    // Hard client timeout — 2 minutes. Long enough for any reasonable itinerary,
+    // short enough that a truly hung request doesn't spin forever.
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const hardTimeout = setTimeout(() => controller.abort(new Error("Timed out after 2 minutes")), 120000);
+
     try {
-      const response = await fetch("/api/chat", {
+      const apiUrl = (typeof __API_BASE__ !== "undefined" ? __API_BASE__ : "") + "/api/chat";
+      const response = await fetch(apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
+          model: "claude-sonnet-4-5",
+          max_tokens: 4096,
           system: buildSystemPrompt(),
           messages: [{ role: "user", content: buildUserPrompt() }],
         }),
       });
-      const data = await response.json();
-      const text = data.content?.find(b => b.type === "text")?.text || "";
-      const clean = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
+
+      // Non-streaming error path: server returned JSON error.
+      if (!response.ok) {
+        const raw = await response.text();
+        let msg = `Request failed (HTTP ${response.status})`;
+        try {
+          const j = JSON.parse(raw);
+          msg = j?.error?.message || j?.message || msg;
+        } catch { if (raw) msg = raw.slice(0, 240); }
+        throw new Error(msg);
+      }
+
+      const ctype = response.headers.get("content-type") || "";
+
+      // Collect the full text from either an SSE stream or a plain JSON response.
+      let fullText = "";
+
+      if (ctype.includes("text/event-stream") && response.body) {
+        // Parse Anthropic SSE: data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"…"}}
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          // SSE events separated by \n\n; lines start with "data: "
+          let nl;
+          while ((nl = buf.indexOf("\n\n")) !== -1) {
+            const event = buf.slice(0, nl);
+            buf = buf.slice(nl + 2);
+            const lines = event.split("\n");
+            for (const line of lines) {
+              if (!line.startsWith("data:")) continue;
+              const payload = line.slice(5).trim();
+              if (!payload || payload === "[DONE]") continue;
+              try {
+                const evt = JSON.parse(payload);
+                if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+                  fullText += evt.delta.text || "";
+                  setStreamPreview(fullText.slice(-400)); // tail preview to show motion
+                } else if (evt.type === "error" || evt.error) {
+                  throw new Error(evt.error?.message || evt.message || "Stream error");
+                }
+              } catch (e) {
+                // Ignore unparseable keepalive lines.
+              }
+            }
+          }
+        }
+      } else {
+        // Fallback: server returned non-streamed JSON.
+        const raw = await response.text();
+        try {
+          const data = JSON.parse(raw);
+          fullText = data.content?.find(b => b.type === "text")?.text || "";
+        } catch { throw new Error("Server returned an unexpected response."); }
+      }
+
+      if (!fullText) throw new Error("No content returned from AI service.");
+
+      // Robust JSON extraction — strip code fences, then look for outermost {...}.
+      const clean = fullText.replace(/```json|```/g, "").trim();
+      let jsonStr = clean;
+      const first = clean.indexOf("{");
+      const last = clean.lastIndexOf("}");
+      if (first !== -1 && last !== -1 && last > first) jsonStr = clean.slice(first, last + 1);
+
+      let parsed;
+      try { parsed = JSON.parse(jsonStr); }
+      catch { throw new Error("AI response was not valid JSON. Try again, or reduce nights / outputs."); }
+
       setResult(parsed);
       setStep(3);
     } catch (err) {
-      setError("Something went wrong generating the plan. Please try again.");
+      const msg = err?.name === "AbortError"
+        ? "Generation cancelled or timed out. Try again."
+        : (err?.message || "Something went wrong generating the plan. Please try again.");
+      setError(msg);
     } finally {
+      clearInterval(phaseTimer);
+      clearTimeout(hardTimeout);
+      abortRef.current = null;
       setLoading(false);
+      setLoadingMsg("");
+      setStreamPreview("");
     }
   };
 
@@ -360,16 +1252,16 @@ Include sections: ${active}`;
             <div style={cardStyle}>
               <p style={ctStyle}>Where & when</p>
               <div style={g2}>
-                <Field label="Destination"><Inp value={basics.destination} onChange={e => setB({ ...basics, destination: e.target.value })} placeholder="e.g. Lisbon, Portugal" /></Field>
-                <Field label="Home airport"><Inp value={flights.homeAirport} onChange={e => setF({ ...flights, homeAirport: e.target.value })} placeholder="e.g. EWR" /></Field>
+                <Field label="Destination"><CityAutocomplete value={basics.destination} onChange={e => setB({ ...basics, destination: e.target.value })} placeholder="Start typing a city…" /></Field>
+                <Field label="Home airport"><AirportAutocomplete value={flights.homeAirport} onChange={e => setF({ ...flights, homeAirport: e.target.value })} placeholder="e.g. EWR" /></Field>
               </div>
               <div style={g3}>
-                <Field label="Start date"><Inp value={basics.startDate} onChange={e => setB({ ...basics, startDate: e.target.value })} placeholder="e.g. June 3, 2027" /></Field>
+                <Field label="Start date"><DateInput value={basics.startDate} onChange={e => setB({ ...basics, startDate: e.target.value })} /></Field>
                 <Field label="Nights"><Inp value={basics.nights} onChange={e => setB({ ...basics, nights: e.target.value })} placeholder="7" /></Field>
-                <Field label="Travelers"><Inp value={basics.travelers} onChange={e => setB({ ...basics, travelers: e.target.value })} placeholder="2 adults" /></Field>
+                <Field label="Travelers"><TravelersAutocomplete value={basics.travelers} onChange={e => setB({ ...basics, travelers: e.target.value })} placeholder="2 adults" /></Field>
               </div>
               <Field label="Base area or neighborhood" hint={areaHint}>
-                <Inp value={basics.baseArea} onChange={e => setB({ ...basics, baseArea: e.target.value })} placeholder="Where in the destination?" />
+                <BaseAreaAutocomplete value={basics.baseArea} onChange={e => setB({ ...basics, baseArea: e.target.value })} placeholder="Where in the destination?" destination={basics.destination} />
               </Field>
             </div>
 
@@ -404,7 +1296,7 @@ Include sections: ${active}`;
             <div style={cardStyle}>
               <p style={ctStyle}>Flights</p>
               <div style={g3}>
-                <Field label="Preferred airline"><Inp value={flights.airline} onChange={e => setF({ ...flights, airline: e.target.value })} placeholder="e.g. United" /></Field>
+                <Field label="Preferred airline"><AirlineAutocomplete value={flights.airline} onChange={e => setF({ ...flights, airline: e.target.value })} placeholder="e.g. United" /></Field>
                 <Field label="Cabin"><Sel value={flights.cabin} onChange={e => setF({ ...flights, cabin: e.target.value })} opts={["Business / Polaris","Premium economy","Economy"]} /></Field>
                 <Field label="Date flexibility"><Sel value={flights.flex} onChange={e => setF({ ...flights, flex: e.target.value })} opts={["Exact date only","± 1 day","± 2 days"]} /></Field>
               </div>
@@ -414,36 +1306,36 @@ Include sections: ${active}`;
               <p style={ctStyle}>Hotel</p>
               <div style={g2}>
                 <Field label="Brand family"><Sel value={hotel.brand} onChange={e => setH({ ...hotel, brand: e.target.value })} opts={["Marriott / Bonvoy","Hilton Honors","Hyatt","IHG","Independent / boutique","No preference"]} /></Field>
-                <Field label="Sub-brand or tier"><Inp value={hotel.tier} onChange={e => setH({ ...hotel, tier: e.target.value })} placeholder="e.g. Ritz-Carlton, W, Autograph" /></Field>
+                <Field label="Sub-brand or tier"><HotelTierAutocomplete value={hotel.tier} onChange={e => setH({ ...hotel, tier: e.target.value })} placeholder="e.g. Ritz-Carlton, W, Autograph" /></Field>
               </div>
-              <Field label="Must-haves"><Inp value={hotel.mustHave} onChange={e => setH({ ...hotel, mustHave: e.target.value })} placeholder="e.g. pool, walkable to dining, full kitchen" /></Field>
+              <Field label="Must-haves"><HotelMustHaveAutocomplete value={hotel.mustHave} onChange={e => setH({ ...hotel, mustHave: e.target.value })} placeholder="e.g. pool, walkable to dining" /></Field>
             </div>
 
             <div style={cardStyle}>
               <p style={ctStyle}>Ground transport</p>
               <div style={g3}>
                 <Field label="Type"><Sel value={transport.type} onChange={e => setT({ ...transport, type: e.target.value })} opts={["Rental car","Private driver","Rideshare / taxi","Train / rail","No car needed"]} /></Field>
-                <Field label="Preferred company"><Inp value={transport.company} onChange={e => setT({ ...transport, company: e.target.value })} placeholder="e.g. Hertz Gold, Sixt" /></Field>
-                <Field label="Vehicle type"><Inp value={transport.vehicle} onChange={e => setT({ ...transport, vehicle: e.target.value })} placeholder="e.g. SUV, sedan" /></Field>
+                <Field label="Preferred company"><RentalCompanyAutocomplete value={transport.company} onChange={e => setT({ ...transport, company: e.target.value })} placeholder="e.g. Hertz, Sixt" airport={flights.homeAirport} /></Field>
+                <Field label="Vehicle type"><VehicleAutocomplete value={transport.vehicle} onChange={e => setT({ ...transport, vehicle: e.target.value })} placeholder="e.g. SUV, sedan" /></Field>
               </div>
             </div>
 
             <div style={cardStyle}>
               <p style={ctStyle}>Dining</p>
               <div style={g2}>
-                <Field label="Cuisine preferences"><Inp value={dining.cuisine} onChange={e => setD({ ...dining, cuisine: e.target.value })} placeholder="e.g. local, seafood, wine-focused" /></Field>
+                <Field label="Cuisine preferences"><CuisineAutocomplete value={dining.cuisine} onChange={e => setD({ ...dining, cuisine: e.target.value })} placeholder="e.g. local, seafood, wine-focused" /></Field>
                 <Field label="Per-dinner budget"><Sel value={dining.budget} onChange={e => setD({ ...dining, budget: e.target.value })} opts={["$$ — casual ($30–60pp)","$$$ — mid ($60–120pp)","$$$$ — fine dining ($120pp+)","Mixed"]} /></Field>
               </div>
-              <TagInput placeholder="Add a restaurant or dining type" tags={restaurants} setTags={setRest} />
+              <TagInput placeholder="Add a restaurant or dining type" tags={restaurants} setTags={setRest} suggestions={getRestaurantSuggestions(basics.destination)} />
             </div>
 
             <div style={cardStyle}>
               <p style={ctStyle}>Activities</p>
               <div style={g2}>
                 <Field label="Physical level"><Sel value={interests.level} onChange={e => setInt({ ...interests, level: e.target.value })} opts={["Easy — mostly walking","Moderate — some hiking","Active — full days on feet"]} /></Field>
-                <Field label="Interests"><Inp value={interests.text} onChange={e => setInt({ ...interests, text: e.target.value })} placeholder="e.g. art, wine, architecture, golf" /></Field>
+                <Field label="Interests"><InterestsAutocomplete value={interests.text} onChange={e => setInt({ ...interests, text: e.target.value })} placeholder="e.g. art, wine, architecture, golf" /></Field>
               </div>
-              <TagInput placeholder="Add a specific activity" tags={activities} setTags={setActs} />
+              <TagInput placeholder="Add a specific activity" tags={activities} setTags={setActs} suggestions={getActivitySuggestions(basics.destination)} />
             </div>
 
             <div style={cardStyle}>
@@ -453,13 +1345,31 @@ Include sections: ${active}`;
 
             <div style={{ display: "flex", gap: "10px", marginTop: "0.5rem" }}>
               <button onClick={() => setStep(1)} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>← Back</button>
-              <button onClick={handleBuild} disabled={loading}
-                style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: loading ? "wait" : "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
-                {loading ? "Building your plan…" : "Build Trip Plan →"}
-              </button>
+              {loading ? (
+                <button onClick={handleCancel}
+                  style={{ flex: 1, border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}>
+                  Cancel
+                </button>
+              ) : (
+                <button onClick={handleBuild} disabled={loading}
+                  style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
+                  Build Trip Plan →
+                </button>
+              )}
             </div>
+            {loading && (
+              <div style={{ marginTop: "12px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
+                <p style={{ fontSize: "12px", color: "var(--color-text-primary)", margin: "0 0 6px", fontWeight: 500 }}>{loadingMsg || "Working…"}</p>
+                <div style={{ height: "3px", borderRadius: "2px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
+                  <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
+                </div>
+                {streamPreview && (
+                  <p style={{ fontSize: "10px", lineHeight: 1.5, color: "var(--color-text-tertiary, #999)", margin: "8px 0 0", fontFamily: "var(--font-mono, ui-monospace, monospace)", whiteSpace: "pre-wrap", maxHeight: "60px", overflow: "hidden" }}>…{streamPreview}</p>
+                )}
+              </div>
+            )}
             {error && <p style={{ fontSize: "12px", color: "var(--color-text-danger, #c0392b)", marginTop: "8px", textAlign: "center" }}>{error}</p>}
-            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>Generates a live itinerary powered by AI</p>
+            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>Typical plan: 15–40 seconds. Itinerary streams as it's built.</p>
           </div>
         )}
 
@@ -474,7 +1384,7 @@ Include sections: ${active}`;
               <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 5px" }}>Your trip</p>
               <p style={{ fontSize: "20px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)" }}>{basics.destination || "Destination not set"}</p>
               <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: "1.6" }}>
-                {[basics.baseArea, basics.startDate, basics.nights ? `${basics.nights} nights` : null, flights.homeAirport ? `from ${flights.homeAirport}` : null].filter(Boolean).join("  ·  ") || "Complete the form above"}
+                {[basics.baseArea, formatDateForDisplay(basics.startDate), basics.nights ? `${basics.nights} nights` : null, flights.homeAirport ? `from ${flights.homeAirport}` : null].filter(Boolean).join("  ·  ") || "Complete the form above"}
               </p>
               {(restaurants.length > 0 || activities.length > 0) && (
                 <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: "10px", marginTop: "12px" }}>
