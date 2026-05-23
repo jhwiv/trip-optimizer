@@ -1446,30 +1446,35 @@ const DAY_SCHEMA = {
   required: ["label", "items"],
 };
 
+// IMPORTANT: property declaration order matters here. Anthropic models tend to
+// emit fields in the order they appear in the schema. days[] MUST be declared
+// before the smaller string-array fields (logistics/flags/planb) so the model
+// commits the expensive content first — if anything gets truncated, we lose
+// the tail (insider notes, plan B) instead of the entire itinerary.
 const TRIP_PLAN_TOOL = {
   name: "submit_trip_plan",
-  description: "Submit the finalized luxury trip plan to the user. You MUST call this tool with a complete plan — days[] is the main output and must contain one entry per day of the trip.",
+  description: "Submit the finalized luxury trip plan to the user. You MUST call this tool with a complete plan. CRITICAL: emit fields in this exact order: destination, meta, days, then everything else. days[] is the main deliverable — write it BEFORE logistics, flags, planb, snobs, or tonight.",
   input_schema: {
     type: "object",
     properties: {
-      destination: { type: "string" },
-      meta: { type: "string", description: "One-line summary: Dates · N nights · N travelers · Style" },
+      destination: { type: "string", description: "WRITE FIRST." },
+      meta: { type: "string", description: "WRITE SECOND. One-line summary: Dates · N nights · N travelers · Style" },
       days: {
         type: "array",
-        description: "Day-by-day plan. REQUIRED. Must have exactly nights+1 entries. Never empty.",
+        description: "WRITE THIRD — THIS IS THE MAIN DELIVERABLE. Day-by-day plan. Must have exactly nights+1 entries. Never empty. Write this BEFORE logistics/flags/planb/snobs/tonight.",
         items: DAY_SCHEMA,
         minItems: 1,
       },
       logistics: {
         type: "array",
-        description: "Short chips only (≤6 chips, ≤40 chars each). Top-line facts. NO long sentences.",
+        description: "WRITE AFTER DAYS. Short chips only (≤6 chips, ≤40 chars each). Top-line facts. NO long sentences.",
         items: { type: "string" },
         maxItems: 6,
       },
-      flags: { type: "array", items: { type: "string" }, description: "Constraint flags: closures, booking lead times." },
-      planb: { type: "array", items: { type: "string" }, description: "Weather / disruption alternatives." },
-      snobs: { type: "array", items: { type: "string" }, description: "Insider tone notes." },
-      tonight: { type: "array", items: { type: "string" }, description: "Action items to do tonight." },
+      flags: { type: "array", items: { type: "string" }, description: "WRITE AFTER DAYS. Constraint flags: closures, booking lead times." },
+      planb: { type: "array", items: { type: "string" }, description: "WRITE AFTER DAYS. Weather / disruption alternatives." },
+      snobs: { type: "array", items: { type: "string" }, description: "WRITE LAST. Insider tone notes." },
+      tonight: { type: "array", items: { type: "string" }, description: "WRITE LAST. Action items to do tonight." },
     },
     required: ["destination", "meta", "days"],
   },
@@ -1530,6 +1535,10 @@ export default function TripOptimizer() {
     const totalDays = (parseInt(basics.nights, 10) || 3) + 1;
     return `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.
 
+FIELD EMISSION ORDER — CRITICAL:
+Write the tool input in this exact order: destination, meta, days, logistics, flags, planb, snobs, tonight.
+days[] is the main deliverable. Write the entire days[] array BEFORE writing logistics, flags, planb, snobs, or tonight. Never write logistics/flags/planb first and then days — if anything gets cut off, we lose the whole plan. Always write days first.
+
 TRIP REQUIREMENTS:
 • days[] must contain exactly ${totalDays} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). Compute the correct weekday for each day starting from the start date.
 • Each day's items[] needs at least 3 items — a typical full day is: morning Activity or Breakfast, midday Lunch, evening Dinner. Arrival/departure days also include Flight + Hotel.
@@ -1580,7 +1589,8 @@ Interests: ${interests.text || "not specified"} · Level: ${interests.level}
 Include sections: ${active}
 
 IMPORTANT: Prefer NONSTOP flights. If ${flights.homeAirport} has no nonstop to the primary airport for ${basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.
-IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3) + 1} entries (arrival day + ${parseInt(basics.nights,10)||3} nights). Do not collapse the plan into the logistics chip list.`;
+IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3) + 1} entries (arrival day + ${parseInt(basics.nights,10)||3} nights). Do not collapse the plan into the logistics chip list.
+IMPORTANT: Write days[] BEFORE logistics, flags, planb, snobs, or tonight. days[] comes immediately after destination + meta in the tool input.`;
   };
 
   const handleCancel = () => {
@@ -1654,7 +1664,11 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
         signal: controller.signal,
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
-          max_tokens: 16000,
+          // 32k headroom: a 7-day plan with full restaurant menus + backups
+          // empirically lands around 6-8k output tokens; 16k was leaving no
+          // room for thinking + the model occasionally truncated days[]
+          // when it wrote chips/flags first.
+          max_tokens: 32000,
           system: buildSystemPrompt(),
           messages: [{ role: "user", content: buildUserPrompt() }],
           tools: [TRIP_PLAN_TOOL],
