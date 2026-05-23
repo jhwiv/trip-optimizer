@@ -980,13 +980,13 @@ const g3 = { display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 
 
 export default function TripOptimizer() {
   // Persisted form state — survives reloads and accidental tab closes.
-  const LS_KEY = "trip-optimizer-form-v2";
+  const LS_KEY = "trip-optimizer-form-v3";
   const loadSaved = () => { try { return JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch { return {}; } };
   const saved = loadSaved();
 
   // Sample prefill — June 4, 6 nights, United, Hertz, Marriott, food + wine focus.
   const DEFAULTS = {
-    basics: { destination: "", startDate: "2026-06-04", nights: "6", travelers: "2 adults", baseArea: "", style: "Food & wine", pace: "Moderate (2–3 things/day)", budget: "$$$ — mid range" },
+    basics: { destination: "Santa Fe, NM", startDate: "2026-06-04", nights: "6", travelers: "2 adults", baseArea: "", style: "Food & wine", pace: "Moderate (2–3 things/day)", budget: "$$$ — mid range" },
     flights: { homeAirport: "EWR", airline: "United", cabin: "Business / Polaris", flex: "Exact date only" },
     hotel: { brand: "Marriott / Bonvoy", tier: "", mustHave: "" },
     transport: { type: "Rental car", company: "Hertz", vehicle: "" },
