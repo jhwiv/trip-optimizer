@@ -895,6 +895,63 @@ function CityAutocomplete({ value, onChange, placeholder }) {
   );
 }
 
+// Attempt to recover a parseable JSON object from a truncated stream. Strategy:
+// walk forward tracking brace depth (while ignoring braces inside strings),
+// remember the position right after the last completed top-level child of the
+// outer object, then close the outer braces.
+function salvageTruncatedJSON(str) {
+  if (!str) return null;
+  let i = 0;
+  const len = str.length;
+  while (i < len && str[i] !== "{") i++;
+  if (i >= len) return null;
+  const start = i;
+  let depth = 0;
+  let inStr = false;
+  let escape = false;
+  let lastSafeClose = -1; // index of a '}' or ']' at depth 1 (top-level child boundary)
+  for (; i < len; i++) {
+    const c = str[i];
+    if (escape) { escape = false; continue; }
+    if (inStr) {
+      if (c === "\\") { escape = true; continue; }
+      if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") {
+      depth--;
+      if (depth === 1) lastSafeClose = i; // just closed a top-level child
+      if (depth === 0) {
+        // Already balanced — nothing to salvage; caller's normal parse would have worked.
+        return null;
+      }
+    }
+  }
+  if (lastSafeClose < 0) return null;
+  // Truncate after the last safe close and append closers for whatever remains open.
+  let head = str.slice(start, lastSafeClose + 1);
+  // Walk head to figure out what's still open.
+  let d = 0; let s = false; let esc = false;
+  const stack = [];
+  for (let k = 0; k < head.length; k++) {
+    const c = head[k];
+    if (esc) { esc = false; continue; }
+    if (s) { if (c === "\\") { esc = true; continue; } if (c === '"') s = false; continue; }
+    if (c === '"') { s = true; continue; }
+    if (c === "{" || c === "[") { stack.push(c); d++; }
+    else if (c === "}" || c === "]") { stack.pop(); d--; }
+  }
+  // Remove a trailing comma if present, then close remaining open structures.
+  head = head.replace(/,\s*$/, "");
+  while (stack.length) {
+    const open = stack.pop();
+    head += open === "{" ? "}" : "]";
+  }
+  return head;
+}
+
 // Look up an airport record by IATA code, city, or name fragment.
 function lookupAirport(value) {
   if (!value) return null;
@@ -1320,9 +1377,12 @@ Include sections: ${active}`;
     }, 250);
 
     // Expected output size for the progress estimate.
-    // ~600 tokens of overhead + ~500 tokens per dinner (full menu+backup) + ~150 per other day item.
+    // Empirically: ~1300 tokens per day with the full restaurant-card schema
+    // (dinner card + menu + backup + activities), plus ~1200 of overhead
+    // (logistics, flags, planb, snobs, tonight). Tuned to land near 90% just
+    // as the final message_stop arrives.
     const nightsNum = Math.max(1, parseInt(basics.nights || "3", 10) || 3);
-    const expectedTokens = 800 + nightsNum * 700;
+    const expectedTokens = 1200 + (nightsNum + 1) * 1300;
 
     // Rotating progress messages so users see motion during the long generation.
     const phases = [
@@ -1358,7 +1418,7 @@ Include sections: ${active}`;
         signal: controller.signal,
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
-          max_tokens: 8192,
+          max_tokens: 16000,
           system: buildSystemPrompt(),
           messages: [{ role: "user", content: buildUserPrompt() }],
         }),
@@ -1411,13 +1471,31 @@ Include sections: ${active}`;
                   const frac = Math.min(0.95, estTokens / expectedTokens);
                   setProgress(frac);
 
-                  // Count completed day labels for a human-friendly counter.
+                  // Friendlier progress label — tracks both the current day and
+                  // sub-step within it, so the user doesn't see "Day 1 of 7"
+                  // sit for 60+ seconds while restaurant menus generate.
+                  const totalDays = nightsNum + 1;
                   const dayMatches = fullText.match(/"label"\s*:\s*"Day\s+\d+/g) || [];
                   const daysSeen = dayMatches.length;
-                  if (daysSeen > 0) {
-                    setProgressLabel(`Day ${Math.min(daysSeen, nightsNum + 1)} of ${nightsNum + 1}`);
-                  } else if (fullText.length > 100) {
-                    setProgressLabel("Building plan…");
+                  const restaurantMatches = fullText.match(/"reservation"\s*:/g) || [];
+                  const restaurantsDone = restaurantMatches.length;
+
+                  if (daysSeen === 0 && fullText.length < 200) {
+                    setProgressLabel("Starting plan…");
+                  } else if (daysSeen === 0) {
+                    setProgressLabel("Building logistics…");
+                  } else if (daysSeen < totalDays) {
+                    // Show what's happening inside the current day.
+                    const currentDay = daysSeen;
+                    if (restaurantsDone > 0 && fullText.lastIndexOf("menu") > fullText.lastIndexOf(`"Day ${currentDay}`)) {
+                      setProgressLabel(`Day ${currentDay} of ${totalDays} · menu`);
+                    } else if (fullText.lastIndexOf("restaurant") > fullText.lastIndexOf(`"Day ${currentDay}`)) {
+                      setProgressLabel(`Day ${currentDay} of ${totalDays} · dining`);
+                    } else {
+                      setProgressLabel(`Day ${currentDay} of ${totalDays} · activities`);
+                    }
+                  } else {
+                    setProgressLabel("Insider notes & Plan B…");
                   }
                 } else if (evt.type === "message_stop") {
                   setProgress(1);
@@ -1450,8 +1528,23 @@ Include sections: ${active}`;
       if (first !== -1 && last !== -1 && last > first) jsonStr = clean.slice(first, last + 1);
 
       let parsed;
-      try { parsed = JSON.parse(jsonStr); }
-      catch { throw new Error("AI response was not valid JSON. Try again, or reduce nights / outputs."); }
+      try {
+        parsed = JSON.parse(jsonStr);
+      } catch (e1) {
+        // Salvage path: response was truncated mid-string. Trim back to the last
+        // closed brace inside the days array, then close the outer braces.
+        const salvaged = salvageTruncatedJSON(jsonStr);
+        if (salvaged) {
+          try {
+            parsed = JSON.parse(salvaged);
+            parsed._truncated = true;
+          } catch {
+            throw new Error("AI response was incomplete and couldn't be recovered. Try again with fewer nights or fewer output sections.");
+          }
+        } else {
+          throw new Error("AI response was not valid JSON. Try again, or reduce nights / outputs.");
+        }
+      }
 
       setResult(parsed);
       setStep(3);
