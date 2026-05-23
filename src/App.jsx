@@ -1152,6 +1152,9 @@ export default function TripOptimizer() {
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [streamPreview, setStreamPreview] = useState("");
+  const [progress, setProgress] = useState(0);          // 0–1 estimated fraction
+  const [progressLabel, setProgressLabel] = useState("");
+  const [elapsedSec, setElapsedSec] = useState(0);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const abortRef = useRef(null);
@@ -1293,7 +1296,21 @@ Include sections: ${active}`;
     setLoading(true);
     setError("");
     setStreamPreview("");
+    setProgress(0);
+    setProgressLabel("");
+    setElapsedSec(0);
     setLoadingMsg("Researching destination…");
+
+    // Track elapsed time for the progress display.
+    const startedAt = Date.now();
+    const elapsedTimer = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
+    }, 250);
+
+    // Expected output size for the progress estimate.
+    // ~600 tokens of overhead + ~500 tokens per dinner (full menu+backup) + ~150 per other day item.
+    const nightsNum = Math.max(1, parseInt(basics.nights || "3", 10) || 3);
+    const expectedTokens = 800 + nightsNum * 700;
 
     // Rotating progress messages so users see motion during the long generation.
     const phases = [
@@ -1374,7 +1391,25 @@ Include sections: ${active}`;
                 const evt = JSON.parse(payload);
                 if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
                   fullText += evt.delta.text || "";
-                  setStreamPreview(fullText.slice(-400)); // tail preview to show motion
+                  setStreamPreview(fullText.slice(-400));
+
+                  // Progress estimate — chars-based since we don't get token counts mid-stream.
+                  // Rough conversion: ~3.5 chars/token; cap at 95% so the bar never claims done until message_stop.
+                  const estTokens = fullText.length / 3.5;
+                  const frac = Math.min(0.95, estTokens / expectedTokens);
+                  setProgress(frac);
+
+                  // Count completed day labels for a human-friendly counter.
+                  const dayMatches = fullText.match(/"label"\s*:\s*"Day\s+\d+/g) || [];
+                  const daysSeen = dayMatches.length;
+                  if (daysSeen > 0) {
+                    setProgressLabel(`Day ${Math.min(daysSeen, nightsNum + 1)} of ${nightsNum + 1}`);
+                  } else if (fullText.length > 100) {
+                    setProgressLabel("Building plan…");
+                  }
+                } else if (evt.type === "message_stop") {
+                  setProgress(1);
+                  setProgressLabel("Finalizing…");
                 } else if (evt.type === "error" || evt.error) {
                   throw new Error(evt.error?.message || evt.message || "Stream error");
                 }
@@ -1415,12 +1450,16 @@ Include sections: ${active}`;
       setError(msg);
     } finally {
       clearInterval(phaseTimer);
+      clearInterval(elapsedTimer);
       clearTimeout(hardTimeout);
       clearTimeout(slowNotice);
       abortRef.current = null;
       setLoading(false);
       setLoadingMsg("");
       setStreamPreview("");
+      setProgress(0);
+      setProgressLabel("");
+      setElapsedSec(0);
     }
   };
 
@@ -1574,11 +1613,25 @@ Include sections: ${active}`;
               )}
             </div>
             {loading && (
-              <div style={{ marginTop: "12px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
-                <p style={{ fontSize: "12px", color: "var(--color-text-primary)", margin: "0 0 6px", fontWeight: 500 }}>{loadingMsg || "Working…"}</p>
-                <div style={{ height: "3px", borderRadius: "2px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
-                  <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
+              <div style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px", gap: "10px" }}>
+                  <p style={{ fontSize: "12px", color: "var(--color-text-primary)", margin: 0, fontWeight: 500, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {progressLabel || loadingMsg || "Working…"}
+                  </p>
+                  <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                    {progress > 0 ? `${Math.round(progress * 100)}%` : ""}
+                    {elapsedSec > 0 ? `  ·  ${Math.floor(elapsedSec/60)}:${String(elapsedSec%60).padStart(2,'0')}` : ""}
+                  </p>
                 </div>
+                {/* Real progress bar driven by token stream. Falls back to indeterminate stripe before first token arrives. */}
+                <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
+                  {progress > 0 ? (
+                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: GOLD, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
+                  ) : (
+                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
+                  )}
+                </div>
+                <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "6px 0 0" }}>{loadingMsg}</p>
                 {streamPreview && (
                   <p style={{ fontSize: "10px", lineHeight: 1.5, color: "var(--color-text-tertiary, #999)", margin: "8px 0 0", fontFamily: "var(--font-mono, ui-monospace, monospace)", whiteSpace: "pre-wrap", maxHeight: "60px", overflow: "hidden" }}>…{streamPreview}</p>
                 )}
