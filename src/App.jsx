@@ -562,6 +562,17 @@ function FlightCard({ type, time, end_time, flight: f, text }) {
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
   const stopLabel = f.nonstop ? "Nonstop" : (f.connection ? `Connect ${f.connection}` : "Connecting");
+  const note = f.confirmation_note || "";
+  const hasVerify = /verify/i.test(note);
+  const carrierLower = (f.carrier || "").toLowerCase();
+  const bookHost = carrierLower.includes("united") ? "united.com"
+    : carrierLower.includes("delta") ? "delta.com"
+    : carrierLower.includes("american") ? "aa.com"
+    : carrierLower.includes("jetblue") ? "jetblue.com"
+    : carrierLower.includes("southwest") ? "southwest.com"
+    : carrierLower.includes("alaska") ? "alaskaair.com"
+    : null;
+  const bookUrl = bookHost ? `https://www.${bookHost}` : null;
   return (
     <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
@@ -579,8 +590,16 @@ function FlightCard({ type, time, end_time, flight: f, text }) {
           {[f.cabin, f.aircraft].filter(Boolean).join("  ·  ")}
         </p>
       )}
-      {f.confirmation_note && (
-        <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", lineHeight: 1.5, fontStyle: "italic" }}>{f.confirmation_note}</p>
+      {note && (
+        <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", lineHeight: 1.5, fontStyle: "italic" }}>{note}</p>
+      )}
+      {!hasVerify && (
+        <p style={{ fontSize: "10.5px", color: "#B85C00", margin: "6px 0 0", lineHeight: 1.4, letterSpacing: "0.02em" }}>⚠︎ Verify flight number, times and equipment at booking — schedules change.</p>
+      )}
+      {bookUrl && (
+        <div style={{ marginTop: "8px" }}>
+          <a href={bookUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>Book · {bookHost}</a>
+        </div>
       )}
       {text && !f.carrier && (
         <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "4px 0 0" }}>{text}</p>
@@ -591,6 +610,8 @@ function FlightCard({ type, time, end_time, flight: f, text }) {
 
 function HotelCard({ type, time, end_time, hotel: h, text }) {
   if (!h) return null;
+  const mapsUrl = h.address ? `https://maps.google.com/?q=${encodeURIComponent(`${h.name || ""} ${h.address}`.trim())}` : null;
+  const telUrl = h.phone ? `tel:${h.phone.replace(/[^0-9+]/g, "")}` : null;
   return (
     <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
@@ -599,7 +620,11 @@ function HotelCard({ type, time, end_time, hotel: h, text }) {
         <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1, minWidth: 0 }}>{h.name || text}</p>
       </div>
       {h.address && (
-        <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 4px" }}>{h.address}</p>
+        mapsUrl ? (
+          <a href={mapsUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 4px", textDecoration: "underline", textDecorationColor: "var(--color-border-tertiary)", textUnderlineOffset: "2px", display: "block" }}>{h.address}</a>
+        ) : (
+          <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 4px" }}>{h.address}</p>
+        )
       )}
       {(h.check_in_time || h.check_out_time || h.room_type) && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: "2px 0 4px" }}>
@@ -613,11 +638,21 @@ function HotelCard({ type, time, end_time, hotel: h, text }) {
       {h.confirmation_note && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", fontStyle: "italic" }}>{h.confirmation_note}</p>
       )}
+      {(telUrl || mapsUrl) && (
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "8px" }}>
+          {telUrl && (
+            <a href={telUrl} style={{ fontSize: "11px", padding: "6px 11px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>Call · {h.phone}</a>
+          )}
+          {mapsUrl && (
+            <a href={mapsUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>Open in Maps</a>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-function DayBlock({ day, onOpenMenu }) {
+function DayBlock({ day, dayIndex, onOpenMenu }) {
   // Sort items chronologically by `time`. Items without a time keep their
   // original order and sink to the end. Index is the stable tiebreaker.
   const sortedItems = (day?.items || [])
@@ -632,9 +667,30 @@ function DayBlock({ day, onOpenMenu }) {
       return a.idx - b.idx;
     })
     .map(x => x.item);
+  // Split the label like 'Day 1 · Thu Jun 4 · Arrive Santa Fe' into 3 parts when possible.
+  const labelParts = (day?.label || "").split(" · ");
+  const dayTag = labelParts[0] || `Day ${dayIndex + 1}`;
+  const dateTag = labelParts[1] || "";
+  const themeTag = labelParts.slice(2).join(" · ") || "";
   return (
-    <div style={{ borderLeft: `2px solid ${GOLD}`, paddingLeft: "1rem", marginBottom: "1.5rem", borderRadius: 0 }}>
-      <p style={{ fontSize: "13px", fontWeight: "600", color: "var(--color-text-primary)", margin: "0 0 10px", letterSpacing: "0.02em" }}>{day.label}</p>
+    <div id={`day-${dayIndex + 1}`} style={{ scrollMarginTop: "60px", borderLeft: `2px solid ${GOLD}`, paddingLeft: "1rem", marginBottom: "1.75rem", borderRadius: 0 }}>
+      <div style={{ marginBottom: "10px" }}>
+        <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", margin: "0 0 2px" }}>{dayTag}{dateTag ? `  ·  ${dateTag}` : ""}</p>
+        {themeTag && <p style={{ fontSize: "16px", fontWeight: 500, color: "var(--color-text-primary)", margin: "0 0 4px", letterSpacing: "-0.1px", lineHeight: 1.3 }}>{themeTag}</p>}
+        {day?.headline && (
+          <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "4px 0 6px", fontStyle: "italic", lineHeight: 1.5 }}>— {day.headline}</p>
+        )}
+        {(day?.weather || day?.pace_note) && (
+          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
+            {day.weather && (
+              <span style={{ fontSize: "10.5px", color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", padding: "3px 8px", letterSpacing: "0.02em" }}>☀ {day.weather}</span>
+            )}
+            {day.pace_note && (
+              <span style={{ fontSize: "10.5px", color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", padding: "3px 8px", letterSpacing: "0.02em" }}>· {day.pace_note}</span>
+            )}
+          </div>
+        )}
+      </div>
       {sortedItems.map((item, i) => {
         // Structured flight → rich card.
         if (item.type === "Flight" && item.flight) {
@@ -827,47 +883,164 @@ function Section({ title, children }) {
   );
 }
 
+function tonightPriority(s) {
+  const t = (s || "").trim();
+  if (/^⚠/.test(t) || /^must today/i.test(t)) return { rank: 0, label: "Must today", color: "#B85C00", bg: "#FFF1E0" };
+  if (/^this week/i.test(t) || /^·\s*this week/i.test(t)) return { rank: 1, label: "This week", color: GOLD_DARK, bg: GOLD_LIGHT };
+  if (/^anytime/i.test(t)) return { rank: 2, label: "Anytime", color: "var(--color-text-secondary)", bg: "var(--color-background-secondary)" };
+  return { rank: 1, label: null, color: GOLD_DARK, bg: GOLD_LIGHT };
+}
+function stripTonightPrefix(s) {
+  return (s || "")
+    .replace(/^⚠︎?\s*Must today\s*[:—–-]?\s*/i, "")
+    .replace(/^·?\s*This week\s*[:—–-]?\s*/i, "")
+    .replace(/^Anytime\s*[:—–-]?\s*/i, "")
+    .trim();
+}
+
+function TripHero({ data }) {
+  // Pull flight + hotel summary directly from days[].
+  const items = (data.days || []).flatMap(d => (d.items || []));
+  const flights = items.filter(it => it.type === "Flight" && it.flight);
+  const outbound = flights[0]?.flight;
+  const inbound = flights[flights.length - 1]?.flight;
+  const hotelItem = items.find(it => it.type === "Hotel" && it.hotel)?.hotel;
+  const mealCount = items.filter(it => /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/i.test(it.type || "")).length;
+  const activityCount = items.filter(it => it.type === "Activity").length;
+
+  return (
+    <div style={{ marginBottom: "1.5rem" }}>
+      <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "600", margin: "0 0 6px" }}>Your trip</p>
+      <p style={{ fontSize: "24px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)", letterSpacing: "-0.4px", lineHeight: 1.15 }}>{data.destination}</p>
+      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "0 0 14px" }}>{data.meta}</p>
+
+      {(outbound || hotelItem || mealCount > 0) && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "8px", marginBottom: "14px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary)" }}>
+          {outbound && (
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", fontSize: "12.5px" }}>
+              <span style={{ color: "var(--color-text-tertiary)", letterSpacing: "0.04em", textTransform: "uppercase", fontSize: "10px", fontWeight: 600, minWidth: "60px" }}>Fly out</span>
+              <span style={{ color: "var(--color-text-primary)", textAlign: "right", flex: 1 }}>{outbound.carrier} {outbound.flight_number} · {outbound.from_airport}→{outbound.to_airport} · {formatTime(outbound.depart_time)}</span>
+            </div>
+          )}
+          {inbound && inbound !== outbound && (
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", fontSize: "12.5px" }}>
+              <span style={{ color: "var(--color-text-tertiary)", letterSpacing: "0.04em", textTransform: "uppercase", fontSize: "10px", fontWeight: 600, minWidth: "60px" }}>Return</span>
+              <span style={{ color: "var(--color-text-primary)", textAlign: "right", flex: 1 }}>{inbound.carrier} {inbound.flight_number} · {inbound.from_airport}→{inbound.to_airport} · {formatTime(inbound.depart_time)}</span>
+            </div>
+          )}
+          {hotelItem && (
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", fontSize: "12.5px" }}>
+              <span style={{ color: "var(--color-text-tertiary)", letterSpacing: "0.04em", textTransform: "uppercase", fontSize: "10px", fontWeight: 600, minWidth: "60px" }}>Stay</span>
+              <span style={{ color: "var(--color-text-primary)", textAlign: "right", flex: 1 }}>{hotelItem.name}</span>
+            </div>
+          )}
+          {(mealCount > 0 || activityCount > 0) && (
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", fontSize: "12.5px" }}>
+              <span style={{ color: "var(--color-text-tertiary)", letterSpacing: "0.04em", textTransform: "uppercase", fontSize: "10px", fontWeight: 600, minWidth: "60px" }}>Plan</span>
+              <span style={{ color: "var(--color-text-primary)", textAlign: "right", flex: 1 }}>{mealCount} meals · {activityCount} activities · {(data.days || []).length} days</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {Array.isArray(data.logistics) && data.logistics.length > 0 && (
+        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+          {data.logistics.map((l, i) => (
+            <span key={i} style={{ fontSize: "11.5px", background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "4px 9px", color: "var(--color-text-secondary)" }}>{l}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DayNav({ days }) {
+  if (!days || days.length < 2) return null;
+  return (
+    <div style={{ position: "sticky", top: 0, zIndex: 5, background: "var(--color-background-primary)", paddingTop: "6px", paddingBottom: "8px", marginBottom: "10px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+      <div style={{ display: "flex", gap: "6px", overflowX: "auto", scrollbarWidth: "none", WebkitOverflowScrolling: "touch" }}>
+        {days.map((d, i) => {
+          const parts = (d.label || "").split(" · ");
+          const short = parts[1] || `Day ${i + 1}`;
+          return (
+            <a key={i} href={`#day-${i + 1}`} style={{ flex: "0 0 auto", fontSize: "10.5px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600, color: "var(--color-text-secondary)", padding: "5px 9px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", textDecoration: "none", whiteSpace: "nowrap", background: "var(--color-background-primary)" }}>{i + 1} · {short}</a>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ItineraryView({ data, onBack }) {
   const [menuRestaurant, setMenuRestaurant] = useState(null);
+  const sortedTonight = Array.isArray(data.tonight)
+    ? [...data.tonight].map((t, i) => ({ t, i, p: tonightPriority(t) })).sort((a, b) => a.p.rank - b.p.rank || a.i - b.i)
+    : [];
   return (
     <div>
       <MenuModal restaurant={menuRestaurant} onClose={() => setMenuRestaurant(null)} />
-      <div style={{ marginBottom: "1.75rem" }}>
-        <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "600", margin: "0 0 6px" }}>Your trip</p>
-        <p style={{ fontSize: "22px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)", letterSpacing: "-0.3px" }}>{data.destination}</p>
-        <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "0 0 1rem" }}>{data.meta}</p>
-        {Array.isArray(data.logistics) && data.logistics.length > 0 && (
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            {data.logistics.map((l, i) => (
-              <span key={i} style={{ fontSize: "12px", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "4px 10px", color: "var(--color-text-secondary)" }}>{l}</span>
-            ))}
+      <TripHero data={data} />
+
+      {/* Pre-day high-signal block: do this tonight first, weather/pack second */}
+      {sortedTonight.length > 0 && (
+        <Section title="Do this tonight">
+          <div style={{ borderRadius: "var(--border-radius-md)", overflow: "hidden", border: "0.5px solid var(--color-border-secondary)" }}>
+            {sortedTonight.map(({ t, p }, i) => {
+              const text = stripTonightPrefix(t);
+              return (
+                <div key={i} style={{ display: "flex", gap: "10px", padding: "10px 12px", borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none", background: p.bg, alignItems: "flex-start" }}>
+                  {p.label && (
+                    <span style={{ flex: "0 0 auto", fontSize: "9.5px", fontWeight: 700, color: p.color, letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: `0.5px solid ${p.color}`, borderRadius: "3px", whiteSpace: "nowrap", marginTop: "1px" }}>{p.label}</span>
+                  )}
+                  <span style={{ fontSize: "12.5px", color: "var(--color-text-primary)", lineHeight: 1.5, flex: 1 }}>{text}</span>
+                </div>
+              );
+            })}
           </div>
-        )}
-      </div>
+        </Section>
+      )}
+
+      {(data.weather_window || (Array.isArray(data.pack) && data.pack.length > 0)) && (
+        <Section title="Weather & pack">
+          {data.weather_window && (
+            <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 12px", lineHeight: 1.55 }}>☀ {data.weather_window}</p>
+          )}
+          {Array.isArray(data.pack) && data.pack.length > 0 && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "4px" }}>
+              {data.pack.map((p, i) => (
+                <div key={i} style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", display: "flex", gap: "8px", lineHeight: 1.5 }}>
+                  <span style={{ color: GOLD, flex: "0 0 auto" }}>✓</span><span>{p}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
 
       {data.days && data.days.length > 0 && (
         <Section title="Day-by-day">
-          {data.days.map((d, i) => <DayBlock key={i} day={d} onOpenMenu={setMenuRestaurant} />)}
+          <DayNav days={data.days} />
+          {data.days.map((d, i) => <DayBlock key={i} day={d} dayIndex={i} onOpenMenu={setMenuRestaurant} />)}
         </Section>
       )}
 
       {data.flags && data.flags.length > 0 && (
-        <Section title="Constraint flags">
+        <Section title="Heads up">
           {data.flags.map((f, i) => (
-            <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "6px", fontSize: "13px" }}>
-              <Badge type="Flag" />
-              <span style={{ color: "var(--color-text-secondary)" }}>{f}</span>
+            <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "6px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: 1.5 }}>
+              <span style={{ flex: "0 0 auto", color: "#B85C00", fontSize: "12px", marginTop: "1px" }}>⚠︎</span>
+              <span>{f}</span>
             </div>
           ))}
         </Section>
       )}
 
       {data.planb && data.planb.length > 0 && (
-        <Section title="Plan B alternatives">
+        <Section title="If plans break">
           {data.planb.map((p, i) => (
-            <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "6px", fontSize: "13px" }}>
-              <Badge type="Plan B" />
-              <span style={{ color: "var(--color-text-secondary)" }}>{p}</span>
+            <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "7px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: 1.5 }}>
+              <span style={{ flex: "0 0 auto", fontSize: "9.5px", fontWeight: 700, color: "#5B6E8F", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: "0.5px solid #5B6E8F", borderRadius: "3px", whiteSpace: "nowrap", marginTop: "1px" }}>Plan B</span>
+              <span>{p}</span>
             </div>
           ))}
         </Section>
@@ -878,18 +1051,6 @@ function ItineraryView({ data, onBack }) {
           {data.snobs.map((s, i) => (
             <div key={i} style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "8px 12px", borderLeft: `2px solid #D4537E`, marginBottom: "8px", lineHeight: "1.6", borderRadius: 0 }}>{s}</div>
           ))}
-        </Section>
-      )}
-
-      {data.tonight && data.tonight.length > 0 && (
-        <Section title='"Do this tonight"'>
-          <div style={{ background: GOLD_LIGHT, border: `1px solid #E4D5A8`, borderRadius: "var(--border-radius-md)", padding: "12px 14px" }}>
-            {data.tonight.map((t, i) => (
-              <div key={i} style={{ fontSize: "12px", color: GOLD_DARK, marginBottom: i < data.tonight.length - 1 ? "6px" : 0, display: "flex", gap: "6px" }}>
-                <span>→</span><span>{t}</span>
-              </div>
-            ))}
-          </div>
         </Section>
       )}
 
@@ -1393,7 +1554,7 @@ const FLIGHT_SCHEMA = {
   description: "Structured flight details. Required for any item with type=Flight.",
   properties: {
     carrier: { type: "string", description: "Full airline name, e.g. 'United', 'Delta', 'JetBlue'." },
-    flight_number: { type: "string", description: "Specific flight number, e.g. 'UA 1234'. Use a realistic flight number that the carrier is known to operate on this route." },
+    flight_number: { type: "string", description: "Specific flight number, e.g. 'UA 1234'. Use a realistic flight number that the carrier is known to operate on this route. Will be flagged in UI as 'verify at booking' — never claim a specific flight is guaranteed." },
     from_airport: { type: "string", description: "Origin IATA code, e.g. 'EWR'." },
     to_airport: { type: "string", description: "Destination IATA code, e.g. 'ABQ'." },
     depart_time: { type: "string", description: "Local 24h time at origin, e.g. '08:45'." },
@@ -1414,6 +1575,7 @@ const HOTEL_ITEM_SCHEMA = {
   properties: {
     name: { type: "string" },
     address: { type: "string" },
+    phone: { type: "string", description: "Direct line, formatted +1-505-988-3030. Tappable in-app." },
     check_in_time: { type: "string", description: "e.g. '15:00'." },
     check_out_time: { type: "string", description: "e.g. '11:00'." },
     room_type: { type: "string" },
@@ -1441,6 +1603,9 @@ const DAY_SCHEMA = {
   type: "object",
   properties: {
     label: { type: "string", description: "e.g. 'Day 1 · Thu Jun 4 · Arrive Santa Fe'" },
+    headline: { type: "string", description: "If you only do one thing today, this. 6–10 words, opinionated. e.g. 'Sunset margaritas on the Anasazi rooftop'." },
+    weather: { type: "string", description: "One-line seasonal expectation for this destination/date: high/low + sky + any caveat. e.g. 'High 82°F / low 52°F · sun w/ 30% PM thunderstorm risk'. Use seasonal norms; never fabricate live forecasts." },
+    pace_note: { type: "string", description: "Optional 1-line pacing call: 'easy arrival', 'big driving day', 'spa & slow', etc." },
     items: { type: "array", items: DAY_ITEM_SCHEMA, minItems: 3 },
   },
   required: ["label", "items"],
@@ -1471,10 +1636,23 @@ const TRIP_PLAN_TOOL = {
         items: { type: "string" },
         maxItems: 6,
       },
+      weather_window: { type: "string", description: "WRITE AFTER DAYS. 1–2 sentence seasonal weather expectation for the trip dates + any pattern the traveler should plan around (e.g. afternoon monsoons, midday heat). Never fabricate a live forecast." },
+      pack: {
+        type: "array",
+        description: "WRITE AFTER DAYS. 4–8 destination-specific packing or prep essentials that are NOT obvious (e.g. 'Aspirin for altitude headache', 'Layers — evenings drop 30°F', 'Cash for Canyon Road galleries'). Skip the obvious (passport, phone charger).",
+        items: { type: "string" },
+        minItems: 3,
+        maxItems: 8,
+      },
       flags: { type: "array", items: { type: "string" }, description: "WRITE AFTER DAYS. Constraint flags: closures, booking lead times." },
-      planb: { type: "array", items: { type: "string" }, description: "WRITE AFTER DAYS. Weather / disruption alternatives." },
+      planb: {
+        type: "array",
+        items: { type: "string" },
+        description: "WRITE AFTER DAYS. AT LEAST 5 disruption alternatives. Cover at minimum: weather/rain, a sold-out marquee restaurant, a closed-day activity, a transport disruption (canceled flight / car issue), and a health/altitude/illness day. Each entry: brief scenario → concrete substitute.",
+        minItems: 5,
+      },
       snobs: { type: "array", items: { type: "string" }, description: "WRITE LAST. Insider tone notes." },
-      tonight: { type: "array", items: { type: "string" }, description: "WRITE LAST. Action items to do tonight." },
+      tonight: { type: "array", items: { type: "string" }, description: "WRITE LAST. Action items to do tonight — each prefixed with priority: '⚠︎ Must today:', '· This week:', or 'Anytime:'. Most urgent first." },
     },
     required: ["destination", "meta", "days"],
   },
@@ -1541,13 +1719,21 @@ days[] is the main deliverable. Write the entire days[] array BEFORE writing log
 
 TRIP REQUIREMENTS:
 • days[] must contain exactly ${totalDays} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). Compute the correct weekday for each day starting from the start date.
+• Each day MUST include: label, headline (the one-line "if you only do one thing" call), weather (seasonal expectation, NOT a live forecast), and items[].
 • Each day's items[] needs at least 3 items — a typical full day is: morning Activity or Breakfast, midday Lunch, evening Dinner. Arrival/departure days also include Flight + Hotel.
 • EVERY item in items[] MUST have a "time" field (24h local time, e.g. '08:30', '14:00', '19:30'). Items should appear in chronological order within each day. This is what turns the day into a real time-based itinerary instead of a vague list.
 • Use realistic times: breakfast 07:30–09:00, lunch 12:00–13:30, dinner 19:00–20:30. Activities sized to their duration (museum 2h, hike 3–4h, gallery walk 90min). Add end_time when helpful.
 • For Activity items, fill "location" with a specific venue or address.
+• For Transport items between activities, the "text" should include estimated drive/walk time (e.g. 'Drive to Abiquiú — 1h 15min via US-84').
+
+VARIETY RULES — STRICT:
+• Each unique restaurant may appear AT MOST ONCE in days[]. Never schedule the same restaurant for two meals across the trip. If a place is a true must-revisit, mention it in snobs[] instead.
+• The hotel restaurant may appear for at most ONE in-house meal across the entire trip. Vary breakfasts — use named local breakfast/brunch spots, not the hotel by default.
+• Never repeat the same activity venue across days (e.g. 'Canyon Road' may anchor one day; subsequent gallery time should be a different neighborhood or pueblo).
 
 FLIGHTS — PREFER NONSTOP, ALWAYS STRUCTURED:
-• Every Flight item MUST include the full "flight" object: carrier, flight_number (realistic, e.g. 'UA 1234' — use a flight number the carrier is known to operate on this exact route), from_airport (IATA), to_airport (IATA), depart_time, arrive_time, duration, nonstop (boolean), cabin, aircraft, confirmation_note. Use REAL flight numbers from the carrier's published schedule whenever you can recall them; otherwise pick a plausible number in that carrier's range for that route.
+• Every Flight item MUST include the full "flight" object: carrier, flight_number (realistic, e.g. 'UA 1234' — use a flight number the carrier is known to operate on this exact route), from_airport (IATA), to_airport (IATA), depart_time, arrive_time, duration, nonstop (boolean), cabin, aircraft, confirmation_note.
+• Flight numbers and times are STARTING POINTS for booking, not guarantees. The confirmation_note MUST end with: "Verify flight number, times, and equipment at booking — schedules change." Use real flight numbers from the carrier's published schedule when you can recall them; otherwise pick a plausible number in that carrier's range for that route.
 • Search for nonstop service from the home airport to the destination's primary airport first.
 • If no nonstop exists to the requested airport but one exists to a nearby airport in the same metro (e.g., ABQ ~60min from Santa Fe instead of SAF), RECOMMEND THE NONSTOP and add a flags[] note mentioning the drive time.
 • Only return a connecting itinerary if no nonstop exists to any reasonable nearby airport. Set nonstop=false and fill "connection" with the connecting airport IATA.
@@ -1555,7 +1741,8 @@ FLIGHTS — PREFER NONSTOP, ALWAYS STRUCTURED:
 • If the user's preferred airline doesn't fly nonstop but a competitor does, mention the competitor nonstop in flags[].
 
 HOTEL ITEMS:
-• Use a Hotel-type item on arrival day (check-in) and departure day (check-out). Populate the "hotel" object with name, address, check_in_time, check_out_time, room_type, confirmation_note.
+• Use a Hotel-type item on arrival day (check-in) and departure day (check-out). Populate the "hotel" object with name, address, phone (formatted, tappable), check_in_time, check_out_time, room_type, confirmation_note.
+• The phone field is critical — it becomes a tappable "Call hotel" CTA in the app.
 
 RESTAURANTS:
 • Every Dinner/Lunch/Breakfast/Brunch item should include the full restaurant object: name, neighborhood, cuisine, price_range, why, closure_note, reservation, menu, backup.
@@ -1566,6 +1753,18 @@ RESTAURANTS:
 
 LOGISTICS chips:
 • Short chips only — max 6, each ≤40 chars. Top-line facts only (airline summary, hotel name, car). DO NOT write sentences here. The full plan goes in days[].
+
+WEATHER WINDOW (top-level):
+• 1–2 sentences on the SEASONAL pattern for the destination during these dates. Include any planning-relevant pattern (monsoon afternoons, midday heat, fog, ski conditions, etc.). NEVER claim a live forecast.
+
+PACK (top-level):
+• 4–8 non-obvious essentials specific to this destination/season (altitude meds, layers, cash for cash-only spots, sun protection, charging adapters for region). Skip obvious items.
+
+PLAN B (top-level, ≥5 entries):
+• Cover: weather/rain, sold-out marquee restaurant, closed-day activity substitute, transport disruption (canceled flight or rental car issue), health/altitude/illness day, and any destination-specific risk.
+
+TONIGHT (top-level):
+• Prefix each action: '⚠︎ Must today:' for things that lose value if delayed (sold-out restaurants, advance-only tours), '· This week:' for important but flexible, 'Anytime:' for low-urgency. Order most-urgent first.
 
 TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood detail. Avoid travel-blog vagueness.`;
   };
@@ -1590,7 +1789,9 @@ Include sections: ${active}
 
 IMPORTANT: Prefer NONSTOP flights. If ${flights.homeAirport} has no nonstop to the primary airport for ${basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.
 IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3) + 1} entries (arrival day + ${parseInt(basics.nights,10)||3} nights). Do not collapse the plan into the logistics chip list.
-IMPORTANT: Write days[] BEFORE logistics, flags, planb, snobs, or tonight. days[] comes immediately after destination + meta in the tool input.`;
+IMPORTANT: Write days[] BEFORE logistics, flags, planb, snobs, or tonight. days[] comes immediately after destination + meta in the tool input.
+IMPORTANT: NO RESTAURANT MAY APPEAR TWICE. Each named restaurant gets ONE meal slot across the entire trip. Vary breakfasts — use real local spots, not the hotel restaurant on repeat.
+IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "weather" line (seasonal expectation). Top-level MUST include weather_window, pack[≥3], planb[≥5], tonight (with priority prefixes).`;
   };
 
   const handleCancel = () => {
