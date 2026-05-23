@@ -1310,11 +1310,16 @@ Include sections: ${active}`;
       setLoadingMsg(phases[phaseIdx]);
     }, 7000);
 
-    // Hard client timeout — 2 minutes. Long enough for any reasonable itinerary,
-    // short enough that a truly hung request doesn't spin forever.
+    // Hard client timeout — 4 minutes. Richer restaurant payloads (full menus +
+    // backup per dinner) can push a 6-night plan to ~2 min of streaming.
     const controller = new AbortController();
     abortRef.current = controller;
-    const hardTimeout = setTimeout(() => controller.abort(new Error("Timed out after 2 minutes")), 120000);
+    const hardTimeout = setTimeout(() => controller.abort(new Error("Timed out after 4 minutes")), 240000);
+
+    // Reassure the user after 60s that we're still working.
+    const slowNotice = setTimeout(() => {
+      setLoadingMsg(prev => prev.includes("longer") ? prev : "Still working — detailed plans can take 1–3 minutes…");
+    }, 60000);
 
     try {
       const apiUrl = (typeof __API_BASE__ !== "undefined" ? __API_BASE__ : "") + "/api/chat";
@@ -1411,6 +1416,7 @@ Include sections: ${active}`;
     } finally {
       clearInterval(phaseTimer);
       clearTimeout(hardTimeout);
+      clearTimeout(slowNotice);
       abortRef.current = null;
       setLoading(false);
       setLoadingMsg("");
