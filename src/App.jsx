@@ -1199,9 +1199,112 @@ const ctStyle = { fontSize: "11px", fontWeight: "500", color: GOLD, letterSpacin
 const g2 = { display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: "20px", marginBottom: "16px" };
 const g3 = { display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)", gap: "14px", marginBottom: "16px" };
 
+// ----------------------------------------------------------------------------
+// Anthropic tool_use schema. Forces the model to produce structured JSON that
+// matches this shape — no more truncation, no more empty days[], no more
+// "summary in logistics" failures. The API validates before responding.
+// ----------------------------------------------------------------------------
+const MENU_DISH_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    description: { type: "string" },
+    price: { type: "string" },
+  },
+  required: ["name"],
+};
+
+const MENU_SCHEMA = {
+  type: "object",
+  description: "Representative menu reconstructed from typical offerings.",
+  properties: {
+    style_note: { type: "string" },
+    signature_dishes: { type: "array", items: MENU_DISH_SCHEMA },
+    appetizers: { type: "array", items: MENU_DISH_SCHEMA },
+    mains: { type: "array", items: MENU_DISH_SCHEMA },
+    desserts: { type: "array", items: MENU_DISH_SCHEMA },
+    wine_and_drinks: { type: "array", items: MENU_DISH_SCHEMA },
+    source_note: { type: "string", description: "Disclaimer that menus change." },
+  },
+};
+
+const RESTAURANT_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    neighborhood: { type: "string" },
+    cuisine: { type: "string" },
+    price_range: { type: "string", description: "$, $$, $$$, or $$$$" },
+    why: { type: "string", description: "Insider, opinionated 1–2 sentence reason." },
+    closure_note: { type: "string", description: "Confirm closure-day awareness given the weekday of the meal." },
+    reservation: {
+      type: "object",
+      properties: {
+        platform: { type: "string", enum: ["opentable", "resy", "tock", "yelp", "phone", "walkin"] },
+        url: { type: "string" },
+        phone: { type: "string" },
+      },
+      required: ["platform"],
+    },
+    menu: MENU_SCHEMA,
+  },
+  required: ["name", "cuisine", "why"],
+};
+
+// Backup is the same shape but allowed to be slimmer.
+const BACKUP_SCHEMA = { ...RESTAURANT_SCHEMA, description: "Same-tier fallback in the same neighborhood / cuisine family." };
+
+const DAY_ITEM_SCHEMA = {
+  type: "object",
+  properties: {
+    type: { type: "string", enum: ["Flight", "Hotel", "Activity", "Breakfast", "Brunch", "Lunch", "Dinner", "Transport", "Note"] },
+    text: { type: "string", description: "Short headline of the item." },
+    restaurant: { ...RESTAURANT_SCHEMA, properties: { ...RESTAURANT_SCHEMA.properties, backup: BACKUP_SCHEMA } },
+  },
+  required: ["type", "text"],
+};
+
+const DAY_SCHEMA = {
+  type: "object",
+  properties: {
+    label: { type: "string", description: "e.g. 'Day 1 · Thu Jun 4 · Arrive Santa Fe'" },
+    items: { type: "array", items: DAY_ITEM_SCHEMA, minItems: 3 },
+  },
+  required: ["label", "items"],
+};
+
+const TRIP_PLAN_TOOL = {
+  name: "submit_trip_plan",
+  description: "Submit the finalized luxury trip plan to the user. You MUST call this tool with a complete plan — days[] is the main output and must contain one entry per day of the trip.",
+  input_schema: {
+    type: "object",
+    properties: {
+      destination: { type: "string" },
+      meta: { type: "string", description: "One-line summary: Dates · N nights · N travelers · Style" },
+      days: {
+        type: "array",
+        description: "Day-by-day plan. REQUIRED. Must have exactly nights+1 entries. Never empty.",
+        items: DAY_SCHEMA,
+        minItems: 1,
+      },
+      logistics: {
+        type: "array",
+        description: "Short chips only (≤6 chips, ≤40 chars each). Top-line facts. NO long sentences.",
+        items: { type: "string" },
+        maxItems: 6,
+      },
+      flags: { type: "array", items: { type: "string" }, description: "Constraint flags: closures, booking lead times." },
+      planb: { type: "array", items: { type: "string" }, description: "Weather / disruption alternatives." },
+      snobs: { type: "array", items: { type: "string" }, description: "Insider tone notes." },
+      tonight: { type: "array", items: { type: "string" }, description: "Action items to do tonight." },
+    },
+    required: ["destination", "meta", "days"],
+  },
+};
+
 export default function TripOptimizer() {
   // Persisted form state — survives reloads and accidental tab closes.
-  const LS_KEY = "trip-optimizer-form-v3";
+  const LS_KEY = "trip-optimizer-form-v4";
   const loadSaved = () => { try { return JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch { return {}; } };
   const saved = loadSaved();
 
@@ -1251,114 +1354,33 @@ export default function TripOptimizer() {
   const areaHint = getAreaHint(basics.destination);
   const activeCount = Object.values(outputs).filter(Boolean).length;
 
-  const buildSystemPrompt = () => `You are a luxury travel planner. Return ONLY valid JSON — no markdown, no backticks, no preamble.
+  const buildSystemPrompt = () => {
+    const totalDays = (parseInt(basics.nights, 10) || 3) + 1;
+    return `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.
 
-Return this EXACT structure with fields in THIS ORDER (days BEFORE logistics so you commit to the full plan first):
-{
-  "destination": "City, State/Country",
-  "meta": "Dates · N nights · N travelers · Style",
-  "days": [
-    {
-      "label": "Day 1 · Thu Jun 4 · Arrive Santa Fe",
-      "items": [
-        { "type": "Flight", "text": "EWR → SAF via DEN, depart 09:30, arrive 14:45, United" },
-        { "type": "Hotel", "text": "Check in · Eldorado Hotel & Spa, downtown" },
-        { "type": "Activity", "text": "Sunset on the Plaza, gallery walk on Canyon Road" },
-        {
-          "type": "Dinner",
-          "text": "Geronimo — Canyon Road, contemporary Southwest",
-          "restaurant": {
-            "name": "Geronimo",
-            "neighborhood": "Canyon Road",
-            "cuisine": "Contemporary Southwest",
-            "price_range": "$$$$",
-            "why": "Set in a 250-year-old adobe; the elk tenderloin and green-chile lobster tail are signature. Book the patio in summer.",
-            "closure_note": "Open Thu. Confirm hours — some Santa Fe spots close Tue.",
-            "reservation": { "platform": "opentable", "url": "https://www.opentable.com/r/geronimo-santa-fe" },
-            "menu": {
-              "style_note": "Modern Southwest with French technique. Tasting-menu vibe à la carte.",
-              "signature_dishes": [
-                { "name": "Mesquite-grilled elk tenderloin", "description": "Applewood-smoked bacon, garlic mashed potatoes, brandied mushroom sauce", "price": "$58" },
-                { "name": "Green-chile lobster tail", "description": "Atlantic lobster, Hatch green chile cream, sweet corn", "price": "$72" }
-              ],
-              "appetizers": [
-                { "name": "Heirloom tomato salad", "description": "Buffalo mozzarella, basil oil", "price": "$18" }
-              ],
-              "mains": [
-                { "name": "Tellicherry-rubbed elk", "description": "See signature", "price": "$58" },
-                { "name": "Diver scallops", "description": "Cauliflower pure, brown butter", "price": "$48" }
-              ],
-              "desserts": [
-                { "name": "Warm chocolate tart", "description": "Espresso ice cream", "price": "$14" }
-              ],
-              "wine_and_drinks": [
-                { "name": "Wine list", "description": "450+ bottles, strong New World focus, broad by-the-glass" },
-                { "name": "Sgnt. cocktail: Smoked sage margarita" }
-              ],
-              "source_note": "Menu reconstructed from typical offerings; prices and items change seasonally — confirm at restaurant."
-            },
-            "backup": {
-              "name": "The Compound",
-              "neighborhood": "Canyon Road",
-              "cuisine": "New American / Southwest",
-              "price_range": "$$$$",
-              "why": "Same Canyon Road caliber; James Beard–recognized chef. Easier to book last-minute than Geronimo.",
-              "reservation": { "platform": "opentable", "url": "https://www.opentable.com/r/the-compound-santa-fe" },
-              "menu": {
-                "signature_dishes": [
-                  { "name": "Tuna tartare", "price": "$24" },
-                  { "name": "Roast chicken for two", "price": "$78" }
-                ],
-                "source_note": "Representative menu; confirm on arrival."
-              }
-            }
-          }
-        }
-      ]
-    }
-  ],
-  "logistics": ["Flight EWR→ABQ · United nonstop", "Hotel · La Fonda Plaza", "Car · Hertz SUV"],
-  "flags": ["Geronimo books out 2–3 weeks ahead in summer", "Many Canyon Road galleries closed Sun/Mon"],
-  "planb": ["If thunderstorms (common 3–5pm in summer): swap outdoor for Georgia O'Keeffe Museum"],
-  "snobs": ["It's 'red or green?' on chile — 'Christmas' = both. Locals don't say 'chili'."],
-  "tonight": ["Confirm Geronimo reservation for Day 1", "Verify Day 3 backup (The Compound) hours"]
-}
+TRIP REQUIREMENTS:
+• days[] must contain exactly ${totalDays} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). Compute the correct weekday for each day starting from the start date.
+• Each day's items[] needs at least 3 items — a typical full day is: morning Activity or Breakfast, midday Lunch, evening Dinner. Arrival/departure days also include Flight + Hotel.
 
-CRITICAL OUTPUT STRUCTURE RULES — READ CAREFULLY:
-• "days" is the MAIN OUTPUT and MUST come FIRST in your JSON (right after destination/meta). It MUST contain exactly ${(parseInt(basics.nights,10)||3) + 1} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). days[] MUST NOT be empty. If you run low on space, shorten menu/backup detail — NEVER skip a day.
-• Each day MUST have an "items" array with at least 3 items (morning Activity/Breakfast, midday Lunch, evening Dinner; plus Flight/Hotel on arrival/departure days).
-• "logistics" is a SHORT CHIP LIST that comes AFTER days. Max 6 chips, each ≤40 chars. ONLY top-line facts (airline, hotel name, car). DO NOT put day-by-day content, alternates, hotel justification, or notes here — those go in days[], flags[], or planb[].
+FLIGHTS — PREFER NONSTOP:
+• Search for nonstop service from the home airport to the destination's primary airport first.
+• If no nonstop exists to the requested airport but one exists to a nearby airport in the same metro (e.g., ABQ ~60min from Santa Fe instead of SAF), RECOMMEND THE NONSTOP and add a flags[] note mentioning the drive time.
+• Only return a connecting itinerary if no nonstop exists to any reasonable nearby airport.
+• In each Flight item's text, explicitly state "nonstop" or "connecting via X".
+• If the user's preferred airline doesn't fly nonstop but a competitor does, mention the competitor nonstop in flags[].
 
-WRONG — do not do this:
-  "logistics": [
-    "Flight: EWR → SAF via DEN, United Polaris, depart 09:30 Jun 4...",
-    "Hotel: The Inn of the Five Graces (Relais & Châteaux)...",
-    "Alternate hotel (Bonvoy): St. Regis Aspen is closest..."
-  ],
-  "days": []
-This is broken. The user sees a useless summary card.
+RESTAURANTS:
+• Every Dinner/Lunch/Breakfast/Brunch item should include the full restaurant object: name, neighborhood, cuisine, price_range, why, closure_note, reservation, menu, backup.
+• Be aware of the weekday for each meal. Many fine-dining spots close Mon or Tue — don't recommend a restaurant on its closure day. If unsure, put "Confirm hours — closure day uncertain" in closure_note.
+• Always include a same-tier backup in the same neighborhood / cuisine family.
+• reservation.platform: opentable for most US/UK/EU fine dining; resy for trendy NYC/LA/Miami; tock for tasting menus; phone with a phone number for hole-in-the-walls; walkin if no reservations. Include the canonical url when you know it.
+• menu schema: { style_note, signature_dishes, appetizers, mains, desserts, wine_and_drinks, source_note }. Real dishes the restaurant is actually known for. Always include the source_note acknowledging menus change.
 
-RIGHT — do this:
-  "days": [ {full Day 1...}, {full Day 2...}, ... ],
-  "logistics": ["Flight EWR→ABQ · United nonstop", "Hotel · Five Graces", "Car · Hertz SUV"]
+LOGISTICS chips:
+• Short chips only — max 6, each ≤40 chars. Top-line facts only (airline summary, hotel name, car). DO NOT write sentences here. The full plan goes in days[].
 
-FLIGHT RULES — STRICT:
-• PREFER NONSTOP. Search for nonstop service from the home airport to the destination airport first.
-• If no nonstop exists to the requested airport, check for nonstop service to a nearby alternative airport in the same metro/region (e.g., ABQ ~60min from Santa Fe instead of SAF). If a nonstop to a nearby airport exists, RECOMMEND IT as the primary flight and explain the trade-off in a flags[] note. Mention drive time.
-• Only recommend a connecting itinerary if no nonstop exists to ANY reasonable nearby airport AND a connection is genuinely required.
-• Always state nonstop vs connecting explicitly in the Flight item text (e.g., "EWR→ABQ United nonstop, depart 09:00, arrive 11:35").
-• If the preferred airline doesn't fly nonstop but a competitor does, mention the competitor nonstop in flags[] so the user knows.
-
-CRITICAL RULES FOR RESTAURANTS:
-1. EVERY "Dinner", "Lunch", "Breakfast", or "Brunch" item MUST include the full "restaurant" object with all fields above (name, neighborhood, cuisine, price_range, why, closure_note, reservation, menu, backup).
-2. Compute the weekday for each day from the start date. EXCLUDE restaurants known to be typically closed that weekday (e.g., many fine-dining spots close Mon or Tue). If you're not sure of the closure day, put "Confirm hours — closure day uncertain" in closure_note.
-3. ALWAYS include a same-tier "backup" restaurant in the same neighborhood / cuisine family for when the primary is fully booked.
-4. Reservation platform must be one of: "opentable", "resy", "tock", "yelp", "phone", "walkin". Use OpenTable for most US/UK/EU mid-tier fine dining; Resy for trendy NYC/LA/Miami; Tock for tasting-menu / pre-paid spots; "phone" with a phone number for hole-in-the-wall spots; "walkin" if no reservations.
-5. If you know the canonical reservation URL (e.g., https://www.opentable.com/r/<slug>), include it. Otherwise omit "url" and the app will build a search URL.
-6. The menu must follow the exact schema: { style_note, signature_dishes, appetizers, mains, desserts, wine_and_drinks, source_note }. Each dish is { name, description, price } (description and price optional). Include the source_note acknowledging menus change.
-7. Be specific, opinionated, insider-toned. Real restaurant names. Real dishes the restaurant is actually known for.
-
-Generate ${(parseInt(basics.nights,10)||3) + 1} day entries total (arrival day + ${parseInt(basics.nights,10)||3} nights). Compute the correct weekday for each day starting from the start date provided in the user message.`;
+TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood detail. Avoid travel-blog vagueness.`;
+  };
 
   const buildUserPrompt = () => {
     const active = Object.entries(outputs).filter(([, v]) => v).map(([k]) => k).join(", ");
@@ -1458,6 +1480,8 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
           max_tokens: 16000,
           system: buildSystemPrompt(),
           messages: [{ role: "user", content: buildUserPrompt() }],
+          tools: [TRIP_PLAN_TOOL],
+          tool_choice: { type: "tool", name: "submit_trip_plan" },
         }),
       });
       return response;
@@ -1507,87 +1531,81 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
 
       const ctype = response.headers.get("content-type") || "";
 
-      // Collect the full text from either an SSE stream or a plain JSON response.
-      let fullText = "";
-
-      // Stream-level retry: if the SSE connection drops mid-flight without
-      // a clean message_stop, we attempt once more (only if nothing useful streamed yet).
+      // Accumulated tool_use input. Anthropic streams it as partial_json fragments
+      // inside content_block_delta events; we concatenate then JSON.parse at the end.
+      let toolJson = "";
       let sawMessageStop = false;
+      let serverFinalText = ""; // fallback if API ever returns non-streamed JSON
+
       if (ctype.includes("text/event-stream") && response.body) {
-        // Parse Anthropic SSE: data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"…"}}
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
         try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          // SSE events separated by \n\n; lines start with "data: "
-          let nl;
-          while ((nl = buf.indexOf("\n\n")) !== -1) {
-            const event = buf.slice(0, nl);
-            buf = buf.slice(nl + 2);
-            const lines = event.split("\n");
-            for (const line of lines) {
-              if (!line.startsWith("data:")) continue;
-              const payload = line.slice(5).trim();
-              if (!payload || payload === "[DONE]") continue;
-              try {
-                const evt = JSON.parse(payload);
-                if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
-                  fullText += evt.delta.text || "";
-                  setStreamPreview(fullText.slice(-400));
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            let nl;
+            while ((nl = buf.indexOf("\n\n")) !== -1) {
+              const event = buf.slice(0, nl);
+              buf = buf.slice(nl + 2);
+              for (const line of event.split("\n")) {
+                if (!line.startsWith("data:")) continue;
+                const payload = line.slice(5).trim();
+                if (!payload || payload === "[DONE]") continue;
+                try {
+                  const evt = JSON.parse(payload);
+                  if (evt.type === "content_block_delta" && evt.delta?.type === "input_json_delta") {
+                    toolJson += evt.delta.partial_json || "";
+                    setStreamPreview(toolJson.slice(-400));
 
-                  // Progress estimate — chars-based since we don't get token counts mid-stream.
-                  // Rough conversion: ~3.5 chars/token; cap at 95% so the bar never claims done until message_stop.
-                  const estTokens = fullText.length / 3.5;
-                  const frac = Math.min(0.95, estTokens / expectedTokens);
-                  setProgress(frac);
+                    // Progress: estimate by character count vs expected budget. Cap at 95%.
+                    const estTokens = toolJson.length / 3.5;
+                    const frac = Math.min(0.95, estTokens / expectedTokens);
+                    setProgress(frac);
 
-                  // Friendlier progress label — tracks both the current day and
-                  // sub-step within it, so the user doesn't see "Day 1 of 7"
-                  // sit for 60+ seconds while restaurant menus generate.
-                  const totalDays = nightsNum + 1;
-                  const dayMatches = fullText.match(/"label"\s*:\s*"Day\s+\d+/g) || [];
-                  const daysSeen = dayMatches.length;
-                  const restaurantMatches = fullText.match(/"reservation"\s*:/g) || [];
-                  const restaurantsDone = restaurantMatches.length;
+                    // Friendly progress label based on what's been generated so far.
+                    const totalDays = nightsNum + 1;
+                    const dayMatches = toolJson.match(/"label"\s*:\s*"Day\s+\d+/g) || [];
+                    const daysSeen = dayMatches.length;
+                    const restaurantMatches = toolJson.match(/"reservation"\s*:/g) || [];
+                    const restaurantsDone = restaurantMatches.length;
 
-                  if (daysSeen === 0 && fullText.length < 200) {
-                    setProgressLabel("Starting plan…");
-                  } else if (daysSeen === 0) {
-                    setProgressLabel("Building logistics…");
-                  } else if (daysSeen < totalDays) {
-                    // Show what's happening inside the current day.
-                    const currentDay = daysSeen;
-                    if (restaurantsDone > 0 && fullText.lastIndexOf("menu") > fullText.lastIndexOf(`"Day ${currentDay}`)) {
-                      setProgressLabel(`Day ${currentDay} of ${totalDays} · menu`);
-                    } else if (fullText.lastIndexOf("restaurant") > fullText.lastIndexOf(`"Day ${currentDay}`)) {
-                      setProgressLabel(`Day ${currentDay} of ${totalDays} · dining`);
+                    if (daysSeen === 0 && toolJson.length < 200) {
+                      setProgressLabel("Starting plan…");
+                    } else if (daysSeen === 0) {
+                      setProgressLabel("Planning structure…");
+                    } else if (daysSeen < totalDays) {
+                      const currentDay = daysSeen;
+                      if (restaurantsDone > 0 && toolJson.lastIndexOf("menu") > toolJson.lastIndexOf(`"Day ${currentDay}`)) {
+                        setProgressLabel(`Day ${currentDay} of ${totalDays} · menu`);
+                      } else if (toolJson.lastIndexOf("restaurant") > toolJson.lastIndexOf(`"Day ${currentDay}`)) {
+                        setProgressLabel(`Day ${currentDay} of ${totalDays} · dining`);
+                      } else {
+                        setProgressLabel(`Day ${currentDay} of ${totalDays} · activities`);
+                      }
                     } else {
-                      setProgressLabel(`Day ${currentDay} of ${totalDays} · activities`);
+                      setProgressLabel("Insider notes & Plan B…");
                     }
-                  } else {
-                    setProgressLabel("Insider notes & Plan B…");
+                  } else if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+                    // Some models may emit a small text preamble before calling the tool. Ignore for parsing.
+                  } else if (evt.type === "message_stop") {
+                    sawMessageStop = true;
+                    setProgress(1);
+                    setProgressLabel("Finalizing…");
+                  } else if (evt.type === "error" || evt.error) {
+                    throw new Error(evt.error?.message || evt.message || "Stream error");
                   }
-                } else if (evt.type === "message_stop") {
-                  sawMessageStop = true;
-                  setProgress(1);
-                  setProgressLabel("Finalizing…");
-                } else if (evt.type === "error" || evt.error) {
-                  throw new Error(evt.error?.message || evt.message || "Stream error");
+                } catch (e) {
+                  // Ignore unparseable keepalive lines.
                 }
-              } catch (e) {
-                // Ignore unparseable keepalive lines.
               }
             }
           }
-        }
         } catch (streamErr) {
-          // Stream broke mid-flight. If we never saw message_stop AND nothing
-          // useful was buffered, attempt one retry of the whole request.
-          if (!sawMessageStop && fullText.length < 200 && isTransientNetworkError(streamErr) && navigator.onLine !== false) {
+          // Stream broke mid-flight. Retry once if nothing useful arrived yet.
+          if (!sawMessageStop && toolJson.length < 200 && isTransientNetworkError(streamErr) && navigator.onLine !== false) {
             setLoadingMsg("Connection dropped — retrying…");
             await new Promise(r => setTimeout(r, 800));
             const retryResponse = await attemptOnce();
@@ -1595,6 +1613,7 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
             const retryReader = retryResponse.body?.getReader();
             if (!retryReader) throw streamErr;
             buf = "";
+            toolJson = "";
             while (true) {
               const { done, value } = await retryReader.read();
               if (done) break;
@@ -1609,8 +1628,8 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
                   if (!payload || payload === "[DONE]") continue;
                   try {
                     const evt = JSON.parse(payload);
-                    if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
-                      fullText += evt.delta.text || "";
+                    if (evt.type === "content_block_delta" && evt.delta?.type === "input_json_delta") {
+                      toolJson += evt.delta.partial_json || "";
                     } else if (evt.type === "message_stop") {
                       sawMessageStop = true;
                     }
@@ -1618,45 +1637,51 @@ IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3)
                 }
               }
             }
-          } else if (fullText.length < 200) {
+          } else if (toolJson.length < 200) {
             throw streamErr;
           }
-          // Otherwise we have a decent amount of text — try to salvage what we got.
         }
       } else {
-        // Fallback: server returned non-streamed JSON.
+        // Non-streamed fallback: server returned a full JSON payload.
         const raw = await response.text();
         try {
           const data = JSON.parse(raw);
-          fullText = data.content?.find(b => b.type === "text")?.text || "";
+          const toolBlock = data.content?.find(b => b.type === "tool_use");
+          if (toolBlock?.input) {
+            // Already parsed object — short-circuit.
+            const parsed = toolBlock.input;
+            const expectedDays = (parseInt(basics.nights, 10) || 3) + 1;
+            if (!Array.isArray(parsed.days) || parsed.days.length === 0) {
+              throw new Error("The AI didn't produce a day-by-day plan. Tap Build again.");
+            }
+            setResult(parsed);
+            setStep(3);
+            return;
+          }
+          serverFinalText = data.content?.find(b => b.type === "text")?.text || "";
         } catch { throw new Error("Server returned an unexpected response."); }
       }
 
-      if (!fullText) throw new Error("No content returned from AI service.");
+      if (!toolJson && !serverFinalText) throw new Error("No content returned from AI service.");
 
-      // Robust JSON extraction — strip code fences, then look for outermost {...}.
-      const clean = fullText.replace(/```json|```/g, "").trim();
-      let jsonStr = clean;
-      const first = clean.indexOf("{");
-      const last = clean.lastIndexOf("}");
-      if (first !== -1 && last !== -1 && last > first) jsonStr = clean.slice(first, last + 1);
-
+      // Parse the accumulated tool input JSON. With tool_use, Anthropic guarantees
+      // the JSON is well-formed and matches the schema before message_stop — so
+      // a parse failure here means the stream was truncated.
       let parsed;
       try {
-        parsed = JSON.parse(jsonStr);
+        parsed = JSON.parse(toolJson || serverFinalText);
       } catch (e1) {
-        // Salvage path: response was truncated mid-string. Trim back to the last
-        // closed brace inside the days array, then close the outer braces.
-        const salvaged = salvageTruncatedJSON(jsonStr);
+        // Salvage path — should be rare with tool_use, but keep it as a backstop.
+        const salvaged = salvageTruncatedJSON(toolJson || serverFinalText);
         if (salvaged) {
           try {
             parsed = JSON.parse(salvaged);
             parsed._truncated = true;
           } catch {
-            throw new Error("AI response was incomplete and couldn't be recovered. Try again with fewer nights or fewer output sections.");
+            throw new Error("The plan was cut off before it finished. Try again — keep the screen on if you're on cellular.");
           }
         } else {
-          throw new Error("AI response was not valid JSON. Try again, or reduce nights / outputs.");
+          throw new Error("The plan was cut off before it finished. Try again — keep the screen on if you're on cellular.");
         }
       }
 
