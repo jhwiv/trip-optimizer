@@ -1253,11 +1253,10 @@ export default function TripOptimizer() {
 
   const buildSystemPrompt = () => `You are a luxury travel planner. Return ONLY valid JSON — no markdown, no backticks, no preamble.
 
-Return this exact structure:
+Return this EXACT structure with fields in THIS ORDER (days BEFORE logistics so you commit to the full plan first):
 {
   "destination": "City, State/Country",
   "meta": "Dates · N nights · N travelers · Style",
-  "logistics": ["Flight EWR→SAF · United", "Hotel · La Fonda Plaza", "Car · Hertz SUV"],
   "days": [
     {
       "label": "Day 1 · Thu Jun 4 · Arrive Santa Fe",
@@ -1318,17 +1317,30 @@ Return this exact structure:
       ]
     }
   ],
+  "logistics": ["Flight EWR→ABQ · United nonstop", "Hotel · La Fonda Plaza", "Car · Hertz SUV"],
   "flags": ["Geronimo books out 2–3 weeks ahead in summer", "Many Canyon Road galleries closed Sun/Mon"],
   "planb": ["If thunderstorms (common 3–5pm in summer): swap outdoor for Georgia O'Keeffe Museum"],
   "snobs": ["It's 'red or green?' on chile — 'Christmas' = both. Locals don't say 'chili'."],
   "tonight": ["Confirm Geronimo reservation for Day 1", "Verify Day 3 backup (The Compound) hours"]
 }
 
-CRITICAL OUTPUT STRUCTURE RULES:
-• "logistics" is a SHORT CHIP LIST. Max 6 chips, each ≤40 chars. ONLY top-line facts (airline, hotel name, car). DO NOT put day-by-day content, alternates, or notes here — those go in days[], flags[], or planb[].
-• "days" is REQUIRED and MUST contain exactly ${(parseInt(basics.nights,10)||3) + 1} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). Never return days: [] or fewer entries. If you must shorten, shorten descriptions — never drop days.
-• Each day MUST have an "items" array with at least 3 items (typically: morning Activity/Breakfast, midday Lunch, evening Dinner, plus context like Flight/Hotel on arrival/departure days).
-• If you cannot produce the full days array within length limits, STILL return the days array — trim menu/backup detail first, not days.
+CRITICAL OUTPUT STRUCTURE RULES — READ CAREFULLY:
+• "days" is the MAIN OUTPUT and MUST come FIRST in your JSON (right after destination/meta). It MUST contain exactly ${(parseInt(basics.nights,10)||3) + 1} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). days[] MUST NOT be empty. If you run low on space, shorten menu/backup detail — NEVER skip a day.
+• Each day MUST have an "items" array with at least 3 items (morning Activity/Breakfast, midday Lunch, evening Dinner; plus Flight/Hotel on arrival/departure days).
+• "logistics" is a SHORT CHIP LIST that comes AFTER days. Max 6 chips, each ≤40 chars. ONLY top-line facts (airline, hotel name, car). DO NOT put day-by-day content, alternates, hotel justification, or notes here — those go in days[], flags[], or planb[].
+
+WRONG — do not do this:
+  "logistics": [
+    "Flight: EWR → SAF via DEN, United Polaris, depart 09:30 Jun 4...",
+    "Hotel: The Inn of the Five Graces (Relais & Châteaux)...",
+    "Alternate hotel (Bonvoy): St. Regis Aspen is closest..."
+  ],
+  "days": []
+This is broken. The user sees a useless summary card.
+
+RIGHT — do this:
+  "days": [ {full Day 1...}, {full Day 2...}, ... ],
+  "logistics": ["Flight EWR→ABQ · United nonstop", "Hotel · Five Graces", "Car · Hertz SUV"]
 
 FLIGHT RULES — STRICT:
 • PREFER NONSTOP. Search for nonstop service from the home airport to the destination airport first.
