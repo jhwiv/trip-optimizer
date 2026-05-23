@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment } from "react";
+import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 
 const GOLD = "#C4A862";
 const GOLD_LIGHT = "#F5EDD6";
@@ -754,9 +754,12 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
 
   return (
     <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
         <Badge type={type} />
         <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1 }}>{r.name}</p>
+        {r._isReturnVisit && (
+          <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: `0.5px solid ${GOLD}`, borderRadius: "3px", whiteSpace: "nowrap" }}>Return visit</span>
+        )}
       </div>
       {(r.neighborhood || r.cuisine || r.price_range) && (
         <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 6px", letterSpacing: "0.02em" }}>
@@ -898,6 +901,99 @@ function stripTonightPrefix(s) {
     .trim();
 }
 
+// Pass-three quality layer: dedupe restaurant repeats with an explicit
+// "Return to X for [meal]" annotation, and surface a QC summary of any
+// fixes/warnings the renderer applied so the user knows the app is on it.
+// Pure: never mutates input — returns { data, qc }.
+function applyQualityLayer(input) {
+  if (!input || typeof input !== "object") return { data: input, qc: { fixes: [], warnings: [] } };
+  const fixes = [];
+  const warnings = [];
+
+  // Deep-clone the bits we'll touch so renderer mutation is safe.
+  const days = Array.isArray(input.days)
+    ? input.days.map(d => ({ ...d, items: Array.isArray(d.items) ? d.items.map(it => ({ ...it, restaurant: it.restaurant ? { ...it.restaurant } : it.restaurant, flight: it.flight ? { ...it.flight } : it.flight })) : d.items }))
+    : input.days;
+
+  // 1. Restaurant dedupe → annotate the 2nd+ visit so the user understands the repeat is intentional.
+  if (Array.isArray(days)) {
+    const seen = new Map(); // normalized name → { dayIndex, mealType }
+    days.forEach((day, dayIdx) => {
+      (day.items || []).forEach(item => {
+        const r = item.restaurant;
+        const isMeal = /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/i.test(item.type || "");
+        if (!r || !r.name || !isMeal) return;
+        const key = r.name.trim().toLowerCase();
+        const prior = seen.get(key);
+        if (prior) {
+          const mealLabel = (item.type || "meal").toLowerCase();
+          const note = `Return visit — first appeared Day ${prior.dayIndex + 1} (${prior.mealType.toLowerCase()}).`;
+          if (r.why && !/^return visit/i.test(r.why)) {
+            r.why = `${note} ${r.why}`;
+          } else if (!r.why) {
+            r.why = note;
+          }
+          r._isReturnVisit = true;
+          fixes.push(`Annotated repeat: ${r.name} (Day ${dayIdx + 1} ${mealLabel}) — first on Day ${prior.dayIndex + 1}`);
+        } else {
+          seen.set(key, { dayIndex: dayIdx, mealType: item.type || "meal" });
+        }
+      });
+    });
+  }
+
+  // 2. Flight verify-microcopy: if note doesn't end with the verify sentence, append it (model+renderer defense layered).
+  if (Array.isArray(days)) {
+    const VERIFY = "Verify flight number, times and equipment at booking — schedules change.";
+    days.forEach((day, dayIdx) => {
+      (day.items || []).forEach(item => {
+        if (item.type === "Flight" && item.flight) {
+          const note = item.flight.confirmation_note || "";
+          if (!/verify/i.test(note)) {
+            item.flight.confirmation_note = note ? `${note} ${VERIFY}` : VERIFY;
+            fixes.push(`Appended verify-at-booking microcopy to Day ${dayIdx + 1} flight`);
+          }
+        }
+      });
+    });
+  }
+
+  // 3. Validators — surface as warnings, never block render.
+  const planbLen = Array.isArray(input.planb) ? input.planb.length : 0;
+  if (planbLen < 5) warnings.push(`Plan B has only ${planbLen} entries (expected ≥5)`);
+  if (!input.weather_window) warnings.push("Missing weather_window summary");
+  if (!Array.isArray(input.pack) || input.pack.length < 3) warnings.push("Pack list shorter than 3 items");
+  if (Array.isArray(days)) {
+    days.forEach((d, i) => {
+      if (!d.headline) warnings.push(`Day ${i + 1} missing headline`);
+      if (!d.weather) warnings.push(`Day ${i + 1} missing weather line`);
+    });
+  }
+
+  return { data: { ...input, days }, qc: { fixes, warnings } };
+}
+
+// Small QC chip surfaced below the trip — shows we caught and fixed something
+// instead of silently letting it through. Hidden when there's nothing to say.
+function QualityBadge({ qc }) {
+  if (!qc || (qc.fixes.length === 0 && qc.warnings.length === 0)) return null;
+  return (
+    <div style={{ marginTop: "1rem", marginBottom: "1.25rem", padding: "10px 12px", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary)" }}>
+      <p style={{ fontSize: "10px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" }}>Quality check</p>
+      {qc.fixes.length > 0 && (
+        <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 4px", lineHeight: 1.5 }}>
+          ✓ Auto-fixed {qc.fixes.length} item{qc.fixes.length === 1 ? "" : "s"}: {qc.fixes.slice(0, 2).join("; ")}{qc.fixes.length > 2 ? `; +${qc.fixes.length - 2} more` : ""}.
+        </p>
+      )}
+      {qc.warnings.length > 0 && (
+        <p style={{ fontSize: "11.5px", color: "#B85C00", margin: 0, lineHeight: 1.5 }}>
+          ⚠︎ {qc.warnings.length} warning{qc.warnings.length === 1 ? "" : "s"}: {qc.warnings.slice(0, 2).join("; ")}{qc.warnings.length > 2 ? `; +${qc.warnings.length - 2} more` : ""}.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function TripHero({ data }) {
   // Pull flight + hotel summary directly from days[].
   const items = (data.days || []).flatMap(d => (d.items || []));
@@ -971,8 +1067,11 @@ function DayNav({ days }) {
   );
 }
 
-function ItineraryView({ data, onBack }) {
+function ItineraryView({ data: rawData, onBack }) {
   const [menuRestaurant, setMenuRestaurant] = useState(null);
+  // Apply the pass-three quality layer once before render. This dedupes
+  // restaurants, fills verify microcopy, and computes a QC summary.
+  const { data, qc } = useMemo(() => applyQualityLayer(rawData), [rawData]);
   const sortedTonight = Array.isArray(data.tonight)
     ? [...data.tonight].map((t, i) => ({ t, i, p: tonightPriority(t) })).sort((a, b) => a.p.rank - b.p.rank || a.i - b.i)
     : [];
@@ -980,6 +1079,7 @@ function ItineraryView({ data, onBack }) {
     <div>
       <MenuModal restaurant={menuRestaurant} onClose={() => setMenuRestaurant(null)} />
       <TripHero data={data} />
+      <QualityBadge qc={qc} />
 
       {/* Pre-day high-signal block: do this tonight first, weather/pack second */}
       {sortedTonight.length > 0 && (
@@ -1735,6 +1835,9 @@ VARIETY RULES — STRICT, NON-NEGOTIABLE:
 FLIGHTS — PREFER NONSTOP, ALWAYS STRUCTURED:
 • Every Flight item MUST include the full "flight" object: carrier, flight_number (realistic, e.g. 'UA 1234' — use a flight number the carrier is known to operate on this exact route), from_airport (IATA), to_airport (IATA), depart_time, arrive_time, duration, nonstop (boolean), cabin, aircraft, confirmation_note.
 • Flight numbers and times are STARTING POINTS for booking, not guarantees. Every confirmation_note MUST literally end with this exact sentence: "Verify flight number, times and equipment at booking — schedules change." Use real flight numbers from the carrier's published schedule when you can recall them; otherwise pick a plausible number in that carrier's range for that route.
+• WRONG confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C"
+• RIGHT confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C. Verify flight number, times and equipment at booking — schedules change."
+• Do not paraphrase the verify sentence. Copy it verbatim. The literal substring "Verify flight number, times and equipment at booking" MUST be in every flight's confirmation_note.
 • Search for nonstop service from the home airport to the destination's primary airport first.
 • If no nonstop exists to the requested airport but one exists to a nearby airport in the same metro (e.g., ABQ ~60min from Santa Fe instead of SAF), RECOMMEND THE NONSTOP and add a flags[] note mentioning the drive time.
 • Only return a connecting itinerary if no nonstop exists to any reasonable nearby airport. Set nonstop=false and fill "connection" with the connecting airport IATA.
