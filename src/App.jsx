@@ -596,6 +596,9 @@ function FlightCard({ type, time, end_time, flight: f, text }) {
       {!hasVerify && (
         <p style={{ fontSize: "10.5px", color: "#B85C00", margin: "6px 0 0", lineHeight: 1.4, letterSpacing: "0.02em" }}>⚠︎ Verify flight number, times and equipment at booking — schedules change.</p>
       )}
+      {hasVerify && f._verifyAppended && (
+        <p style={{ fontSize: "10.5px", color: "#B85C00", margin: "6px 0 0", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 500 }}>⚠︎ Verify flight details at booking — schedules change.</p>
+      )}
       {bookUrl && (
         <div style={{ marginTop: "8px" }}>
           <a href={bookUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>Book · {bookHost}</a>
@@ -950,7 +953,14 @@ function applyQualityLayer(input) {
         if (item.type === "Flight" && item.flight) {
           const note = item.flight.confirmation_note || "";
           if (!/verify/i.test(note)) {
-            item.flight.confirmation_note = note ? `${note} ${VERIFY}` : VERIFY;
+            // Ensure clean sentence boundary before appending.
+            const trimmed = note.trim();
+            const needsPeriod = trimmed && !/[.!?]$/.test(trimmed);
+            item.flight.confirmation_note = trimmed
+              ? `${trimmed}${needsPeriod ? "." : ""} ${VERIFY}`
+              : VERIFY;
+            // Mark so the renderer can keep the amber banner styling for emphasis.
+            item.flight._verifyAppended = true;
             fixes.push(`Appended verify-at-booking microcopy to Day ${dayIdx + 1} flight`);
           }
         }
