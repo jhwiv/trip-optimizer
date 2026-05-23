@@ -522,16 +522,166 @@ function Badge({ type }) {
   );
 }
 
-function DayBlock({ day }) {
+function DayBlock({ day, onOpenMenu }) {
   return (
     <div style={{ borderLeft: `2px solid ${GOLD}`, paddingLeft: "1rem", marginBottom: "1.5rem", borderRadius: 0 }}>
       <p style={{ fontSize: "13px", fontWeight: "600", color: "var(--color-text-primary)", margin: "0 0 10px", letterSpacing: "0.02em" }}>{day.label}</p>
-      {day.items.map((item, i) => (
-        <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "7px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: "1.5" }}>
-          <Badge type={item.type} />
-          <span style={{ color: "var(--color-text-secondary)" }}>{item.text}</span>
+      {day.items.map((item, i) => {
+        // Dining items with a structured restaurant payload render as a rich card.
+        if (item.restaurant && (item.type === "Dinner" || item.type === "Lunch" || item.type === "Breakfast" || item.type === "Brunch" || item.type === "Dining")) {
+          return <RestaurantCard key={i} type={item.type} restaurant={item.restaurant} onOpenMenu={onOpenMenu} />;
+        }
+        return (
+          <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "7px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: "1.5" }}>
+            <Badge type={item.type} />
+            <span style={{ color: "var(--color-text-secondary)" }}>{item.text}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Build a reservation URL from a restaurant payload.
+// Anthropic should provide reservation.url directly; this is a fallback that
+// constructs a search URL on the named platform.
+function reservationLink(r) {
+  if (!r || !r.reservation) return null;
+  const platform = (r.reservation.platform || "").toLowerCase();
+  if (r.reservation.url) return { platform, url: r.reservation.url };
+  const q = encodeURIComponent(r.name || "");
+  if (platform === "opentable") return { platform, url: `https://www.opentable.com/s?term=${q}` };
+  if (platform === "resy") return { platform, url: `https://resy.com/cities/search?query=${q}` };
+  if (platform === "tock") return { platform, url: `https://www.exploretock.com/search?query=${q}` };
+  if (platform === "yelp") return { platform, url: `https://www.yelp.com/search?find_desc=${q}` };
+  if (platform === "phone" && r.reservation.phone) return { platform, url: `tel:${r.reservation.phone}` };
+  return null;
+}
+
+function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
+  const resv = reservationLink(r);
+  const platformLabel = resv ? ({
+    opentable: "OpenTable", resy: "Resy", tock: "Tock", yelp: "Yelp", phone: "Call",
+  }[resv.platform] || "Reserve") : null;
+
+  return (
+    <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+        <Badge type={type} />
+        <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1 }}>{r.name}</p>
+      </div>
+      {(r.neighborhood || r.cuisine || r.price_range) && (
+        <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 6px", letterSpacing: "0.02em" }}>
+          {[r.neighborhood, r.cuisine, r.price_range].filter(Boolean).join("  ·  ")}
+        </p>
+      )}
+      {r.why && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{r.why}</p>}
+      {r.closure_note && (
+        <p style={{ fontSize: "11px", color: r.closure_note.toLowerCase().includes("confirm") ? "#B85C00" : "var(--color-text-tertiary)", margin: "0 0 8px", fontStyle: "italic" }}>
+          ⚠︎ {r.closure_note}
+        </p>
+      )}
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px" }}>
+        {r.menu && (
+          <button
+            onClick={() => onOpenMenu(r)}
+            style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}
+          >View Menu</button>
+        )}
+        {resv && (
+          <a
+            href={resv.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, textDecoration: "none", display: "inline-block" }}
+          >Reserve · {platformLabel}</a>
+        )}
+      </div>
+      {r.backup && (
+        <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
+          <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", margin: "0 0 4px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Backup if no table</p>
+          <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>{r.backup.name}</p>
+          {(r.backup.neighborhood || r.backup.cuisine) && (
+            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 6px" }}>{[r.backup.neighborhood, r.backup.cuisine].filter(Boolean).join("  ·  ")}</p>
+          )}
+          {r.backup.why && <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 6px", lineHeight: 1.5 }}>{r.backup.why}</p>}
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            {r.backup.menu && (
+              <button
+                onClick={() => onOpenMenu(r.backup)}
+                style={{ fontSize: "10.5px", padding: "5px 10px", borderRadius: "4px", border: `0.5px solid var(--color-border-secondary)`, background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.04em", textTransform: "uppercase" }}
+              >Menu</button>
+            )}
+            {reservationLink(r.backup) && (
+              <a
+                href={reservationLink(r.backup).url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: "10.5px", padding: "5px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.04em", textTransform: "uppercase", textDecoration: "none" }}
+              >Reserve · {({opentable:"OpenTable",resy:"Resy",tock:"Tock",yelp:"Yelp",phone:"Call"}[reservationLink(r.backup).platform] || "Reserve")}</a>
+            )}
+          </div>
         </div>
-      ))}
+      )}
+    </div>
+  );
+}
+
+function MenuModal({ restaurant, onClose }) {
+  if (!restaurant) return null;
+  const m = restaurant.menu || {};
+  const sections = [
+    ["Signature dishes", m.signature_dishes],
+    ["Appetizers / small plates", m.appetizers],
+    ["Mains", m.mains],
+    ["Desserts", m.desserts],
+    ["Wine & drinks", m.wine_and_drinks],
+  ];
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 1000, padding: 0 }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{ background: "var(--color-background-primary)", maxWidth: "640px", width: "100%", maxHeight: "90vh", overflowY: "auto", borderRadius: "16px 16px 0 0", padding: "22px 22px 32px", boxShadow: "0 -8px 32px rgba(0,0,0,0.25)" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
+          <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Menu</p>
+          <button
+            onClick={onClose}
+            aria-label="Close menu"
+            style={{ background: "transparent", border: "none", fontSize: "22px", color: "var(--color-text-secondary)", cursor: "pointer", padding: "4px 8px", lineHeight: 1 }}
+          >×</button>
+        </div>
+        <p style={{ fontSize: "20px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)" }}>{restaurant.name}</p>
+        {(restaurant.neighborhood || restaurant.cuisine || restaurant.price_range) && (
+          <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 14px", letterSpacing: "0.02em" }}>
+            {[restaurant.neighborhood, restaurant.cuisine, restaurant.price_range].filter(Boolean).join("  ·  ")}
+          </p>
+        )}
+        {m.style_note && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 14px", fontStyle: "italic", lineHeight: 1.55 }}>{m.style_note}</p>}
+        {sections.map(([title, items]) => Array.isArray(items) && items.length > 0 && (
+          <div key={title} style={{ marginBottom: "14px" }}>
+            <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 8px", paddingBottom: "6px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{title}</p>
+            {items.map((it, i) => {
+              if (typeof it === "string") {
+                return <p key={i} style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 6px", lineHeight: 1.5 }}>{it}</p>;
+              }
+              return (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: "12px", marginBottom: "8px", alignItems: "baseline" }}>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: 0, fontWeight: 500, lineHeight: 1.4 }}>{it.name}</p>
+                    {it.description && <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "2px 0 0", lineHeight: 1.5 }}>{it.description}</p>}
+                  </div>
+                  {it.price && <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, whiteSpace: "nowrap" }}>{it.price}</p>}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+        {m.source_note && <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", marginTop: "16px", fontStyle: "italic", lineHeight: 1.5 }}>{m.source_note}</p>}
+      </div>
     </div>
   );
 }
@@ -546,8 +696,10 @@ function Section({ title, children }) {
 }
 
 function ItineraryView({ data, onBack }) {
+  const [menuRestaurant, setMenuRestaurant] = useState(null);
   return (
     <div>
+      <MenuModal restaurant={menuRestaurant} onClose={() => setMenuRestaurant(null)} />
       <div style={{ marginBottom: "1.75rem" }}>
         <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "600", margin: "0 0 6px" }}>Your trip</p>
         <p style={{ fontSize: "22px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)", letterSpacing: "-0.3px" }}>{data.destination}</p>
@@ -561,7 +713,7 @@ function ItineraryView({ data, onBack }) {
 
       {data.days && data.days.length > 0 && (
         <Section title="Day-by-day">
-          {data.days.map((d, i) => <DayBlock key={i} day={d} />)}
+          {data.days.map((d, i) => <DayBlock key={i} day={d} onOpenMenu={setMenuRestaurant} />)}
         </Section>
       )}
 
@@ -1031,27 +1183,85 @@ export default function TripOptimizer() {
 
 Return this exact structure:
 {
-  "destination": "City, Country",
+  "destination": "City, State/Country",
   "meta": "Dates · N nights · N travelers · Style",
-  "logistics": ["Flight: EWR → LIS United Business", "Hotel: Bairro Alto Hotel", "Car: Hertz Gold SUV"],
+  "logistics": ["Flight: EWR → SAF United", "Hotel: La Fonda on the Plaza", "Car: Hertz SUV"],
   "days": [
     {
-      "label": "Day 1 · Mon Jun 3 · Arrive Lisbon",
+      "label": "Day 1 · Thu Jun 4 · Arrive Santa Fe",
       "items": [
-        { "type": "Flight", "text": "EWR → LIS, depart 18:40, arrive 07:05+1, United (suggested)" },
-        { "type": "Hotel", "text": "Check in · Bairro Alto Hotel, Chiado" },
-        { "type": "Activity", "text": "Afternoon: Baixa walk, Praça do Comércio, first impressions" },
-        { "type": "Dinner", "text": "Taberna da Rua das Flores — petiscos, no reservation needed early" }
+        { "type": "Flight", "text": "EWR → SAF via DEN, depart 09:30, arrive 14:45, United" },
+        { "type": "Hotel", "text": "Check in · Eldorado Hotel & Spa, downtown" },
+        { "type": "Activity", "text": "Sunset on the Plaza, gallery walk on Canyon Road" },
+        {
+          "type": "Dinner",
+          "text": "Geronimo — Canyon Road, contemporary Southwest",
+          "restaurant": {
+            "name": "Geronimo",
+            "neighborhood": "Canyon Road",
+            "cuisine": "Contemporary Southwest",
+            "price_range": "$$$$",
+            "why": "Set in a 250-year-old adobe; the elk tenderloin and green-chile lobster tail are signature. Book the patio in summer.",
+            "closure_note": "Open Thu. Confirm hours — some Santa Fe spots close Tue.",
+            "reservation": { "platform": "opentable", "url": "https://www.opentable.com/r/geronimo-santa-fe" },
+            "menu": {
+              "style_note": "Modern Southwest with French technique. Tasting-menu vibe à la carte.",
+              "signature_dishes": [
+                { "name": "Mesquite-grilled elk tenderloin", "description": "Applewood-smoked bacon, garlic mashed potatoes, brandied mushroom sauce", "price": "$58" },
+                { "name": "Green-chile lobster tail", "description": "Atlantic lobster, Hatch green chile cream, sweet corn", "price": "$72" }
+              ],
+              "appetizers": [
+                { "name": "Heirloom tomato salad", "description": "Buffalo mozzarella, basil oil", "price": "$18" }
+              ],
+              "mains": [
+                { "name": "Tellicherry-rubbed elk", "description": "See signature", "price": "$58" },
+                { "name": "Diver scallops", "description": "Cauliflower pure, brown butter", "price": "$48" }
+              ],
+              "desserts": [
+                { "name": "Warm chocolate tart", "description": "Espresso ice cream", "price": "$14" }
+              ],
+              "wine_and_drinks": [
+                { "name": "Wine list", "description": "450+ bottles, strong New World focus, broad by-the-glass" },
+                { "name": "Sgnt. cocktail: Smoked sage margarita" }
+              ],
+              "source_note": "Menu reconstructed from typical offerings; prices and items change seasonally — confirm at restaurant."
+            },
+            "backup": {
+              "name": "The Compound",
+              "neighborhood": "Canyon Road",
+              "cuisine": "New American / Southwest",
+              "price_range": "$$$$",
+              "why": "Same Canyon Road caliber; James Beard–recognized chef. Easier to book last-minute than Geronimo.",
+              "reservation": { "platform": "opentable", "url": "https://www.opentable.com/r/the-compound-santa-fe" },
+              "menu": {
+                "signature_dishes": [
+                  { "name": "Tuna tartare", "price": "$24" },
+                  { "name": "Roast chicken for two", "price": "$78" }
+                ],
+                "source_note": "Representative menu; confirm on arrival."
+              }
+            }
+          }
+        }
       ]
     }
   ],
-  "flags": ["Sintra — book timed entry online or queues are brutal", "Pastéis de Belém opens 8am — go before 9am"],
-  "planb": ["If rain on Day 3: Museu Nacional do Azulejo instead of Sintra", "If Belém crowds: LxFactory market is 10 min away"],
-  "snobs": ["Say Baixa-Chiado (BI-sha SHYA-doo), not 'the downtown area'", "Pastéis de nata at Manteigaria are better than Belém. Fight me."],
-  "tonight": ["Download offline maps for Sintra and Cascais — signal is poor", "Confirm Day 3 rental car pickup time", "Book Belém timed entry at patrimoniocultural.gov.pt"]
+  "flags": ["Geronimo books out 2–3 weeks ahead in summer", "Many Canyon Road galleries closed Sun/Mon"],
+  "planb": ["If thunderstorms (common 3–5pm in summer): swap outdoor for Georgia O'Keeffe Museum"],
+  "snobs": ["It's 'red or green?' on chile — 'Christmas' = both. Locals don't say 'chili'."],
+  "tonight": ["Confirm Geronimo reservation for Day 1", "Verify Day 3 backup (The Compound) hours"]
 }
 
-Generate ${basics.nights || 3} days. Be specific, opinionated, insider-toned. Real restaurant names. Real neighborhoods. Actual timing.`;
+CRITICAL RULES FOR RESTAURANTS:
+1. EVERY "Dinner", "Lunch", "Breakfast", or "Brunch" item MUST include the full "restaurant" object with all fields above (name, neighborhood, cuisine, price_range, why, closure_note, reservation, menu, backup).
+2. Compute the weekday for each day from the start date. EXCLUDE restaurants known to be typically closed that weekday (e.g., many fine-dining spots close Mon or Tue). If you're not sure of the closure day, put "Confirm hours — closure day uncertain" in closure_note.
+3. ALWAYS include a same-tier "backup" restaurant in the same neighborhood / cuisine family for when the primary is fully booked.
+4. Reservation platform must be one of: "opentable", "resy", "tock", "yelp", "phone", "walkin". Use OpenTable for most US/UK/EU mid-tier fine dining; Resy for trendy NYC/LA/Miami; Tock for tasting-menu / pre-paid spots; "phone" with a phone number for hole-in-the-wall spots; "walkin" if no reservations.
+5. If you know the canonical reservation URL (e.g., https://www.opentable.com/r/<slug>), include it. Otherwise omit "url" and the app will build a search URL.
+6. The menu must follow the exact schema: { style_note, signature_dishes, appetizers, mains, desserts, wine_and_drinks, source_note }. Each dish is { name, description, price } (description and price optional). Include the source_note acknowledging menus change.
+7. Be specific, opinionated, insider-toned. Real restaurant names. Real dishes the restaurant is actually known for.
+
+Generate ${basics.nights || 3} days. Compute the correct weekday for each day starting from the start date provided in the user message.`;
 
   const buildUserPrompt = () => {
     const active = Object.entries(outputs).filter(([, v]) => v).map(([k]) => k).join(", ");
@@ -1114,7 +1324,7 @@ Include sections: ${active}`;
         signal: controller.signal,
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
-          max_tokens: 4096,
+          max_tokens: 8192,
           system: buildSystemPrompt(),
           messages: [{ role: "user", content: buildUserPrompt() }],
         }),
