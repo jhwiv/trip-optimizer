@@ -1257,7 +1257,7 @@ Return this exact structure:
 {
   "destination": "City, State/Country",
   "meta": "Dates · N nights · N travelers · Style",
-  "logistics": ["Flight: EWR → SAF United", "Hotel: La Fonda on the Plaza", "Car: Hertz SUV"],
+  "logistics": ["Flight EWR→SAF · United", "Hotel · La Fonda Plaza", "Car · Hertz SUV"],
   "days": [
     {
       "label": "Day 1 · Thu Jun 4 · Arrive Santa Fe",
@@ -1324,6 +1324,19 @@ Return this exact structure:
   "tonight": ["Confirm Geronimo reservation for Day 1", "Verify Day 3 backup (The Compound) hours"]
 }
 
+CRITICAL OUTPUT STRUCTURE RULES:
+• "logistics" is a SHORT CHIP LIST. Max 6 chips, each ≤40 chars. ONLY top-line facts (airline, hotel name, car). DO NOT put day-by-day content, alternates, or notes here — those go in days[], flags[], or planb[].
+• "days" is REQUIRED and MUST contain exactly ${(parseInt(basics.nights,10)||3) + 1} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). Never return days: [] or fewer entries. If you must shorten, shorten descriptions — never drop days.
+• Each day MUST have an "items" array with at least 3 items (typically: morning Activity/Breakfast, midday Lunch, evening Dinner, plus context like Flight/Hotel on arrival/departure days).
+• If you cannot produce the full days array within length limits, STILL return the days array — trim menu/backup detail first, not days.
+
+FLIGHT RULES — STRICT:
+• PREFER NONSTOP. Search for nonstop service from the home airport to the destination airport first.
+• If no nonstop exists to the requested airport, check for nonstop service to a nearby alternative airport in the same metro/region (e.g., ABQ ~60min from Santa Fe instead of SAF). If a nonstop to a nearby airport exists, RECOMMEND IT as the primary flight and explain the trade-off in a flags[] note. Mention drive time.
+• Only recommend a connecting itinerary if no nonstop exists to ANY reasonable nearby airport AND a connection is genuinely required.
+• Always state nonstop vs connecting explicitly in the Flight item text (e.g., "EWR→ABQ United nonstop, depart 09:00, arrive 11:35").
+• If the preferred airline doesn't fly nonstop but a competitor does, mention the competitor nonstop in flags[] so the user knows.
+
 CRITICAL RULES FOR RESTAURANTS:
 1. EVERY "Dinner", "Lunch", "Breakfast", or "Brunch" item MUST include the full "restaurant" object with all fields above (name, neighborhood, cuisine, price_range, why, closure_note, reservation, menu, backup).
 2. Compute the weekday for each day from the start date. EXCLUDE restaurants known to be typically closed that weekday (e.g., many fine-dining spots close Mon or Tue). If you're not sure of the closure day, put "Confirm hours — closure day uncertain" in closure_note.
@@ -1333,7 +1346,7 @@ CRITICAL RULES FOR RESTAURANTS:
 6. The menu must follow the exact schema: { style_note, signature_dishes, appetizers, mains, desserts, wine_and_drinks, source_note }. Each dish is { name, description, price } (description and price optional). Include the source_note acknowledging menus change.
 7. Be specific, opinionated, insider-toned. Real restaurant names. Real dishes the restaurant is actually known for.
 
-Generate ${basics.nights || 3} days. Compute the correct weekday for each day starting from the start date provided in the user message.`;
+Generate ${(parseInt(basics.nights,10)||3) + 1} day entries total (arrival day + ${parseInt(basics.nights,10)||3} nights). Compute the correct weekday for each day starting from the start date provided in the user message.`;
 
   const buildUserPrompt = () => {
     const active = Object.entries(outputs).filter(([, v]) => v).map(([k]) => k).join(", ");
@@ -1351,7 +1364,10 @@ Cuisine: ${dining.cuisine || "local"} · Dinner budget: ${dining.budget}
 Restaurants requested: ${restaurants.length ? restaurants.join(", ") : "suggest"}
 Activities requested: ${activities.length ? activities.join(", ") : "suggest based on style"}
 Interests: ${interests.text || "not specified"} · Level: ${interests.level}
-Include sections: ${active}`;
+Include sections: ${active}
+
+IMPORTANT: Prefer NONSTOP flights. If ${flights.homeAirport} has no nonstop to the primary airport for ${basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.
+IMPORTANT: Return a complete days[] array with ${(parseInt(basics.nights,10)||3) + 1} entries (arrival day + ${parseInt(basics.nights,10)||3} nights). Do not collapse the plan into the logistics chip list.`;
   };
 
   const handleCancel = () => {
@@ -1630,6 +1646,17 @@ Include sections: ${active}`;
         } else {
           throw new Error("AI response was not valid JSON. Try again, or reduce nights / outputs.");
         }
+      }
+
+      // Sanity check: model must return a real days[] array, not collapse everything into logistics.
+      const expectedDays = (parseInt(basics.nights, 10) || 3) + 1;
+      const gotDays = Array.isArray(parsed?.days) ? parsed.days.length : 0;
+      if (gotDays === 0) {
+        throw new Error("The AI returned a summary instead of a day-by-day plan. Tap Build again — this usually works on the second try.");
+      }
+      if (gotDays < Math.max(2, expectedDays - 1) && !parsed._truncated) {
+        // Allow off-by-one (some models skip the arrival half-day), but anything shorter is broken.
+        console.warn(`Expected ~${expectedDays} days, got ${gotDays}`);
       }
 
       setResult(parsed);
