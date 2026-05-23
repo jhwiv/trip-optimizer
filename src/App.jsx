@@ -522,19 +522,138 @@ function Badge({ type }) {
   );
 }
 
+// Convert '08:30' or '8:30' to '8:30 AM' / '20:15' to '8:15 PM'. Pass through anything else.
+function formatTime(t) {
+  if (!t || typeof t !== "string") return "";
+  const m = t.trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return t;
+  let h = parseInt(m[1], 10);
+  const mm = m[2];
+  if (isNaN(h)) return t;
+  const ampm = h >= 12 ? "PM" : "AM";
+  let h12 = h % 12; if (h12 === 0) h12 = 12;
+  return `${h12}:${mm} ${ampm}`;
+}
+
+// Sort key: convert '08:30' → 830, '14:05' → 1405. Items without time sink to the end.
+function timeKey(t) {
+  if (!t || typeof t !== "string") return 99999;
+  const m = t.trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return 99999;
+  return parseInt(m[1], 10) * 100 + parseInt(m[2], 10);
+}
+
+function TimePill({ time, end_time }) {
+  if (!time) return null;
+  const t = formatTime(time);
+  const et = end_time ? formatTime(end_time) : "";
+  return (
+    <span style={{
+      display: "inline-block", fontSize: "11px", fontWeight: 600,
+      color: "var(--color-text-primary)", background: "#F5EDD6",
+      padding: "2px 7px", borderRadius: "3px", whiteSpace: "nowrap",
+      letterSpacing: "0.02em", minWidth: "58px", textAlign: "center",
+    }}>{et ? `${t} – ${et}` : t}</span>
+  );
+}
+
+function FlightCard({ type, time, end_time, flight: f, text }) {
+  if (!f) return null;
+  const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
+  const stopLabel = f.nonstop ? "Nonstop" : (f.connection ? `Connect ${f.connection}` : "Connecting");
+  return (
+    <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+        <TimePill time={time} end_time={end_time} />
+        <Badge type={type || "Flight"} />
+        <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1, minWidth: 0 }}>
+          {f.carrier} {f.flight_number} · {route}
+        </p>
+      </div>
+      <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "2px 0 6px", letterSpacing: "0.02em" }}>
+        Depart {formatTime(f.depart_time)} · Arrive {formatTime(f.arrive_time)}{f.duration ? `  ·  ${f.duration}` : ""}  ·  {stopLabel}
+      </p>
+      {(f.cabin || f.aircraft) && (
+        <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: "0 0 4px" }}>
+          {[f.cabin, f.aircraft].filter(Boolean).join("  ·  ")}
+        </p>
+      )}
+      {f.confirmation_note && (
+        <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", lineHeight: 1.5, fontStyle: "italic" }}>{f.confirmation_note}</p>
+      )}
+      {text && !f.carrier && (
+        <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "4px 0 0" }}>{text}</p>
+      )}
+    </div>
+  );
+}
+
+function HotelCard({ type, time, end_time, hotel: h, text }) {
+  if (!h) return null;
+  return (
+    <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+        <TimePill time={time} end_time={end_time} />
+        <Badge type={type || "Hotel"} />
+        <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1, minWidth: 0 }}>{h.name || text}</p>
+      </div>
+      {h.address && (
+        <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 4px" }}>{h.address}</p>
+      )}
+      {(h.check_in_time || h.check_out_time || h.room_type) && (
+        <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: "2px 0 4px" }}>
+          {[
+            h.check_in_time ? `Check-in ${formatTime(h.check_in_time)}` : "",
+            h.check_out_time ? `Check-out ${formatTime(h.check_out_time)}` : "",
+            h.room_type,
+          ].filter(Boolean).join("  ·  ")}
+        </p>
+      )}
+      {h.confirmation_note && (
+        <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", fontStyle: "italic" }}>{h.confirmation_note}</p>
+      )}
+    </div>
+  );
+}
+
 function DayBlock({ day, onOpenMenu }) {
+  // Sort items chronologically by `time`. Items without a time go last.
+  const sortedItems = [...(day.items || [])].sort((a, b) => timeKey(a?.time) - timeKey(b?.time));
   return (
     <div style={{ borderLeft: `2px solid ${GOLD}`, paddingLeft: "1rem", marginBottom: "1.5rem", borderRadius: 0 }}>
       <p style={{ fontSize: "13px", fontWeight: "600", color: "var(--color-text-primary)", margin: "0 0 10px", letterSpacing: "0.02em" }}>{day.label}</p>
-      {day.items.map((item, i) => {
-        // Dining items with a structured restaurant payload render as a rich card.
+      {sortedItems.map((item, i) => {
+        // Structured flight → rich card.
+        if (item.type === "Flight" && item.flight) {
+          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} />;
+        }
+        // Structured hotel → rich card.
+        if (item.type === "Hotel" && item.hotel) {
+          return <HotelCard key={i} type={item.type} time={item.time} end_time={item.end_time} hotel={item.hotel} text={item.text} />;
+        }
+        // Dining items with a structured restaurant payload render as a rich card with a time pill.
         if (item.restaurant && (item.type === "Dinner" || item.type === "Lunch" || item.type === "Breakfast" || item.type === "Brunch" || item.type === "Dining")) {
-          return <RestaurantCard key={i} type={item.type} restaurant={item.restaurant} onOpenMenu={onOpenMenu} />;
+          return (
+            <div key={i}>
+              {item.time && (
+                <div style={{ marginBottom: "4px" }}>
+                  <TimePill time={item.time} end_time={item.end_time} />
+                </div>
+              )}
+              <RestaurantCard type={item.type} restaurant={item.restaurant} onOpenMenu={onOpenMenu} />
+            </div>
+          );
         }
         return (
-          <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "7px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: "1.5" }}>
+          <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "7px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: "1.5", flexWrap: "wrap" }}>
+            <TimePill time={item.time} end_time={item.end_time} />
             <Badge type={item.type} />
-            <span style={{ color: "var(--color-text-secondary)" }}>{item.text}</span>
+            <span style={{ color: "var(--color-text-secondary)", flex: 1, minWidth: 0 }}>
+              {item.text}
+              {item.location && (
+                <span style={{ display: "block", fontSize: "11.5px", color: "var(--color-text-tertiary)", marginTop: "2px" }}>{item.location}</span>
+              )}
+            </span>
           </div>
         );
       })}
@@ -1254,14 +1373,53 @@ const RESTAURANT_SCHEMA = {
 // Backup is the same shape but allowed to be slimmer.
 const BACKUP_SCHEMA = { ...RESTAURANT_SCHEMA, description: "Same-tier fallback in the same neighborhood / cuisine family." };
 
+const FLIGHT_SCHEMA = {
+  type: "object",
+  description: "Structured flight details. Required for any item with type=Flight.",
+  properties: {
+    carrier: { type: "string", description: "Full airline name, e.g. 'United', 'Delta', 'JetBlue'." },
+    flight_number: { type: "string", description: "Specific flight number, e.g. 'UA 1234'. Use a realistic flight number that the carrier is known to operate on this route." },
+    from_airport: { type: "string", description: "Origin IATA code, e.g. 'EWR'." },
+    to_airport: { type: "string", description: "Destination IATA code, e.g. 'ABQ'." },
+    depart_time: { type: "string", description: "Local 24h time at origin, e.g. '08:45'." },
+    arrive_time: { type: "string", description: "Local 24h time at destination, e.g. '11:20'." },
+    duration: { type: "string", description: "e.g. '4h 35m'." },
+    nonstop: { type: "boolean" },
+    connection: { type: "string", description: "If not nonstop, the connecting airport code, e.g. 'DEN'." },
+    cabin: { type: "string", description: "e.g. 'Polaris Business', 'First', 'Economy Plus'." },
+    aircraft: { type: "string", description: "e.g. 'Boeing 737-900', 'Airbus A321neo'." },
+    confirmation_note: { type: "string", description: "Booking guidance, e.g. 'Book directly on united.com for Polaris lounge access'." },
+  },
+  required: ["carrier", "flight_number", "from_airport", "to_airport", "depart_time", "arrive_time", "nonstop"],
+};
+
+const HOTEL_ITEM_SCHEMA = {
+  type: "object",
+  description: "Structured hotel check-in/check-out details. Use for any Hotel-type item.",
+  properties: {
+    name: { type: "string" },
+    address: { type: "string" },
+    check_in_time: { type: "string", description: "e.g. '15:00'." },
+    check_out_time: { type: "string", description: "e.g. '11:00'." },
+    room_type: { type: "string" },
+    confirmation_note: { type: "string" },
+  },
+};
+
 const DAY_ITEM_SCHEMA = {
   type: "object",
   properties: {
+    time: { type: "string", description: "REQUIRED. Local 24h start time for this item, e.g. '08:30', '12:00', '19:30'. Must be present on EVERY item so the day reads chronologically." },
+    end_time: { type: "string", description: "Optional local 24h end time, e.g. '10:00'. Use for activities and meals with a known duration." },
     type: { type: "string", enum: ["Flight", "Hotel", "Activity", "Breakfast", "Brunch", "Lunch", "Dinner", "Transport", "Note"] },
-    text: { type: "string", description: "Short headline of the item." },
+    text: { type: "string", description: "Short headline of the item — what it is and where, no times (times go in the time field)." },
+    location: { type: "string", description: "Specific venue or address when applicable." },
+    duration: { type: "string", description: "Human-readable duration if useful, e.g. '2 hours', '90 min'." },
+    flight: FLIGHT_SCHEMA,
+    hotel: HOTEL_ITEM_SCHEMA,
     restaurant: { ...RESTAURANT_SCHEMA, properties: { ...RESTAURANT_SCHEMA.properties, backup: BACKUP_SCHEMA } },
   },
-  required: ["type", "text"],
+  required: ["time", "type", "text"],
 };
 
 const DAY_SCHEMA = {
@@ -1361,13 +1519,20 @@ export default function TripOptimizer() {
 TRIP REQUIREMENTS:
 • days[] must contain exactly ${totalDays} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). Compute the correct weekday for each day starting from the start date.
 • Each day's items[] needs at least 3 items — a typical full day is: morning Activity or Breakfast, midday Lunch, evening Dinner. Arrival/departure days also include Flight + Hotel.
+• EVERY item in items[] MUST have a "time" field (24h local time, e.g. '08:30', '14:00', '19:30'). Items should appear in chronological order within each day. This is what turns the day into a real time-based itinerary instead of a vague list.
+• Use realistic times: breakfast 07:30–09:00, lunch 12:00–13:30, dinner 19:00–20:30. Activities sized to their duration (museum 2h, hike 3–4h, gallery walk 90min). Add end_time when helpful.
+• For Activity items, fill "location" with a specific venue or address.
 
-FLIGHTS — PREFER NONSTOP:
+FLIGHTS — PREFER NONSTOP, ALWAYS STRUCTURED:
+• Every Flight item MUST include the full "flight" object: carrier, flight_number (realistic, e.g. 'UA 1234' — use a flight number the carrier is known to operate on this exact route), from_airport (IATA), to_airport (IATA), depart_time, arrive_time, duration, nonstop (boolean), cabin, aircraft, confirmation_note. Use REAL flight numbers from the carrier's published schedule whenever you can recall them; otherwise pick a plausible number in that carrier's range for that route.
 • Search for nonstop service from the home airport to the destination's primary airport first.
 • If no nonstop exists to the requested airport but one exists to a nearby airport in the same metro (e.g., ABQ ~60min from Santa Fe instead of SAF), RECOMMEND THE NONSTOP and add a flags[] note mentioning the drive time.
-• Only return a connecting itinerary if no nonstop exists to any reasonable nearby airport.
+• Only return a connecting itinerary if no nonstop exists to any reasonable nearby airport. Set nonstop=false and fill "connection" with the connecting airport IATA.
 • In each Flight item's text, explicitly state "nonstop" or "connecting via X".
 • If the user's preferred airline doesn't fly nonstop but a competitor does, mention the competitor nonstop in flags[].
+
+HOTEL ITEMS:
+• Use a Hotel-type item on arrival day (check-in) and departure day (check-out). Populate the "hotel" object with name, address, check_in_time, check_out_time, room_type, confirmation_note.
 
 RESTAURANTS:
 • Every Dinner/Lunch/Breakfast/Brunch item should include the full restaurant object: name, neighborhood, cuisine, price_range, why, closure_note, reservation, menu, backup.
