@@ -60,31 +60,39 @@ export async function onRequestPost(context) {
   );
   await env.JOBS.put(`job:${jobId}:text`, "", { expirationTtl: JOB_TTL_SECONDS });
 
-  // Streaming response back to the client. We write NDJSON events to this
-  // stream as Anthropic deltas arrive. The runtime keeps the function alive
-  // for as long as the client is reading this body.
+  // Streaming response back to the client. We use TransformStream so the
+  // Response is constructed and returned IMMEDIATELY with a readable body
+  // that we then write into asynchronously. The runtime keeps the function
+  // alive while the response body is still being written.
+  //
+  // Why not ReadableStream({ async start }):
+  //   Cloudflare's runtime can throw an unhandled exception (Worker error
+  //   1101) when `start` is async AND awaits I/O like KV writes or upstream
+  //   fetch before the first enqueue. The TransformStream pattern below
+  //   sidesteps that: writer.write() is called from a detached async IIFE
+  //   while the Response body is already being delivered to the client.
   const encoder = new TextEncoder();
-  const readable = new ReadableStream({
-    async start(controller) {
-      const writeEvent = (obj) => {
-        try { controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n")); } catch {}
-      };
-      // First event: jobId, so the client can record it for resume.
-      writeEvent({ type: "job", jobId });
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
 
-      try {
-        await runBuild({ env, jobId, body, startedAt, writeEvent });
-      } catch (err) {
-        writeEvent({ type: "error", error: String(err?.message || err) });
-      } finally {
-        try { controller.close(); } catch {}
-      }
-    },
-    cancel() {
-      // Client disconnected. KV mirroring inside runBuild keeps the build
-      // recoverable; we just stop trying to write to the closed stream.
-    },
-  });
+  const writeEvent = async (obj) => {
+    try { await writer.write(encoder.encode(JSON.stringify(obj) + "\n")); } catch {}
+  };
+
+  // Fire-and-forget the build. We don't await this — the Response below
+  // returns instantly with the streamed body. The function stays alive as
+  // long as the writer hasn't closed.
+  (async () => {
+    try {
+      // First event: jobId, so the client can record it for resume.
+      await writeEvent({ type: "job", jobId });
+      await runBuild({ env, jobId, body, startedAt, writeEvent });
+    } catch (err) {
+      await writeEvent({ type: "error", error: String(err?.message || err) });
+    } finally {
+      try { await writer.close(); } catch {}
+    }
+  })();
 
   return new Response(readable, {
     status: 200,
