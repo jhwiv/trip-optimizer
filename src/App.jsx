@@ -2503,7 +2503,7 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
   );
 }
 
-function ItineraryView({ data: rawData, inputs, onBack, onSaved, savedTripId, onPlanRevised, onReviewChange, initialReview }) {
+function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, savedTripId, onPlanRevised, onReviewChange, initialReview }) {
   const [menuRestaurant, setMenuRestaurant] = useState(null);
   // Apply the pass-three quality layer once before render. This dedupes
   // restaurants, fills verify microcopy, and computes a QC summary.
@@ -2619,6 +2619,13 @@ function ItineraryView({ data: rawData, inputs, onBack, onSaved, savedTripId, on
       )}
 
       <div className="no-print" style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "0.5rem" }}>
+        {onEditTrip && (
+          <button
+            onClick={onEditTrip}
+            style={{ background: "transparent", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", color: GOLD, fontWeight: 500 }}
+            title="Go back to the input form with this trip's details still filled in — tweak dates, cities, or anything else and rebuild."
+          >✎ Edit trip details</button>
+        )}
         <button
           onClick={onBack}
           style={{ background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", color: "var(--color-text-secondary)" }}
@@ -4552,10 +4559,14 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
       return;
     }
     // Probe the job first so we don't show a spinner for an expired/missing one.
+    // ONLY resume if the server says the build is still running. If status is
+    // 'done' or 'error' (e.g. previous timeout / partial completion), clear
+    // the key and stay on the home page — the user already navigated away
+    // and we shouldn't force them back into a stuck build screen.
     fetch(`/api/build/${encodeURIComponent(saved.jobId)}?cursor=0`)
       .then(r => r.ok ? r.json() : null)
       .then(data => {
-        if (!data || data.notFound || data?.status === "error") {
+        if (!data || data.notFound || data?.status !== "running") {
           try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
           return;
         }
@@ -4846,6 +4857,15 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
             data={result}
             inputs={{ basics, flights, hotel, transport, dining, restaurants, activities, interests, outputs }}
             onBack={() => { resetFormToBlank(); setCurrentSavedTripId(null); setReviewState(null); setStep(1); }}
+            onEditTrip={() => {
+              // Go back to the input form without wiping anything. The user's
+              // basics/flights/hotel/transport/dining/restaurants/activities/
+              // interests state is already populated (it's what built this
+              // plan), so they can tweak dates/cities/etc and rebuild.
+              setStep(1);
+              // Smooth scroll to top so they land on the "Where & when" card.
+              try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+            }}
             onSaved={(entry) => { setCurrentSavedTripId(entry?.id || null); refreshSavedTrips(); }}
             savedTripId={currentSavedTripId}
             onPlanRevised={handlePlanRevised}
