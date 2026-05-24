@@ -63,29 +63,28 @@ export async function onRequestPost(context) {
   // Streaming response back to the client. We write NDJSON events to this
   // stream as Anthropic deltas arrive. The runtime keeps the function alive
   // for as long as the client is reading this body.
-  const { readable, writable } = new TransformStream();
-  const writer = writable.getWriter();
   const encoder = new TextEncoder();
-  const writeEvent = async (obj) => {
-    try { await writer.write(encoder.encode(JSON.stringify(obj) + "\n")); } catch {}
-  };
+  const readable = new ReadableStream({
+    async start(controller) {
+      const writeEvent = (obj) => {
+        try { controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n")); } catch {}
+      };
+      // First event: jobId, so the client can record it for resume.
+      writeEvent({ type: "job", jobId });
 
-  // Send the jobId event up front so the client can record it (for resume on
-  // disconnect) before any deltas land.
-  await writeEvent({ type: "job", jobId });
-
-  // Kick off the actual build. We do NOT await it here — we await it at the
-  // very end (in ctx.waitUntil) so the function stays alive even if the writer
-  // already closed. But the primary lifeline is the connected client reading
-  // `readable`.
-  const buildPromise = runBuild({ env, jobId, body, startedAt, writeEvent })
-    .catch(async (err) => { try { await writeEvent({ type: "error", error: String(err?.message || err) }); } catch {} })
-    .finally(async () => { try { await writer.close(); } catch {} });
-
-  // waitUntil here just guards the tail of the build if the client disconnects
-  // — KV writes will still complete (up to ~30s after disconnect, which is
-  // enough to flush the in-flight accumulator and set final status).
-  context.waitUntil(buildPromise);
+      try {
+        await runBuild({ env, jobId, body, startedAt, writeEvent });
+      } catch (err) {
+        writeEvent({ type: "error", error: String(err?.message || err) });
+      } finally {
+        try { controller.close(); } catch {}
+      }
+    },
+    cancel() {
+      // Client disconnected. KV mirroring inside runBuild keeps the build
+      // recoverable; we just stop trying to write to the closed stream.
+    },
+  });
 
   return new Response(readable, {
     status: 200,
@@ -150,7 +149,7 @@ async function runBuild({ env, jobId, body, startedAt, writeEvent }) {
     });
   } catch (err) {
     await flushKV(true, { error: `Upstream fetch failed: ${err?.message || err}` });
-    await writeEvent({ type: "error", error: `Upstream fetch failed: ${err?.message || err}` });
+    writeEvent({ type: "error", error: `Upstream fetch failed: ${err?.message || err}` });
     return;
   }
 
@@ -158,7 +157,7 @@ async function runBuild({ env, jobId, body, startedAt, writeEvent }) {
     const text = await anthropicRes.text().catch(() => "");
     const msg = `Anthropic ${anthropicRes.status}: ${text.slice(0, 500)}`;
     await flushKV(true, { error: msg });
-    await writeEvent({ type: "error", error: msg });
+    writeEvent({ type: "error", error: msg });
     return;
   }
 
@@ -202,7 +201,7 @@ async function runBuild({ env, jobId, body, startedAt, writeEvent }) {
       // Push any new bytes from this read to the client immediately. This is
       // the low-latency path — KV is a secondary mirror.
       if (pendingDelta) {
-        await writeEvent({ type: "delta", text: pendingDelta });
+        writeEvent({ type: "delta", text: pendingDelta });
       }
 
       const now = Date.now();
@@ -214,11 +213,11 @@ async function runBuild({ env, jobId, body, startedAt, writeEvent }) {
       }
     }
     await flushKV(true);
-    await writeEvent({ type: "done", len: accumulated.length });
+    writeEvent({ type: "done", len: accumulated.length });
   } catch (err) {
     const msg = `Stream read failed: ${err?.message || err}`;
     await flushKV(true, { error: msg });
-    await writeEvent({ type: "error", error: msg });
+    writeEvent({ type: "error", error: msg });
   }
 }
 
