@@ -2049,7 +2049,461 @@ function DayNav({ days }) {
   );
 }
 
-function ItineraryView({ data: rawData, inputs, onBack, onSaved }) {
+// ============================================================================
+// ReviewPanel — the post-build Professional Review surface.
+// ----------------------------------------------------------------------------
+// Lives at the top of ItineraryView. Three states:
+//   (1) idle    — show the banner card with reviewer picker + 'Run review'
+//   (2) running — show the progress bar (~45s target for review, ~2min for re-plan)
+//   (3) done    — show the verdict + findings cards, each with per-finding Apply
+//                 toggle, then a single bottom Apply button.
+//
+// All result/state writes go up through onPlanRevised / onReviewChange so the
+// parent (TripOptimizer) can persist them into saved trips.
+// ============================================================================
+function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview }) {
+  // --- review state ------------------------------------------------------
+  // 'idle' — banner card with picker
+  // 'running' — review in flight
+  // 'done' — review back, findings visible
+  // 'applying' — revision in flight
+  // 'applied' — revision back, brief success state before fading back to done
+  const [status, setStatus] = useState(initialReview ? "done" : "idle");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => {
+    if (initialReview?.sources) return initialReview.sources;
+    return REVIEWER_SOURCES.filter(s => s.dflt).map(s => s.id);
+  });
+  const [review, setReview] = useState(initialReview?.review || null);
+  const [applyState, setApplyState] = useState({}); // findingId -> bool
+  const [appliedIds, setAppliedIds] = useState(() => initialReview?.applied_ids || []);
+  const [error, setError] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [progressLabel, setProgressLabel] = useState("");
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const abortRef = useRef(null);
+
+  // Initialize per-finding Apply toggles from default_apply when review arrives.
+  useEffect(() => {
+    if (review && Array.isArray(review.findings)) {
+      setApplyState(prev => {
+        // Preserve any explicit user choices; default the rest from default_apply.
+        const next = { ...prev };
+        for (const f of review.findings) {
+          if (!(f.id in next)) next[f.id] = !!f.default_apply;
+        }
+        return next;
+      });
+    }
+  }, [review]);
+
+  const selectedSources = REVIEWER_SOURCES.filter(s => selectedIds.includes(s.id));
+  const findings = Array.isArray(review?.findings) ? review.findings : [];
+  const selectedForApply = findings.filter(f => applyState[f.id]);
+  const revisionMode = routeRevisionMode(selectedForApply);
+  const criticalCount = findings.filter(f => f.severity === "critical").length;
+  const suggestedCount = findings.filter(f => f.severity === "suggested").length;
+  const niceCount = findings.filter(f => f.severity === "nice").length;
+
+  // ----- handlers --------------------------------------------------------
+  const handleRunReview = async () => {
+    if (selectedSources.length === 0) { setError("Pick at least one source."); return; }
+    setStatus("running");
+    setError("");
+    setProgress(0);
+    setProgressLabel("Starting review…");
+    setElapsedSec(0);
+    const startedAt = Date.now();
+    const targetSec = 45;
+    let lastTokFrac = 0;
+
+    const elapsedTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - startedAt) / 1000);
+      setElapsedSec(sec);
+      const timeFrac = Math.min(0.95, sec / targetSec);
+      setProgress(prev => Math.max(prev, Math.max(lastTokFrac, timeFrac)));
+    }, 250);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const hardTimeout = setTimeout(() => controller.abort(), 300000);
+
+    try {
+      const body = {
+        model: "claude-sonnet-4-5",
+        max_tokens: 8000,
+        system: buildReviewSystemPrompt(plan, selectedSources, inputs),
+        messages: [{ role: "user", content: buildReviewUserPrompt() }],
+        tools: [REVIEW_TOOL],
+        tool_choice: { type: "tool", name: "submit_review" },
+      };
+      const jobId = await startBuildJob(body);
+      let toolJson = "";
+      await pollBuildJob({
+        jobId,
+        signal: controller.signal,
+        onDelta: (delta) => {
+          toolJson += delta;
+          const estTokens = toolJson.length / 3.5;
+          const tokFrac = Math.min(0.95, estTokens / 1800);
+          lastTokFrac = tokFrac;
+          setProgress(prev => Math.max(prev, tokFrac));
+          const fMatches = toolJson.match(/"summary"\s*:\s*"/g) || [];
+          if (toolJson.length < 200) setProgressLabel("Reading the plan…");
+          else if (fMatches.length === 0) setProgressLabel("Forming verdict…");
+          else setProgressLabel(`Drafting findings (${fMatches.length})`);
+        },
+      });
+      setProgress(1);
+      setProgressLabel("Finalizing…");
+      const { parsed } = parseToolJson(toolJson);
+      if (!parsed || !Array.isArray(parsed.findings)) throw new Error("Review returned no findings.");
+      setReview(parsed);
+      // Reset per-finding toggles to defaults on a fresh review.
+      const fresh = {};
+      parsed.findings.forEach(f => { fresh[f.id] = !!f.default_apply; });
+      setApplyState(fresh);
+      setAppliedIds([]);
+      setStatus("done");
+      if (typeof onReviewChange === "function") {
+        onReviewChange({
+          sources: selectedIds,
+          review: parsed,
+          applied_ids: [],
+          generatedAt: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        setError("Review cancelled.");
+      } else {
+        setError(err?.message || "Review failed.");
+      }
+      setStatus("idle");
+    } finally {
+      clearInterval(elapsedTimer);
+      clearTimeout(hardTimeout);
+      abortRef.current = null;
+      setProgress(0);
+      setProgressLabel("");
+      setElapsedSec(0);
+    }
+  };
+
+  const handleCancelReview = () => {
+    if (abortRef.current) { try { abortRef.current.abort(); } catch {} }
+  };
+
+  const handleApply = async () => {
+    if (selectedForApply.length === 0) { setError("Pick at least one change to apply."); return; }
+    setStatus("applying");
+    setError("");
+    setProgress(0);
+    setProgressLabel(revisionMode === "surgical" ? "Applying patches…" : "Re-planning the trip…");
+    setElapsedSec(0);
+    const startedAt = Date.now();
+    const targetSec = revisionMode === "surgical" ? 35 : 160;
+    let lastTokFrac = 0;
+
+    const elapsedTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - startedAt) / 1000);
+      setElapsedSec(sec);
+      const timeFrac = Math.min(0.95, sec / targetSec);
+      setProgress(prev => Math.max(prev, Math.max(lastTokFrac, timeFrac)));
+    }, 250);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const hardTimeout = setTimeout(() => controller.abort(), 300000);
+
+    try {
+      const body = revisionMode === "surgical"
+        ? {
+            model: "claude-sonnet-4-5",
+            max_tokens: 8000,
+            system: buildRevisionSystemPromptSurgical(plan, selectedForApply, inputs),
+            messages: [{ role: "user", content: buildRevisionUserPromptSurgical() }],
+            tools: [REVISION_TOOL_SURGICAL],
+            tool_choice: { type: "tool", name: "submit_revision_patches" },
+          }
+        : {
+            model: "claude-sonnet-4-5",
+            max_tokens: 32000,
+            system: buildRevisionSystemPromptFull(plan, selectedForApply, inputs),
+            messages: [{ role: "user", content: buildRevisionUserPromptFull() }],
+            tools: [REVISION_TOOL_FULL],
+            tool_choice: { type: "tool", name: "submit_trip_plan" },
+          };
+      const jobId = await startBuildJob(body);
+      let toolJson = "";
+      await pollBuildJob({
+        jobId,
+        signal: controller.signal,
+        onDelta: (delta) => {
+          toolJson += delta;
+          const estTokens = toolJson.length / 3.5;
+          const tokFrac = Math.min(0.95, estTokens / (revisionMode === "surgical" ? 1500 : 7000));
+          lastTokFrac = tokFrac;
+          setProgress(prev => Math.max(prev, tokFrac));
+          if (revisionMode === "surgical") {
+            const pm = toolJson.match(/"op"\s*:/g) || [];
+            setProgressLabel(pm.length ? `Applying patch ${pm.length}…` : "Reading plan…");
+          } else {
+            const dm = toolJson.match(/"label"\s*:\s*"/g) || [];
+            setProgressLabel(dm.length ? `Day ${dm.length} of plan…` : "Re-planning…");
+          }
+        },
+      });
+      setProgress(1);
+      setProgressLabel("Finalizing…");
+      const { parsed } = parseToolJson(toolJson);
+      let newPlan;
+      if (revisionMode === "surgical") {
+        if (!parsed || !Array.isArray(parsed.patches)) throw new Error("Revision returned no patches.");
+        newPlan = applyPatchesToPlan(plan, parsed.patches);
+      } else {
+        if (!parsed || !Array.isArray(parsed.days) || parsed.days.length === 0) throw new Error("Revision returned no plan.");
+        newPlan = parsed;
+      }
+      const newAppliedIds = Array.from(new Set([...appliedIds, ...selectedForApply.map(f => f.id)]));
+      setAppliedIds(newAppliedIds);
+      // Clear the apply toggles for findings we just applied so the same
+      // ones don't sit checked indefinitely.
+      setApplyState(prev => {
+        const next = { ...prev };
+        for (const f of selectedForApply) next[f.id] = false;
+        return next;
+      });
+      setStatus("applied");
+      setTimeout(() => setStatus("done"), 2500);
+      if (typeof onPlanRevised === "function") {
+        onPlanRevised(newPlan);
+      }
+      if (typeof onReviewChange === "function") {
+        onReviewChange({
+          sources: selectedIds,
+          review,
+          applied_ids: newAppliedIds,
+          generatedAt: new Date().toISOString(),
+          last_mode: revisionMode,
+        });
+      }
+    } catch (err) {
+      if (err?.name === "AbortError") setError("Apply cancelled.");
+      else setError(err?.message || "Apply failed.");
+      setStatus("done");
+    } finally {
+      clearInterval(elapsedTimer);
+      clearTimeout(hardTimeout);
+      abortRef.current = null;
+      setProgress(0);
+      setProgressLabel("");
+      setElapsedSec(0);
+    }
+  };
+
+  const togglePickerSource = (id) => {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+  const toggleFindingApply = (fid) => {
+    setApplyState(prev => ({ ...prev, [fid]: !prev[fid] }));
+  };
+
+  // ----- shared styles ---------------------------------------------------
+  const cardStyleLocal = { border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "14px 16px", marginBottom: "1.25rem", background: "var(--color-background-primary)" };
+  const sectionLabel = { fontSize: "10.5px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" };
+
+  // ----- render ----------------------------------------------------------
+  return (
+    <div className="no-print">
+      {/* PICKER MODAL */}
+      {pickerOpen && (
+        <ReviewPickerModal
+          selectedIds={selectedIds}
+          onToggle={togglePickerSource}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
+
+      {/* IDLE — banner with picker + Run */}
+      {status === "idle" && (
+        <div style={cardStyleLocal}>
+          <p style={sectionLabel}>Professional review</p>
+          <p style={{ fontSize: "14px", color: "var(--color-text-primary)", margin: "0 0 4px", fontFamily: "var(--font-serif)", fontStyle: "italic" }}>
+            Have your plan reviewed by a panel of luxury-travel experts.
+          </p>
+          <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 12px", lineHeight: 1.55 }}>
+            They&rsquo;ll flag what to fix, what to upgrade, and what to skip. You pick which changes to apply.
+          </p>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
+            {selectedSources.map(s => (
+              <span key={s.id} style={{ fontSize: "10.5px", color: "#0F0F0F", background: GOLD, padding: "3px 9px", borderRadius: "999px", letterSpacing: "0.02em", fontWeight: 600, whiteSpace: "nowrap" }}>{s.name}</span>
+            ))}
+            <button onClick={() => setPickerOpen(true)} style={{ fontSize: "10.5px", color: GOLD, background: "transparent", border: `0.5px dashed ${GOLD}`, padding: "3px 9px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", fontWeight: 600 }}>+ Change sources</button>
+          </div>
+          <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "0 0 12px", fontStyle: "italic" }}>
+            Why these? They cover taste (CN Traveler), food (Michelin), pacing (NYT 36 Hours), and ground-truth (Reddit + locals). Add more for hotel-specific or scene-specific feedback.
+          </p>
+          <button onClick={handleRunReview} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}>
+            Run review (~45 sec)
+          </button>
+          {error && <p style={{ fontSize: "11.5px", color: "#c0392b", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
+        </div>
+      )}
+
+      {/* RUNNING (review) or APPLYING (revision) */}
+      {(status === "running" || status === "applying") && (
+        <div style={cardStyleLocal}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "8px", gap: "10px" }}>
+            <p style={{ ...sectionLabel, margin: 0 }}>{status === "running" ? "Review in progress" : revisionMode === "surgical" ? "Applying quick edits" : "Re-planning trip"}</p>
+            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums" }}>
+              {progress > 0 ? `${Math.round(progress * 100)}%` : ""}{elapsedSec > 0 ? `  ·  ${Math.floor(elapsedSec/60)}:${String(elapsedSec%60).padStart(2,'0')}` : ""}
+            </p>
+          </div>
+          <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 8px" }}>{progressLabel || "Working…"}</p>
+          <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
+            {progress > 0 ? (
+              <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: GOLD, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
+            ) : (
+              <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
+            )}
+          </div>
+          <button onClick={handleCancelReview} style={{ marginTop: "10px", width: "100%", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "9px 16px", fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "transparent", color: "var(--color-text-primary)" }}>
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* DONE — verdict + findings */}
+      {(status === "done" || status === "applied") && review && (
+        <div style={cardStyleLocal}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: "8px", marginBottom: "8px" }}>
+            <p style={{ ...sectionLabel, margin: 0 }}>Review by {selectedSources.length} source{selectedSources.length !== 1 ? "s" : ""}</p>
+            <button onClick={() => { setStatus("idle"); setReview(null); }} style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
+              Re-run review
+            </button>
+          </div>
+          <p style={{ fontSize: "15px", color: "var(--color-text-primary)", margin: "0 0 10px", lineHeight: 1.5, fontFamily: "var(--font-serif)", fontStyle: "italic" }}>{review.verdict}</p>
+          {findings.length > 0 && (
+            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 12px" }}>
+              {criticalCount > 0 && <span style={{ color: "#c0392b", fontWeight: 600 }}>{criticalCount} critical</span>}
+              {criticalCount > 0 && (suggestedCount + niceCount) > 0 && <span>  ·  </span>}
+              {suggestedCount > 0 && <span>{suggestedCount} suggested</span>}
+              {suggestedCount > 0 && niceCount > 0 && <span>  ·  </span>}
+              {niceCount > 0 && <span style={{ color: "var(--color-text-tertiary)" }}>{niceCount} nice</span>}
+            </p>
+          )}
+          {findings.length === 0 && (
+            <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 4px", fontStyle: "italic" }}>
+              No notes — the panel signed off as-is.
+            </p>
+          )}
+          {findings.map(f => (
+            <FindingCard
+              key={f.id}
+              finding={f}
+              checked={!!applyState[f.id]}
+              alreadyApplied={appliedIds.includes(f.id)}
+              onToggle={() => toggleFindingApply(f.id)}
+            />
+          ))}
+
+          {/* Bottom Apply button — only when something is checked */}
+          {selectedForApply.length > 0 && (
+            <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+              <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 8px" }}>
+                {selectedForApply.length} change{selectedForApply.length === 1 ? "" : "s"} selected ·&nbsp;
+                <span style={{ color: GOLD, fontWeight: 600 }}>
+                  {revisionMode === "surgical" ? "Quick edit — ~30 sec" : "Full re-plan — ~2 min"}
+                </span>
+              </p>
+              <button onClick={handleApply} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}>
+                {revisionMode === "surgical" ? "Apply quick edits" : "Apply — full re-plan"}
+              </button>
+            </div>
+          )}
+          {status === "applied" && (
+            <p style={{ marginTop: "10px", fontSize: "12px", color: GOLD, textAlign: "center", fontWeight: 600 }}>✓ Changes applied to your plan.</p>
+          )}
+          {error && <p style={{ fontSize: "11.5px", color: "#c0392b", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Picker modal — bottom-sheet style on mobile. Multi-select gold chips,
+// grouped by lens. Tap a chip to toggle. Tap Done to close.
+function ReviewPickerModal({ selectedIds, onToggle, onClose }) {
+  const lensOrder = ["editorial", "hotels", "restaurants", "local"];
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,15,15,0.6)", zIndex: 1000, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: "640px", maxHeight: "85vh", overflowY: "auto", background: "var(--color-background-primary, #fff)", borderTopLeftRadius: "16px", borderTopRightRadius: "16px", padding: "1.25rem 1.25rem 1.5rem", boxShadow: "0 -10px 40px rgba(0,0,0,0.25)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "1rem" }}>
+          <p style={{ fontSize: "15px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: 0, color: "var(--color-text-primary)" }}>Reviewer panel</p>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: GOLD, fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}>Done</button>
+        </div>
+        {lensOrder.map(lensId => {
+          const lens = REVIEWER_LENSES.find(l => l.id === lensId);
+          const sources = REVIEWER_SOURCES.filter(s => s.lens === lensId);
+          return (
+            <div key={lensId} style={{ marginBottom: "1.1rem" }}>
+              <p style={{ fontSize: "10.5px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 3px" }}>{lens.label}</p>
+              <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 8px", fontStyle: "italic", lineHeight: 1.5 }}>{lens.why}</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                {sources.map(s => {
+                  const on = selectedIds.includes(s.id);
+                  return (
+                    <button key={s.id} onClick={() => onToggle(s.id)} style={{ fontSize: "11.5px", color: on ? "#0F0F0F" : GOLD, background: on ? GOLD : "transparent", border: `0.5px solid ${GOLD}`, padding: "6px 12px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", fontWeight: on ? 600 : 500, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>
+                      {on ? "✓ " : ""}{s.name}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "4px" }}>
+                {sources.map(s => (
+                  <p key={s.id + "_blurb"} style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: 0, fontStyle: "italic" }}>
+                    <span style={{ color: "var(--color-text-secondary)" }}>{s.name}</span> — {s.blurb}
+                  </p>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Findings card — severity dot, target chip, source chip, summary, action, apply toggle.
+function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
+  const sev = finding.severity || "suggested";
+  const sevColor = sev === "critical" ? "#c0392b" : sev === "suggested" ? GOLD : "#7a7a7a";
+  const sevLabel = sev === "critical" ? "Critical" : sev === "suggested" ? "Suggested" : "Nice";
+  return (
+    <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", padding: "12px 0 4px", opacity: alreadyApplied ? 0.55 : 1 }}>
+      <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+        <span style={{ flex: "0 0 auto", marginTop: "5px", width: "8px", height: "8px", borderRadius: "50%", background: sevColor }} aria-hidden="true" />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "4px", alignItems: "baseline" }}>
+            <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: sevColor, padding: "2px 6px", border: `0.5px solid ${sevColor}`, borderRadius: "3px" }}>{sevLabel}</span>
+            {finding.target && <span style={{ fontSize: "10.5px", color: "var(--color-text-primary)", background: "var(--color-background-secondary, #fafafa)", padding: "2px 7px", borderRadius: "3px", border: "0.5px solid var(--color-border-tertiary)" }}>{formatFindingTarget(finding.target)}</span>}
+            {finding.source && <span style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", fontStyle: "italic" }}>via {finding.source}</span>}
+          </div>
+          <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.5 }}>{finding.summary}</p>
+          {finding.action && <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.5 }}><span style={{ color: GOLD, fontWeight: 600, marginRight: "4px" }}>→</span>{finding.action}</p>}
+          <label style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "8px", fontSize: "11px", color: "var(--color-text-secondary)", cursor: alreadyApplied ? "default" : "pointer", fontFamily: "inherit" }}>
+            <input type="checkbox" checked={checked} onChange={onToggle} disabled={alreadyApplied} style={{ accentColor: GOLD, margin: 0, cursor: alreadyApplied ? "default" : "pointer" }} />
+            <span>{alreadyApplied ? "Already applied" : "Apply this change"}</span>
+          </label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ItineraryView({ data: rawData, inputs, onBack, onSaved, savedTripId, onPlanRevised, onReviewChange, initialReview }) {
   const [menuRestaurant, setMenuRestaurant] = useState(null);
   // Apply the pass-three quality layer once before render. This dedupes
   // restaurants, fills verify microcopy, and computes a QC summary.
@@ -2066,6 +2520,15 @@ function ItineraryView({ data: rawData, inputs, onBack, onSaved }) {
       <MenuModal restaurant={menuRestaurant} onClose={() => setMenuRestaurant(null)} />
       <TripHero data={data} />
       <QualityBadge qc={qc} />
+
+      {/* Professional review surface — user-initiated, sits between hero and the day-by-day content. */}
+      <ReviewPanel
+        plan={rawData}
+        inputs={inputs}
+        onPlanRevised={onPlanRevised}
+        onReviewChange={onReviewChange}
+        initialReview={initialReview}
+      />
 
       {/* Pre-day high-signal block: do this tonight first, weather/pack second */}
       {sortedTonight.length > 0 && (
@@ -2458,6 +2921,87 @@ function salvageTruncatedJSON(str) {
     head += open === "{" ? "}" : "]";
   }
   return head;
+}
+
+// Module-level poller for /api/build/<jobId>. Used by both the main plan-build
+// flow and the professional-review / revision flows. Polls GET with cursor,
+// appends server-side deltas to a running buffer via onDelta, resolves with
+// the final accumulated length when status flips to 'done'. Throws on error
+// or notFound. The signal cancels polling without killing the server-side
+// job (build keeps running for the next reconnect).
+async function pollBuildJob({ jobId, signal, onDelta, pollMs = 1500 }) {
+  let cursor = 0;
+  while (true) {
+    if (signal?.aborted) {
+      const err = new Error("Aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+    let resp;
+    try {
+      resp = await fetch(`/api/build/${encodeURIComponent(jobId)}?cursor=${cursor}`, {
+        signal,
+        headers: { "Cache-Control": "no-cache" },
+      });
+    } catch (netErr) {
+      if (netErr?.name === "AbortError") throw netErr;
+      await new Promise(r => setTimeout(r, pollMs));
+      continue;
+    }
+    if (resp.status === 404) {
+      const err = new Error("Job not found or expired.");
+      err.notFound = true;
+      throw err;
+    }
+    if (!resp.ok) {
+      await new Promise(r => setTimeout(r, pollMs));
+      continue;
+    }
+    const data = await resp.json();
+    if (data?.error?.message) throw new Error(data.error.message);
+    if (data.delta) {
+      cursor = data.cursor;
+      if (typeof onDelta === "function") onDelta(data.delta, cursor);
+    }
+    if (data.status === "done") return { len: data.cursor };
+    if (data.status === "error") throw new Error(data.error || "Build failed on server.");
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+}
+
+// Start a /api/build job with an arbitrary Anthropic body (model/system/messages/tools).
+// Returns the jobId. Throws on HTTP error.
+async function startBuildJob(body) {
+  const r = await fetch("/api/build", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const txt = await r.text();
+    let msg = `Could not start job (HTTP ${r.status}).`;
+    try { const j = JSON.parse(txt); msg = j?.error?.message || msg; } catch { if (txt) msg = txt.slice(0, 240); }
+    throw new Error(msg);
+  }
+  const out = await r.json();
+  if (!out?.jobId) throw new Error("Server did not return a jobId.");
+  return out.jobId;
+}
+
+// Parse a tool-input JSON buffer with salvage fallback. Returns { parsed, truncated }.
+function parseToolJson(toolJson) {
+  if (!toolJson) throw new Error("Empty response.");
+  try {
+    return { parsed: JSON.parse(toolJson), truncated: false };
+  } catch (parseErr) {
+    const salvaged = salvageTruncatedJSON(toolJson);
+    if (!salvaged) throw new Error("The response was cut off before it finished.", { cause: parseErr });
+    try {
+      return { parsed: JSON.parse(salvaged), truncated: true };
+    } catch (salvageErr) {
+      throw new Error("The response was cut off before it finished.", { cause: salvageErr });
+    }
+  }
 }
 
 // Look up an airport record by IATA code, city, or name fragment.
@@ -2934,6 +3478,349 @@ const TRIP_PLAN_TOOL = {
   },
 };
 
+// ============================================================================
+// PROFESSIONAL REVIEW SYSTEM
+// ----------------------------------------------------------------------------
+// After a plan is generated, the user can request a professional review from
+// a curated set of editorial / hotel / restaurant / local-voice sources. The
+// reviewer produces a structured set of findings (no free-form prose) which
+// the user can selectively apply. Surgical-mode card swaps re-run the same
+// /api/build pipeline with REVISION_TOOL in patches mode; broader changes
+// (pacing, neighborhood, day restructure) trigger a full re-plan with the
+// reviewer's findings injected into the system prompt.
+// ============================================================================
+
+// 12 reviewer sources organized into 4 lens groups. Default = the 4 marked
+// `dflt: true` (Condé Nast, Michelin Guide, NYT 36 Hours, Reddit + locals)
+// which together cover editorial / restaurants / itinerary pacing / local truth.
+const REVIEWER_SOURCES = [
+  // Editorial lens — overall trip shape, taste level, neighborhood selection.
+  { id: "cnt",        name: "Condé Nast Traveler",           lens: "editorial",   dflt: true,  blurb: "Hot Lists, Reader's Choice" },
+  { id: "tl",         name: "Travel + Leisure",              lens: "editorial",   dflt: false, blurb: "World's Best, A-List advisors" },
+  { id: "departures", name: "Departures",                    lens: "editorial",   dflt: false, blurb: "Amex Platinum — high-end taste" },
+  // Hotels lens — property quality, service, room hierarchy.
+  { id: "forbes",     name: "Forbes Travel Guide",           lens: "hotels",      dflt: false, blurb: "5-star service standards" },
+  { id: "michelinK",  name: "Michelin Keys",                 lens: "hotels",      dflt: false, blurb: "New 1–3 Key hotel rating" },
+  { id: "lqa",        name: "LQA / Leading Hotels",          lens: "hotels",      dflt: false, blurb: "Mystery-shop service audits" },
+  // Restaurants lens — culinary quality, reservation logic, scene fit.
+  { id: "michelinG",  name: "Michelin Guide",                lens: "restaurants", dflt: true,  blurb: "Stars, Bib Gourmand, Plates" },
+  { id: "w50b",       name: "World's 50 Best",               lens: "restaurants", dflt: false, blurb: "Global voting body" },
+  { id: "eater",      name: "Eater",                         lens: "restaurants", dflt: false, blurb: "City-level Heatmaps & Essential 38" },
+  // Local voice lens — pacing, walkability, when-to-go, what locals actually do.
+  { id: "nyt36",      name: "NYT 36 Hours",                  lens: "local",       dflt: true,  blurb: "Tight, pacing-aware day plans" },
+  { id: "ftHTSI",     name: "FT How to Spend It",            lens: "local",       dflt: false, blurb: "Bloomberg Pursuits–style insider picks" },
+  { id: "reddit",     name: "Reddit + locals",               lens: "local",       dflt: true,  blurb: "r/travel, r/[city] real talk" },
+];
+
+const REVIEWER_LENSES = [
+  { id: "editorial",   label: "Editorial",       why: "Overall trip taste, shape, and neighborhood logic — do the days hold together as a coherent stay." },
+  { id: "hotels",      label: "Hotels",          why: "Property tier, service, and room hierarchy — is this the right hotel for the trip's price and purpose." },
+  { id: "restaurants", label: "Restaurants",     why: "Culinary quality, reservation feasibility, scene fit — would a serious diner make these picks." },
+  { id: "local",       label: "Local voice",     why: "Pacing, walkability, what locals actually do — does the plan move like a local would, or a tourist." },
+];
+
+// findings[].mode_hint controls the surgical-vs-full router. Card-targeted
+// hints can be applied as a JSON patch; structural hints require a re-plan.
+const CARD_TARGETED_HINTS = new Set([
+  "swap_restaurant",
+  "swap_hotel",
+  "swap_planb",
+  "swap_activity",
+  "adjust_logistics",
+  "add_flag",
+  "add_tonight",
+]);
+const STRUCTURAL_HINTS = new Set([
+  "adjust_pacing",
+  "change_neighborhood",
+  "restructure_day",
+  "rebalance_legs",
+  "change_hotel_brand_tier",
+]);
+
+// Format a finding.target ({day, time, item} | string) into a short chip label.
+function formatFindingTarget(t) {
+  if (!t) return "";
+  if (typeof t === "string") return t;
+  if (typeof t !== "object") return String(t);
+  const parts = [];
+  if (t.day != null) parts.push(`Day ${t.day}`);
+  if (t.time) parts.push(String(t.time));
+  if (t.label) parts.push(String(t.label));
+  if (t.item) parts.push(String(t.item));
+  if (t.section) parts.push(String(t.section));
+  if (parts.length === 0) {
+    try { return JSON.stringify(t); } catch { return ""; }
+  }
+  return parts.join(" · ");
+}
+
+// Decide which revision path to use given the set of findings the user marked
+// for Apply. Returns 'surgical' if every selected finding has a card-targeted
+// mode_hint AND there are at most 3 findings. Returns 'full' otherwise.
+function routeRevisionMode(selectedFindings) {
+  if (!Array.isArray(selectedFindings) || selectedFindings.length === 0) return null;
+  if (selectedFindings.length > 3) return "full";
+  for (const f of selectedFindings) {
+    if (!f?.mode_hint || !CARD_TARGETED_HINTS.has(f.mode_hint)) return "full";
+  }
+  return "surgical";
+}
+
+const REVIEW_TOOL = {
+  name: "submit_review",
+  description: "Submit a structured professional review of an existing trip plan. NO free-form prose — only call this tool with a verdict + findings[] array. Each finding is a single, actionable observation a luxury concierge would flag. Critical findings = real problems that hurt the trip. Suggested = clear upgrades. Nice-to-have = polish.",
+  input_schema: {
+    type: "object",
+    properties: {
+      verdict: {
+        type: "string",
+        description: "One-line overall verdict in the format 'A | B+ | B | C+ | C — short rationale (≤14 words)'. Examples: 'B+ — strong hotels, but Day 2 pacing is too aggressive', 'A — tight, well-balanced, no notes'.",
+      },
+      findings: {
+        type: "array",
+        description: "Each finding is ONE actionable observation. Order by severity (critical first), then by day order. AT LEAST 1 finding unless verdict is A with no notes. Cap at 8 findings — pick the highest-impact issues only.",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Stable id: 'f1', 'f2', 'f3', etc. — used to track Apply selections." },
+            severity: { type: "string", enum: ["critical", "suggested", "nice"], description: "critical = real problem that hurts the trip (e.g. closed restaurant, impossible drive time, hotel mismatch). suggested = clear upgrade (better-fitting hotel, more interesting restaurant). nice = polish (timing tweak, micro-substitution)." },
+            lens: { type: "string", enum: ["editorial", "hotels", "restaurants", "local"], description: "Which lens flagged this. Must match the lens of the source(s) supporting it." },
+            source: { type: "string", description: "Which reviewer source(s) flag this, comma-separated. Use the source names exactly: 'Condé Nast Traveler', 'Michelin Guide', 'NYT 36 Hours', 'Reddit + locals', etc." },
+            target: { type: "string", description: "What this finding is ABOUT, in the user's language. Format: 'Day N · context' or 'Hotel' or 'Pacing' or 'Plan B'. Examples: 'Day 2 · lunch', 'Day 3 · hotel', 'Pacing — Days 4–5', 'Plan B'." },
+            summary: { type: "string", description: "One sentence (≤22 words) stating the issue. Plain, specific, no hedging. Example: 'Dinner at Geranium on Day 3 needs a 2–3 month reservation; the plan assumes walk-in.'" },
+            action: { type: "string", description: "One sentence (≤22 words) stating the concrete change to make. Example: 'Swap to Alchemist (similar tier, easier reservation) or move Geranium to Day 1 and book now.'" },
+            mode_hint: { type: "string", enum: ["swap_restaurant", "swap_hotel", "swap_planb", "swap_activity", "adjust_logistics", "add_flag", "add_tonight", "adjust_pacing", "change_neighborhood", "restructure_day", "rebalance_legs", "change_hotel_brand_tier"], description: "Categorizes the kind of change. Swap_* hints can be applied as a card-level patch. Structural hints (adjust_pacing, change_neighborhood, restructure_day, rebalance_legs, change_hotel_brand_tier) require a full re-plan." },
+            default_apply: { type: "boolean", description: "Whether the Apply toggle should default ON. Set true for critical findings, false for nice findings; for suggested findings use your judgment based on impact." },
+          },
+          required: ["id", "severity", "lens", "source", "target", "summary", "action", "mode_hint", "default_apply"],
+        },
+        maxItems: 8,
+      },
+    },
+    required: ["verdict", "findings"],
+  },
+};
+
+const REVISION_TOOL_SURGICAL = {
+  name: "submit_revision_patches",
+  description: "Apply a small set of surgical patches to an existing trip plan. Each patch describes ONE replacement: a new item to put in place of an existing item identified by day index + item index. The client merges these patches into the plan locally. Use this ONLY when the changes are card-level swaps (restaurant, hotel, plan B, activity). Do NOT use for pacing or neighborhood changes.",
+  input_schema: {
+    type: "object",
+    properties: {
+      patches: {
+        type: "array",
+        description: "At most 5 patches. Each patch targets one specific card.",
+        items: {
+          type: "object",
+          properties: {
+            op: { type: "string", enum: ["replace_item", "replace_hotel", "replace_planb_entry", "add_flag", "add_tonight"], description: "What kind of patch. replace_item swaps one day's item (restaurant/activity/transport). replace_hotel swaps the hotel item for a day. replace_planb_entry replaces one Plan B entry by index. add_flag / add_tonight append a new string." },
+            day_index: { type: "integer", description: "0-based day index. Required for replace_item and replace_hotel." },
+            item_index: { type: "integer", description: "0-based item index within day.items[]. Required for replace_item." },
+            planb_index: { type: "integer", description: "0-based index into planb[]. Required for replace_planb_entry." },
+            new_item: { type: "object", description: "The replacement item, matching the DAY_SCHEMA items shape (type, name, time, location, etc.). Required for replace_item / replace_hotel.", additionalProperties: true },
+            new_text: { type: "string", description: "The replacement text. Required for replace_planb_entry / add_flag / add_tonight." },
+            rationale: { type: "string", description: "One short sentence (≤18 words) explaining why this patch addresses the finding." },
+          },
+          required: ["op", "rationale"],
+        },
+        maxItems: 5,
+      },
+    },
+    required: ["patches"],
+  },
+};
+
+// For full re-plans the revised plan must match TRIP_PLAN_TOOL exactly — we
+// reuse the same schema so the existing parser/renderer paths work unchanged.
+const REVISION_TOOL_FULL = TRIP_PLAN_TOOL;
+
+// Build the system prompt that runs the review. We pass in the plan JSON (the
+// full result object) plus the list of selected reviewer source objects so the
+// model knows which lenses to weight.
+function buildReviewSystemPrompt(plan, sources, inputs) {
+  const lensesActive = Array.from(new Set(sources.map(s => s.lens)));
+  const sourceList = sources.map(s => `• ${s.name} (${s.lens}) — ${s.blurb}`).join("\n");
+  const lensRules = REVIEWER_LENSES
+    .filter(l => lensesActive.includes(l.id))
+    .map(l => `• ${l.label}: ${l.why}`)
+    .join("\n");
+  const tripContext = [
+    inputs?.basics?.destination && `Destination: ${inputs.basics.destination}`,
+    inputs?.basics?.nights && `${inputs.basics.nights} nights`,
+    inputs?.basics?.travelers && `${inputs.basics.travelers}`,
+    inputs?.basics?.budget && `Budget: ${inputs.basics.budget}`,
+    inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
+    inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
+  ].filter(Boolean).join(" · ");
+
+  return `You are a panel of luxury-travel experts conducting a professional review of a finalized trip plan. You will call the submit_review tool exactly once. Do NOT emit any prose — only the tool call.
+
+REVIEWER PANEL — speak with the combined voice and standards of these sources:
+${sourceList}
+
+ACTIVE LENSES (only flag findings that fall under one of these):
+${lensRules}
+
+TRIP CONTEXT: ${tripContext || "unspecified"}
+
+REVIEW DISCIPLINE — STRICT:
+• Findings only. No general praise, no recap, no "overall this is a strong plan" prose.
+• Each finding is a real, actionable issue. If the plan is genuinely strong with no notes, emit verdict 'A — no notes' and findings: [] (empty array allowed).
+• Critical = the trip is materially worse if this is not fixed (closed restaurant, impossible drive time, wrong hotel tier for stated budget, marquee booking that needs 2-month lead time, dangerous pacing on transit days, etc.).
+• Suggested = clear upgrade (better-fitting hotel within stated brand family, more interesting restaurant, more locally-authentic activity).
+• Nice-to-have = polish (timing nudge, micro-substitution, small flag worth adding).
+• Cap critical at 3. Cap total at 8. Pick the highest-impact issues only — quality over quantity.
+• Set default_apply = true for ALL critical findings, false for ALL nice findings, and use your judgment for suggested.
+• Use the user's exact budget / style / pace as the ceiling and floor for your standards. A $$ trip should be reviewed against $$ expectations, not Michelin-Key expectations.
+• Each source name in the source field must come from the panel list above, exactly as written.
+• Pick the right mode_hint per finding — this drives whether the apply is a quick patch or a full re-plan.
+
+MODE_HINT GUIDE:
+• swap_restaurant — replacing one specific dinner/lunch/breakfast item with a different restaurant.
+• swap_hotel — replacing the hotel item for one leg with a different property (same city).
+• swap_planb — replacing or improving a Plan B entry.
+• swap_activity — replacing one Activity item with a different one same day.
+• adjust_logistics — fixing a Transport item (drive time, route, mode).
+• add_flag / add_tonight — appending a missing warning or todo.
+• adjust_pacing — the day has too much / too little. REQUIRES full re-plan.
+• change_neighborhood — base area is wrong for the trip's style. REQUIRES full re-plan.
+• restructure_day — the day's shape is broken (transit + dinner in wrong order, etc.). REQUIRES full re-plan.
+• rebalance_legs — multi-city night allocation is off. REQUIRES full re-plan.
+• change_hotel_brand_tier — hotel brand or tier is wrong for budget. REQUIRES full re-plan.
+
+PLAN TO REVIEW (JSON):
+${JSON.stringify(plan, null, 2)}`;
+}
+
+function buildReviewUserPrompt() {
+  return "Review the plan above. Call submit_review exactly once with verdict + findings[].";
+}
+
+function buildRevisionSystemPromptSurgical(plan, findings, inputs) {
+  const findingsBlock = findings.map(f =>
+    `[${f.id}] (${f.severity}, ${f.mode_hint}, ${formatFindingTarget(f.target)}) ${f.summary} → ${f.action}`
+  ).join("\n");
+  const tripContext = [
+    inputs?.basics?.destination && `Destination: ${inputs.basics.destination}`,
+    inputs?.basics?.nights && `${inputs.basics.nights} nights`,
+    inputs?.basics?.budget && `Budget: ${inputs.basics.budget}`,
+  ].filter(Boolean).join(" · ");
+
+  return `You are applying surgical card-level patches to an existing luxury trip plan. Call submit_revision_patches exactly once with a small patches[] array — one patch per finding. No prose.
+
+TRIP CONTEXT: ${tripContext}
+
+FINDINGS TO ADDRESS:
+${findingsBlock}
+
+PATCH RULES:
+• Emit ONE patch per finding above (in the same order). Skip a finding only if it genuinely cannot be card-patched.
+• Identify the right day_index and item_index by reading the plan JSON below. Days are 0-indexed; items[] within a day are 0-indexed.
+• For replace_item: new_item must have type ('Restaurant' | 'Activity' | 'Transport' | 'Breakfast' | 'Lunch' | 'Dinner' | 'Hotel' | 'Flight'), name, time (24h), and any other relevant fields the original item had (location, reservation, notes, end_time). Match the structure of the existing item shape.
+• For replace_hotel: same as replace_item but the new_item.type must be 'Hotel'.
+• For replace_planb_entry: provide planb_index (0-based) and new_text.
+• For add_flag / add_tonight: provide new_text only.
+• Keep replacement choices consistent with the original budget and style. Don't upgrade or downgrade tier without cause.
+• Rationale: one short sentence per patch, plain language.
+
+PLAN TO PATCH (JSON):
+${JSON.stringify(plan, null, 2)}`;
+}
+
+function buildRevisionUserPromptSurgical() {
+  return "Apply the findings above as surgical patches. Call submit_revision_patches exactly once.";
+}
+
+function buildRevisionSystemPromptFull(plan, findings, inputs) {
+  const findingsBlock = findings.map(f =>
+    `• [${f.severity}/${f.mode_hint}] ${formatFindingTarget(f.target)} — ${f.summary} → ${f.action}`
+  ).join("\n");
+  const tripContext = [
+    inputs?.basics?.destination && `Destination: ${inputs.basics.destination}`,
+    inputs?.basics?.nights && `${inputs.basics.nights} nights`,
+    inputs?.basics?.travelers && `${inputs.basics.travelers}`,
+    inputs?.basics?.budget && `Budget: ${inputs.basics.budget}`,
+    inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
+    inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
+  ].filter(Boolean).join(" · ");
+  const nightsNum = parseInt(inputs?.basics?.nights, 10) || (Array.isArray(plan?.days) ? Math.max(1, plan.days.length - 1) : 3);
+  const totalDays = nightsNum + 1;
+
+  return `You are revising a luxury trip plan based on a professional review. Call the submit_trip_plan tool exactly once with the FULL revised plan — same schema as the original. Do not emit any prose.
+
+TRIP CONTEXT: ${tripContext}
+Target: ${totalDays} days (${nightsNum} nights).
+
+REVIEWER FINDINGS TO ADDRESS:
+${findingsBlock}
+
+REVISION RULES:
+• Re-emit the COMPLETE plan with every field (destination, meta, days, logistics, weather_window, pack, flags, planb, snobs, tonight). Do not return a partial plan.
+• Address every finding above. Where a finding calls for pacing or neighborhood changes, restructure the affected days fully — don't just relabel.
+• Preserve what was working: keep restaurants, hotels, and activities that the review did NOT flag, unless adjusting them is necessary to fix a flagged issue.
+• Same field emission order rule applies: destination, meta, ${Array.isArray(plan?.cities) && plan.cities.length > 1 ? "cities, " : ""}days, then logistics/flags/planb/snobs/tonight last.
+• days[] must contain exactly ${totalDays} entries.
+• VARIETY: no restaurant repeats across days. Each unique name appears at most once across the whole plan.
+• EVERY item in items[] MUST have a "time" field (24h local time).
+• If a finding's mode_hint is 'change_hotel_brand_tier', change the hotel item AND update any related fields (transport_in if hotel moved across town, neighborhood references in headlines, etc.) — keep the plan internally consistent.
+
+ORIGINAL PLAN (use as starting point — change only what the findings require):
+${JSON.stringify(plan, null, 2)}`;
+}
+
+function buildRevisionUserPromptFull() {
+  return "Revise the plan above to address every finding. Call submit_trip_plan exactly once with the complete revised plan.";
+}
+
+// Apply surgical patches client-side. Returns a new plan object (does not mutate).
+// Each patch op:
+//   replace_item       — plan.days[day_index].items[item_index] = new_item
+//   replace_hotel      — same, but asserts new_item.type === 'Hotel'
+//   replace_planb_entry— plan.planb[planb_index] = new_text
+//   add_flag           — push new_text into plan.flags
+//   add_tonight        — push new_text into plan.tonight
+function applyPatchesToPlan(plan, patches) {
+  if (!plan || !Array.isArray(patches)) return plan;
+  // Deep-clone the parts we'll mutate so React notices the change.
+  const next = { ...plan };
+  next.days = Array.isArray(plan.days) ? plan.days.map(d => ({ ...d, items: Array.isArray(d.items) ? [...d.items] : [] })) : [];
+  next.planb = Array.isArray(plan.planb) ? [...plan.planb] : [];
+  next.flags = Array.isArray(plan.flags) ? [...plan.flags] : [];
+  next.tonight = Array.isArray(plan.tonight) ? [...plan.tonight] : [];
+
+  for (const p of patches) {
+    if (!p || !p.op) continue;
+    try {
+      if (p.op === "replace_item" && typeof p.day_index === "number" && typeof p.item_index === "number" && p.new_item) {
+        const day = next.days[p.day_index];
+        if (day && Array.isArray(day.items) && p.item_index >= 0 && p.item_index < day.items.length) {
+          day.items[p.item_index] = p.new_item;
+        }
+      } else if (p.op === "replace_hotel" && typeof p.day_index === "number" && p.new_item) {
+        const day = next.days[p.day_index];
+        if (day && Array.isArray(day.items)) {
+          // Replace the FIRST hotel-typed item on that day. If none, append.
+          const hotelIdx = day.items.findIndex(it => it && typeof it.type === "string" && it.type.toLowerCase() === "hotel");
+          if (hotelIdx >= 0) day.items[hotelIdx] = { ...p.new_item, type: "Hotel" };
+          else day.items.push({ ...p.new_item, type: "Hotel" });
+        }
+      } else if (p.op === "replace_planb_entry" && typeof p.planb_index === "number" && typeof p.new_text === "string") {
+        if (p.planb_index >= 0 && p.planb_index < next.planb.length) {
+          next.planb[p.planb_index] = p.new_text;
+        }
+      } else if (p.op === "add_flag" && typeof p.new_text === "string") {
+        next.flags.push(p.new_text);
+      } else if (p.op === "add_tonight" && typeof p.new_text === "string") {
+        next.tonight.push(p.new_text);
+      }
+    } catch {
+      // Swallow per-patch errors; we'd rather apply 4-of-5 patches than abort.
+    }
+  }
+  return next;
+}
+
 export default function TripOptimizer() {
   // Form state is INTENTIONALLY NOT PERSISTED across launches. The user wants
   // a clean slate on every launch and after "Plan another trip". We still
@@ -2969,6 +3856,14 @@ export default function TripOptimizer() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const abortRef = useRef(null);
+  // Tracks which saved-trip entry (if any) the current `result` came from.
+  // When a saved trip is opened and then revised, we persist the revised plan
+  // and review state back into THAT entry rather than creating a new one.
+  const [currentSavedTripId, setCurrentSavedTripId] = useState(null);
+  // _review state for the currently-displayed plan. Mirrored onto result so
+  // it round-trips through saves; also lifted here so ItineraryView re-mounts
+  // pick up the latest reviewer findings.
+  const [reviewState, setReviewState] = useState(null);
 
   // Normalize basics: ensure cities[] exists even for saved sessions from before multi-city support.
   const normalizeBasics = (b) => {
@@ -3031,6 +3926,8 @@ export default function TripOptimizer() {
     setElapsedSec(0);
     setError("");
     setResult(entry.result);
+    setCurrentSavedTripId(entry.id || null);
+    setReviewState(entry.result?._review || null);
     setStep(3);
     window.scrollTo({ top: 0, behavior: "instant" });
   };
@@ -3519,6 +4416,9 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
 
       // Success — clear the stored active job so we don't auto-resume it.
       try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+      // Fresh build is a brand-new plan, not yet saved — reset associations.
+      setCurrentSavedTripId(null);
+      setReviewState(null);
       setResult(parsed);
       setStep(3);
     } catch (err) {
@@ -3667,6 +4567,41 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
     ["badges","Personal recommendation badges","Flag places you've personally visited"],
     ["pronunciation","Pronunciation guide","Phonetic hints on unfamiliar place names"],
   ];
+
+  // Called by ReviewPanel when the user applies revisions and we have a new
+  // plan (either surgically patched or fully re-planned). We replace the
+  // displayed result and, if this plan came from a saved trip entry, also
+  // persist the new plan into that entry so re-opening preserves the edits.
+  const handlePlanRevised = (newPlan) => {
+    if (!newPlan) return;
+    // Carry over any pre-existing _review marker; ReviewPanel will overwrite
+    // it shortly via onReviewChange.
+    const merged = reviewState ? { ...newPlan, _review: reviewState } : newPlan;
+    setResult(merged);
+    if (currentSavedTripId) {
+      const list = loadSavedTrips();
+      const next = list.map(t => t.id === currentSavedTripId ? { ...t, result: merged } : t);
+      writeSavedTrips(next);
+      refreshSavedTrips();
+    }
+  };
+
+  // Called by ReviewPanel whenever review state changes (sources/findings/
+  // applied_ids). We attach it to the current result as _review and persist
+  // back into the saved-trip entry if we have one.
+  const handleReviewChange = (next) => {
+    setReviewState(next);
+    setResult(prev => prev ? { ...prev, _review: next } : prev);
+    if (currentSavedTripId) {
+      const list = loadSavedTrips();
+      const updated = list.map(t => {
+        if (t.id !== currentSavedTripId) return t;
+        return { ...t, result: { ...t.result, _review: next } };
+      });
+      writeSavedTrips(updated);
+      refreshSavedTrips();
+    }
+  };
 
   return (
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)" }}>
@@ -3876,8 +4811,12 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
           <ItineraryView
             data={result}
             inputs={{ basics, flights, hotel, transport, dining, restaurants, activities, interests, outputs }}
-            onBack={() => { resetFormToBlank(); setStep(1); }}
-            onSaved={refreshSavedTrips}
+            onBack={() => { resetFormToBlank(); setCurrentSavedTripId(null); setReviewState(null); setStep(1); }}
+            onSaved={(entry) => { setCurrentSavedTripId(entry?.id || null); refreshSavedTrips(); }}
+            savedTripId={currentSavedTripId}
+            onPlanRevised={handlePlanRevised}
+            onReviewChange={handleReviewChange}
+            initialReview={reviewState}
           />
         )}
 
