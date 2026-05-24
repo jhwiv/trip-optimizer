@@ -4617,6 +4617,47 @@ export default function TripOptimizer() {
     // Train is OFF by default. The user must explicitly tick "Train / rail" in
     // the ground-transport multi-select for any rail suggestion to be allowed.
     const trainAllowedSys = Array.isArray(transport.type) && transport.type.some(t => /train|rail/i.test(t));
+    // Private driver / chauffeur enforcement. The user explicitly ticked
+    // "Private driver" in the ground-transport multi-select OR named a private
+    // driver day-trip in activities OR typed driver/chauffeur into the free-text
+    // interests box. If ANY of these are true we MUST surface a named chauffeur
+    // operator, daily pickup windows, and a dedicated "Your driver" logistics
+    // chip — not a vague "car service available" aside.
+    const wantsPrivateDriver =
+      (Array.isArray(transport.type) && transport.type.some(t => /private\s*driver|chauffeur/i.test(t))) ||
+      (Array.isArray(activities) && activities.some(a => /private driver/i.test(a))) ||
+      /\b(private driver|chauffeur|car service|black car)\b/i.test(interests?.text || "");
+    const privateDriverBlock = !wantsPrivateDriver ? "" : `
+
+PRIVATE DRIVER — HARD RULE (USER REQUESTED THIS):
+The user explicitly asked for a private driver / chauffeur. You MUST surface this in the plan, not bury it.
+• Name a real, reputable local chauffeur/car-service operator for the destination (e.g. Blacklane in major European cities, Carey or Dav-El in NYC/major US metros, a known Mercedes V-Class service for Italy/Switzerland/Austria, etc.). If you cannot name one with confidence, write "Concierge to book — verify operator" and add a flags[] entry asking the hotel concierge to confirm the driver — do NOT invent a fake company name.
+• Emit a dedicated Transport item on EACH activity-heavy day with: time of pickup, time of return, vehicle type (Mercedes E-Class sedan / V-Class van / Cadillac Escalade / etc. — match the traveler count), and the driver/operator name. Example text: "08:30 — Driver pickup (Blacklane Mercedes E-Class) for Vatican → lunch → Trastevere; return 18:30."
+• For airport arrival on Day 1 and departure on the last day, the Transport item is the driver pickup at the terminal — include meet-and-greet detail ("meets at baggage claim with name placard") and the pickup window relative to flight arrival (typically 30–45min after wheels-down for international, 20–30 for domestic).
+• Inter-city legs on a multi-city trip use the private driver too (NOT a self-drive rental) unless the user ALSO ticked "Rental car". Drive time + distance + route still required.
+• Add ONE logistics chip in the form "Driver · <operator>" so the top-of-page chip strip shows the user their car service at a glance.
+• Add a flags[] entry confirming the driver booking workflow (e.g. "Pre-book Blacklane via app 24h ahead; concierge can also arrange") and include cancellation-window detail when known.
+• Add a tonight entry: "⚠︎ Must today: Confirm driver pickup window for Day 1 arrival."
+• Do NOT also push a rental-car narrative on top of this unless the user explicitly selected BOTH "Private driver" AND "Rental car". A user who said private driver wants to be driven — don't add "or grab an Uber" as a fallback in every slot.`;
+    // Private tour / private guide enforcement. Triggered by any of:
+    //  • activities list containing "private" + "tour/guide/walking" phrasing
+    //  • free-text interests mentioning private tour/guide
+    //  • style preference including "VIP" or "private experiences"
+    const wantsPrivateTour =
+      (Array.isArray(activities) && activities.some(a => /private (city|walking|food)?\s*(tour|guide)|skip[- ]the[- ]line|VIP/i.test(a))) ||
+      /\b(private (tour|guide|walking tour)|VIP tour|skip[- ]the[- ]line)\b/i.test(interests?.text || "") ||
+      (Array.isArray(basics.style) && basics.style.some(s => /VIP|private/i.test(s)));
+    const privateTourBlock = !wantsPrivateTour ? "" : `
+
+PRIVATE TOURS / PRIVATE GUIDES — HARD RULE (USER REQUESTED THIS):
+The user asked for private tours or private guides. Group bus tours and self-guided audio walks do NOT satisfy this request.
+• For each marquee experience (Vatican / Colosseum / Sagrada Família / Versailles / Alhambra / Louvre / Uffizi / Acropolis / Vasa Museum / etc.), emit an Activity item that specifies it is a PRIVATE guide — not a group tour. Example text: "Private 3-hour Vatican + Sistine tour with art-historian guide (small-group max 6 if true private unavailable)."
+• Name the operator/agency when you can credibly do so (Context Travel, Walks of Italy private upgrade, Through Eternity private, LivTours private, Devour Tours private food walk, Take Walks private, ToursByLocals for vetted independents, the destination's official licensed-guide bureau). If unsure, write "Concierge to book licensed private guide" and flag for verification.
+• Each private tour Activity item MUST include: duration, guide credential (art historian / licensed local guide / sommelier / chef / etc.), pickup-or-meet location, advance booking lead time (most marquee private tours need 2–6 weeks), and approximate per-group cost band if you have confidence in it.
+• Add a flags[] entry: "Book private guides NOW — marquee slots (Vatican early-entry, Uffizi opening) sell out 4–8 weeks ahead."
+• Add a tonight entry prefixed "⚠︎ Must today:" for the most lead-time-sensitive private booking.
+• Add a snobs entry that says what a private guide unlocks vs a group tour (early access, off-hours, deeper expertise, customization of the route).
+• NEVER substitute a hop-on-hop-off bus, a self-guided audio app, or a free walking tour for a requested private experience.`;
     const trainRuleBlock = trainAllowedSys ? "" : `
 
 GROUND TRANSPORT — NO TRAINS (HARD RULE):
@@ -4636,7 +4677,7 @@ Total: ${totalNights} nights = ${totalDays} days.
 • MINIMUM 2 NIGHTS per city when cities.length === 3 — if the user gave 1 night for a leg in a 3-city trip, set a flags[] warning that one night doesn't leave time to enjoy that city and suggest a re-balance.
 • HOTEL ITEMS: One check-in Hotel item per leg (at arrival) and a check-out item on the last morning of each leg EXCEPT the final leg's check-out which is on the very last day before flying home. Each leg's stay must be a DIFFERENT hotel (different city = different hotel).
 • weather and weather_window: if cities are in very different climates (mountain vs coast vs desert), call this out in weather_window AND give per-day weather that reflects the city's actual climate for that day.` : "";
-    return `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.${trainRuleBlock}
+    return `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.${trainRuleBlock}${privateDriverBlock}${privateTourBlock}
 
 FIELD EMISSION ORDER — CRITICAL:
 Write the tool input in this exact order: destination, meta, ${isMultiCity ? "cities, " : ""}days, logistics, flags, planb, snobs, tonight.
@@ -4758,6 +4799,17 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
     // rail segment when the user picked rental car, private driver, or
     // nothing at all — even if the destination has good rail service.
     const trainAllowed = Array.isArray(transport.type) && transport.type.some(t => /train|rail/i.test(t));
+    // Mirror the system-prompt detectors so we can echo the explicit ask in the
+    // user message too — surfacing it twice prevents it from being drowned out
+    // by other constraints (especially the long NO-TRAINS block).
+    const userWantsPrivateDriver =
+      (Array.isArray(transport.type) && transport.type.some(t => /private\s*driver|chauffeur/i.test(t))) ||
+      (Array.isArray(activities) && activities.some(a => /private driver/i.test(a))) ||
+      /\b(private driver|chauffeur|car service|black car)\b/i.test(interests?.text || "");
+    const userWantsPrivateTour =
+      (Array.isArray(activities) && activities.some(a => /private (city|walking|food)?\s*(tour|guide)|skip[- ]the[- ]line|VIP/i.test(a))) ||
+      /\b(private (tour|guide|walking tour)|VIP tour|skip[- ]the[- ]line)\b/i.test(interests?.text || "") ||
+      (Array.isArray(basics.style) && basics.style.some(s => /VIP|private/i.test(s)));
     const groundModeText = trainAllowed
       ? "driving or train (user opted into rail)"
       : "driving only — NO trains, NO rail, NO Amtrak under any circumstances";
@@ -4784,7 +4836,9 @@ IMPORTANT: Return a complete days[] array with ${(isMultiCity ? totalNightsFromC
 IMPORTANT: This is a ${cities.length}-city trip. Emit cities[] with ${cities.length} entries. Each day's "city" field must match a city in cities[] (or use From→To format for transit days). Inter-city transit is a Transport item at the start of legs 2+ with realistic drive time + distance.` : ""}
 IMPORTANT: Write days[] BEFORE logistics, flags, planb, snobs, or tonight. days[] comes immediately after destination + meta in the tool input.
 IMPORTANT: NO RESTAURANT MAY APPEAR TWICE. Each named restaurant gets ONE meal slot across the entire trip. Vary breakfasts — use real local spots, not the hotel restaurant on repeat.
-IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "weather" line (seasonal expectation). Top-level MUST include weather_window, pack[≥3], planb[≥5], tonight (with priority prefixes).`;
+IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "weather" line (seasonal expectation). Top-level MUST include weather_window, pack[≥3], planb[≥5], tonight (with priority prefixes).
+${userWantsPrivateDriver ? `IMPORTANT — PRIVATE DRIVER REQUESTED: The user wants a private chauffeur, not a rental car or rideshare. Each activity-heavy day MUST have a Transport item with a named operator (Blacklane / Carey / Mercedes V-Class service / etc. — or "Concierge to book" if unsure), pickup time, return time, and vehicle type. Add a logistics chip "Driver · <operator>". The airport arrival on Day 1 is a driver meet-and-greet, not a self-drive pickup.` : ""}
+${userWantsPrivateTour ? `IMPORTANT — PRIVATE TOURS / GUIDES REQUESTED: Marquee sights MUST be done with a named PRIVATE guide (Context Travel, Walks of Italy private, Through Eternity private, ToursByLocals, or destination-specific licensed-guide bureau). Group bus tours and audio walks do NOT satisfy this. Each private-tour Activity item must include: duration, guide credential, advance-booking lead time, and pickup/meet location. Add a flags[] entry urging immediate booking.` : ""}`;
   };
 
   // Active-job storage key. When a build is in flight we write the jobId and
