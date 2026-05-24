@@ -1846,9 +1846,11 @@ async function saveItineraryAsPDF(filename, setStatus) {
 
 // Detect the specific failure where a dynamic import resolves to a chunk hash
 // that's no longer in the current deploy. The user's open tab is running stale
-// HTML referencing an old hash; the only fix is to reload the shell (which is
-// network-first, so it'll pick up the new index.html with the new hashes).
-// We unregister the SW and purge caches first so the reload is clean.
+// HTML referencing an old hash. We need to refresh the shell, but doing so
+// would wipe any in-memory itinerary the user hasn't saved — so we DON'T
+// auto-reload. Instead we (a) unregister the SW + clear caches in the
+// background so the *next* manual refresh is clean, and (b) surface a clear
+// notice to the user with a one-click refresh button.
 function isStaleChunkError(err) {
   if (!err) return false;
   const msg = String(err.message || err);
@@ -1861,7 +1863,9 @@ function isStaleChunkError(err) {
     msg.includes('strict MIME type checking')
   );
 }
-async function recoverFromStaleShell() {
+// Prepare a clean refresh without actually reloading. Safe to call multiple
+// times. Returns once SW + caches are evicted; caller decides when to reload.
+async function clearShellCaches() {
   try {
     if ('serviceWorker' in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
@@ -1874,7 +1878,8 @@ async function recoverFromStaleShell() {
       await Promise.all(keys.map((k) => caches.delete(k)));
     }
   } catch (_) { /* ignore */ }
-  // Reload with a cache-buster so the shell is fetched fresh from origin.
+}
+function hardReloadNow() {
   const url = new URL(window.location.href);
   url.searchParams.set('_r', Date.now().toString(36));
   window.location.replace(url.toString());
@@ -1884,6 +1889,9 @@ function PrintButton({ data }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  // When the PDF lib chunk is missing from the current deploy, we surface a
+  // refresh prompt instead of auto-reloading (which would lose unsaved work).
+  const [stale, setStale] = useState(false);
 
   const handleClick = async () => {
     if (busy) return;
@@ -1894,18 +1902,20 @@ function PrintButton({ data }) {
       console.error("PDF save failed", err);
       if (isStaleChunkError(err)) {
         // App shell is stale — the PDF library chunk hash changed between
-        // when this tab loaded and now. Self-heal: clear SW + caches and
-        // reload so the user gets a fresh shell with valid asset hashes.
-        setStatus("Updating app…");
-        setError("App was updated. Refreshing…");
-        await recoverFromStaleShell();
-        return; // page is reloading; don't reset state
+        // when this tab loaded and now. DO NOT auto-reload (would wipe the
+        // in-memory itinerary). Instead: silently evict SW + caches so the
+        // next manual refresh is clean, then show a refresh button. Tell
+        // the user to Save Trip first if they haven't.
+        clearShellCaches().catch(() => {});
+        setStale(true);
+        setError("");
+      } else {
+        setError("Could not save PDF. Try again.");
       }
-      setError("Could not save PDF. Try again.");
     } finally {
       setBusy(false);
       setStatus("");
-      setTimeout(() => setError(""), 5000);
+      if (!stale) setTimeout(() => setError(""), 5000);
     }
   };
 
@@ -1937,6 +1947,63 @@ function PrintButton({ data }) {
       </button>
       {error && (
         <span style={{ fontSize: "11px", color: "#B85C00" }}>{error}</span>
+      )}
+      {stale && (
+        <div
+          role="alert"
+          style={{
+            marginTop: "6px",
+            padding: "10px 12px",
+            border: "1px solid #C4A862",
+            background: "rgba(196,168,98,0.08)",
+            borderRadius: "var(--border-radius-md)",
+            fontSize: "11px",
+            color: "var(--color-text-primary)",
+            lineHeight: 1.5,
+            maxWidth: "320px",
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: "4px" }}>App update required for PDF</div>
+          <div style={{ color: "var(--color-text-secondary)", marginBottom: "8px" }}>
+            A newer build is live. Save your trip first (so it persists), then refresh to enable PDF save.
+          </div>
+          <button
+            type="button"
+            onClick={hardReloadNow}
+            style={{
+              background: "var(--color-text-primary)",
+              color: "var(--color-background-primary)",
+              border: "none",
+              borderRadius: "var(--border-radius-md)",
+              padding: "7px 12px",
+              fontSize: "11px",
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              fontWeight: 600,
+            }}
+          >
+            Refresh now
+          </button>
+          <button
+            type="button"
+            onClick={() => setStale(false)}
+            style={{
+              marginLeft: "6px",
+              background: "transparent",
+              color: "var(--color-text-secondary)",
+              border: "none",
+              padding: "7px 8px",
+              fontSize: "11px",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              textDecoration: "underline",
+            }}
+          >
+            Later
+          </button>
+        </div>
       )}
     </div>
   );
@@ -4225,23 +4292,45 @@ export default function TripOptimizer() {
   // Runs once at module init — before the first render — so the form starts blank.
   try { localStorage.removeItem(LS_KEY); } catch {}
 
-  const [step, setStep] = useState(1);
+  // SESSION RECOVERY. Holds the most recent built `result` + inputs + step so
+  // an unexpected reload (PWA update, browser crash, our own self-heal) doesn't
+  // wipe a working itinerary the user hasn't explicitly saved. Distinct from
+  // SAVED_TRIPS_KEY which is the explicit "library". TTL'd to 24h so a stale
+  // session doesn't surprise the user on a future visit.
+  const SESSION_KEY = "trip-optimizer-session-v1";
+  const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+  const loadSession = () => {
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      if (!raw) return null;
+      const s = JSON.parse(raw);
+      if (!s || typeof s !== "object") return null;
+      if (!s.savedAt || (Date.now() - s.savedAt) > SESSION_TTL_MS) {
+        localStorage.removeItem(SESSION_KEY);
+        return null;
+      }
+      return s;
+    } catch { return null; }
+  };
+  const recovered = loadSession();
+
+  const [step, setStep] = useState(recovered?.step || 1);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [progress, setProgress] = useState(0);          // 0–1 estimated fraction
   const [progressLabel, setProgressLabel] = useState("");
   const [elapsedSec, setElapsedSec] = useState(0);
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useState(recovered?.result || null);
   const [error, setError] = useState("");
   const abortRef = useRef(null);
   // Tracks which saved-trip entry (if any) the current `result` came from.
   // When a saved trip is opened and then revised, we persist the revised plan
   // and review state back into THAT entry rather than creating a new one.
-  const [currentSavedTripId, setCurrentSavedTripId] = useState(null);
+  const [currentSavedTripId, setCurrentSavedTripId] = useState(recovered?.currentSavedTripId || null);
   // _review state for the currently-displayed plan. Mirrored onto result so
   // it round-trips through saves; also lifted here so ItineraryView re-mounts
   // pick up the latest reviewer findings.
-  const [reviewState, setReviewState] = useState(null);
+  const [reviewState, setReviewState] = useState(recovered?.reviewState || recovered?.result?._review || null);
 
   // Normalize basics: ensure cities[] exists even for saved sessions from before multi-city support.
   const normalizeBasics = (b) => {
@@ -4249,14 +4338,15 @@ export default function TripOptimizer() {
     if (Array.isArray(src.cities) && src.cities.length > 0) return src;
     return { ...src, cities: [{ name: src.destination || "", nights: src.nights || "", focus: "" }] };
   };
-  const [basics, setB] = useState(normalizeBasics(BLANK.basics));
-  const [flights, setF] = useState(BLANK.flights);
-  const [hotel, setH] = useState(BLANK.hotel);
-  const [transport, setT] = useState(BLANK.transport);
-  const [dining, setD] = useState(BLANK.dining);
-  const [restaurants, setRest] = useState(BLANK.restaurants);
-  const [activities, setActs] = useState(BLANK.activities);
-  const [interests, setInt] = useState(BLANK.interests);
+  const _ri = recovered?.inputs;
+  const [basics, setB] = useState(normalizeBasics(_ri?.basics || BLANK.basics));
+  const [flights, setF] = useState(_ri?.flights || BLANK.flights);
+  const [hotel, setH] = useState(_ri?.hotel || BLANK.hotel);
+  const [transport, setT] = useState(_ri?.transport || BLANK.transport);
+  const [dining, setD] = useState(_ri?.dining || BLANK.dining);
+  const [restaurants, setRest] = useState(_ri?.restaurants || BLANK.restaurants);
+  const [activities, setActs] = useState(_ri?.activities || BLANK.activities);
+  const [interests, setInt] = useState(_ri?.interests || BLANK.interests);
 
   // Reset every form bucket to BLANK. Used for "Plan another trip".
   const resetFormToBlank = () => {
@@ -4273,6 +4363,7 @@ export default function TripOptimizer() {
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
     setLoading(false); setLoadingMsg(""); setProgress(0); setProgressLabel(""); setElapsedSec(0);
     try { localStorage.removeItem(LS_KEY); } catch {}
+    try { localStorage.removeItem(SESSION_KEY); } catch {}
   };
 
   // Saved trips list — hydrated from localStorage. Refreshed on save/delete/open.
@@ -4366,6 +4457,28 @@ export default function TripOptimizer() {
       localStorage.setItem(LS_KEY, JSON.stringify({ basics, flights, hotel, transport, dining, restaurants, activities, interests }));
     } catch {}
   }, [basics, flights, hotel, transport, dining, restaurants, activities, interests]);
+
+  // Persist a session snapshot whenever the built `result` or step changes.
+  // This is the safety net against unexpected reloads losing an unsaved trip.
+  // Only writes when we have a real result OR have advanced past Step 1.
+  useEffect(() => {
+    try {
+      if (!result && step === 1) {
+        // Nothing meaningful to preserve. Clear any stale slot from a prior session.
+        localStorage.removeItem(SESSION_KEY);
+        return;
+      }
+      const snapshot = {
+        savedAt: Date.now(),
+        step,
+        result,
+        currentSavedTripId,
+        reviewState,
+        inputs: { basics, flights, hotel, transport, dining, restaurants, activities, interests },
+      };
+      localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot));
+    } catch {}
+  }, [result, step, currentSavedTripId, reviewState, basics, flights, hotel, transport, dining, restaurants, activities, interests]);
   const [outputs, setOut] = useState({ itinerary: true, weather: true, navigation: true, logistics: true, tonight: true, menus: true, flags: true, planb: true, snobs: true, practical: false, badges: false, pronunciation: false });
 
   const togOut = k => setOut(o => ({ ...o, [k]: !o[k] }));
