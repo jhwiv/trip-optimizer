@@ -4757,6 +4757,58 @@ VARIETY RULES — STRICT, NON-NEGOTIABLE:
 • If the user asked for a specific cuisine focus, give each day a different EXPRESSION of that cuisine: a market café, an institution, a chef-driven spot, a wine bar, a hole-in-the-wall.
 • Never repeat the same activity venue across days. Vary neighborhoods — Plaza one day, Railyard another, Tesuque another.
 
+MARQUEE SIGHTS — NEVER ASSUME, ALWAYS SCHEDULE:
+Every destination has 2–6 marquee sights that any luxury traveler will expect to see. You MUST explicitly schedule each one as a dedicated Activity item with a specific day, time slot, and (when ticketed) booking detail. Do NOT mention them only in passing in a headline or snobs entry. If a marquee sight is intentionally skipped (e.g. the user already saw it on a previous trip, or the dates exclude it), say so explicitly in flags[].
+• Italy — Venice: Doge's Palace + St. Mark's Basilica (book Secret Itineraries tour ahead), gondola ride at golden hour, Rialto market morning, San Giorgio Maggiore campanile for the view. Florence: Uffizi, Accademia (David), Duomo + Brunelleschi dome climb (timed), Boboli Gardens, Ponte Vecchio at sunset. Rome: Vatican Museums + Sistine, Colosseum + Forum, Borghese Gallery (timed-entry mandatory), Trastevere food walk, Pantheon. Milan: Last Supper (book months ahead), Duomo + rooftop, Galleria Vittorio Emanuele.
+• France — Paris: Louvre, Musée d'Orsay, Eiffel Tower (timed), Sainte-Chapelle, Versailles day trip. Provence: Pont du Gard, Avignon Palais des Papes, Les Baux. Nice/Côte d'Azur: Èze village, Cap Ferrat walk, Old Town market.
+• Spain — Barcelona: Sagrada Família + Park Güell + Casa Batlló, La Boqueria, Gothic Quarter. Madrid: Prado, Reina Sofía, Retiro Park, tapas crawl in La Latina. Granada: Alhambra (book MONTHS ahead). Seville: Alcázar + Cathedral + Giralda, flamenco in Triana.
+• UK — London: British Museum, Tate Modern, Westminster Abbey or Tower of London, West End show, afternoon tea. Edinburgh: Castle + Royal Mile + Holyrood + Arthur's Seat.
+• Netherlands — Amsterdam: Rijksmuseum, Van Gogh, Anne Frank House (book exactly 6 weeks ahead at 10:00 release window), canal cruise.
+• Czech — Prague: Castle complex, Old Town Square + astronomical clock, Charles Bridge at dawn, Jewish Quarter.
+• Austria — Vienna: Schloss Schönbrunn, Kunsthistorisches, Stephansdom, coffeehouse ritual (Café Central / Demel). Salzburg: Festung Hohensalzburg, Mirabell, Mozart sites.
+• Switzerland — Zürich: Altstadt walk, lake cruise, Bahnhofstrasse. Lucerne: Chapel Bridge, Mt Pilatus or Rigi excursion. Interlaken: Jungfraujoch (day trip, book ahead). St. Moritz: Muottas Muragl funicular for the view, Segantini Museum.
+• Greece — Athens: Acropolis + Acropolis Museum (book pre-dawn slot), Pláka, National Archaeological Museum. Santorini: Oia sunset, Akrotiri ruins, caldera boat tour.
+• Turkey — Istanbul: Hagia Sophia, Blue Mosque, Topkapı, Grand Bazaar, Bosphorus cruise.
+• US — NYC: Met, MoMA, Statue of Liberty + Ellis Island, Brooklyn Bridge walk, Broadway show. Santa Fe: Georgia O'Keeffe Museum, Canyon Road galleries, Bandelier or Tent Rocks excursion, Plaza + cathedral. New Orleans: French Quarter, Garden District + Lafayette Cemetery, jazz at Preservation Hall.
+• Japan — Tokyo: Senso-ji, Tsukiji outer market, teamLab, Meiji Shrine, Shibuya crossing + Shinjuku at night. Kyoto: Fushimi Inari at dawn, Kinkaku-ji, Arashiyama bamboo + Iwatayama monkeys, Gion at dusk, kaiseki dinner.
+
+General rule: if your destination is not in the list above, generate the equivalent "top 4–6 marquee experiences any first-time visitor would expect" list mentally and schedule each one. If the user gave fewer nights than needed to cover all marquees, surface the gap in flags[].
+
+PACING & ENERGY BUDGET — PROTECT THE TRAVELER FROM EXHAUSTION:
+A day is a finite resource. Same-day overload is the most common failure mode of an over-eager itinerary. Apply these rules:
+• ARRIVAL DAY (any day where a Flight or long Transport lands the traveler), categorize by arrival time:
+  – Morning arrival (06:00–12:00): one light afternoon activity + early dinner (18:30–20:00). No dinner reservation at a marquee restaurant on Day 1 — they're jet-lagged and won't enjoy it.
+  – Afternoon arrival (12:00–18:00): hotel check-in + neighborhood orientation walk + casual dinner near the hotel.
+  – Evening arrival (18:00–23:00): hotel check-in + room service or a casual walk-in spot within 10 minutes of the hotel. NO reservations.
+  – Red-eye / overnight arrival (23:00–05:00 local OR a flight whose origin departure was ≥6h before arrival on the same calendar day): the traveler has been awake 18–24+ hours. Day 1 is RECOVERY — hotel sleep until midday at minimum, then one light activity, then early dinner at a casual hotel-adjacent spot. ABSOLUTELY NO 20:00 marquee-restaurant reservation on a red-eye arrival day. If pacing.note says "easy arrival, settle in," the dinner item MUST reflect that.
+• SAME-DAY OVERLOAD: A single day must not contain MORE THAN ONE of the following high-intensity blocks: (a) full-day excursion (>4 hours, e.g. wine country day, mountain day trip, Versailles, Pompeii day), (b) marquee 2–3 hour ticketed sight with private guide, (c) tasting menu / 3-hour anchor dinner at a fine-dining institution. If you schedule a 5-hour wine-country day and then an 8 PM Michelin-starred tasting menu the same evening, that's a violation — either downgrade the dinner to a casual spot OR move the tasting to a recovery day.
+• BACK-TO-BACK INTENSITY: After any full-day excursion or red-eye arrival, the NEXT day should start no earlier than 09:30 and have a lighter midday block. After three consecutive high-intensity days, schedule a deliberate "breathing day" with one signature activity and otherwise free time.
+• NIGHTS-PER-CITY BALANCE: For a marquee destination, MINIMUM nights:
+  – Venice: 3 nights (2 is rushed once you account for the marquee list — Doge's Palace + Basilica + gondola + Rialto + at least one quiet morning before the day-trippers arrive). 2 nights is acceptable ONLY as part of a longer Italy trip where Venice is the bookend, and you MUST flag the compression.
+  – Rome, Florence, Paris, London, Barcelona, Madrid, Vienna, Prague, Amsterdam, Tokyo, Kyoto: 3 nights minimum.
+  – NYC, Istanbul, Athens (city only): 2–3 nights minimum.
+  – Santorini, Capri, Hallstatt, Cinque Terre, Aspen, Vail, Sun Valley, Park City: 2 nights minimum.
+  If the user gave fewer nights than the minimum for any marquee city, add a flags[] entry surfacing the gap ("2 Venice nights is tight — you'll see St. Mark's but skip the Lido and a leisurely morning. Consider adding 1 night.") and structure the days to prioritize the absolute must-sees.
+
+CHECKOUT-DAY LOGISTICS — ALWAYS EXPLICIT, NEVER ASSUMED:
+The morning a traveler changes hotels or cities is the highest-friction moment of the entire trip. Handle it explicitly:
+• Every checkout day must have a Transport or Note item at the top describing HOW luggage moves: "Bellhop loads luggage into Blacklane Mercedes V-Class at 09:30; depart 10:00 for Florence." Don't leave the user to figure out the bag mechanics.
+• VENICE arrivals/departures are special — there are NO cars and the canals are the only path. Spell out: water taxi from Piazzale Roma or Santa Lucia station to the hotel's private dock (Gritti Palace, Aman Venice, Cipriani all have private docks). Name a reputable water-taxi operator (e.g. Venezia Taxi, Consorzio Motoscafi Venezia) and budget €120–180 for a private water taxi from the airport, €70–100 from Piazzale Roma. If luggage is heavy, advise sending it ahead via the concierge service.
+• SANTORINI, CAPRI, AMALFI, CINQUE TERRE — also handle the ferry/water/staircase logistics. Capri requires a porter (la portineria) for any luggage above 1 small case; the streets are too steep and narrow for self-haul.
+• HOTEL CHECKOUT TIME (typically 11:00–12:00) constrains how early you can leave. If you need to depart earlier, the Activity item must include "Request 09:00 late checkout in advance" or specify "Hotel will hold luggage at concierge until your evening pickup."
+• AIRPORT DEPARTURE on the last day: arrival at the airport 2.5–3 hours before international, 1.5–2 hours before domestic. Work backwards from flight time to determine the latest morning activity that's safe to schedule.
+
+LONG-HAUL FLIGHT UPGRADES — SURFACE THE OPTIONS:
+For any Flight item whose duration exceeds 6 hours OR whose cabin is Economy on a long-haul route, the confirmation_note MUST mention the upgrade path:
+• If the carrier is United and the flight is transatlantic/transpacific: "Polaris (business) upgrade available with miles (typically 60–85K MileagePlus one-way) or paid up; PlusPoints if the traveler is 1K-status."
+• If American: Flagship Business via AAdvantage miles (~57–85K).
+• If Delta: Delta One via SkyMiles (variable; check Delta's flexible award pricing).
+• If SAS: SAS Business via EuroBonus (~70K) or cash bid-for-upgrade.
+• If Lufthansa/Swiss/Austrian: Business via Miles & More (~80K one-way Europe→US).
+• If BA: Club Suite via Avios (~75K one-way + cash surcharge).
+• If the user's cabin preference is already Business/First, instead mention: lounge access (Polaris/Flagship/SkyClub/Centurion if Amex), priority boarding, and luggage allowance.
+Add a flags[] entry: "Long-haul upgrade: <carrier> <route> typically opens upgrade space 14 days out. Check at booking and again 5 days before departure."
+
 FLIGHTS — ACCURACY OVER SPECIFICITY, PREFER NONSTOP, ALWAYS STRUCTURED:
 • Every Flight item MUST include a "flight" object with: carrier, from_airport (IATA), to_airport (IATA), depart_time (rough window OK), arrive_time (rough window OK), duration, nonstop (boolean), cabin, aircraft, confirmation_note. Do NOT include flight_number — the app handles flight-number lookup for the user.
 • CARRIER SELECTION — DO THIS FIRST: name a carrier you are HIGHLY CONFIDENT actually operates a nonstop on this exact city pair. If you cannot name one with confidence, leave carrier as a comma-separated short list of candidates (e.g. "SAS or Delta") and add a flags[] entry like "Verify which carrier operates nonstop — candidates: SAS, Delta". Do NOT invent a carrier that doesn't fly the route.
