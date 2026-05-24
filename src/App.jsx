@@ -2900,7 +2900,7 @@ export default function TripOptimizer() {
   // BLANK = truly empty state. Used on every launch and on "Plan another trip".
   const BLANK = {
     basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", nights: "", travelers: "", baseArea: "", style: "", pace: "", budget: "" },
-    flights: { homeAirport: "", airline: "", cabin: "", flex: "" },
+    flights: { homeAirport: "", airline: "", cabin: "", flex: "", noFlight: false },
     hotel: { brand: "", tier: "", mustHave: "" },
     transport: { type: "", company: "", vehicle: "" },
     dining: { cuisine: "", budget: "" },
@@ -3089,7 +3089,9 @@ export default function TripOptimizer() {
     !cityNamesValid && (isMultiCity ? "All city names" : "Destination"),
     !basics.startDate.trim() && "Start date",
     !cityNightsValid && (isMultiCity ? "Nights for each city" : "Nights"),
-    !flights.homeAirport.trim() && "Home airport",
+    // Home airport only required when the user is actually flying. If they
+    // tick "Not flying (driving / train)" we skip flight planning entirely.
+    !flights.noFlight && !flights.homeAirport.trim() && "Home airport",
   ].filter(Boolean);
   const ready = missing.length === 0;
   const areaHint = getAreaHint(cities[0]?.name || basics.destination);
@@ -3237,7 +3239,7 @@ Start date: ${formatDateForDisplay(basics.startDate) || basics.startDate}
 Nights: ${isMultiCity ? totalNightsFromCities : basics.nights}${isMultiCity ? "  (" + cities.map(c => `${c.nights} in ${c.name}`).join(" + ") + ")" : ""}
 Travelers: ${basics.travelers}
 Style: ${basics.style} · Pace: ${basics.pace} · Budget: ${basics.budget}
-Home airport: ${flights.homeAirport} · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin}
+${flights.noFlight ? `Transportation mode: GROUND ONLY (driving / train). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the drive or rail journey from the user's origin to the destination, with realistic time + distance.` : `Home airport: ${flights.homeAirport} · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin}`}
 Hotel brand: ${hotel.brand}${hotel.tier ? ` · ${hotel.tier}` : ""} · Must-haves: ${hotel.mustHave || "none"}
 Transport: ${transport.type}${transport.company ? ` · ${transport.company}` : ""}
 Cuisine: ${dining.cuisine || "local"} · Dinner budget: ${dining.budget}
@@ -3246,7 +3248,7 @@ Activities requested: ${activities.length ? activities.join(", ") : "suggest bas
 Interests: ${interests.text || "not specified"} · Level: ${interests.level}
 Include sections: ${active}
 
-IMPORTANT: Prefer NONSTOP flights. If ${flights.homeAirport} has no nonstop to the primary airport for ${isMultiCity ? cities[0]?.name : basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.
+${flights.noFlight ? `IMPORTANT: NO FLIGHTS. The user is driving or taking the train. Day 1 must be a Transport item describing the surface-travel arrival; do not invent flights, do not include any Flight items in days[].items.` : `IMPORTANT: Prefer NONSTOP flights. If ${flights.homeAirport} has no nonstop to the primary airport for ${isMultiCity ? cities[0]?.name : basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.`}
 IMPORTANT: Return a complete days[] array with ${(isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)) + 1} entries (arrival day + ${isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)} nights). Do not collapse the plan into the logistics chip list.${isMultiCity ? `
 IMPORTANT: This is a ${cities.length}-city trip. Emit cities[] with ${cities.length} entries. Each day's "city" field must match a city in cities[] (or use From→To format for transit days). Inter-city transit is a Transport item at the start of legs 2+ with realistic drive time + distance.` : ""}
 IMPORTANT: Write days[] BEFORE logistics, flags, planb, snobs, or tonight. days[] comes immediately after destination + meta in the tool input.
@@ -3665,12 +3667,22 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
                     )}
                   </div>
                 </Field>
-                <Field label="Home airport" hint={lookupAirport(flights.homeAirport) ? `${lookupAirport(flights.homeAirport).city} · ${lookupAirport(flights.homeAirport).name}` : null}><AirportAutocomplete value={flights.homeAirport} onChange={e => setF({ ...flights, homeAirport: e.target.value })} placeholder="e.g. EWR" /></Field>
+                <Field label="Home airport" hint={flights.noFlight ? "Not flying — skip this" : (lookupAirport(flights.homeAirport) ? `${lookupAirport(flights.homeAirport).city} · ${lookupAirport(flights.homeAirport).name}` : null)}>
+                  {flights.noFlight ? (
+                    <div style={{ height: "38px", lineHeight: "38px", borderBottom: "0.5px solid var(--color-border-secondary)", fontSize: "14px", color: "var(--color-text-secondary)", fontStyle: "italic", opacity: 0.6 }}>Not flying</div>
+                  ) : (
+                    <AirportAutocomplete value={flights.homeAirport} onChange={e => setF({ ...flights, homeAirport: e.target.value })} placeholder="e.g. EWR" />
+                  )}
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px", fontSize: "11px", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit" }}>
+                    <input type="checkbox" checked={!!flights.noFlight} onChange={e => setF({ ...flights, noFlight: e.target.checked, homeAirport: e.target.checked ? "" : flights.homeAirport, airline: e.target.checked ? "" : flights.airline, cabin: e.target.checked ? "" : flights.cabin })} style={{ accentColor: GOLD, margin: 0, cursor: "pointer" }} />
+                    <span>Not flying (driving / train)</span>
+                  </label>
+                </Field>
               </div>
               <div style={g3}>
                 <Field label="Start date"><DateInput value={basics.startDate} onChange={e => setB({ ...basics, startDate: e.target.value })} /></Field>
                 <Field label={isMultiCity ? "Total nights" : "Nights"} hint={isMultiCity ? "Auto-summed from cities" : null}>
-                  <Inp value={isMultiCity ? String(totalNightsFromCities) : basics.nights} onChange={e => !isMultiCity && setB({ ...basics, nights: e.target.value })} placeholder="7" />
+                  <Inp value={isMultiCity ? String(totalNightsFromCities) : basics.nights} onChange={e => { if (isMultiCity) return; const v = e.target.value; setB({ ...basics, nights: v, cities: (basics.cities && basics.cities.length > 0) ? basics.cities.map((c, i) => i === 0 ? { ...c, nights: v } : c) : [{ name: basics.destination || "", nights: v, focus: "" }] }); }} placeholder="7" />
                 </Field>
                 <Field label="Travelers"><TravelersAutocomplete value={basics.travelers} onChange={e => setB({ ...basics, travelers: e.target.value })} placeholder="2 adults" /></Field>
               </div>
@@ -3710,14 +3722,16 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
               </div>
             </div>
 
-            <div style={cardStyle}>
-              <p style={ctStyle}>Flights</p>
-              <div style={g3}>
-                <Field label="Preferred airline"><AirlineAutocomplete value={flights.airline} onChange={e => setF({ ...flights, airline: e.target.value })} placeholder="e.g. United" /></Field>
-                <Field label="Cabin"><Sel value={flights.cabin} onChange={e => setF({ ...flights, cabin: e.target.value })} opts={["Business / Polaris","Premium economy","Economy"]} /></Field>
-                <Field label="Date flexibility"><Sel value={flights.flex} onChange={e => setF({ ...flights, flex: e.target.value })} opts={["Exact date only","± 1 day","± 2 days"]} /></Field>
+            {!flights.noFlight && (
+              <div style={cardStyle}>
+                <p style={ctStyle}>Flights</p>
+                <div style={g3}>
+                  <Field label="Preferred airline"><AirlineAutocomplete value={flights.airline} onChange={e => setF({ ...flights, airline: e.target.value })} placeholder="e.g. United" /></Field>
+                  <Field label="Cabin"><Sel value={flights.cabin} onChange={e => setF({ ...flights, cabin: e.target.value })} opts={["Business / Polaris","Premium economy","Economy"]} /></Field>
+                  <Field label="Date flexibility"><Sel value={flights.flex} onChange={e => setF({ ...flights, flex: e.target.value })} opts={["Exact date only","± 1 day","± 2 days"]} /></Field>
+                </div>
               </div>
-            </div>
+            )}
 
             <div style={cardStyle}>
               <p style={ctStyle}>Hotel</p>
