@@ -5611,12 +5611,16 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)" }}>
 
       <div style={{ padding: "2rem 1.75rem 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}>
-        <img
-          src="/brand-wordmark.png?v=2"
-          alt="Barrier Island Digital"
-          style={{ display: "block", height: "auto", width: "100%", maxWidth: "320px", margin: "0 0 10px" }}
-        />
-        <p style={{ fontSize: "15px", fontWeight: "400", margin: 0, color: "var(--color-text-secondary)", letterSpacing: "-0.2px", fontFamily: "var(--font-serif)", fontStyle: "italic" }}>Trip Optimizer</p>
+        <p style={{ fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 8px", color: "var(--color-text-secondary)" }}>Travel planning</p>
+        <p style={{ fontSize: "28px", fontWeight: "400", margin: "0 0 10px", color: "var(--color-text-primary)", letterSpacing: "-0.5px", fontFamily: "var(--font-serif)", fontStyle: "italic" }}>Trip Optimizer</p>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
+          <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Powered by</span>
+          <img
+            src="/brand-wordmark.png?v=2"
+            alt="Barrier Island Digital, LLC"
+            style={{ display: "block", height: "16px", width: "auto", opacity: 0.85 }}
+          />
+        </div>
         <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "14px 0 0" }} />
       </div>
 
