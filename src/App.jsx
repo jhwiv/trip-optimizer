@@ -1072,6 +1072,28 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
           ⚠︎ {r.closure_note}
         </p>
       )}
+      {/* Freshness check — the model marks restaurants it can't confirm are */}
+      {/* still operating, and we surface that as a tappable verify link so the */}
+      {/* traveler doesn't show up to a dark storefront. The single biggest QA */}
+      {/* failure this app can ship is recommending a permanently-closed */}
+      {/* restaurant, so we default to the conservative "verify before booking" */}
+      {/* microcopy whenever the model isn't certain. */}
+      {(r.verify_status === "verify_before_booking" || (!r.verify_status && r.verify_url)) && (
+        <div style={{ margin: "0 0 8px", padding: "6px 9px", background: "#FFF8EC", border: "0.5px solid #E8C063", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "10.5px", fontWeight: 600, color: "#8A6500", letterSpacing: "0.04em", textTransform: "uppercase" }}>Verify</span>
+          <span style={{ fontSize: "11.5px", color: "#5A4A1F" }}>
+            Confirm this spot is still open before booking.
+          </span>
+          {r.verify_url && (
+            <a
+              href={r.verify_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: "11px", color: "#8A6500", textDecoration: "underline", fontWeight: 500, marginLeft: "auto" }}
+            >Check listing →</a>
+          )}
+        </div>
+      )}
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px" }}>
         {r.menu && (
           <button
@@ -1667,6 +1689,151 @@ function applyQualityLayer(input, inputs) {
           }
         });
       });
+    }
+  }
+
+  // 2.5 Restaurant freshness defaulter — if the model omitted verify_status,
+  // default to the conservative "verify_before_booking" so the verify chip
+  // shows on the card. We err on the side of asking the traveler to confirm
+  // rather than blindly trusting a stale recommendation. Also propagate the
+  // same default to backup restaurants.
+  if (Array.isArray(days)) {
+    days.forEach(day => {
+      (day.items || []).forEach(item => {
+        const r = item.restaurant;
+        if (r && r.name) {
+          if (!r.verify_status) r.verify_status = "verify_before_booking";
+          if (r.backup && r.backup.name && !r.backup.verify_status) {
+            r.backup.verify_status = "verify_before_booking";
+          }
+        }
+      });
+    });
+  }
+
+  // 2.6 Marquee coverage check — every destination has a handful of iconic
+  // sights any first-time visitor expects to see. The system prompt forces
+  // the model to schedule them, but we double-check here and surface a
+  // warning if the canonical marquee for a known destination is absent
+  // from the days[] item names/headlines. This catches misses like
+  // recommending Greenville without Falls Park / Swamp Rabbit Trail.
+  //
+  // The table is intentionally small — only destinations where a single
+  // missing sight would be obviously wrong to a local. Each entry pairs
+  // a destination-name substring with required keyword groups: each group
+  // must match at least one keyword somewhere in days[].items[].name or
+  // day.headline or top-level destination notes.
+  const MARQUEE_REQUIRED = [
+    { match: /\bgreenville\b.*\bsc\b|\bgreenville,?\s*sc\b/i, groups: [
+      ["falls park", "liberty bridge", "reedy river"],
+      ["swamp rabbit", "swamp-rabbit"],
+    ]},
+    { match: /\basheville\b/i, groups: [
+      ["biltmore"],
+      ["blue ridge parkway", "parkway"],
+    ]},
+    { match: /\bcharleston\b/i, groups: [
+      ["battery", "rainbow row"],
+    ]},
+    { match: /\bsavannah\b/i, groups: [
+      ["forsyth", "historic district", "squares"],
+    ]},
+    { match: /\bnashville\b/i, groups: [
+      ["country music", "ryman", "opry"],
+    ]},
+    { match: /\bsanta\s*fe\b/i, groups: [
+      ["o'keeffe", "okeeffe", "o\u2019keeffe"],
+      ["canyon road", "plaza", "bandelier", "tent rocks"],
+    ]},
+    { match: /\bsedona\b/i, groups: [
+      ["cathedral rock", "bell rock", "chapel of the holy cross"],
+    ]},
+    { match: /\bbozeman\b/i, groups: [
+      ["museum of the rockies", "hyalite", "bridger", "big sky"],
+    ]},
+    { match: /\bjackson\b.*\bwy\b|\bjackson hole\b|\bgrand teton\b/i, groups: [
+      ["grand teton", "snake river", "schwabacher"],
+    ]},
+    { match: /\baspen\b/i, groups: [
+      ["maroon bells", "aspen mountain", "gondola"],
+    ]},
+    { match: /\bvenice\b/i, groups: [
+      ["doge", "st. mark", "saint mark", "san marco"],
+      ["gondola", "rialto"],
+    ]},
+    { match: /\brome\b/i, groups: [
+      ["vatican", "sistine"],
+      ["colosseum", "forum"],
+    ]},
+    { match: /\bflorence\b/i, groups: [
+      ["uffizi", "accademia", "david"],
+      ["duomo", "brunelleschi"],
+    ]},
+    { match: /\bparis\b/i, groups: [
+      ["louvre", "orsay", "eiffel"],
+    ]},
+    { match: /\bbarcelona\b/i, groups: [
+      ["sagrada"],
+      ["park g\u00fcell", "park guell", "casa batll\u00f3", "casa batllo"],
+    ]},
+    { match: /\bgranada\b/i, groups: [
+      ["alhambra"],
+    ]},
+    { match: /\bamsterdam\b/i, groups: [
+      ["rijksmuseum", "van gogh", "anne frank"],
+    ]},
+    { match: /\bathens\b/i, groups: [
+      ["acropolis"],
+    ]},
+    { match: /\bistanbul\b/i, groups: [
+      ["hagia sophia", "blue mosque", "topkap"],
+    ]},
+    { match: /\btokyo\b/i, groups: [
+      ["senso", "meiji", "shibuya", "shinjuku", "teamlab"],
+    ]},
+    { match: /\bkyoto\b/i, groups: [
+      ["fushimi", "kinkaku", "arashiyama", "gion"],
+    ]},
+  ];
+
+  // Combine destination + all city names (multi-city trips put per-city info
+  // in inputs.cities[].name) so the matcher fires even when only the joined
+  // arrow string is missing a particular substring.
+  const destStr = (() => {
+    const parts = [inputs?.destination, inputs?.destinations];
+    if (Array.isArray(inputs?.cities)) {
+      inputs.cities.forEach(c => { if (c?.name) parts.push(c.name); });
+    }
+    return parts.filter(Boolean).join(" ").toLowerCase();
+  })();
+  if (destStr && Array.isArray(days)) {
+    // Flatten every text surface the model might have put a marquee mention into:
+    // day headlines, item names, item notes, snobs guide, etc.
+    const haystack = (() => {
+      const parts = [];
+      days.forEach(d => {
+        if (d.headline) parts.push(String(d.headline));
+        if (d.weather) parts.push(String(d.weather));
+        (d.items || []).forEach(it => {
+          if (it.name) parts.push(String(it.name));
+          if (it.notes) parts.push(String(it.notes));
+          if (it.location) parts.push(String(it.location));
+        });
+      });
+      if (Array.isArray(input.snobs)) parts.push(input.snobs.join(" "));
+      if (Array.isArray(input.flags)) parts.push(input.flags.join(" "));
+      return parts.join(" ").toLowerCase();
+    })();
+    for (const rule of MARQUEE_REQUIRED) {
+      if (!rule.match.test(destStr)) continue;
+      const missing = [];
+      for (const group of rule.groups) {
+        const hit = group.some(kw => haystack.includes(kw.toLowerCase()));
+        if (!hit) missing.push(group[0]);
+      }
+      if (missing.length) {
+        warnings.push(`Marquee sight not scheduled: ${missing.join(", ")} — this is iconic to the destination and should appear on the itinerary. Tap Expert Review to add it.`);
+      }
     }
   }
 
@@ -4880,6 +5047,10 @@ Every destination has 2–6 marquee sights that any luxury traveler will expect 
 • Greece — Athens: Acropolis + Acropolis Museum (book pre-dawn slot), Pláka, National Archaeological Museum. Santorini: Oia sunset, Akrotiri ruins, caldera boat tour.
 • Turkey — Istanbul: Hagia Sophia, Blue Mosque, Topkapı, Grand Bazaar, Bosphorus cruise.
 • US — NYC: Met, MoMA, Statue of Liberty + Ellis Island, Brooklyn Bridge walk, Broadway show. Santa Fe: Georgia O'Keeffe Museum, Canyon Road galleries, Bandelier or Tent Rocks excursion, Plaza + cathedral. New Orleans: French Quarter, Garden District + Lafayette Cemetery, jazz at Preservation Hall.
+• US SOUTHEAST — Greenville, SC: Falls Park on the Reedy + Liberty Bridge (the iconic curved suspension bridge over the falls — unmissable, both daytime and golden-hour), Swamp Rabbit Trail (cycle or e-bike Furman → downtown is the signature local experience), Main Street stroll + GVL Today public art, Greenville Zoo or Roper Mountain Science Center if traveling with kids, day trip to Caesar's Head State Park overlook OR Table Rock for a Blue Ridge view. Asheville, NC: Biltmore Estate (half-day minimum, book ahead), Blue Ridge Parkway scenic drive + Craggy Gardens or Graveyard Fields, River Arts District studio crawl, Grove Park Inn (high tea or sunset terrace), downtown food + craft beer walk. Charleston, SC: Battery + Rainbow Row walk, Magnolia or Middleton Place plantation/garden, carriage tour of the historic district, Fort Sumter ferry, King Street shopping + dinner. Savannah, GA: Forsyth Park, Bonaventure Cemetery, Historic District square walk (22 squares!), River Street, Wormsloe Historic Site oak avenue. Nashville, TN: Country Music Hall of Fame, Ryman Auditorium tour, honky-tonk row on Broadway, Belle Meade / Cheekwood, Grand Ole Opry show. Charlotte, NC: NASCAR Hall of Fame, Bechtler / Mint Museum, US National Whitewater Center, NoDa arts district. Memphis, TN: Graceland, Sun Studio, National Civil Rights Museum, Beale Street.
+• US MOUNTAIN/WEST (non-marquee cities) — Bozeman, MT: Museum of the Rockies + T. rex, Hyalite Canyon hike/snowshoe, Bridger Bowl or Big Sky day trip, downtown Main Street. Jackson, WY: Grand Teton drive (Snake River Overlook, Schwabacher Landing), wildlife safari at dawn, Town Square antler arches, Mangy Moose or Million Dollar Cowboy. Sun Valley, ID: Sun Valley Resort + ice show, Bald Mountain gondola, Ketchum gallery walk, Hemingway's grave. Aspen, CO: Maroon Bells (book shuttle ahead in summer), Aspen Mountain gondola, Aspen Art Museum, downtown stroll + Wheeler Opera House. Vail, CO: Gondola One up Vail Mountain, Betty Ford Alpine Gardens, Vail Village stroll, day trip to Beaver Creek. Telluride, CO: Free gondola to Mountain Village, Bridal Veil Falls hike or drive, historic Main Street.
+• US OTHER — Key West: Mallory Square sunset, Hemingway Home, Duval Street, Dry Tortugas day trip if 3+ nights. Sedona: Cathedral Rock + Bell Rock hikes, pink-jeep tour, Chapel of the Holy Cross, Palatki ruins. Napa/Sonoma: 2–3 winery visits with appointment, Castello di Amorosa or Sterling, Oxbow Public Market, hot-air balloon at dawn. Outer Banks: Wright Brothers National Memorial, Cape Hatteras Lighthouse, Bodie Island, Roanoke Festival Park. Hilton Head: beach day, Harbour Town Lighthouse, Pinckney Island wildlife refuge, Coastal Discovery Museum.
+• CARIBBEAN — Anguilla, St. Barth, Turks & Caicos: the beach IS the marquee — still schedule one anchor experience (Shoal Bay snorkel + lunch, Gustavia harbor walk, Chalk Sound + Smith's Reef). Don't pretend a beach destination has no marquee — plan the signature beach and the signature meal.
 • Japan — Tokyo: Senso-ji, Tsukiji outer market, teamLab, Meiji Shrine, Shibuya crossing + Shinjuku at night. Kyoto: Fushimi Inari at dawn, Kinkaku-ji, Arashiyama bamboo + Iwatayama monkeys, Gion at dusk, kaiseki dinner.
 
 General rule: if your destination is not in the list above, generate the equivalent "top 4–6 marquee experiences any first-time visitor would expect" list mentally and schedule each one. If the user gave fewer nights than needed to cover all marquees, surface the gap in flags[].
@@ -4991,6 +5162,20 @@ RESTAURANTS:
 • Always include a same-tier backup in the same neighborhood / cuisine family.
 • reservation.platform: opentable for most US/UK/EU fine dining; resy for trendy NYC/LA/Miami; tock for tasting menus; phone with a phone number for hole-in-the-walls; walkin if no reservations. Include the canonical url when you know it.
 • menu schema: { style_note, signature_dishes, appetizers, mains, desserts, wine_and_drinks, source_note }. Real dishes the restaurant is actually known for. Always include the source_note acknowledging menus change.
+
+• RESTAURANT FRESHNESS — NEVER RECOMMEND A CLOSED RESTAURANT:
+  Restaurants close permanently all the time, and the closure is usually weeks-to-months ahead of the news cycle the model was trained on. A recommendation for a permanently-closed restaurant is the single most damaging failure this app can ship — the traveler shows up to a dark storefront. Apply these guards on EVERY meal item:
+  — Only recommend restaurants that you have HIGH confidence are still operating as of the user's travel dates. If your confidence is below ~85%, do NOT recommend it. Pick a different restaurant.
+  — Specifically AVOID restaurants you know to have a history of: ownership/concept changes, brief pop-up runs (<2 years), social media silence in the past year, or chef departures that ended the concept.
+  — Prefer institutions with a multi-year track record (5+ years, ideally 10+) and a stable owner/chef, OR brand-new openings (<18 months) that have generated verifiable press coverage. The danger zone is the 2–5 year old spot that may have quietly closed.
+  — EVERY restaurant object MUST include a verify_status field with EXACTLY ONE of these values:
+      "confirmed_operating"   — you have high confidence (institution, chain, recent verifiable press) the restaurant is still open.
+      "verify_before_booking" — you believe it's still open but freshness is uncertain. The card will surface a 'Confirm still open' microcopy line to the user.
+  — Default to "verify_before_booking" whenever in doubt. NEVER mark a restaurant "confirmed_operating" unless it is a well-known institution OR you know of recent (last ~12 months) press coverage.
+  — The closure_note field must capture the SPECIFIC closure-day pattern when known (e.g., "Closed Mondays", "Closed Sunday + Monday", "Closed for summer break in August"). "Confirm hours" alone is not enough.
+  — If you cannot find ANY restaurant in the destination you have high confidence in, default to the hotel restaurant or a well-known chain/institution — do not invent or guess.
+  — The backup field is not optional and must be a DIFFERENT operator (not a sister restaurant of the primary). The backup is what the traveler uses when the primary is closed/booked/gone.
+  — For every restaurant, also include verify_url (TheFork / OpenTable / Resy / Google Maps / the restaurant's own website) the traveler can tap to confirm hours before they walk over.
 
 LOGISTICS chips:
 • Short chips only — max 6, each ≤40 chars. Top-line facts only (airline summary, hotel name, car). DO NOT write sentences here. The full plan goes in days[].
