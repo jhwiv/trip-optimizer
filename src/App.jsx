@@ -5618,7 +5618,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           <img
             src="/brand-wordmark.png?v=2"
             alt="Barrier Island Digital, LLC"
-            style={{ display: "block", height: "16px", width: "auto", opacity: 0.85 }}
+            style={{ display: "block", height: "22px", width: "auto", opacity: 0.9 }}
           />
         </div>
         <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "14px 0 0" }} />
