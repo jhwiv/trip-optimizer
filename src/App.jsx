@@ -1925,7 +1925,7 @@ function InputSummary({ inputs }) {
     ["Transport", transport?.type + (transport?.company ? ` · ${transport.company}` : "")],
     ["Vehicle", transport?.vehicle || "—"],
     ["Cuisine focus", dining?.cuisine || "—"],
-    ["Dinner budget", dining?.budget || "—"],
+    ["Dinner budget", Array.isArray(dining?.budget) ? (dining.budget.length ? dining.budget.join(", ") : "—") : (dining?.budget || "—")],
     ["Requested restaurants", (restaurants && restaurants.length) ? restaurants.join(", ") : "—"],
     ["Requested activities", (activities && activities.length) ? activities.join(", ") : "—"],
     ["Interest level", interests?.level || "—"],
@@ -2948,7 +2948,7 @@ export default function TripOptimizer() {
     flights: { homeAirport: "", airline: "", cabin: "", flex: "", noFlight: false },
     hotel: { brand: [], tier: "", mustHave: "" },
     transport: { type: [], company: "", vehicle: "" },
-    dining: { cuisine: "", budget: "" },
+    dining: { cuisine: "", budget: [] },
     restaurants: [],
     activities: [],
     interests: { level: "", text: "" },
@@ -3287,7 +3287,7 @@ Style: ${prefToText(basics.style)} · Pace: ${basics.pace || "No preference"} ·
 ${flights.noFlight ? `Transportation mode: GROUND ONLY (driving / train). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the drive or rail journey from the user's origin to the destination, with realistic time + distance.` : `Home airport: ${flights.homeAirport} · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin || "no preference"}`}
 Hotel brand: ${prefToText(hotel.brand)}${hotel.tier ? ` · ${hotel.tier}` : ""} · Must-haves: ${hotel.mustHave || "none"}
 Transport: ${prefToText(transport.type)}${transport.company ? ` · ${transport.company}` : ""}
-Cuisine: ${dining.cuisine || "local"} · Dinner budget: ${dining.budget || "No preference"}
+Cuisine: ${dining.cuisine || "local"} · Dinner budget: ${prefToText(dining.budget)}
 Restaurants requested: ${restaurants.length ? restaurants.join(", ") : "suggest"}
 Activities requested: ${activities.length ? activities.join(", ") : "suggest based on style"}
 Interests: ${interests.text || "not specified"} · Level: ${interests.level || "No preference"}
@@ -3301,13 +3301,108 @@ IMPORTANT: NO RESTAURANT MAY APPEAR TWICE. Each named restaurant gets ONE meal s
 IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "weather" line (seasonal expectation). Top-level MUST include weather_window, pack[≥3], planb[≥5], tonight (with priority prefixes).`;
   };
 
+  // Active-job storage key. When a build is in flight we write the jobId and
+  // form snapshot here so a reopened window can re-attach to the server-side
+  // job and continue polling exactly where it left off. Cleared on completion,
+  // explicit cancel, or hard error.
+  const ACTIVE_JOB_KEY = "trip-optimizer-active-job-v1";
+
+  // Shared poller used by both fresh builds and the resume-on-mount path.
+  // Polls GET /api/build/<jobId>?cursor=N, appends server-side deltas to a
+  // running toolJson buffer, updates progress, and resolves with the final
+  // accumulated text when status flips to "done". Throws on "error" or
+  // notFound. The signal cancels the poll loop without killing the
+  // server-side job (build keeps running for next time).
+  const pollJob = async ({ jobId, signal, onDelta }) => {
+    let cursor = 0;
+    const POLL_MS = 1500;
+    while (true) {
+      if (signal?.aborted) {
+        const err = new Error("Aborted");
+        err.name = "AbortError";
+        throw err;
+      }
+      let resp;
+      try {
+        resp = await fetch(`/api/build/${encodeURIComponent(jobId)}?cursor=${cursor}`, {
+          signal,
+          headers: { "Cache-Control": "no-cache" },
+        });
+      } catch (netErr) {
+        // Transient network blip during a poll — wait and retry. The job is
+        // still running on the server; we just couldn't reach it this tick.
+        if (netErr?.name === "AbortError") throw netErr;
+        await new Promise(r => setTimeout(r, POLL_MS));
+        continue;
+      }
+      if (resp.status === 404) {
+        const err = new Error("Job not found or expired. Build again.");
+        err.notFound = true;
+        throw err;
+      }
+      if (!resp.ok) {
+        // 5xx — surface once but keep trying a couple times before giving up.
+        await new Promise(r => setTimeout(r, POLL_MS));
+        continue;
+      }
+      const data = await resp.json();
+      if (data?.error?.message) throw new Error(data.error.message);
+
+      if (data.delta) {
+        cursor = data.cursor;
+        onDelta(data.delta, cursor);
+      }
+      if (data.status === "done") return { len: data.cursor };
+      if (data.status === "error") throw new Error(data.error || "Build failed on server.");
+
+      await new Promise(r => setTimeout(r, POLL_MS));
+    }
+  };
+
+  // Compute progress label given the current accumulated toolJson. Pulled out
+  // of the inner stream loop so it can run identically against polled deltas
+  // and against a resumed job's pre-existing buffer.
+  const updateProgressLabel = (toolJson, totalDays) => {
+    const dayMatches = toolJson.match(/"label"\s*:\s*"/g) || [];
+    const daysSeen = dayMatches.length;
+    const restaurantMatches = toolJson.match(/"reservation"\s*:/g) || [];
+    const restaurantsDone = restaurantMatches.length;
+
+    if (daysSeen === 0 && toolJson.length < 200) {
+      setProgressLabel("Starting plan…");
+    } else if (daysSeen === 0) {
+      setProgressLabel("Planning structure…");
+    } else if (daysSeen <= totalDays) {
+      const currentDay = daysSeen;
+      const lastLabelIdx = toolJson.lastIndexOf('"label"');
+      const restIdx = toolJson.lastIndexOf('"restaurant"');
+      const menuIdx = toolJson.lastIndexOf('"menu"');
+      if (restaurantsDone > 0 && menuIdx > lastLabelIdx) {
+        setProgressLabel(`Day ${currentDay} of ${totalDays} · menu`);
+      } else if (restIdx > lastLabelIdx) {
+        setProgressLabel(`Day ${currentDay} of ${totalDays} · dining`);
+      } else {
+        setProgressLabel(`Day ${currentDay} of ${totalDays} · activities`);
+      }
+    } else {
+      setProgressLabel("Insider notes & Plan B…");
+    }
+  };
+
   const handleCancel = () => {
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} }
+    // Drop the stored active job so we don't auto-resume it on next mount.
+    try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
     setLoading(false);
     setLoadingMsg("");
   };
 
-  const handleBuild = async () => {
+  // Internal: drive the UI state machine for a running job. Used for both
+  // fresh starts (jobId just minted) and resume-on-reopen (jobId loaded from
+  // localStorage). Caller provides the expected nights so progress can be
+  // computed without re-deriving from current form state (which may be empty
+  // on a resume into a fresh tab).
+  const runBuildForJob = async ({ jobId, nightsNum, expectedTokens, startedAt }) => {
     setLoading(true);
     setError("");
     setProgress(0);
@@ -3315,29 +3410,18 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
     setElapsedSec(0);
     setLoadingMsg("Researching destination…");
 
-    // Track elapsed time for the progress display + drive time-based progress.
-    // Token-based estimation undercounts on long plans (real builds run
-    // 2–3 minutes); we take the max of the two so the bar always advances.
-    const startedAt = Date.now();
-    // Empirically, recent builds land ~120–180s. Target 160s as the
-    // "95% reached" point; the bar caps there until message_stop hits.
+    const totalDays = nightsNum + 1;
     const targetSec = 160;
     let lastTokenFrac = 0;
+
     const elapsedTimer = setInterval(() => {
       const sec = Math.floor((Date.now() - startedAt) / 1000);
       setElapsedSec(sec);
-      // Update progress with the time-based floor so the bar keeps moving
-      // even if the model pauses on a long restaurant card.
       const timeFrac = Math.min(0.95, sec / targetSec);
       const frac = Math.max(lastTokenFrac, timeFrac);
       setProgress(prev => (prev >= 1 ? prev : Math.max(prev, frac)));
     }, 250);
 
-    // Expected output size for the token-side of the estimate.
-    const nightsNum = Math.max(1, parseInt(basics.nights || "3", 10) || 3);
-    const expectedTokens = 1200 + (nightsNum + 1) * 1300;
-
-    // Rotating progress messages so users see motion during the long generation.
     const phases = [
       "Researching destination…",
       "Selecting hotels and neighborhoods…",
@@ -3352,35 +3436,29 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
       setLoadingMsg(phases[phaseIdx]);
     }, 7000);
 
-    // Hard client timeout — 4 minutes. Richer restaurant payloads (full menus +
-    // backup per dinner) can push a 6-night plan to ~2 min of streaming.
+    // The client-side hard timeout is now generous (5 min) because the server
+    // keeps running independently. If the user wants to walk away we don't
+    // need to abort early — we just stop polling.
     const controller = new AbortController();
     abortRef.current = controller;
-    const hardTimeout = setTimeout(() => controller.abort(new Error("Timed out after 4 minutes")), 240000);
+    const hardTimeout = setTimeout(() => controller.abort(new Error("Polled too long")), 300000);
 
-    // Reassure the user partway through. Realistic build times are 2–3 min;
-    // bump the message at ~90s so it doesn't lie about being almost done.
     const slowNotice = setTimeout(() => {
       setLoadingMsg(prev => prev.includes("still building") ? prev : "Still building — detailed plans typically take 2–3 minutes…");
     }, 90000);
 
-    // Keep iOS Safari from sleeping the screen and dropping the stream.
-    // Wake locks auto-release whenever the page becomes hidden; we need to
-    // re-acquire it when the user returns. This is the most common cause of
-    // "app crashed when I switched windows" — the screen slept, the connection
-    // dropped, and the stream died silently.
+    // Wake lock keeps the screen alive on iOS so polling stays fluid; with
+    // server-side jobs even a screen sleep no longer kills the build, but a
+    // bright phone keeps the polling visible.
     let wakeLock = null;
     const requestWakeLock = async () => {
       try {
         if ("wakeLock" in navigator && navigator.wakeLock?.request) {
           wakeLock = await navigator.wakeLock.request("screen");
         }
-      } catch { /* not available; safe to ignore */ }
+      } catch {}
     };
     const onVisibilityChange = () => {
-      // When the tab returns to the foreground mid-build, re-grab the wake
-      // lock so the screen doesn't sleep again. Do NOT abort the controller
-      // here — the stream may still be live in the background.
       if (document.visibilityState === "visible" && abortRef.current === controller) {
         requestWakeLock();
       }
@@ -3388,268 +3466,71 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
     await requestWakeLock();
     document.addEventListener("visibilitychange", onVisibilityChange);
 
-    // One inner attempt that runs the fetch + stream-reading. Returns parsed plan or throws.
-    const attemptOnce = async () => {
-      const apiUrl = (typeof __API_BASE__ !== "undefined" ? __API_BASE__ : "") + "/api/chat";
-      const response = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model: "claude-sonnet-4-5",
-          // 32k headroom: a 7-day plan with full restaurant menus + backups
-          // empirically lands around 6-8k output tokens; 16k was leaving no
-          // room for thinking + the model occasionally truncated days[]
-          // when it wrote chips/flags first.
-          max_tokens: 32000,
-          system: buildSystemPrompt(),
-          messages: [{ role: "user", content: buildUserPrompt() }],
-          tools: [TRIP_PLAN_TOOL],
-          tool_choice: { type: "tool", name: "submit_trip_plan" },
-        }),
-      });
-      return response;
-    };
-
-    // Classify whether an error looks like a transient network drop worth retrying.
-    const isTransientNetworkError = (err) => {
-      if (!err) return false;
-      if (err.name === "AbortError") return false; // user-cancelled or timed out
-      const msg = String(err.message || err).toLowerCase();
-      return (
-        err instanceof TypeError ||              // Safari "Load failed" / Chrome "Failed to fetch"
-        msg.includes("load failed") ||
-        msg.includes("failed to fetch") ||
-        msg.includes("network") ||
-        msg.includes("connection") ||
-        msg.includes("stream")
-      );
-    };
+    let toolJson = "";
 
     try {
-      let response;
-      try {
-        response = await attemptOnce();
-      } catch (initialErr) {
-        if (isTransientNetworkError(initialErr) && navigator.onLine !== false) {
-          // Brief pause then one retry. Safari occasionally drops the very first
-          // streaming request when the network's on cellular.
-          setLoadingMsg("Retrying… connection dropped");
-          await new Promise(r => setTimeout(r, 800));
-          response = await attemptOnce();
-        } else {
-          throw initialErr;
-        }
-      }
+      await pollJob({
+        jobId,
+        signal: controller.signal,
+        onDelta: (delta /*, totalLen */) => {
+          toolJson += delta;
+          // Char-based token estimate + progress label, same logic as before.
+          const estTokens = toolJson.length / 3.5;
+          const tokFrac = Math.min(0.95, estTokens / expectedTokens);
+          lastTokenFrac = tokFrac;
+          setProgress(prev => Math.max(prev, tokFrac));
+          updateProgressLabel(toolJson, totalDays);
+        },
+      });
 
-      // Non-streaming error path: server returned JSON error.
-      if (!response.ok) {
-        const raw = await response.text();
-        let msg = `Request failed (HTTP ${response.status})`;
-        try {
-          const j = JSON.parse(raw);
-          msg = j?.error?.message || j?.message || msg;
-        } catch { if (raw) msg = raw.slice(0, 240); }
-        throw new Error(msg);
-      }
+      setProgress(1);
+      setProgressLabel("Finalizing…");
 
-      const ctype = response.headers.get("content-type") || "";
+      if (!toolJson) throw new Error("No content returned from AI service.");
 
-      // Accumulated tool_use input. Anthropic streams it as partial_json fragments
-      // inside content_block_delta events; we concatenate then JSON.parse at the end.
-      let toolJson = "";
-      let sawMessageStop = false;
-      let serverFinalText = ""; // fallback if API ever returns non-streamed JSON
-
-      if (ctype.includes("text/event-stream") && response.body) {
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buf += decoder.decode(value, { stream: true });
-            let nl;
-            while ((nl = buf.indexOf("\n\n")) !== -1) {
-              const event = buf.slice(0, nl);
-              buf = buf.slice(nl + 2);
-              for (const line of event.split("\n")) {
-                if (!line.startsWith("data:")) continue;
-                const payload = line.slice(5).trim();
-                if (!payload || payload === "[DONE]") continue;
-                try {
-                  const evt = JSON.parse(payload);
-                  if (evt.type === "content_block_delta" && evt.delta?.type === "input_json_delta") {
-                    toolJson += evt.delta.partial_json || "";
-
-                    // Progress: estimate by character count vs expected budget. Cap at 95%.
-                    const estTokens = toolJson.length / 3.5;
-                    const tokFrac = Math.min(0.95, estTokens / expectedTokens);
-                    lastTokenFrac = tokFrac;
-                    setProgress(prev => Math.max(prev, tokFrac));
-
-                    // Friendly progress label based on what's been generated so far.
-                    // Count "label":" occurrences — those only appear inside days[]
-                    // (the schema has no other `label` field), so this matches every
-                    // label format the model might emit (e.g. "Day 1 · Thu" or
-                    // "Wednesday, Jun 4 – Arrival").
-                    const totalDays = nightsNum + 1;
-                    const dayMatches = toolJson.match(/"label"\s*:\s*"/g) || [];
-                    const daysSeen = dayMatches.length;
-                    const restaurantMatches = toolJson.match(/"reservation"\s*:/g) || [];
-                    const restaurantsDone = restaurantMatches.length;
-
-                    if (daysSeen === 0 && toolJson.length < 200) {
-                      setProgressLabel("Starting plan…");
-                    } else if (daysSeen === 0) {
-                      setProgressLabel("Planning structure…");
-                    } else if (daysSeen <= totalDays) {
-                      // daysSeen == N means the model just opened Day N's object
-                      // (the label of day N is the latest one written).
-                      const currentDay = daysSeen;
-                      // Find where this day's block starts so we can tell whether
-                      // the most recent activity inside it is restaurant/menu work.
-                      const lastLabelIdx = toolJson.lastIndexOf('"label"');
-                      const restIdx = toolJson.lastIndexOf('"restaurant"');
-                      const menuIdx = toolJson.lastIndexOf('"menu"');
-                      if (restaurantsDone > 0 && menuIdx > lastLabelIdx) {
-                        setProgressLabel(`Day ${currentDay} of ${totalDays} · menu`);
-                      } else if (restIdx > lastLabelIdx) {
-                        setProgressLabel(`Day ${currentDay} of ${totalDays} · dining`);
-                      } else {
-                        setProgressLabel(`Day ${currentDay} of ${totalDays} · activities`);
-                      }
-                    } else {
-                      setProgressLabel("Insider notes & Plan B…");
-                    }
-                  } else if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
-                    // Some models may emit a small text preamble before calling the tool. Ignore for parsing.
-                  } else if (evt.type === "message_stop") {
-                    sawMessageStop = true;
-                    setProgress(1);
-                    setProgressLabel("Finalizing…");
-                  } else if (evt.type === "error" || evt.error) {
-                    throw new Error(evt.error?.message || evt.message || "Stream error");
-                  }
-                } catch {
-                  // Ignore unparseable keepalive lines.
-                }
-              }
-            }
-          }
-        } catch (streamErr) {
-          // Stream broke mid-flight. Retry once if nothing useful arrived yet.
-          if (!sawMessageStop && toolJson.length < 200 && isTransientNetworkError(streamErr) && navigator.onLine !== false) {
-            setLoadingMsg("Connection dropped — retrying…");
-            await new Promise(r => setTimeout(r, 800));
-            const retryResponse = await attemptOnce();
-            if (!retryResponse.ok) throw streamErr;
-            const retryReader = retryResponse.body?.getReader();
-            if (!retryReader) throw streamErr;
-            buf = "";
-            toolJson = "";
-            while (true) {
-              const { done, value } = await retryReader.read();
-              if (done) break;
-              buf += decoder.decode(value, { stream: true });
-              let nl2;
-              while ((nl2 = buf.indexOf("\n\n")) !== -1) {
-                const event = buf.slice(0, nl2);
-                buf = buf.slice(nl2 + 2);
-                for (const line of event.split("\n")) {
-                  if (!line.startsWith("data:")) continue;
-                  const payload = line.slice(5).trim();
-                  if (!payload || payload === "[DONE]") continue;
-                  try {
-                    const evt = JSON.parse(payload);
-                    if (evt.type === "content_block_delta" && evt.delta?.type === "input_json_delta") {
-                      toolJson += evt.delta.partial_json || "";
-                    } else if (evt.type === "message_stop") {
-                      sawMessageStop = true;
-                    }
-                  } catch {}
-                }
-              }
-            }
-          } else if (toolJson.length < 200) {
-            throw streamErr;
-          }
-        }
-      } else {
-        // Non-streamed fallback: server returned a full JSON payload.
-        const raw = await response.text();
-        try {
-          const data = JSON.parse(raw);
-          const toolBlock = data.content?.find(b => b.type === "tool_use");
-          if (toolBlock?.input) {
-            // Already parsed object — short-circuit.
-            const parsed = toolBlock.input;
-            if (!Array.isArray(parsed.days) || parsed.days.length === 0) {
-              const keys = Object.keys(parsed).join(", ");
-              const buildId = (typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "unknown";
-              throw new Error(`No day-by-day plan (non-stream path, build ${buildId}). Got keys: ${keys}. Tap Build again.`);
-            }
-            setResult(parsed);
-            setStep(3);
-            return;
-          }
-          serverFinalText = data.content?.find(b => b.type === "text")?.text || "";
-        } catch { throw new Error("Server returned an unexpected response."); }
-      }
-
-      if (!toolJson && !serverFinalText) throw new Error("No content returned from AI service.");
-
-      // Parse the accumulated tool input JSON. With tool_use, Anthropic guarantees
-      // the JSON is well-formed and matches the schema before message_stop — so
-      // a parse failure here means the stream was truncated.
       let parsed;
       try {
-        parsed = JSON.parse(toolJson || serverFinalText);
+        parsed = JSON.parse(toolJson);
       } catch (parseErr) {
-        // Salvage path — should be rare with tool_use, but keep it as a backstop.
-        const salvaged = salvageTruncatedJSON(toolJson || serverFinalText);
+        const salvaged = salvageTruncatedJSON(toolJson);
         if (salvaged) {
           try {
             parsed = JSON.parse(salvaged);
             parsed._truncated = true;
           } catch (salvageErr) {
-            throw new Error("The plan was cut off before it finished. Try again — keep the screen on if you're on cellular.", { cause: salvageErr });
+            throw new Error("The plan was cut off before it finished. Try again.", { cause: salvageErr });
           }
         } else {
-          throw new Error("The plan was cut off before it finished. Try again — keep the screen on if you're on cellular.", { cause: parseErr });
+          throw new Error("The plan was cut off before it finished. Try again.", { cause: parseErr });
         }
       }
 
-      // Sanity check: model must return a real days[] array, not collapse everything into logistics.
-      const expectedDays = (parseInt(basics.nights, 10) || 3) + 1;
+      const expectedDays = nightsNum + 1;
       const gotDays = Array.isArray(parsed?.days) ? parsed.days.length : 0;
       if (gotDays === 0) {
-        // Self-diagnosing error: surface what we actually received so we can debug from a screenshot.
         const keys = parsed ? Object.keys(parsed).join(", ") : "(no object)";
         const truncFlag = parsed?._truncated ? " [truncated]" : "";
         const buildId = (typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "unknown";
         throw new Error(`No day-by-day plan returned (build ${buildId}${truncFlag}). Got keys: ${keys}. Tap Build again.`);
       }
-      // Off-by-one (some models skip the arrival half-day) is acceptable; anything
-      // shorter than that means the day list got truncated. We still surface it.
       if (gotDays < Math.max(2, expectedDays - 1) && !parsed._truncated) {
         parsed._dayCountWarning = `Expected ~${expectedDays} days, got ${gotDays}`;
       }
 
+      // Success — clear the stored active job so we don't auto-resume it.
+      try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
       setResult(parsed);
       setStep(3);
     } catch (err) {
       let msg;
       if (err?.name === "AbortError") {
-        msg = "Generation cancelled or timed out. Try again.";
-      } else if (isTransientNetworkError(err)) {
-        // Safari's generic "Load failed" / Chrome's "Failed to fetch".
-        msg = navigator.onLine === false
-          ? "You appear to be offline. Reconnect and try again."
-          : "Connection dropped before the plan finished. This often happens on cellular or if the screen locked — try again, keep the screen on, or switch to Wi-Fi.";
+        msg = "Build cancelled. The server may still be finishing — reopen the page within a few minutes to resume.";
+      } else if (err?.notFound) {
+        msg = "That build expired or was not found. Tap Build again.";
+        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
       } else {
         msg = err?.message || "Something went wrong generating the plan. Please try again.";
+        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
       }
       setError(msg);
     } finally {
@@ -3667,6 +3548,110 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
       setElapsedSec(0);
     }
   };
+
+  const handleBuild = async () => {
+    // Estimate plan size for the progress-bar token model.
+    const nightsNum = Math.max(1, parseInt(basics.nights || "3", 10) || 3);
+    const expectedTokens = 1200 + (nightsNum + 1) * 1300;
+
+    // Build the Anthropic request body once and ship it to the server. The
+    // server stores it under a jobId, returns immediately, and runs the
+    // Anthropic stream in the background using waitUntil so the build
+    // survives a window close, tab close, screen sleep, or network drop.
+    const body = {
+      model: "claude-sonnet-4-5",
+      max_tokens: 32000,
+      system: buildSystemPrompt(),
+      messages: [{ role: "user", content: buildUserPrompt() }],
+      tools: [TRIP_PLAN_TOOL],
+      tool_choice: { type: "tool", name: "submit_trip_plan" },
+    };
+
+    setLoading(true);
+    setError("");
+    setLoadingMsg("Starting build…");
+
+    let jobId;
+    try {
+      const r = await fetch("/api/build", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const txt = await r.text();
+        let msg = `Could not start build (HTTP ${r.status}).`;
+        try { const j = JSON.parse(txt); msg = j?.error?.message || msg; } catch { if (txt) msg = txt.slice(0, 240); }
+        throw new Error(msg);
+      }
+      const out = await r.json();
+      jobId = out.jobId;
+      if (!jobId) throw new Error("Server did not return a jobId.");
+    } catch (err) {
+      setError(err?.message || "Could not start build. Please try again.");
+      setLoading(false);
+      setLoadingMsg("");
+      return;
+    }
+
+    const startedAt = Date.now();
+    // Persist enough to resume in a fresh tab. We don't need the full form —
+    // the server has the request — but we keep destination + nights so the
+    // resume UI can show context before the first delta arrives.
+    try {
+      localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({
+        jobId,
+        startedAt,
+        nightsNum,
+        expectedTokens,
+        destination: basics.destination || (basics.cities?.[0]?.name) || "your trip",
+      }));
+    } catch {}
+
+    await runBuildForJob({ jobId, nightsNum, expectedTokens, startedAt });
+  };
+
+  // Resume an in-flight build if the user reopens the page during one. We
+  // store the jobId + a few stats in localStorage when a build starts; if we
+  // find a fresh one here on mount, re-attach to its server-side stream. The
+  // build kept running on Cloudflare while the page was gone (waitUntil) —
+  // we just rejoin the polling loop and pick up wherever the server is now.
+  // Stale jobs (>30 min) are discarded so we don't poll into 404s forever.
+  const resumedRef = useRef(false);
+  useEffect(() => {
+    if (resumedRef.current) return;
+    resumedRef.current = true;
+    let raw;
+    try { raw = localStorage.getItem(ACTIVE_JOB_KEY); } catch { return; }
+    if (!raw) return;
+    let saved;
+    try { saved = JSON.parse(raw); } catch { return; }
+    if (!saved?.jobId) return;
+    const age = Date.now() - (saved.startedAt || 0);
+    if (age > 30 * 60 * 1000) {
+      try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+      return;
+    }
+    // Probe the job first so we don't show a spinner for an expired/missing one.
+    fetch(`/api/build/${encodeURIComponent(saved.jobId)}?cursor=0`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data || data.notFound || data?.status === "error") {
+          try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+          return;
+        }
+        setStep(2);
+        setLoadingMsg(`Resuming build for ${saved.destination || "your trip"}…`);
+        runBuildForJob({
+          jobId: saved.jobId,
+          nightsNum: saved.nightsNum || 3,
+          expectedTokens: saved.expectedTokens || 6500,
+          startedAt: saved.startedAt || Date.now(),
+        });
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const outputDefs = [
     ["itinerary","Day-by-day itinerary","Full sequenced schedule with timing"],
@@ -3827,7 +3812,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
               <p style={ctStyle}>Dining</p>
               <div style={g2}>
                 <Field label="Cuisine preferences"><CuisineAutocomplete value={dining.cuisine} onChange={e => setD({ ...dining, cuisine: e.target.value })} placeholder="e.g. local, seafood, wine-focused" /></Field>
-                <Field label="Per-dinner budget"><Sel value={dining.budget} onChange={e => setD({ ...dining, budget: e.target.value })} opts={["$$ — casual ($30–60pp)","$$$ — mid ($60–120pp)","$$$$ — fine dining ($120pp+)","Mixed"]} /></Field>
+                <Field label="Per-dinner budget" hint="Tap one or more"><Sel multi value={dining.budget} onChange={e => setD({ ...dining, budget: e.target.value })} opts={["$$ — casual ($30–60pp)","$$$ — mid ($60–120pp)","$$$$ — fine dining ($120pp+)"]} /></Field>
               </div>
               <TagInput placeholder="Add a restaurant or dining type" tags={restaurants} setTags={setRest} suggestions={getRestaurantSuggestions(basics.destination)} />
             </div>
