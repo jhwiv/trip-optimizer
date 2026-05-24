@@ -2288,7 +2288,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       if (err?.name === "AbortError") {
         setError("Review cancelled.");
       } else {
-        setError(err?.message || "Review failed.");
+        setError(cleanErrorMessage(err?.message, "Review failed."));
       }
       setStatus("idle");
     } finally {
@@ -2400,7 +2400,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       }
     } catch (err) {
       if (err?.name === "AbortError") setError("Apply cancelled.");
-      else setError(err?.message || "Apply failed.");
+      else setError(cleanErrorMessage(err?.message, "Apply failed."));
       setStatus("done");
     } finally {
       clearInterval(elapsedTimer);
@@ -3327,7 +3327,23 @@ async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
   if (!resp.ok) {
     const txt = await resp.text().catch(() => "");
     let msg = `Could not start job (HTTP ${resp.status}).`;
-    try { const j = JSON.parse(txt); msg = j?.error?.message || msg; } catch { if (txt) msg = txt.slice(0, 240); }
+    // Defensive parse: if the upstream returned a Cloudflare error page or
+    // any other HTML shell, JSON.parse will fail and we previously dumped
+    // the raw HTML (doctype + IE conditional comments) into the UI. Now we
+    // detect HTML and replace it with a clean user-facing message.
+    try {
+      const j = JSON.parse(txt);
+      msg = j?.error?.message || msg;
+    } catch {
+      if (txt) {
+        const looksLikeHtml = /<!doctype|<html|<body|<head|<script|<style/i.test(txt);
+        if (looksLikeHtml) {
+          msg = `Server returned an error page (HTTP ${resp.status}). Please retry in a moment.`;
+        } else {
+          msg = txt.slice(0, 200).replace(/\s+/g, " ").trim();
+        }
+      }
+    }
     throw new Error(msg);
   }
   if (!resp.body) throw new Error("Server did not return a stream body.");
@@ -3420,6 +3436,25 @@ async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
   }
 
   return { jobId, toolJson };
+}
+
+// Clean an error message before it hits the UI. Strips HTML tags, collapses
+// whitespace, trims length. The catch-all for any setError(err?.message) site
+// where err.message might be raw HTML from an upstream error page or a long
+// stack-like blob. React already escapes the text, but escaped HTML markup in
+// the UI still looks broken — this normalizes it to plain prose.
+function cleanErrorMessage(raw, fallback = "Something went wrong.") {
+  if (!raw) return fallback;
+  const s = String(raw);
+  // If the string contains markup, replace with a clean message rather than
+  // letting escaped tags clutter the UI.
+  if (/<!doctype|<html|<body|<head|<script|<style|<\/\w+>/i.test(s)) {
+    return "The server returned an unexpected response. Please retry.";
+  }
+  // Strip any stray tags, collapse whitespace, cap at 200 chars.
+  const stripped = s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  if (!stripped) return fallback;
+  return stripped.length > 200 ? stripped.slice(0, 197) + "…" : stripped;
 }
 
 // Parse a tool-input JSON buffer with salvage fallback. Returns { parsed, truncated }.
@@ -5301,7 +5336,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       // onJob callback to capture the jobId.
       startedAt = Date.now();
     } catch (err) {
-      setError(err?.message || "Could not start build. Please try again.");
+      setError(cleanErrorMessage(err?.message, "Could not start build. Please try again."));
       setLoading(false);
       setLoadingMsg("");
       return;
