@@ -755,9 +755,12 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
   const bookUrl = bookHost ? `https://www.${bookHost}` : null;
   // Universal: flight_number is always null after the quality layer. Title shows carrier · route.
   const titleLine = `${f.carrier || "Carrier TBD"} · ${route}`;
-  // Banner copy: priority is carrier-correction → generic look-up.
+  // Banner copy: priority is carrier-correction → airport suggestion → generic look-up.
   const overrideBanner = f._carrierOverride
     ? `App corrected carrier: ${f._originalCarrier || "the model's pick"} does not operate this nonstop. Use ${f.carrier} — confirm with the live lookup below.`
+    : null;
+  const airportBanner = (f._airportSuspect && f._airportSuggestion)
+    ? `Closer airport: ${f._airportSuggestion.iata} (${f._airportSuggestion.name}) is ${f._airportSuggestion.drive} away — ${f._airportSuggestion.note}. Consider flying into ${f._airportSuggestion.iata} instead of ${f.to_airport}.`
     : null;
   // Always-on look-up CTA: build a Google Flights URL for the exact route + date.
   const isoDate = parseDayLabelToISODate(dayLabel);
@@ -774,6 +777,9 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
       </div>
       {overrideBanner && (
         <p style={{ fontSize: "11px", color: "#B85C00", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 500, padding: "6px 8px", background: "rgba(184,92,0,0.06)", borderLeft: "2px solid #B85C00", borderRadius: "2px" }}>⚠︎ {overrideBanner}</p>
+      )}
+      {airportBanner && (
+        <p style={{ fontSize: "11px", color: "#0F0F0F", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 600, padding: "6px 8px", background: "rgba(196,168,98,0.18)", borderLeft: `2px solid ${GOLD}`, borderRadius: "2px" }}>✈ {airportBanner}</p>
       )}
       <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "2px 0 6px", letterSpacing: "0.02em" }}>
         {f.depart_time ? `Approx depart ${formatTime(f.depart_time)}` : ""}{f.arrive_time ? ` · arrive ${formatTime(f.arrive_time)}` : ""}{f.duration ? `  ·  ${f.duration}` : ""}  ·  {stopLabel}
@@ -1114,6 +1120,191 @@ function stripTonightPrefix(s) {
 // model emits a flight whose carrier is not in this set, applyQualityLayer
 // rewrites it. Keep keys sorted as "AAA-BBB" with the alphabetically smaller
 // IATA first — lookup is direction-agnostic.
+// Curated destination → airports lookup. Keyed on lowercase destination phrase
+// (city, region, or attraction). Each entry lists airports in PREFERRED order:
+// the closest viable airport first, fallbacks after. Each airport has IATA +
+// approx ground-time-from-destination. Used by both the system prompt (so the
+// model can pick correctly) and the post-processing validator (so the app
+// flags wrong choices). Match is by `includes()` on the lowercased destination
+// — "bar harbor" matches "Bar Harbor, Maine" and "Bar Harbor & Acadia".
+const DEST_AIRPORTS = {
+  "bar harbor": [
+    { iata: "BHB", name: "Hancock County–Bar Harbor", drive: "15 min", note: "seasonal Cape Air/JetBlue from BOS; closest by far" },
+    { iata: "BGR", name: "Bangor Intl", drive: "50 min", note: "daily mainline service from EWR/JFK/PHL/DCA; best year-round option" },
+    { iata: "PWM", name: "Portland Jetport", drive: "3 h", note: "more flight options, but long drive" },
+  ],
+  "acadia": [
+    { iata: "BHB", name: "Hancock County–Bar Harbor", drive: "15 min", note: "closest to park" },
+    { iata: "BGR", name: "Bangor Intl", drive: "50 min", note: "more flight options" },
+    { iata: "PWM", name: "Portland Jetport", drive: "3 h", note: "hub backup" },
+  ],
+  "santa fe": [
+    { iata: "SAF", name: "Santa Fe Regional", drive: "15 min", note: "limited — American from DFW, United from DEN/ORD" },
+    { iata: "ABQ", name: "Albuquerque Intl Sunport", drive: "1 h", note: "primary hub; most nonstops; usually the right call" },
+  ],
+  "taos": [
+    { iata: "TAOS", name: "Taos Regional", drive: "15 min", note: "very limited" },
+    { iata: "SAF", name: "Santa Fe", drive: "1.5 h", note: "some service" },
+    { iata: "ABQ", name: "Albuquerque", drive: "2.5 h", note: "most reliable" },
+  ],
+  "jackson hole": [
+    { iata: "JAC", name: "Jackson Hole", drive: "15 min", note: "direct nonstops from many hubs" },
+    { iata: "SLC", name: "Salt Lake City", drive: "5 h", note: "only if JAC is full/expensive" },
+  ],
+  "aspen": [
+    { iata: "ASE", name: "Aspen/Pitkin", drive: "10 min", note: "seasonal service, weather-sensitive" },
+    { iata: "EGE", name: "Eagle/Vail", drive: "1.25 h", note: "more reliable winter option" },
+    { iata: "DEN", name: "Denver", drive: "4 h", note: "last resort" },
+  ],
+  "vail": [
+    { iata: "EGE", name: "Eagle/Vail", drive: "45 min", note: "nonstops from many hubs in ski season" },
+    { iata: "DEN", name: "Denver", drive: "2 h", note: "year-round backup" },
+  ],
+  "sun valley": [
+    { iata: "SUN", name: "Friedman Memorial", drive: "15 min", note: "Alaska/United/Delta seasonal" },
+    { iata: "BOI", name: "Boise", drive: "2.5 h", note: "more options" },
+  ],
+  "big sky": [
+    { iata: "BZN", name: "Bozeman Yellowstone", drive: "1 h", note: "closest — nonstops year-round" },
+  ],
+  "yellowstone": [
+    { iata: "BZN", name: "Bozeman", drive: "1.5 h", note: "north entrance — most flight options" },
+    { iata: "JAC", name: "Jackson Hole", drive: "1 h", note: "south entrance" },
+    { iata: "COD", name: "Cody", drive: "1 h", note: "east entrance — limited service" },
+  ],
+  "glacier national": [
+    { iata: "FCA", name: "Glacier Park / Kalispell", drive: "30 min", note: "closest" },
+    { iata: "GPI", name: "Glacier Park (same as FCA)", drive: "30 min", note: "" },
+  ],
+  "napa": [
+    { iata: "STS", name: "Charles M. Schulz / Sonoma County", drive: "45 min", note: "smaller; Alaska/Avelo" },
+    { iata: "SFO", name: "San Francisco", drive: "1.5 h", note: "most flight options" },
+    { iata: "OAK", name: "Oakland", drive: "1.5 h", note: "backup" },
+  ],
+  "sonoma": [
+    { iata: "STS", name: "Sonoma County", drive: "30 min", note: "closest" },
+    { iata: "SFO", name: "San Francisco", drive: "1.5 h", note: "more options" },
+  ],
+  "martha's vineyard": [
+    { iata: "MVY", name: "Martha's Vineyard", drive: "on-island", note: "closest — JetBlue/Delta seasonal from BOS/JFK/EWR" },
+    { iata: "HYA", name: "Hyannis", drive: "ferry from Hyannis", note: "connect via ferry" },
+    { iata: "BOS", name: "Boston", drive: "3 h + ferry", note: "if seasonal flights to MVY unavailable" },
+  ],
+  "nantucket": [
+    { iata: "ACK", name: "Nantucket Memorial", drive: "on-island", note: "JetBlue/Delta/American seasonal" },
+    { iata: "BOS", name: "Boston", drive: "3 h + ferry", note: "backup" },
+  ],
+  "hamptons": [
+    { iata: "HTO", name: "East Hampton", drive: "15 min", note: "private/charter" },
+    { iata: "ISP", name: "Long Island MacArthur", drive: "1.25 h", note: "Southwest/Frontier" },
+    { iata: "JFK", name: "JFK", drive: "2.5 h", note: "most options" },
+  ],
+  "montauk": [
+    { iata: "MTP", name: "Montauk", drive: "5 min", note: "GA only" },
+    { iata: "ISP", name: "Long Island MacArthur", drive: "2 h", note: "limited" },
+    { iata: "JFK", name: "JFK", drive: "3 h", note: "most options" },
+  ],
+  "cape cod": [
+    { iata: "HYA", name: "Hyannis (Barnstable)", drive: "central Cape", note: "Cape Air seasonal" },
+    { iata: "PVC", name: "Provincetown", drive: "P-town only", note: "Cape Air from BOS" },
+    { iata: "BOS", name: "Boston", drive: "1.5–2.5 h", note: "most flight options" },
+  ],
+  "newport rhode": [
+    { iata: "PVD", name: "T.F. Green / Providence", drive: "40 min", note: "closest" },
+    { iata: "BOS", name: "Boston", drive: "1.5 h", note: "more options" },
+  ],
+  "hilton head": [
+    { iata: "HHH", name: "Hilton Head", drive: "on-island", note: "AA/Delta/United from major hubs" },
+    { iata: "SAV", name: "Savannah", drive: "50 min", note: "more options" },
+  ],
+  "savannah": [
+    { iata: "SAV", name: "Savannah/Hilton Head", drive: "20 min", note: "primary" },
+  ],
+  "asheville": [
+    { iata: "AVL", name: "Asheville Regional", drive: "20 min", note: "primary — nonstops from many east-coast hubs" },
+    { iata: "CLT", name: "Charlotte", drive: "2 h", note: "backup" },
+  ],
+  "charleston": [
+    { iata: "CHS", name: "Charleston Intl", drive: "20 min", note: "primary" },
+  ],
+  "key west": [
+    { iata: "EYW", name: "Key West Intl", drive: "10 min", note: "AA/Delta/United/Silver from major hubs" },
+    { iata: "MIA", name: "Miami", drive: "3.5 h", note: "if EYW pricey or sold out" },
+  ],
+  "jackson wyoming": [
+    { iata: "JAC", name: "Jackson Hole", drive: "15 min", note: "primary" },
+  ],
+  "park city": [
+    { iata: "SLC", name: "Salt Lake City", drive: "40 min", note: "primary — no closer airport" },
+  ],
+  "telluride": [
+    { iata: "TEX", name: "Telluride Regional", drive: "15 min", note: "weather-sensitive seasonal" },
+    { iata: "MTJ", name: "Montrose", drive: "1.5 h", note: "more reliable winter option" },
+  ],
+  "steamboat": [
+    { iata: "HDN", name: "Yampa Valley / Hayden", drive: "30 min", note: "ski season nonstops" },
+    { iata: "DEN", name: "Denver", drive: "3 h", note: "backup" },
+  ],
+  "hallstatt": [
+    { iata: "SZG", name: "Salzburg", drive: "1 h", note: "closest — European budget hub" },
+    { iata: "VIE", name: "Vienna", drive: "3 h", note: "more transatlantic options" },
+    { iata: "MUC", name: "Munich", drive: "3 h", note: "transatlantic backup" },
+  ],
+  "interlaken": [
+    { iata: "BRN", name: "Bern", drive: "1 h", note: "limited service" },
+    { iata: "ZRH", name: "Zurich", drive: "2 h", note: "primary international gateway" },
+    { iata: "GVA", name: "Geneva", drive: "2.5 h", note: "international gateway" },
+  ],
+  "st. moritz": [
+    { iata: "SMV", name: "Samedan / St. Moritz", drive: "15 min", note: "GA/private only" },
+    { iata: "ZRH", name: "Zurich", drive: "3.5 h", note: "primary" },
+  ],
+  "zermatt": [
+    { iata: "GVA", name: "Geneva", drive: "3.5 h + train", note: "primary — Zermatt is car-free, take Glacier Express train" },
+    { iata: "ZRH", name: "Zurich", drive: "3.5 h + train", note: "backup" },
+  ],
+  "chamonix": [
+    { iata: "GVA", name: "Geneva", drive: "1.25 h", note: "closest international" },
+  ],
+  "reykjavik": [
+    { iata: "KEF", name: "Keflavík", drive: "45 min", note: "all international flights" },
+  ],
+  "cinque terre": [
+    { iata: "PSA", name: "Pisa", drive: "1.5 h", note: "closest" },
+    { iata: "FLR", name: "Florence", drive: "2.5 h", note: "if Pisa unavailable" },
+    { iata: "GOA", name: "Genoa", drive: "1.5 h", note: "backup" },
+  ],
+  "tuscany": [
+    { iata: "FLR", name: "Florence", drive: "central", note: "primary" },
+    { iata: "PSA", name: "Pisa", drive: "1 h", note: "budget carriers" },
+  ],
+  "amalfi": [
+    { iata: "NAP", name: "Naples", drive: "1.5 h", note: "primary" },
+  ],
+  "positano": [
+    { iata: "NAP", name: "Naples", drive: "1.5 h", note: "primary" },
+  ],
+  "capri": [
+    { iata: "NAP", name: "Naples", drive: "+ ferry", note: "primary" },
+  ],
+  "sicily": [
+    { iata: "CTA", name: "Catania", drive: "east coast", note: "main eastern gateway" },
+    { iata: "PMO", name: "Palermo", drive: "west coast", note: "main western gateway" },
+  ],
+  "mallorca": [
+    { iata: "PMI", name: "Palma de Mallorca", drive: "30 min", note: "only airport" },
+  ],
+  "ibiza": [
+    { iata: "IBZ", name: "Ibiza", drive: "20 min", note: "only airport" },
+  ],
+  "mykonos": [
+    { iata: "JMK", name: "Mykonos", drive: "15 min", note: "only airport" },
+  ],
+  "santorini": [
+    { iata: "JTR", name: "Santorini", drive: "20 min", note: "only airport" },
+  ],
+};
+
 const KNOWN_NONSTOPS = {
   // Transatlantic
   "CPH-EWR": ["SAS"],
@@ -1183,6 +1374,21 @@ function routeKey(a, b) {
   return [x, y].sort().join("-");
 }
 
+// Look up the curated airport list for a destination string. Tries the most
+// specific match first (longest matching key wins) so "South Lake Tahoe" picks
+// the Tahoe entry rather than nothing. Returns null if no entry matches.
+function lookupDestAirports(destination) {
+  if (!destination || typeof destination !== "string") return null;
+  const d = destination.toLowerCase();
+  let bestKey = null;
+  for (const key of Object.keys(DEST_AIRPORTS)) {
+    if (d.includes(key)) {
+      if (!bestKey || key.length > bestKey.length) bestKey = key;
+    }
+  }
+  return bestKey ? { key: bestKey, airports: DEST_AIRPORTS[bestKey] } : null;
+}
+
 function carrierMatchesKnown(carrier, knownList) {
   if (!carrier || !Array.isArray(knownList)) return false;
   const c = carrier.toLowerCase();
@@ -1201,7 +1407,7 @@ function carrierMatchesKnown(carrier, knownList) {
 // "Return to X for [meal]" annotation, and surface a QC summary of any
 // fixes/warnings the renderer applied so the user knows the app is on it.
 // Pure: never mutates input — returns { data, qc }.
-function applyQualityLayer(input) {
+function applyQualityLayer(input, inputs) {
   if (!input || typeof input !== "object") return { data: input, qc: { fixes: [], warnings: [] } };
   const fixes = [];
   const warnings = [];
@@ -1311,6 +1517,71 @@ function applyQualityLayer(input) {
         fixes.push(`Day ${dayIdx + 1} flight: corrected carrier (${claimedCarrier} → ${f.carrier}) for ${f.from_airport}→${f.to_airport}`);
       });
     });
+  }
+
+  // 2d. ARRIVAL AIRPORT VALIDATION. The model frequently picks a big hub (BOS,
+  // SFO, MIA) when a much closer regional airport exists (BHB for Bar Harbor,
+  // STS for Sonoma, EYW for Key West). Cross-check the destination against the
+  // curated DEST_AIRPORTS map. If the model's pick isn't the top choice, ADD a
+  // visible flag listing the better option — we do NOT silently rewrite the
+  // airport because that would invalidate the rest of the itinerary (timing,
+  // ground transport, etc). The user sees the suggestion and decides.
+  if (Array.isArray(days) && inputs) {
+    const cities = Array.isArray(inputs?.basics?.cities) ? inputs.basics.cities : [];
+    const destStrings = cities.length
+      ? cities.map(c => c?.name).filter(Boolean)
+      : [inputs?.basics?.destination].filter(Boolean);
+    if (destStrings.length) {
+      days.forEach((day, dayIdx) => {
+        (day.items || []).forEach(item => {
+          if (item.type !== "Flight" || !item.flight) return;
+          const f = item.flight;
+          // Try to figure out which destination this flight is heading INTO.
+          // The day.city field, when present, is most reliable. Otherwise we
+          // pick the destination whose curated airport list contains the
+          // flight's to_airport — if none match, the model's pick is suspect.
+          const arrCity = day.city || null;
+          const candidates = arrCity
+            ? [arrCity]
+            : destStrings;
+          for (const c of candidates) {
+            const lookup = lookupDestAirports(c);
+            if (!lookup) continue;
+            const top = lookup.airports[0];
+            const validIatas = lookup.airports.map(a => a.iata.toUpperCase());
+            const pick = (f.to_airport || "").toUpperCase();
+            if (!pick) continue;
+            // Skip departures FROM this city (returning home). We only validate
+            // arrivals into the destination.
+            if ((f.from_airport || "").toUpperCase() === pick) continue;
+            // If the model's pick isn't in our curated list at all, surface it.
+            if (!validIatas.includes(pick)) {
+              item.flags = Array.isArray(item.flags) ? item.flags.slice() : [];
+              item.flags.push(`Closer airport available for ${c}: ${top.iata} (${top.name}) — ${top.drive} from ${c}. App suggests checking ${top.iata} instead of ${pick}.`);
+              fixes.push(`Day ${dayIdx + 1} flight: flagged ${pick} — ${top.iata} is closer to ${c}`);
+              f._airportSuspect = true;
+              f._airportSuggestion = top;
+              break;
+            }
+            // If the model picked a fallback when the top choice exists, surface it too
+            // (e.g. BOS when BHB or BGR is the right call).
+            const pickIndex = validIatas.indexOf(pick);
+            if (pickIndex > 0) {
+              item.flags = Array.isArray(item.flags) ? item.flags.slice() : [];
+              const closer = lookup.airports.slice(0, pickIndex);
+              const closerList = closer.map(a => `${a.iata} (${a.drive})`).join(", ");
+              item.flags.push(`Closer airport available for ${c}: ${closerList}. App suggests ${top.iata} — ${top.note}. Current pick ${pick} is ${lookup.airports[pickIndex].drive} away.`);
+              fixes.push(`Day ${dayIdx + 1} flight: flagged ${pick} — ${top.iata} is closer to ${c}`);
+              f._airportSuspect = true;
+              f._airportSuggestion = top;
+              break;
+            }
+            // pickIndex === 0 — model got the top choice. Nothing to flag.
+            break;
+          }
+        });
+      });
+    }
   }
 
   // 3. Validators — surface as warnings, never block render.
@@ -1782,7 +2053,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onSaved }) {
   const [menuRestaurant, setMenuRestaurant] = useState(null);
   // Apply the pass-three quality layer once before render. This dedupes
   // restaurants, fills verify microcopy, and computes a QC summary.
-  const { data, qc } = useMemo(() => applyQualityLayer(rawData), [rawData]);
+  const { data, qc } = useMemo(() => applyQualityLayer(rawData, inputs), [rawData, inputs]);
   const sortedTonight = Array.isArray(data.tonight)
     ? [...data.tonight].map((t, i) => ({ t, i, p: tonightPriority(t) })).sort((a, b) => a.p.rank - b.p.rank || a.i - b.i)
     : [];
@@ -2846,6 +3117,43 @@ FLIGHTS — ACCURACY OVER SPECIFICITY, PREFER NONSTOP, ALWAYS STRUCTURED:
 • WRONG confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C"
 • RIGHT confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C. Verify flight number, times and equipment at booking — schedules change."
 • Search for nonstop service from the home airport to the destination's primary airport first.
+• ARRIVAL AIRPORT — PICK THE CLOSEST VIABLE ONE, NOT THE NEAREST MAJOR HUB. For destinations with smaller regional airports, the right answer is the regional, not the metro hub the model knows best. Specifically:
+   - Bar Harbor / Acadia, Maine → BHB (15 min, seasonal Cape Air/JetBlue) or BGR (50 min, year-round mainline). NOT BOS (5 h drive) and NOT PWM (3 h drive).
+   - Santa Fe → SAF (15 min, limited) or ABQ (1 h, most options). NOT DEN or DFW.
+   - Taos → TAOS (15 min, limited) or ABQ (2.5 h) or SAF (1.5 h).
+   - Jackson Hole / Grand Teton → JAC (15 min). NOT SLC unless winter weather closure.
+   - Aspen → ASE (15 min) or EGE (1 h 15) or GJT (2 h 30). NOT DEN (4 h drive).
+   - Vail / Beaver Creek → EGE (45 min) or ASE (1 h 30) or DEN (2 h).
+   - Sun Valley → SUN (15 min) or BOI (2 h 30).
+   - Big Sky / Yellowstone → BZN (1 h) or WYS (seasonal) or JAC (south entrance).
+   - Glacier National Park → GPI/FCA (30 min) or MSO (2 h 30).
+   - Napa / Sonoma → STS (Santa Rosa, 45 min from Napa) or OAK (1 h) or SFO (1 h 30). Avoid SJC.
+   - Martha's Vineyard → MVY (10 min) or HYA (ferry + drive) or BOS (3 h+ferry).
+   - Nantucket → ACK (10 min) or HYA (ferry) or BOS (3 h+ferry).
+   - Hamptons / Montauk → HTO (East Hampton, seasonal) or ISP (Long Island MacArthur, 1 h 30) or JFK (2 h 30).
+   - Cape Cod → HYA (Hyannis) or PVC (Provincetown) or BOS (1 h 30–3 h).
+   - Newport, Rhode Island → PVD (45 min) or BOS (1 h 30).
+   - Hilton Head → HHH (15 min) or SAV (45 min). NOT CHS.
+   - Savannah → SAV (15 min). NOT JAX or CHS.
+   - Asheville → AVL (20 min). NOT CLT (2 h 15) and NOT GSP (1 h).
+   - Charleston SC → CHS (20 min).
+   - Key West → EYW (10 min) or MIA (3 h 30).
+   - Park City / Deer Valley → SLC (45 min).
+   - Telluride → TEX (10 min) or MTJ (1 h 15) or GJT (2 h 30) or DEN (6 h+).
+   - Steamboat Springs → HDN (30 min) or DEN (3 h).
+   - Hallstatt → SZG (Salzburg, 1 h 15) or VIE (3 h).
+   - Interlaken → BRN (1 h) or ZRH (2 h) or GVA (2 h 30).
+   - St. Moritz → ZRH (3 h) or MXP (3 h 30) or LUG (2 h).
+   - Zermatt → ZRH (3 h 30 + train) or GVA (3 h 30 + train).
+   - Chamonix → GVA (1 h 15) or LYS (2 h 30).
+   - Reykjavik → KEF (45 min).
+   - Cinque Terre → PSA (1 h) or GOA (1 h 30) or MXP (3 h 30).
+   - Tuscany / Florence → FLR (20 min) or PSA (1 h 30) or BLQ (1 h 30).
+   - Amalfi / Positano → NAP (1 h 15).
+   - Capri → NAP (1 h 30 + ferry).
+   - Sicily → CTA (Catania) or PMO (Palermo).
+   - Mallorca → PMI. Ibiza → IBZ. Mykonos → JMK. Santorini → JTR.
+  GENERAL RULE: when a regional airport with scheduled passenger service exists within ~1 h of the destination, prefer it over a metro hub 2–5 h away even if the hub has more flight options. Long drives erode trip time; users prefer one short drive over a savings of a couple connecting flights.
 • If no nonstop exists to the requested airport but one exists to a nearby airport in the same metro (e.g., ABQ ~60min from Santa Fe instead of SAF), RECOMMEND THE NONSTOP and add a flags[] note mentioning the drive time.
 • Only return a connecting itinerary if no nonstop exists to any reasonable nearby airport. Set nonstop=false and fill "connection" with the connecting airport IATA.
 • In each Flight item's text, explicitly state "nonstop" or "connecting via X".
