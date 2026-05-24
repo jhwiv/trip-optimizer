@@ -3895,7 +3895,7 @@ export default function TripOptimizer() {
 
   // BLANK = truly empty state. Used on every launch and on "Plan another trip".
   const BLANK = {
-    basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: "" },
+    basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: "" },
     flights: { homeAirport: "", airline: "", cabin: "", flex: "", noFlight: false },
     hotel: { brand: [], tier: "", mustHave: "" },
     transport: { type: [], company: "", vehicle: "" },
@@ -4089,6 +4089,87 @@ export default function TripOptimizer() {
     });
   };
 
+  // Date ⇋ Nights synchronization. Two helpers compute one from the other
+  // using local-noon parsing to avoid timezone drift (DST in particular).
+  // YYYY-MM-DD only — matches the native <input type="date"> format.
+  const addDaysISO = (iso, n) => {
+    if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "";
+    const d = new Date(iso + "T12:00:00");
+    if (isNaN(d)) return "";
+    d.setDate(d.getDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const diffDaysISO = (startIso, endIso) => {
+    if (!startIso || !endIso) return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startIso) || !/^\d{4}-\d{2}-\d{2}$/.test(endIso)) return null;
+    const a = new Date(startIso + "T12:00:00");
+    const b = new Date(endIso + "T12:00:00");
+    if (isNaN(a) || isNaN(b)) return null;
+    return Math.round((b - a) / 86400000);
+  };
+
+  // When the user changes the start date, slide the end date forward by the
+  // same number of nights they already had (if any) so the trip length stays
+  // constant. When the user changes the end date, recompute nights to match.
+  const handleStartDateChange = (newStart) => {
+  const currentNights = parseInt(basics.nights, 10) || 0;
+    if (newStart && currentNights > 0) {
+      const newEnd = addDaysISO(newStart, currentNights);
+      setB({ ...basics, startDate: newStart, endDate: newEnd });
+    } else if (newStart && basics.endDate) {
+      const nights = diffDaysISO(newStart, basics.endDate);
+      const nextNights = nights && nights > 0 ? String(nights) : basics.nights;
+      setB({
+        ...basics,
+        startDate: newStart,
+        nights: nextNights,
+        cities: (basics.cities && basics.cities.length > 0)
+          ? basics.cities.map((c, i) => i === 0 ? { ...c, nights: nextNights } : c)
+          : [{ name: basics.destination || "", nights: nextNights, focus: "" }],
+      });
+    } else {
+      setB({ ...basics, startDate: newStart });
+    }
+  };
+  const handleEndDateChange = (newEnd) => {
+    if (newEnd && basics.startDate) {
+      const nights = diffDaysISO(basics.startDate, newEnd);
+      if (nights !== null && nights > 0) {
+        const v = String(nights);
+        setB({
+          ...basics,
+          endDate: newEnd,
+          nights: v,
+          cities: (basics.cities && basics.cities.length > 0)
+            ? basics.cities.map((c, i) => i === 0 ? { ...c, nights: v } : c)
+            : [{ name: basics.destination || "", nights: v, focus: "" }],
+        });
+        return;
+      }
+    }
+    setB({ ...basics, endDate: newEnd });
+  };
+  // When the user types Nights directly, keep the end date in sync.
+  const handleNightsChange = (newNightsStr) => {
+    const n = parseInt(newNightsStr, 10);
+    const newEnd = (basics.startDate && Number.isFinite(n) && n > 0)
+      ? addDaysISO(basics.startDate, n)
+      : basics.endDate;
+    setB({
+      ...basics,
+      nights: newNightsStr,
+      endDate: newEnd,
+      cities: (basics.cities && basics.cities.length > 0)
+        ? basics.cities.map((c, i) => i === 0 ? { ...c, nights: newNightsStr } : c)
+        : [{ name: basics.destination || "", nights: newNightsStr, focus: "" }],
+    });
+  };
+
+  // End-date validation message (informational — doesn't block submit).
+  const endDateError = (basics.endDate && basics.startDate && diffDaysISO(basics.startDate, basics.endDate) !== null && diffDaysISO(basics.startDate, basics.endDate) <= 0)
+    ? "Return date must be after the start date"
+    : "";
+
   const cityNamesValid = cities.every(c => c.name && c.name.trim());
   const cityNightsValid = cities.every(c => (parseInt(c.nights, 10) || 0) >= 1);
   const missing = [
@@ -4256,7 +4337,8 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
     return `Plan this trip:
 ${cityLine}
 Base area: ${basics.baseArea || (isMultiCity ? "—" : "suggest best area")}
-Start date: ${formatDateForDisplay(basics.startDate) || basics.startDate}
+Start date: ${formatDateForDisplay(basics.startDate) || basics.startDate}${basics.endDate ? `
+Return date: ${formatDateForDisplay(basics.endDate) || basics.endDate}` : ""}
 Nights: ${isMultiCity ? totalNightsFromCities : basics.nights}${isMultiCity ? "  (" + cities.map(c => `${c.nights} in ${c.name}`).join(" + ") + ")" : ""}
 Travelers: ${basics.travelers}
 Style: ${prefToText(basics.style)} · Pace: ${basics.pace || "No preference"} · Budget: ${basics.budget || "No preference"}
@@ -4914,10 +4996,15 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
                   </label>
                 </Field>
               </div>
-              <div style={g3}>
-                <Field label="Start date"><DateInput value={basics.startDate} onChange={e => setB({ ...basics, startDate: e.target.value })} /></Field>
-                <Field label={isMultiCity ? "Total nights" : "Nights"} hint={isMultiCity ? "Auto-summed from cities" : null}>
-                  <Inp value={isMultiCity ? String(totalNightsFromCities) : basics.nights} onChange={e => { if (isMultiCity) return; const v = e.target.value; setB({ ...basics, nights: v, cities: (basics.cities && basics.cities.length > 0) ? basics.cities.map((c, i) => i === 0 ? { ...c, nights: v } : c) : [{ name: basics.destination || "", nights: v, focus: "" }] }); }} placeholder="7" />
+              <div style={g2}>
+                <Field label="Start date"><DateInput value={basics.startDate} onChange={e => handleStartDateChange(e.target.value)} /></Field>
+                <Field label="Return date" hint={endDateError || (basics.endDate && basics.startDate && diffDaysISO(basics.startDate, basics.endDate) > 0 ? `${diffDaysISO(basics.startDate, basics.endDate)} nights` : "Or set Nights below")}>
+                  <DateInput value={basics.endDate || ""} onChange={e => handleEndDateChange(e.target.value)} />
+                </Field>
+              </div>
+              <div style={g2}>
+                <Field label={isMultiCity ? "Total nights" : "Nights"} hint={isMultiCity ? "Auto-summed from cities" : (basics.startDate && basics.endDate ? "Synced with dates" : null)}>
+                  <Inp value={isMultiCity ? String(totalNightsFromCities) : basics.nights} onChange={e => { if (isMultiCity) return; handleNightsChange(e.target.value); }} placeholder="7" />
                 </Field>
                 <Field label="Travelers"><TravelersAutocomplete value={basics.travelers} onChange={e => setB({ ...basics, travelers: e.target.value })} placeholder="2 adults" /></Field>
               </div>
@@ -5092,7 +5179,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
               <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 5px" }}>Your trip</p>
               <p style={{ fontSize: "20px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)" }}>{basics.destination || "Destination not set"}</p>
               <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: "1.6" }}>
-                {[basics.baseArea, formatDateForDisplay(basics.startDate), basics.nights ? `${basics.nights} nights` : null, flights.homeAirport ? `from ${flights.homeAirport}` : null].filter(Boolean).join("  ·  ") || "Complete the form above"}
+                {[basics.baseArea, (basics.startDate && basics.endDate) ? `${formatDateForDisplay(basics.startDate)} – ${formatDateForDisplay(basics.endDate)}` : formatDateForDisplay(basics.startDate), basics.nights ? `${basics.nights} nights` : null, flights.homeAirport ? `from ${flights.homeAirport}` : null].filter(Boolean).join("  ·  ") || "Complete the form above"}
               </p>
               {(restaurants.length > 0 || activities.length > 0) && (
                 <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: "10px", marginTop: "12px" }}>
