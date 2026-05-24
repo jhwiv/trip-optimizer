@@ -74,25 +74,99 @@ const CITIES = [
   { name: "Melbourne", country: "Australia" },
   { name: "Auckland", country: "New Zealand" },
   { name: "Queenstown", country: "New Zealand" },
-  { name: "New York", country: "USA" },
-  { name: "Boston", country: "USA" },
-  { name: "Washington DC", country: "USA" },
-  { name: "Chicago", country: "USA" },
-  { name: "Miami", country: "USA" },
-  { name: "New Orleans", country: "USA" },
-  { name: "Charleston", country: "USA" },
-  { name: "Nashville", country: "USA" },
-  { name: "Austin", country: "USA" },
-  { name: "Santa Fe", country: "USA" },
-  { name: "Aspen", country: "USA" },
-  { name: "Jackson Hole", country: "USA" },
-  { name: "San Francisco", country: "USA" },
-  { name: "Los Angeles", country: "USA" },
-  { name: "Napa Valley", country: "USA" },
-  { name: "Seattle", country: "USA" },
-  { name: "Hawaii — Maui", country: "USA" },
-  { name: "Hawaii — Kauai", country: "USA" },
-  { name: "Naples", country: "USA" },
+  // US — disambiguated by state where common name collisions exist.
+  { name: "New York, NY", country: "USA" },
+  { name: "Boston, MA", country: "USA" },
+  { name: "Washington, DC", country: "USA" },
+  { name: "Chicago, IL", country: "USA" },
+  { name: "Miami, FL", country: "USA" },
+  { name: "New Orleans, LA", country: "USA" },
+  { name: "Charleston, SC", country: "USA" },
+  { name: "Charleston, WV", country: "USA" },
+  { name: "Savannah, GA", country: "USA" },
+  { name: "Asheville, NC", country: "USA" },
+  { name: "Greenville, SC", country: "USA" },
+  { name: "Greenville, NC", country: "USA" },
+  { name: "Nashville, TN", country: "USA" },
+  { name: "Memphis, TN", country: "USA" },
+  { name: "Atlanta, GA", country: "USA" },
+  { name: "Austin, TX", country: "USA" },
+  { name: "Dallas, TX", country: "USA" },
+  { name: "Houston, TX", country: "USA" },
+  { name: "San Antonio, TX", country: "USA" },
+  { name: "Santa Fe, NM", country: "USA" },
+  { name: "Taos, NM", country: "USA" },
+  { name: "Albuquerque, NM", country: "USA" },
+  { name: "Aspen, CO", country: "USA" },
+  { name: "Denver, CO", country: "USA" },
+  { name: "Boulder, CO", country: "USA" },
+  { name: "Telluride, CO", country: "USA" },
+  { name: "Vail, CO", country: "USA" },
+  { name: "Park City, UT", country: "USA" },
+  { name: "Salt Lake City, UT", country: "USA" },
+  { name: "Jackson Hole, WY", country: "USA" },
+  { name: "San Francisco, CA", country: "USA" },
+  { name: "Los Angeles, CA", country: "USA" },
+  { name: "San Diego, CA", country: "USA" },
+  { name: "Santa Barbara, CA", country: "USA" },
+  { name: "Carmel, CA", country: "USA" },
+  { name: "Monterey, CA", country: "USA" },
+  { name: "Palm Springs, CA", country: "USA" },
+  { name: "Napa Valley, CA", country: "USA" },
+  { name: "Sonoma, CA", country: "USA" },
+  { name: "Lake Tahoe, CA/NV", country: "USA" },
+  { name: "Las Vegas, NV", country: "USA" },
+  { name: "Portland, OR", country: "USA" },
+  { name: "Portland, ME", country: "USA" },
+  { name: "Seattle, WA", country: "USA" },
+  { name: "Maui, HI", country: "USA" },
+  { name: "Kauai, HI", country: "USA" },
+  { name: "Oahu, HI", country: "USA" },
+  { name: "Big Island, HI", country: "USA" },
+  { name: "Naples, FL", country: "USA" },
+  { name: "Key West, FL", country: "USA" },
+  { name: "Orlando, FL", country: "USA" },
+  { name: "Sarasota, FL", country: "USA" },
+  { name: "Philadelphia, PA", country: "USA" },
+  { name: "Pittsburgh, PA", country: "USA" },
+  { name: "Newport, RI", country: "USA" },
+  { name: "Cape Cod, MA", country: "USA" },
+  { name: "Nantucket, MA", country: "USA" },
+  { name: "Martha’s Vineyard, MA", country: "USA" },
+  { name: "Stowe, VT", country: "USA" },
+  { name: "Burlington, VT", country: "USA" },
+  { name: "Acadia, ME", country: "USA" },
+  { name: "Bar Harbor, ME", country: "USA" },
+  { name: "Kennebunkport, ME", country: "USA" },
+  { name: "Hudson Valley, NY", country: "USA" },
+  { name: "Hamptons, NY", country: "USA" },
+  { name: "Saratoga Springs, NY", country: "USA" },
+  { name: "Sedona, AZ", country: "USA" },
+  { name: "Scottsdale, AZ", country: "USA" },
+  { name: "Phoenix, AZ", country: "USA" },
+  { name: "Tucson, AZ", country: "USA" },
+  { name: "Sun Valley, ID", country: "USA" },
+  { name: "Big Sky, MT", country: "USA" },
+  { name: "Bozeman, MT", country: "USA" },
+  { name: "Anchorage, AK", country: "USA" },
+  { name: "Juneau, AK", country: "USA" },
+  { name: "Detroit, MI", country: "USA" },
+  { name: "Minneapolis, MN", country: "USA" },
+  { name: "St. Louis, MO", country: "USA" },
+  { name: "Kansas City, MO", country: "USA" },
+  { name: "Louisville, KY", country: "USA" },
+  { name: "Lexington, KY", country: "USA" },
+  { name: "Baltimore, MD", country: "USA" },
+  { name: "Annapolis, MD", country: "USA" },
+  { name: "Raleigh-Durham, NC", country: "USA" },
+  { name: "Wilmington, NC", country: "USA" },
+  { name: "Outer Banks, NC", country: "USA" },
+  { name: "Hilton Head, SC", country: "USA" },
+  { name: "Charlottesville, VA", country: "USA" },
+  { name: "Richmond, VA", country: "USA" },
+  { name: "Virginia Beach, VA", country: "USA" },
+  { name: "Seaside Park, NJ", country: "USA" },
+  { name: "Cape May, NJ", country: "USA" },
   { name: "Vancouver", country: "Canada" },
   { name: "Toronto", country: "Canada" },
   { name: "Montreal", country: "Canada" },
@@ -1502,15 +1576,15 @@ function DateInput({ value, onChange }) {
 // Generic autocomplete: free-text input + filtered dropdown.
 // `getSuggestions(q)` returns an array of items; `renderItem(item)` renders each row;
 // `itemToValue(item)` converts a picked item to the string written into the input.
-function Autocomplete({ value, onChange, placeholder, getSuggestions, renderItem, itemToValue, itemKey, openOnFocusEmpty = false, minChars = 1 }) {
+function Autocomplete({ value, onChange, placeholder, getSuggestions, renderItem, itemToValue, itemKey, openOnFocusEmpty = false, minChars = 1, loading = false, emptyHint = null }) {
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(-1);
   const wrapRef = useRef(null);
 
   const q = value.trim().toLowerCase();
-  const suggestions = (q.length >= minChars || (openOnFocusEmpty && q.length === 0))
-    ? getSuggestions(q).slice(0, 8)
-    : [];
+  const showList = (q.length >= minChars || (openOnFocusEmpty && q.length === 0));
+  const suggestions = showList ? getSuggestions(q).slice(0, 8) : [];
+  const showPanel = open && (suggestions.length > 0 || (showList && (loading || emptyHint)));
 
   useEffect(() => {
     function handleClick(e) {
@@ -1553,7 +1627,7 @@ function Autocomplete({ value, onChange, placeholder, getSuggestions, renderItem
         autoComplete="off"
         style={{ fontSize: "14px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", lineHeight: "1.4" }}
       />
-      {open && suggestions.length > 0 && (
+      {showPanel && (
         <div className="city-suggestions" role="listbox">
           {suggestions.map((item, i) => (
             <div
@@ -1567,24 +1641,131 @@ function Autocomplete({ value, onChange, placeholder, getSuggestions, renderItem
               {renderItem(item)}
             </div>
           ))}
+          {loading && (
+            <div className="city-suggestion" style={{ opacity: 0.65, fontStyle: "italic", cursor: "default", pointerEvents: "none" }}>
+              Searching worldwide…
+            </div>
+          )}
+          {!loading && suggestions.length === 0 && emptyHint && (
+            <div className="city-suggestion" style={{ opacity: 0.65, fontStyle: "italic", cursor: "default", pointerEvents: "none" }}>
+              {emptyHint}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
+// US state name -> USPS code, for compact display of Nominatim results.
+const US_STATE_ABBR = {
+  "alabama":"AL","alaska":"AK","arizona":"AZ","arkansas":"AR","california":"CA",
+  "colorado":"CO","connecticut":"CT","delaware":"DE","district of columbia":"DC",
+  "florida":"FL","georgia":"GA","hawaii":"HI","idaho":"ID","illinois":"IL",
+  "indiana":"IN","iowa":"IA","kansas":"KS","kentucky":"KY","louisiana":"LA",
+  "maine":"ME","maryland":"MD","massachusetts":"MA","michigan":"MI","minnesota":"MN",
+  "mississippi":"MS","missouri":"MO","montana":"MT","nebraska":"NE","nevada":"NV",
+  "new hampshire":"NH","new jersey":"NJ","new mexico":"NM","new york":"NY",
+  "north carolina":"NC","north dakota":"ND","ohio":"OH","oklahoma":"OK","oregon":"OR",
+  "pennsylvania":"PA","rhode island":"RI","south carolina":"SC","south dakota":"SD",
+  "tennessee":"TN","texas":"TX","utah":"UT","vermont":"VT","virginia":"VA",
+  "washington":"WA","west virginia":"WV","wisconsin":"WI","wyoming":"WY",
+  "puerto rico":"PR"
+};
+
+// In-memory cache of Nominatim queries (per page load).
+const NOMINATIM_CACHE = new Map();
+
+// Acceptable place types -- skips countries, regions, roads, POIs.
+const CITY_TYPES = new Set(["city","town","village","hamlet","municipality","suburb","borough","neighbourhood","locality"]);
+
+function formatNominatim(r) {
+  const a = r.address || {};
+  const place = a.city || a.town || a.village || a.hamlet || a.municipality || a.suburb || a.borough || a.locality || (r.name || "").split(",")[0].trim();
+  if (!place) return null;
+  const cc = (a.country_code || "").toLowerCase();
+  if (cc === "us") {
+    const stateName = (a.state || "").toLowerCase();
+    const abbr = US_STATE_ABBR[stateName] || (a.state || "");
+    if (!abbr) return null;
+    return { name: `${place}, ${abbr}`, country: "USA", _src: "world" };
+  }
+  return { name: place, country: a.country || "", _src: "world" };
+}
+
+async function geocodeNominatim(q, signal) {
+  const key = q.trim().toLowerCase();
+  if (!key) return [];
+  if (NOMINATIM_CACHE.has(key)) return NOMINATIM_CACHE.get(key);
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=8&addressdetails=1&accept-language=en`;
+  const res = await fetch(url, { signal, headers: { "Accept": "application/json" } });
+  if (!res.ok) throw new Error(`nominatim ${res.status}`);
+  const raw = await res.json();
+  const seen = new Set();
+  const out = [];
+  for (const r of raw) {
+    const at = (r.addresstype || r.type || "").toLowerCase();
+    if (!CITY_TYPES.has(at)) continue;
+    const fmt = formatNominatim(r);
+    if (!fmt) continue;
+    const k = `${fmt.name}|${fmt.country}`.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(fmt);
+  }
+  NOMINATIM_CACHE.set(key, out);
+  return out;
+}
+
 function CityAutocomplete({ value, onChange, placeholder }) {
+  const [remote, setRemote] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [errored, setErrored] = useState(false);
+  const abortRef = useRef(null);
+  const timerRef = useRef(null);
+
+  const q = value.trim();
+  useEffect(() => {
+    // Cancel any pending request/debounce.
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (abortRef.current) abortRef.current.abort();
+    setErrored(false);
+    if (q.length < 2) { setRemote([]); setLoading(false); return; }
+    setLoading(true);
+    timerRef.current = setTimeout(async () => {
+      const ctl = new AbortController();
+      abortRef.current = ctl;
+      try {
+        const results = await geocodeNominatim(q, ctl.signal);
+        if (!ctl.signal.aborted) { setRemote(results); setLoading(false); }
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+        setErrored(true);
+        setRemote([]);
+        setLoading(false);
+      }
+    }, 350);
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [q]);
+
   return (
     <Autocomplete
       value={value}
       onChange={onChange}
       placeholder={placeholder}
-      getSuggestions={(q) => CITIES.filter(c =>
-        c.name.toLowerCase().includes(q) || c.country.toLowerCase().includes(q)
-      )}
-      renderItem={(c) => <>{c.name}<span className="country">{c.country}</span></>}
+      loading={loading}
+      emptyHint={errored ? "Couldn’t reach world search — type a known city." : "No matches yet — keep typing…"}
+      getSuggestions={(qLower) => {
+        const curated = CITIES.filter(c =>
+          c.name.toLowerCase().includes(qLower) || c.country.toLowerCase().includes(qLower)
+        );
+        const seen = new Set(curated.map(c => `${c.name}|${c.country}`.toLowerCase()));
+        const extras = remote.filter(r => !seen.has(`${r.name}|${r.country}`.toLowerCase()));
+        return [...curated, ...extras];
+      }}
+      renderItem={(c) => <>{c.name}<span className="country">{c.country}{c._src === "world" ? " · world" : ""}</span></>}
       itemToValue={(c) => `${c.name}, ${c.country}`}
-      itemKey={(c) => `${c.name}-${c.country}`}
+      itemKey={(c) => `${c.name}-${c.country}-${c._src || "curated"}`}
     />
   );
 }
