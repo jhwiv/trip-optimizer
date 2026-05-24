@@ -5157,7 +5157,7 @@ HOTEL ITEMS:
 • The phone field is critical — it becomes a tappable "Call hotel" CTA in the app.
 
 RESTAURANTS:
-• Every Dinner/Lunch/Breakfast/Brunch item should include the full restaurant object: name, neighborhood, cuisine, price_range, why, closure_note, reservation, menu, backup.
+• Every Dinner/Lunch/Breakfast/Brunch item should include the full restaurant object: name, neighborhood, cuisine, price_range, why, closure_note, reservation, menu, backup, verify_status, verify_url. The last two are MANDATORY — do not omit them. verify_url should be the canonical Google Maps search URL (https://www.google.com/maps/search/?api=1&query=<URL-encoded restaurant name + city>) when no better source exists, or the restaurant's own website / OpenTable / Resy listing when you know it.
 • Be aware of the weekday for each meal. Many fine-dining spots close Mon or Tue — don't recommend a restaurant on its closure day. If unsure, put "Confirm hours — closure day uncertain" in closure_note.
 • Always include a same-tier backup in the same neighborhood / cuisine family.
 • reservation.platform: opentable for most US/UK/EU fine dining; resy for trendy NYC/LA/Miami; tock for tasting menus; phone with a phone number for hole-in-the-walls; walkin if no reservations. Include the canonical url when you know it.
