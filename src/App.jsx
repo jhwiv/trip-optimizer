@@ -3211,6 +3211,7 @@ function TagInput({ placeholder, tags, setTags, suggestions = [] }) {
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(-1);
   const wrapRef = useRef(null);
+  const inputRef = useRef(null);
 
   const q = val.trim().toLowerCase();
   const filtered = (suggestions || [])
@@ -3228,7 +3229,16 @@ function TagInput({ placeholder, tags, setTags, suggestions = [] }) {
 
   const add = (v) => {
     const trimmed = (v || val).trim();
-    if (trimmed && !tags.includes(trimmed)) setTags([...tags, trimmed]);
+    if (!trimmed) {
+      // Empty + Add click: focus the input and open suggestions so the user
+      // sees a path forward instead of a silent no-op. Previously this
+      // returned nothing and made the button feel broken.
+      try { inputRef.current?.focus(); } catch {}
+      setOpen(true);
+      setActiveIdx(-1);
+      return;
+    }
+    if (!tags.includes(trimmed)) setTags([...tags, trimmed]);
     setVal("");
     setOpen(false);
     setActiveIdx(-1);
@@ -3249,13 +3259,14 @@ function TagInput({ placeholder, tags, setTags, suggestions = [] }) {
       <div ref={wrapRef} style={{ display: "flex", gap: "8px", marginBottom: "8px", position: "relative" }}>
         <div style={{ position: "relative", flex: 1 }}>
           <input
+            ref={inputRef}
             value={val}
             onChange={e => { setVal(e.target.value); setOpen(true); setActiveIdx(-1); }}
             onFocus={() => setOpen(true)}
             onKeyDown={onKeyDown}
             placeholder={placeholder}
             autoComplete="off"
-            style={{ width: "100%", fontSize: "13px", padding: "8px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", outline: "none", fontFamily: "inherit" }}
+            style={{ width: "100%", fontSize: "13px", padding: "8px 0", border: "none", borderBottom: `0.5px solid var(--color-border-primary)`, background: "transparent", color: "var(--color-text-primary)", outline: "none", fontFamily: "inherit" }}
           />
           {open && filtered.length > 0 && (
             <div className="city-suggestions" role="listbox">
