@@ -4646,11 +4646,19 @@ The user explicitly asked for a private driver / chauffeur. You MUST surface thi
     // "Private" anywhere on the same line as tour/guide/walking handles the
     // canned activity labels (e.g. "Private city walking tour") which weren't
     // matched by a stricter "private (city|walking)?\s*(tour|guide)" form.
-    const _tourRe = /\bprivate\b.*\b(tour|guide|walking)\b|skip[- ]the[- ]line|\bVIP\b/i;
+    // NOTE: skip-the-line is its own track — it does NOT imply private guide,
+    // just timed-entry tickets. Handled in a separate block below.
+    const _tourRe = /\bprivate\b.*\b(tour|guide|walking)\b|\bVIP\b/i;
     const wantsPrivateTour =
       (Array.isArray(activities) && activities.some(a => _tourRe.test(a) && !/private driver/i.test(a))) ||
       _tourRe.test(interests?.text || "") ||
       (Array.isArray(basics.style) && basics.style.some(s => /\bVIP\b|\bprivate\b/i.test(s)));
+    // Skip-the-line / timed-entry enforcement. Separate from private-guide
+    // because the user might just want pre-booked tickets, not a guide.
+    const _stlRe = /skip[- ]the[- ]line|timed[- ]entry|fast[- ]track|priority entry/i;
+    const wantsSkipTheLine =
+      (Array.isArray(activities) && activities.some(a => _stlRe.test(a))) ||
+      _stlRe.test(interests?.text || "");
     const privateTourBlock = !wantsPrivateTour ? "" : `
 
 PRIVATE TOURS / PRIVATE GUIDES — HARD RULE (USER REQUESTED THIS):
@@ -4662,6 +4670,18 @@ The user asked for private tours or private guides. Group bus tours and self-gui
 • Add a tonight entry prefixed "⚠︎ Must today:" for the most lead-time-sensitive private booking.
 • Add a snobs entry that says what a private guide unlocks vs a group tour (early access, off-hours, deeper expertise, customization of the route).
 • NEVER substitute a hop-on-hop-off bus, a self-guided audio app, or a free walking tour for a requested private experience.`;
+    const skipTheLineBlock = !wantsSkipTheLine ? "" : `
+
+SKIP-THE-LINE / TIMED ENTRY — HARD RULE (USER REQUESTED THIS):
+The user explicitly asked for skip-the-line access. General-admission walk-up queues are NOT acceptable for marquee sights.
+• For EVERY major ticketed sight in the plan (Vatican Museums / Colosseum / Sagrada Família / Alhambra / Versailles / Uffizi / Accademia / Louvre / Acropolis / Anne Frank House / Borghese Gallery / Last Supper / Doge's Palace / Park Güell / Casa Batlló / Westminster Abbey / etc.) the Activity item MUST specify the skip-the-line / timed-entry ticket type and where to buy it.
+• Preferred booking sources, in order: (1) official museum/site website (cheapest, most reliable — e.g. museivaticani.va, parcocolosseo.it, sagradafamilia.org, alhambra-patronato.es, uffizi.it, ticketmaster for the Louvre, anbefrank.org for Anne Frank, royalcollection.org.uk), (2) reputable resellers when official sells out (GetYourGuide, Tiqets, Headout), (3) hotel concierge as fallback.
+• Each skip-the-line Activity item MUST include: exact ticket name ("Vatican Museums + Sistine Chapel skip-the-line, 09:00 entry"), official booking URL or platform name, advance lead time (most marquee sights need 2–8 weeks; Last Supper and Anne Frank House open ticket windows months ahead), and the specific entry time slot you're targeting.
+• First-thing-in-the-morning slots (08:00–09:00) are the right default for crowd-sensitive sights — NOT mid-day. State the entry time explicitly.
+• Add a flags[] entry per major sight: "Book <sight> skip-the-line NOW — <lead-time> ahead. Official: <url>."
+• Add a tonight entry: "⚠︎ Must today: Book skip-the-line tickets for <most lead-time-sensitive sight>."
+• If the sight ALSO offers a guided-tour upgrade that includes skip-the-line as part of the package (e.g. Vatican early-access guided tour), mention it as an option but do NOT swap the simple skip-the-line ticket for a tour unless the user separately asked for a private guide.
+• NEVER write "buy tickets at the door" or "arrive 30 minutes early" or "the line moves quickly" — those defeat the entire point of the user's request.`;
     const trainRuleBlock = trainAllowedSys ? "" : `
 
 GROUND TRANSPORT — NO TRAINS (HARD RULE):
@@ -4681,7 +4701,7 @@ Total: ${totalNights} nights = ${totalDays} days.
 • MINIMUM 2 NIGHTS per city when cities.length === 3 — if the user gave 1 night for a leg in a 3-city trip, set a flags[] warning that one night doesn't leave time to enjoy that city and suggest a re-balance.
 • HOTEL ITEMS: One check-in Hotel item per leg (at arrival) and a check-out item on the last morning of each leg EXCEPT the final leg's check-out which is on the very last day before flying home. Each leg's stay must be a DIFFERENT hotel (different city = different hotel).
 • weather and weather_window: if cities are in very different climates (mountain vs coast vs desert), call this out in weather_window AND give per-day weather that reflects the city's actual climate for that day.` : "";
-    return `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.${trainRuleBlock}${privateDriverBlock}${privateTourBlock}
+    return `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}
 
 FIELD EMISSION ORDER — CRITICAL:
 Write the tool input in this exact order: destination, meta, ${isMultiCity ? "cities, " : ""}days, logistics, flags, planb, snobs, tonight.
@@ -4810,11 +4830,15 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
       (Array.isArray(transport.type) && transport.type.some(t => /private\s*driver|chauffeur/i.test(t))) ||
       (Array.isArray(activities) && activities.some(a => /private driver/i.test(a))) ||
       /\b(private driver|chauffeur|car service|black car)\b/i.test(interests?.text || "");
-    const _userTourRe = /\bprivate\b.*\b(tour|guide|walking)\b|skip[- ]the[- ]line|\bVIP\b/i;
+    const _userTourRe = /\bprivate\b.*\b(tour|guide|walking)\b|\bVIP\b/i;
     const userWantsPrivateTour =
       (Array.isArray(activities) && activities.some(a => _userTourRe.test(a) && !/private driver/i.test(a))) ||
       _userTourRe.test(interests?.text || "") ||
       (Array.isArray(basics.style) && basics.style.some(s => /\bVIP\b|\bprivate\b/i.test(s)));
+    const _userStlRe = /skip[- ]the[- ]line|timed[- ]entry|fast[- ]track|priority entry/i;
+    const userWantsSkipTheLine =
+      (Array.isArray(activities) && activities.some(a => _userStlRe.test(a))) ||
+      _userStlRe.test(interests?.text || "");
     const groundModeText = trainAllowed
       ? "driving or train (user opted into rail)"
       : "driving only — NO trains, NO rail, NO Amtrak under any circumstances";
@@ -4843,7 +4867,8 @@ IMPORTANT: Write days[] BEFORE logistics, flags, planb, snobs, or tonight. days[
 IMPORTANT: NO RESTAURANT MAY APPEAR TWICE. Each named restaurant gets ONE meal slot across the entire trip. Vary breakfasts — use real local spots, not the hotel restaurant on repeat.
 IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "weather" line (seasonal expectation). Top-level MUST include weather_window, pack[≥3], planb[≥5], tonight (with priority prefixes).
 ${userWantsPrivateDriver ? `IMPORTANT — PRIVATE DRIVER REQUESTED: The user wants a private chauffeur, not a rental car or rideshare. Each activity-heavy day MUST have a Transport item with a named operator (Blacklane / Carey / Mercedes V-Class service / etc. — or "Concierge to book" if unsure), pickup time, return time, and vehicle type. Add a logistics chip "Driver · <operator>". The airport arrival on Day 1 is a driver meet-and-greet, not a self-drive pickup.` : ""}
-${userWantsPrivateTour ? `IMPORTANT — PRIVATE TOURS / GUIDES REQUESTED: Marquee sights MUST be done with a named PRIVATE guide (Context Travel, Walks of Italy private, Through Eternity private, ToursByLocals, or destination-specific licensed-guide bureau). Group bus tours and audio walks do NOT satisfy this. Each private-tour Activity item must include: duration, guide credential, advance-booking lead time, and pickup/meet location. Add a flags[] entry urging immediate booking.` : ""}`;
+${userWantsPrivateTour ? `IMPORTANT — PRIVATE TOURS / GUIDES REQUESTED: Marquee sights MUST be done with a named PRIVATE guide (Context Travel, Walks of Italy private, Through Eternity private, ToursByLocals, or destination-specific licensed-guide bureau). Group bus tours and audio walks do NOT satisfy this. Each private-tour Activity item must include: duration, guide credential, advance-booking lead time, and pickup/meet location. Add a flags[] entry urging immediate booking.` : ""}
+${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major ticketed sight in the plan, the Activity item MUST name the skip-the-line / timed-entry ticket, the official booking URL (or GetYourGuide/Tiqets as reseller fallback), the targeted entry time (default first-of-day 08:00–09:00 for crowd-sensitive sights), and the advance lead time. Add per-sight flags[] entries urging immediate booking. Never tell the user to "arrive early" or "buy at the door."` : ""}`;
   };
 
   // Active-job storage key. When a build is in flight we write the jobId and
