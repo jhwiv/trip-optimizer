@@ -274,6 +274,92 @@ const AIRPORTS = [
   { code: "MEX", city: "Mexico City", name: "Benito Juárez" },
   { code: "SJD", city: "Cabo San Lucas", name: "Los Cabos Intl" },
   { code: "CUN", city: "Cancun", name: "Cancún Intl" },
+  // Regional / smaller-market airports referenced by DEST_AIRPORTS and the
+  // arrival-airport guidance block. Adding them here makes them searchable
+  // in the Home Airport autocomplete.
+  { code: "AVL", city: "Asheville", name: "Asheville Regional" },
+  { code: "HHH", city: "Hilton Head", name: "Hilton Head Airport" },
+  { code: "PVD", city: "Providence", name: "T.F. Green / Rhode Island Intl" },
+  { code: "EYW", city: "Key West", name: "Key West Intl" },
+  // Maine / New England
+  { code: "BGR", city: "Bangor", name: "Bangor Intl" },
+  { code: "BHB", city: "Bar Harbor", name: "Hancock County–Bar Harbor" },
+  { code: "PWM", city: "Portland ME", name: "Portland Intl Jetport" },
+  { code: "HYA", city: "Hyannis", name: "Barnstable Muni" },
+  { code: "PVC", city: "Provincetown", name: "Provincetown Muni" },
+  { code: "MVY", city: "Martha's Vineyard", name: "Martha's Vineyard Airport" },
+  { code: "ACK", city: "Nantucket", name: "Nantucket Memorial" },
+  { code: "HTO", city: "East Hampton", name: "East Hampton Airport" },
+  { code: "ISP", city: "Islip", name: "Long Island MacArthur" },
+  // US ski / mountain markets
+  { code: "EGE", city: "Vail / Eagle", name: "Eagle County Regional" },
+  { code: "HDN", city: "Steamboat Springs", name: "Yampa Valley / Hayden" },
+  { code: "MTJ", city: "Montrose", name: "Montrose Regional" },
+  { code: "TEX", city: "Telluride", name: "Telluride Regional" },
+  { code: "GJT", city: "Grand Junction", name: "Grand Junction Regional" },
+  { code: "COD", city: "Cody", name: "Yellowstone Regional" },
+  { code: "BZN", city: "Bozeman", name: "Bozeman Yellowstone Intl" },
+  { code: "GPI", city: "Kalispell", name: "Glacier Park Intl" },
+  { code: "FCA", city: "Kalispell", name: "Glacier Park Intl (alt code)" },
+  { code: "SUN", city: "Sun Valley", name: "Friedman Memorial" },
+  { code: "BOI", city: "Boise", name: "Boise Airport" },
+  // New Mexico
+  { code: "TAOS", city: "Taos", name: "Taos Regional" },
+  // Wine country / California regionals
+  { code: "STS", city: "Santa Rosa", name: "Charles M. Schulz–Sonoma County" },
+  // Italy regionals
+  { code: "FLR", city: "Florence", name: "Amerigo Vespucci" },
+  { code: "PSA", city: "Pisa", name: "Galileo Galilei" },
+  { code: "GOA", city: "Genoa", name: "Cristoforo Colombo" },
+  { code: "NAP", city: "Naples", name: "Naples Intl" },
+  { code: "CTA", city: "Catania", name: "Catania-Fontanarossa" },
+  { code: "PMO", city: "Palermo", name: "Falcone-Borsellino" },
+  // Spain / Balearics / Greek islands
+  { code: "PMI", city: "Mallorca", name: "Palma de Mallorca" },
+  { code: "IBZ", city: "Ibiza", name: "Ibiza Airport" },
+  { code: "JMK", city: "Mykonos", name: "Mykonos Airport" },
+  { code: "JTR", city: "Santorini", name: "Santorini (Thira) Airport" },
+  // Switzerland / Austria regionals
+  { code: "BRN", city: "Bern", name: "Bern Airport" },
+  { code: "SMV", city: "St. Moritz", name: "Samedan / St. Moritz" },
+  { code: "VIE", city: "Vienna", name: "Vienna Intl" },
+  { code: "SZG", city: "Salzburg", name: "Salzburg W.A. Mozart" },
+  // Montenegro
+  { code: "TIV", city: "Tivat", name: "Tivat Airport" },
+  // Mexico / Caribbean leisure
+  { code: "PVR", city: "Puerto Vallarta", name: "Lic. Gustavo Díaz Ordaz" },
+  { code: "NAS", city: "Nassau", name: "Lynden Pindling Intl" },
+  { code: "SXM", city: "St. Maarten", name: "Princess Juliana Intl" },
+  { code: "AUA", city: "Aruba", name: "Reina Beatrix Intl" },
+  { code: "BGI", city: "Barbados", name: "Grantley Adams Intl" },
+  // Canada secondary
+  { code: "YYC", city: "Calgary", name: "Calgary Intl" },
+  // Pacific Northwest secondary
+  { code: "GEG", city: "Spokane", name: "Spokane Intl" },
+  // Mid-Atlantic / South
+  { code: "RIC", city: "Richmond", name: "Richmond Intl" },
+  { code: "ORF", city: "Norfolk", name: "Norfolk Intl" },
+  { code: "PIT", city: "Pittsburgh", name: "Pittsburgh Intl" },
+  { code: "CVG", city: "Cincinnati", name: "Cincinnati/N. Kentucky" },
+  { code: "CLE", city: "Cleveland", name: "Cleveland Hopkins" },
+  { code: "IND", city: "Indianapolis", name: "Indianapolis Intl" },
+  { code: "MKE", city: "Milwaukee", name: "General Mitchell Intl" },
+  { code: "STL", city: "St. Louis", name: "Lambert Intl" },
+  { code: "MCI", city: "Kansas City", name: "Kansas City Intl" },
+  { code: "OMA", city: "Omaha", name: "Eppley Airfield" },
+  // Texas secondary
+  { code: "DAL", city: "Dallas", name: "Love Field" },
+  { code: "HOU", city: "Houston", name: "Hobby" },
+  { code: "SAT", city: "San Antonio", name: "San Antonio Intl" },
+  // Mountain West secondary
+  { code: "TUS", city: "Tucson", name: "Tucson Intl" },
+  { code: "COS", city: "Colorado Springs", name: "Colorado Springs Muni" },
+  // Asia secondary
+  { code: "TPE", city: "Taipei", name: "Taoyuan Intl" },
+  { code: "PEK", city: "Beijing", name: "Capital Intl" },
+  { code: "PVG", city: "Shanghai", name: "Pudong Intl" },
+  { code: "DEL", city: "Delhi", name: "Indira Gandhi Intl" },
+  { code: "BOM", city: "Mumbai", name: "Chhatrapati Shivaji Maharaj" },
 ];
 
 // Airlines — major carriers globally.
