@@ -4634,23 +4634,27 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
             <div style={cardStyle}>
               <p style={ctStyle}>Where & when</p>
               <div style={g2}>
+                {/* When multi-city, Trip Route needs the full row width or the city
+                    input collapses to zero. Span both grid columns; Home airport
+                    wraps to the next row below. */}
+                <div style={{ gridColumn: isMultiCity ? "1 / -1" : "auto", minWidth: 0 }}>
                 <Field label={isMultiCity ? "Trip route" : "Destination"} hint={isMultiCity ? `${cities.length}-city trip · ${totalNightsFromCities} nights total` : null}>
                   <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                     {cities.map((c, i) => (
-                      <div key={i} style={{ display: "flex", gap: "6px", alignItems: "flex-end" }}>
+                      <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
                         {isMultiCity && (
-                          <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.1em", textTransform: "uppercase", padding: "6px 7px 0", whiteSpace: "nowrap" }}>Leg {i + 1}</span>
+                          <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", padding: "6px 0 0", whiteSpace: "nowrap", flex: "0 0 auto" }}>Leg {i + 1}</span>
                         )}
                         <div style={{ flex: "1 1 auto", minWidth: 0 }}>
                           <CityAutocomplete value={c.name} onChange={e => updateCity(i, { name: e.target.value })} placeholder={i === 0 ? "Start typing a city…" : "Next city…"} />
                         </div>
                         {isMultiCity && (
-                          <div style={{ flex: "0 0 56px" }}>
-                            <input type="number" min="1" max="14" value={c.nights} onChange={e => updateCity(i, { nights: e.target.value })} placeholder="nts" aria-label={`Nights in ${c.name || `city ${i + 1}`}`} style={{ fontSize: "14px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", textAlign: "center" }} />
+                          <div style={{ flex: "0 0 64px" }}>
+                            <input type="number" min="1" max="14" value={c.nights} onChange={e => updateCity(i, { nights: e.target.value })} placeholder="nights" aria-label={`Nights in ${c.name || `city ${i + 1}`}`} style={{ fontSize: "14px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", textAlign: "center" }} />
                           </div>
                         )}
                         {isMultiCity && cities.length > 1 && (
-                          <button onClick={() => removeCity(i)} aria-label={`Remove ${c.name || `city ${i + 1}`}`} style={{ background: "none", border: "none", color: "var(--color-text-tertiary)", fontSize: "18px", cursor: "pointer", padding: "4px 6px", lineHeight: 1 }}>×</button>
+                          <button onClick={() => removeCity(i)} aria-label={`Remove ${c.name || `city ${i + 1}`}`} style={{ background: "none", border: "none", color: "var(--color-text-tertiary)", fontSize: "20px", cursor: "pointer", padding: "4px 4px", lineHeight: 1, flex: "0 0 auto" }}>×</button>
                         )}
                       </div>
                     ))}
@@ -4659,6 +4663,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
                     )}
                   </div>
                 </Field>
+                </div>
                 <Field label="Home airport" hint={flights.noFlight ? "Not flying — skip this" : (lookupAirport(flights.homeAirport) ? `${lookupAirport(flights.homeAirport).city} · ${lookupAirport(flights.homeAirport).name}` : null)}>
                   {flights.noFlight ? (
                     <div style={{ height: "38px", lineHeight: "38px", borderBottom: "0.5px solid var(--color-border-secondary)", fontSize: "14px", color: "var(--color-text-secondary)", fontStyle: "italic", opacity: 0.6 }}>Not flying</div>
