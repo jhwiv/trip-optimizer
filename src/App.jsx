@@ -2890,22 +2890,30 @@ const TRIP_PLAN_TOOL = {
 };
 
 export default function TripOptimizer() {
-  // Persisted form state — survives reloads and accidental tab closes.
+  // Form state is INTENTIONALLY NOT PERSISTED across launches. The user wants
+  // a clean slate on every launch and after "Plan another trip". We still
+  // write to localStorage during a session for crash recovery within the
+  // same tab, but on mount we wipe it. Saved trips (multi-trip library) live
+  // under SAVED_TRIPS_KEY and are unaffected.
   const LS_KEY = "trip-optimizer-form-v4";
-  const loadSaved = () => { try { return JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch { return {}; } };
-  const saved = loadSaved();
 
-  // Sample prefill — June 4, 6 nights, United, Hertz, Marriott, food + wine focus.
-  const DEFAULTS = {
-    basics: { destination: "Santa Fe, NM", cities: [{ name: "Santa Fe, NM", nights: "6", focus: "" }], startDate: "2026-06-04", nights: "6", travelers: "2 adults", baseArea: "", style: "Food & wine", pace: "Moderate (2–3 things/day)", budget: "$$$ — mid range" },
-    flights: { homeAirport: "EWR", airline: "United", cabin: "Business / Polaris", flex: "Exact date only" },
-    hotel: { brand: "Marriott / Bonvoy", tier: "", mustHave: "" },
-    transport: { type: "Rental car", company: "Hertz", vehicle: "" },
-    dining: { cuisine: "Local / regional", budget: "$$$ — mid ($60–120pp)" },
+  // BLANK = truly empty state. Used on every launch and on "Plan another trip".
+  const BLANK = {
+    basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", nights: "", travelers: "", baseArea: "", style: "", pace: "", budget: "" },
+    flights: { homeAirport: "", airline: "", cabin: "", flex: "" },
+    hotel: { brand: "", tier: "", mustHave: "" },
+    transport: { type: "", company: "", vehicle: "" },
+    dining: { cuisine: "", budget: "" },
     restaurants: [],
     activities: [],
-    interests: { level: "Easy — mostly walking", text: "Good local food, food and wine culture focus" },
+    interests: { level: "", text: "" },
   };
+  // DEFAULTS preserved only as fallback when a saved trip is missing a field on Open.
+  const DEFAULTS = BLANK;
+
+  // Wipe any leftover form state from a prior session as early as possible.
+  // Runs once at module init — before the first render — so the form starts blank.
+  try { localStorage.removeItem(LS_KEY); } catch {}
 
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -2923,14 +2931,31 @@ export default function TripOptimizer() {
     if (Array.isArray(src.cities) && src.cities.length > 0) return src;
     return { ...src, cities: [{ name: src.destination || "", nights: src.nights || "", focus: "" }] };
   };
-  const [basics, setB] = useState(normalizeBasics(saved.basics));
-  const [flights, setF] = useState(saved.flights || DEFAULTS.flights);
-  const [hotel, setH] = useState(saved.hotel || DEFAULTS.hotel);
-  const [transport, setT] = useState(saved.transport || DEFAULTS.transport);
-  const [dining, setD] = useState(saved.dining || DEFAULTS.dining);
-  const [restaurants, setRest] = useState(saved.restaurants || DEFAULTS.restaurants);
-  const [activities, setActs] = useState(saved.activities || DEFAULTS.activities);
-  const [interests, setInt] = useState(saved.interests || DEFAULTS.interests);
+  const [basics, setB] = useState(normalizeBasics(BLANK.basics));
+  const [flights, setF] = useState(BLANK.flights);
+  const [hotel, setH] = useState(BLANK.hotel);
+  const [transport, setT] = useState(BLANK.transport);
+  const [dining, setD] = useState(BLANK.dining);
+  const [restaurants, setRest] = useState(BLANK.restaurants);
+  const [activities, setActs] = useState(BLANK.activities);
+  const [interests, setInt] = useState(BLANK.interests);
+
+  // Reset every form bucket to BLANK. Used for "Plan another trip".
+  const resetFormToBlank = () => {
+    setB(normalizeBasics(BLANK.basics));
+    setF(BLANK.flights);
+    setH(BLANK.hotel);
+    setT(BLANK.transport);
+    setD(BLANK.dining);
+    setRest(BLANK.restaurants);
+    setActs(BLANK.activities);
+    setInt(BLANK.interests);
+    setResult(null);
+    setError("");
+    if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
+    setLoading(false); setLoadingMsg(""); setProgress(0); setProgressLabel(""); setElapsedSec(0);
+    try { localStorage.removeItem(LS_KEY); } catch {}
+  };
 
   // Saved trips list — hydrated from localStorage. Refreshed on save/delete/open.
   const [savedTrips, setSavedTrips] = useState(() => loadSavedTrips());
@@ -3780,7 +3805,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
           <ItineraryView
             data={result}
             inputs={{ basics, flights, hotel, transport, dining, restaurants, activities, interests, outputs }}
-            onBack={() => { setStep(1); setResult(null); }}
+            onBack={() => { resetFormToBlank(); setStep(1); }}
             onSaved={refreshSavedTrips}
           />
         )}
