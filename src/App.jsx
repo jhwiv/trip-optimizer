@@ -2938,18 +2938,30 @@ export default function TripOptimizer() {
   const handleOpenSavedTrip = (entry) => {
     if (!entry || !entry.inputs || !entry.result) return;
     const i = entry.inputs;
-    if (i.basics) setB(normalizeBasics(i.basics));
-    if (i.flights) setF(i.flights);
-    if (i.hotel) setH(i.hotel);
-    if (i.transport) setT(i.transport);
-    if (i.dining) setD(i.dining);
-    if (Array.isArray(i.restaurants)) setRest(i.restaurants);
-    if (Array.isArray(i.activities)) setActs(i.activities);
-    if (i.interests) setInt(i.interests);
-    if (i.outputs) setOut(i.outputs);
+    // CLEAR-BEFORE-OPEN. Reset every piece of form state to a clean baseline
+    // first, then layer the saved entry on top. Without this, chips/fields
+    // from the prior session bleed through whenever the saved entry doesn't
+    // include that key (e.g. saved trip has no restaurants[] -> old chips
+    // persist). Also wipes any in-flight error / loading state.
+    setB(normalizeBasics(i.basics || DEFAULTS.basics));
+    setF(i.flights || DEFAULTS.flights);
+    setH(i.hotel || DEFAULTS.hotel);
+    setT(i.transport || DEFAULTS.transport);
+    setD(i.dining || DEFAULTS.dining);
+    setRest(Array.isArray(i.restaurants) ? i.restaurants : []);
+    setActs(Array.isArray(i.activities) ? i.activities : []);
+    setInt(i.interests || DEFAULTS.interests);
+    setOut(i.outputs || { itinerary: true, weather: true, navigation: true, logistics: true, tonight: true, menus: true, flags: true, planb: true, snobs: true, practical: false, badges: false, pronunciation: false });
+    // Cancel any in-flight generation and clear transient UI state.
+    if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
+    setLoading(false);
+    setLoadingMsg("");
+    setProgress(0);
+    setProgressLabel("");
+    setElapsedSec(0);
+    setError("");
     setResult(entry.result);
     setStep(3);
-    setError("");
     window.scrollTo({ top: 0, behavior: "instant" });
   };
   const handleDeleteSavedTrip = (id) => {
