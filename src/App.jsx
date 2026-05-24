@@ -4266,16 +4266,27 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
   // Compute progress label given the current accumulated toolJson. Pulled out
   // of the inner stream loop so it can run identically against polled deltas
   // and against a resumed job's pre-existing buffer.
+  //
+  // IMPORTANT: progressLabel is the *sub-line* below the bold phase header.
+  // It should ONLY render when it adds detail beyond what loadingMsg (the
+  // phase cycler: "Researching destination…", "Selecting hotels…",
+  // "Building day-by-day itinerary…", etc.) already conveys. So we leave it
+  // EMPTY for the early/placeholder states ("Starting plan…",
+  // "Planning structure…") — those would just duplicate loadingMsg and
+  // produce the contradictory "Starting plan… / Finalizing your plan…"
+  // mismatch users have been seeing on slow builds. progressLabel only
+  // fires once we have real stream content to describe ("Day 4 of 8 ·
+  // dining", "Insider notes & Plan B…").
   const updateProgressLabel = (toolJson, totalDays) => {
     const dayMatches = toolJson.match(/"label"\s*:\s*"/g) || [];
     const daysSeen = dayMatches.length;
     const restaurantMatches = toolJson.match(/"reservation"\s*:/g) || [];
     const restaurantsDone = restaurantMatches.length;
 
-    if (daysSeen === 0 && toolJson.length < 200) {
-      setProgressLabel("Starting plan…");
-    } else if (daysSeen === 0) {
-      setProgressLabel("Planning structure…");
+    if (daysSeen === 0) {
+      // No real stream signal yet — let loadingMsg (phase cycler) own the
+      // header without a competing sub-line.
+      setProgressLabel("");
     } else if (daysSeen <= totalDays) {
       const currentDay = daysSeen;
       const lastLabelIdx = toolJson.lastIndexOf('"label"');
@@ -4483,9 +4494,20 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
     // server stores it under a jobId, returns immediately, and runs the
     // Anthropic stream in the background using waitUntil so the build
     // survives a window close, tab close, screen sleep, or network drop.
+    //
+    // max_tokens scales with trip size. A 3-night plan only needs ~7–9k
+    // tokens; capping at 32000 means the model keeps generating long after
+    // the plan is complete (more days, more restaurants, more insider notes
+    // than asked for), which is why short trips were taking 3–4 minutes.
+    // 2200 tokens/day + 4000 base + 1500/extra-city gives generous headroom
+    // without letting the model wander.
+    const maxTokensForTrip = Math.min(
+      32000,
+      Math.max(8000, 4000 + (nightsNum + 1) * 2200 + Math.max(0, citiesCount - 1) * 1500),
+    );
     const body = {
       model: "claude-sonnet-4-5",
-      max_tokens: 32000,
+      max_tokens: maxTokensForTrip,
       system: buildSystemPrompt(),
       messages: [{ role: "user", content: buildUserPrompt() }],
       tools: [TRIP_PLAN_TOOL],
@@ -4820,11 +4842,13 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
               <div style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px", gap: "10px" }}>
                   <p style={{ fontSize: "12px", color: "var(--color-text-primary)", margin: 0, fontWeight: 500, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {/* Bold header always reflects the cycling phase (loadingMsg). The
-                       stream-driven progressLabel goes in the sub-line so we never
-                       show two contradictory states (e.g. "Starting plan…" header
-                       while sub-line says "Finalizing your plan…"). */}
-                    {loadingMsg || progressLabel || "Working…"}
+                    {/* Single source of truth: stream-driven progressLabel wins
+                       whenever it has real content ("Day 4 of 8 · dining",
+                       "Insider notes & Plan B…"). Otherwise fall back to the
+                       phase cycler (loadingMsg). progressLabel is intentionally
+                       blank for placeholder states so we never show two
+                       contradictory strings simultaneously. */}
+                    {progressLabel || loadingMsg || "Working…"}
                   </p>
                   <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
                     {progress > 0 ? `${Math.round(progress * 100)}%` : ""}
@@ -4839,11 +4863,13 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
                     <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
                   )}
                 </div>
-                {/* Sub-line: only show progressLabel if it adds detail beyond the
-                   phase header (e.g. "Day 4 of 8 · dining"). Suppress when it
-                   would just duplicate the header. */}
-                {progressLabel && progressLabel !== loadingMsg && (
-                  <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "6px 0 0" }}>{progressLabel}</p>
+                {/* Sub-line: show loadingMsg (phase) only when progressLabel is
+                   driving the header. That way the user always sees BOTH the
+                   data-driven detail ("Day 4 of 8 · dining") AND the broader
+                   phase context ("Picking restaurants…"), but never two
+                   conflicting versions of the same thing. */}
+                {progressLabel && loadingMsg && progressLabel !== loadingMsg && (
+                  <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "6px 0 0" }}>{loadingMsg}</p>
                 )}
               </div>
             )}
