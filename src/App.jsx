@@ -2976,23 +2976,117 @@ async function pollBuildJob({ jobId, signal, onDelta, pollMs = 1500 }) {
   }
 }
 
-// Start a /api/build job with an arbitrary Anthropic body (model/system/messages/tools).
-// Returns the jobId. Throws on HTTP error.
-async function startBuildJob(body) {
-  const r = await fetch("/api/build", {
+// Run a /api/build job end-to-end against the current NDJSON streaming server.
+// Keeps the POST connection open and reads {type:"job"}, {type:"delta"},
+// {type:"done"}, {type:"error"} events. Returns the accumulated tool/text
+// buffer when the server emits `done`. Falls back to KV polling if the stream
+// ends without a `done` event (e.g. transient disconnect mid-build).
+//
+// Used by the Professional Review and Apply Changes flows. The fresh-build
+// path has its own inline reader (streamBuildResponse) with extra UI hooks.
+async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
+  const resp = await fetch("/api/build", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
-  if (!r.ok) {
-    const txt = await r.text();
-    let msg = `Could not start job (HTTP ${r.status}).`;
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => "");
+    let msg = `Could not start job (HTTP ${resp.status}).`;
     try { const j = JSON.parse(txt); msg = j?.error?.message || msg; } catch { if (txt) msg = txt.slice(0, 240); }
     throw new Error(msg);
   }
-  const out = await r.json();
-  if (!out?.jobId) throw new Error("Server did not return a jobId.");
-  return out.jobId;
+  if (!resp.body) throw new Error("Server did not return a stream body.");
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let toolJson = "";
+  let jobId = null;
+  let doneSeen = false;
+
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        try { await reader.cancel(); } catch {}
+        const err = new Error("Aborted");
+        err.name = "AbortError";
+        throw err;
+      }
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let evt;
+        try { evt = JSON.parse(line); } catch { continue; }
+        if (evt.type === "job" && evt.jobId) {
+          jobId = evt.jobId;
+          if (typeof onJob === "function") onJob(jobId);
+        } else if (evt.type === "delta" && evt.text) {
+          toolJson += evt.text;
+          if (typeof onDelta === "function") onDelta(evt.text, toolJson.length);
+        } else if (evt.type === "done") {
+          doneSeen = true;
+          return { jobId, toolJson };
+        } else if (evt.type === "error") {
+          throw new Error(evt.error || "Build failed on server.");
+        }
+      }
+    }
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+
+  // Stream ended without `done`. If we know the jobId, fall back to KV polling
+  // so we can still finish reading whatever the server produced.
+  if (!doneSeen && jobId) {
+    let cursor = toolJson.length;
+    const POLL_MS = 1500;
+    while (true) {
+      if (signal?.aborted) {
+        const err = new Error("Aborted");
+        err.name = "AbortError";
+        throw err;
+      }
+      let r;
+      try {
+        r = await fetch(`/api/build/${encodeURIComponent(jobId)}?cursor=${cursor}`, {
+          signal,
+          headers: { "Cache-Control": "no-cache" },
+        });
+      } catch (netErr) {
+        if (netErr?.name === "AbortError") throw netErr;
+        await new Promise(r => setTimeout(r, POLL_MS));
+        continue;
+      }
+      if (r.status === 404) {
+        const err = new Error("Job not found or expired.");
+        err.notFound = true;
+        throw err;
+      }
+      if (!r.ok) {
+        await new Promise(r => setTimeout(r, POLL_MS));
+        continue;
+      }
+      const data = await r.json();
+      if (data?.error?.message) throw new Error(data.error.message);
+      if (data.delta) {
+        toolJson += data.delta;
+        cursor = data.cursor;
+        if (typeof onDelta === "function") onDelta(data.delta, toolJson.length);
+      }
+      if (data.status === "done") return { jobId, toolJson };
+      if (data.status === "error") throw new Error(data.error || "Build failed on server.");
+      await new Promise(r => setTimeout(r, POLL_MS));
+    }
+  }
+
+  return { jobId, toolJson };
 }
 
 // Parse a tool-input JSON buffer with salvage fallback. Returns { parsed, truncated }.
@@ -4060,6 +4154,13 @@ export default function TripOptimizer() {
   const buildSystemPrompt = () => {
     const totalNights = isMultiCity ? totalNightsFromCities : (parseInt(basics.nights, 10) || 3);
     const totalDays = totalNights + 1;
+    // Train is OFF by default. The user must explicitly tick "Train / rail" in
+    // the ground-transport multi-select for any rail suggestion to be allowed.
+    const trainAllowedSys = Array.isArray(transport.type) && transport.type.some(t => /train|rail/i.test(t));
+    const trainRuleBlock = trainAllowedSys ? "" : `
+
+GROUND TRANSPORT — NO TRAINS (HARD RULE):
+The user did NOT request train or rail. You MUST NOT propose a train, Amtrak, regional rail, commuter rail, or any rail segment ANYWHERE in this plan. Not in days[].items, not in transport_in for any city, not in logistics chips, not in flags[], not in planb[], not in snobs, not in tonight, not as a backup, not as a "consider also" aside. Pretend trains do not exist for this trip. Every ground transport segment must be car (rental, private driver, or rideshare) or walking. This applies even to rail-friendly destinations (Saratoga Springs, Hudson Valley, Connecticut shore, the entire Northeast Corridor, European destinations with great rail). Treat any urge to mention rail as a hard violation.`;
     const multiCityBlock = isMultiCity ? `
 
 MULTI-CITY TRIP — STRUCTURE THIS CAREFULLY:
@@ -4075,7 +4176,7 @@ Total: ${totalNights} nights = ${totalDays} days.
 • MINIMUM 2 NIGHTS per city when cities.length === 3 — if the user gave 1 night for a leg in a 3-city trip, set a flags[] warning that one night doesn't leave time to enjoy that city and suggest a re-balance.
 • HOTEL ITEMS: One check-in Hotel item per leg (at arrival) and a check-out item on the last morning of each leg EXCEPT the final leg's check-out which is on the very last day before flying home. Each leg's stay must be a DIFFERENT hotel (different city = different hotel).
 • weather and weather_window: if cities are in very different climates (mountain vs coast vs desert), call this out in weather_window AND give per-day weather that reflects the city's actual climate for that day.` : "";
-    return `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.
+    return `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.${trainRuleBlock}
 
 FIELD EMISSION ORDER — CRITICAL:
 Write the tool input in this exact order: destination, meta, ${isMultiCity ? "cities, " : ""}days, logistics, flags, planb, snobs, tonight.
@@ -4192,6 +4293,14 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
     const cityLine = isMultiCity
       ? `Route: ${cities.map((c, i) => `${i + 1}) ${c.name} — ${c.nights} nights`).join("  →  ")}`
       : `Destination: ${basics.destination}`;
+    // Train is OFF unless the user explicitly selected "Train / rail" in the
+    // ground-transport multi-select. The model must not invent an Amtrak /
+    // rail segment when the user picked rental car, private driver, or
+    // nothing at all — even if the destination has good rail service.
+    const trainAllowed = Array.isArray(transport.type) && transport.type.some(t => /train|rail/i.test(t));
+    const groundModeText = trainAllowed
+      ? "driving or train (user opted into rail)"
+      : "driving only — NO trains, NO rail, NO Amtrak under any circumstances";
     return `Plan this trip:
 ${cityLine}
 Base area: ${basics.baseArea || (isMultiCity ? "—" : "suggest best area")}
@@ -4199,7 +4308,7 @@ Start date: ${formatDateForDisplay(basics.startDate) || basics.startDate}
 Nights: ${isMultiCity ? totalNightsFromCities : basics.nights}${isMultiCity ? "  (" + cities.map(c => `${c.nights} in ${c.name}`).join(" + ") + ")" : ""}
 Travelers: ${basics.travelers}
 Style: ${prefToText(basics.style)} · Pace: ${basics.pace || "No preference"} · Budget: ${basics.budget || "No preference"}
-${flights.noFlight ? `Transportation mode: GROUND ONLY (driving / train). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the drive or rail journey from the user's origin to the destination, with realistic time + distance.` : `Home airport: ${flights.homeAirport} · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin || "no preference"}`}
+${flights.noFlight ? `Transportation mode: GROUND ONLY (${groundModeText}). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the ${trainAllowed ? "drive or rail" : "drive"} journey from the user's origin to the destination, with realistic time + distance.` : `Home airport: ${flights.homeAirport} · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin || "no preference"}`}
 Hotel brand: ${prefToText(hotel.brand)}${hotel.tier ? ` · ${hotel.tier}` : ""} · Must-haves: ${hotel.mustHave || "none"}
 Transport: ${prefToText(transport.type)}${transport.company ? ` · ${transport.company}` : ""}
 Cuisine: ${dining.cuisine || "local"} · Dinner budget: ${prefToText(dining.budget)}
@@ -4208,7 +4317,8 @@ Activities requested: ${activities.length ? activities.join(", ") : "suggest bas
 Interests: ${interests.text || "not specified"} · Level: ${interests.level || "No preference"}
 Include sections: ${active}
 
-${flights.noFlight ? `IMPORTANT: NO FLIGHTS. The user is driving or taking the train. Day 1 must be a Transport item describing the surface-travel arrival; do not invent flights, do not include any Flight items in days[].items.` : `IMPORTANT: Prefer NONSTOP flights. If ${flights.homeAirport} has no nonstop to the primary airport for ${isMultiCity ? cities[0]?.name : basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.`}
+${flights.noFlight ? `IMPORTANT: NO FLIGHTS. The user is ${trainAllowed ? "driving or taking the train" : "driving"}. Day 1 must be a Transport item describing the surface-travel arrival; do not invent flights, do not include any Flight items in days[].items.` : `IMPORTANT: Prefer NONSTOP flights. If ${flights.homeAirport} has no nonstop to the primary airport for ${isMultiCity ? cities[0]?.name : basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.`}
+${trainAllowed ? "" : "IMPORTANT — NO TRAINS: The user did NOT request train or rail transportation. Do NOT suggest Amtrak, regional rail, commuter rail, or any train segment anywhere in the plan — not as primary transport, not as an alternative in flags[], not in planb[], not in plan-B fallbacks, not in transport_in for any leg, not in any item.text. Every transport segment must be by car, flight (if applicable), or walking. If the destination is rail-friendly (e.g. Saratoga, the Hudson Valley, Hudson NY, Westchester, Connecticut shore, DC corridor, anywhere on the Northeast Corridor) you still must NOT suggest a train. Pretend rail does not exist for this trip."}
 IMPORTANT: Return a complete days[] array with ${(isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)) + 1} entries (arrival day + ${isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)} nights). Do not collapse the plan into the logistics chip list.${isMultiCity ? `
 IMPORTANT: This is a ${cities.length}-city trip. Emit cities[] with ${cities.length} entries. Each day's "city" field must match a city in cities[] (or use From→To format for transit days). Inter-city transit is a Transport item at the start of legs 2+ with realistic drive time + distance.` : ""}
 IMPORTANT: Write days[] BEFORE logistics, flags, planb, snobs, or tonight. days[] comes immediately after destination + meta in the tool input.
