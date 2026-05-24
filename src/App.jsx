@@ -687,7 +687,39 @@ function TimePill({ time, end_time }) {
   );
 }
 
-function FlightCard({ type, time, end_time, flight: f, text, flags }) {
+// Parse "Day 1 · Thu Jun 4 · Arrive Santa Fe" → "2026-06-04" (the date segment).
+// Returns null if no date can be extracted. Year defaults to current year if
+// not present (the label format doesn't usually include year).
+function parseDayLabelToISODate(label) {
+  if (!label || typeof label !== "string") return null;
+  // Match patterns like "Thu Jun 4", "Mon Jun 14, 2026", "Jun 4", "June 4 2026"
+  const m = label.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})(?:[, ]+(\d{4}))?/i);
+  if (!m) return null;
+  const monthIdx = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"].indexOf(m[1].toLowerCase().slice(0, 3));
+  if (monthIdx < 0) return null;
+  const day = parseInt(m[2], 10);
+  const year = m[3] ? parseInt(m[3], 10) : new Date().getFullYear();
+  const mm = String(monthIdx + 1).padStart(2, "0");
+  const dd = String(day).padStart(2, "0");
+  return `${year}-${mm}-${dd}`;
+}
+
+// Build a Google Flights deep-link for the route + date. Falls back to the
+// generic flights search if airports or date are missing.
+function buildGoogleFlightsUrl(fromIata, toIata, isoDate) {
+  if (!fromIata || !toIata) return "https://www.google.com/travel/flights";
+  const from = String(fromIata).toUpperCase();
+  const to = String(toIata).toUpperCase();
+  if (isoDate) {
+    // Google Flights text-search URL: works reliably without their opaque tfs token.
+    const q = encodeURIComponent(`Flights from ${from} to ${to} on ${isoDate}`);
+    return `https://www.google.com/travel/flights?q=${q}`;
+  }
+  const q = encodeURIComponent(`Flights from ${from} to ${to}`);
+  return `https://www.google.com/travel/flights?q=${q}`;
+}
+
+function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) {
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
   const stopLabel = f.nonstop ? "Nonstop" : (f.connection ? `Connect ${f.connection}` : "Connecting");
@@ -721,15 +753,16 @@ function FlightCard({ type, time, end_time, flight: f, text, flags }) {
     : carrierLower.includes("norse") ? "flynorse.com"
     : null;
   const bookUrl = bookHost ? `https://www.${bookHost}` : null;
-  const hasFlightNum = f.flight_number && String(f.flight_number).trim() && String(f.flight_number).toLowerCase() !== "null";
-  const titleLine = hasFlightNum
-    ? `${f.carrier || ""} ${f.flight_number} · ${route}`.trim()
-    : `${f.carrier || "Carrier TBD"} · ${route}`;
-  // Carrier-correction or missing-number banner: tell the user the app cleaned
-  // up a hallucinated number / wrong carrier instead of silently showing junk.
+  // Universal: flight_number is always null after the quality layer. Title shows carrier · route.
+  const titleLine = `${f.carrier || "Carrier TBD"} · ${route}`;
+  // Banner copy: priority is carrier-correction → generic look-up.
   const overrideBanner = f._carrierOverride
-    ? `App corrected carrier: ${f._originalCarrier || "the model's pick"} does not operate this nonstop. Verify with ${f.carrier}.`
-    : (!hasFlightNum ? `Flight number not confirmed — look it up on ${f.carrier || "the carrier"}'s site before booking.` : null);
+    ? `App corrected carrier: ${f._originalCarrier || "the model's pick"} does not operate this nonstop. Use ${f.carrier} — confirm with the live lookup below.`
+    : null;
+  // Always-on look-up CTA: build a Google Flights URL for the exact route + date.
+  const isoDate = parseDayLabelToISODate(dayLabel);
+  const lookupUrl = buildGoogleFlightsUrl(f.from_airport, f.to_airport, isoDate);
+  const lookupLabel = `LOOK UP ACTUAL FLIGHT${f.from_airport && f.to_airport ? ` · ${f.from_airport}→${f.to_airport}` : ""}`;
   return (
     <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
@@ -743,7 +776,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags }) {
         <p style={{ fontSize: "11px", color: "#B85C00", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 500, padding: "6px 8px", background: "rgba(184,92,0,0.06)", borderLeft: "2px solid #B85C00", borderRadius: "2px" }}>⚠︎ {overrideBanner}</p>
       )}
       <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "2px 0 6px", letterSpacing: "0.02em" }}>
-        Depart {formatTime(f.depart_time)} · Arrive {formatTime(f.arrive_time)}{f.duration ? `  ·  ${f.duration}` : ""}  ·  {stopLabel}
+        {f.depart_time ? `Approx depart ${formatTime(f.depart_time)}` : ""}{f.arrive_time ? ` · arrive ${formatTime(f.arrive_time)}` : ""}{f.duration ? `  ·  ${f.duration}` : ""}  ·  {stopLabel}
       </p>
       {(f.cabin || f.aircraft) && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: "0 0 4px" }}>
@@ -753,17 +786,22 @@ function FlightCard({ type, time, end_time, flight: f, text, flags }) {
       {note && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", lineHeight: 1.5, fontStyle: "italic" }}>{note}</p>
       )}
-      {!hasVerify && (
-        <p style={{ fontSize: "10.5px", color: "#B85C00", margin: "6px 0 0", lineHeight: 1.4, letterSpacing: "0.02em" }}>⚠︎ Verify flight number, times and equipment at booking — schedules change.</p>
-      )}
-      {hasVerify && f._verifyAppended && (
-        <p style={{ fontSize: "10.5px", color: "#B85C00", margin: "6px 0 0", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 500 }}>⚠︎ Verify flight details at booking — schedules change.</p>
-      )}
-      {bookUrl && (
-        <div style={{ marginTop: "8px" }}>
-          <a href={bookUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>Book · {bookHost}</a>
-        </div>
-      )}
+      {/* Primary action: route-specific Google Flights lookup. Always shown. */}
+      <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+        <a href={lookupUrl} target="_blank" rel="noopener noreferrer"
+           style={{ fontSize: "11px", padding: "8px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: GOLD, color: "#0F0F0F", textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 700, display: "inline-block" }}>
+          {lookupLabel}
+        </a>
+        {bookUrl && (
+          <a href={bookUrl} target="_blank" rel="noopener noreferrer"
+             style={{ fontSize: "11px", padding: "7px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>
+            Or book · {bookHost}
+          </a>
+        )}
+      </div>
+      <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "6px 0 0", lineHeight: 1.4, letterSpacing: "0.02em", fontStyle: "italic" }}>
+        Times and carrier shown are planning estimates. Always confirm the actual flight number on the live lookup before booking.
+      </p>
       {text && !f.carrier && (
         <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "4px 0 0" }}>{text}</p>
       )}
@@ -864,7 +902,7 @@ function DayBlock({ day, dayIndex, onOpenMenu }) {
       {sortedItems.map((item, i) => {
         // Structured flight → rich card.
         if (item.type === "Flight" && item.flight) {
-          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} />;
+          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} />;
         }
         // Structured hotel → rich card.
         if (item.type === "Hotel" && item.hotel) {
@@ -1223,10 +1261,30 @@ function applyQualityLayer(input) {
     });
   }
 
-  // 2b. KNOWN_NONSTOPS override: if the model claimed a nonstop with a carrier
-  // that doesn't actually operate the route, rewrite to the truth. This is the
-  // strongest anti-hallucination guardrail — e.g. "United nonstop EWR→CPH" gets
-  // rewritten to SAS, flight_number cleared, and an explanatory flag added.
+  // 2b. UNIVERSAL flight-number strip. The model cannot be trusted to know
+  // specific published flight numbers — even for routes it gets the carrier
+  // right on, the number is usually fabricated. Strip every flight_number
+  // unconditionally and force the renderer to surface a "Look up actual
+  // flight" CTA. This is route-agnostic and applies to every flight, every
+  // trip, no allowlist required.
+  if (Array.isArray(days)) {
+    days.forEach((day, dayIdx) => {
+      (day.items || []).forEach(item => {
+        if (item.type !== "Flight" || !item.flight) return;
+        const f = item.flight;
+        if (f.flight_number != null && String(f.flight_number).trim() !== "") {
+          f._originalFlightNumber = f.flight_number;
+          f.flight_number = null;
+          f._flightNumberStripped = true;
+          fixes.push(`Day ${dayIdx + 1} flight: removed model-supplied flight number — look up live schedule`);
+        }
+      });
+    });
+  }
+
+  // 2c. KNOWN_NONSTOPS carrier-correction (route-specific bonus layer). If the
+  // model also got the carrier wrong on a route we know about, fix it. This
+  // runs AFTER the universal number strip, so flight_number is already null.
   if (Array.isArray(days)) {
     days.forEach((day, dayIdx) => {
       (day.items || []).forEach(item => {
@@ -1242,16 +1300,11 @@ function applyQualityLayer(input) {
         const claimedCarrier = f.carrier || "the listed carrier";
         const allCorrect = known.slice(0, 3);
         f._originalCarrier = f.carrier;
-        f._originalFlightNumber = f.flight_number;
         f._originalConfirmationNote = f.confirmation_note;
         f.carrier = allCorrect.length > 1 ? allCorrect.join(" or ") : allCorrect[0];
-        f.flight_number = null; // strip the made-up number
         f._carrierOverride = true;
-        // Strip carrier-specific references from confirmation_note (e.g. "book on
-        // united.com") since they're misleading now — keep only the verify sentence.
         const VERIFY_SENT = "Verify flight number, times and equipment at booking — schedules change.";
         f.confirmation_note = `Book directly with ${allCorrect[0]}. ${VERIFY_SENT}`;
-        // Add a flag so the user sees why the carrier changed.
         item.flags = Array.isArray(item.flags) ? item.flags.slice() : [];
         const operators = allCorrect.length > 1 ? `${allCorrect.join(" / ")} are the` : `${allCorrect[0]} is the`;
         item.flags.push(`Carrier corrected: ${claimedCarrier} does not operate a nonstop ${f.from_airport}→${f.to_airport}. ${operators} actual nonstop operator${allCorrect.length > 1 ? "s" : ""}.`);
@@ -2774,9 +2827,9 @@ VARIETY RULES — STRICT, NON-NEGOTIABLE:
 • Never repeat the same activity venue across days. Vary neighborhoods — Plaza one day, Railyard another, Tesuque another.
 
 FLIGHTS — ACCURACY OVER SPECIFICITY, PREFER NONSTOP, ALWAYS STRUCTURED:
-• Every Flight item MUST include a "flight" object with: carrier, from_airport (IATA), to_airport (IATA), depart_time (rough window OK), arrive_time (rough window OK), duration, nonstop (boolean), cabin, aircraft, confirmation_note.
+• Every Flight item MUST include a "flight" object with: carrier, from_airport (IATA), to_airport (IATA), depart_time (rough window OK), arrive_time (rough window OK), duration, nonstop (boolean), cabin, aircraft, confirmation_note. Do NOT include flight_number — the app handles flight-number lookup for the user.
 • CARRIER SELECTION — DO THIS FIRST: name a carrier you are HIGHLY CONFIDENT actually operates a nonstop on this exact city pair. If you cannot name one with confidence, leave carrier as a comma-separated short list of candidates (e.g. "SAS or Delta") and add a flags[] entry like "Verify which carrier operates nonstop — candidates: SAS, Delta". Do NOT invent a carrier that doesn't fly the route.
-• FLIGHT NUMBERS — NEVER INVENT. This rule overrides all others. If you do not know the carrier's actual published flight number for this exact route with high confidence, OMIT the "flight_number" field entirely (or set it to null). Do NOT make up a number like "UA 1234" just to fill the field. A missing flight_number is correct; a fake flight_number is wrong and breaks the user's trust.
+• FLIGHT NUMBERS — DO NOT EMIT. The app strips any flight_number you send and renders a "Look up actual flight" link instead. Set "flight_number": null. The user looks up the real flight on Google Flights, not from your output. Do NOT make up numbers like "UA 1234" — they will be removed but they waste tokens and erode trust if anyone sees the raw JSON.
 • ROUTE TRUTH — common transatlantic / long-haul nonstops you MUST get right:
    - EWR ↔ CPH: SAS operates the daily nonstop. United sells the route only as codeshare/connecting (via FRA, MUC, ZRH). Do NOT emit "United nonstop EWR-CPH".
    - JFK ↔ CPH: SAS and Norse Atlantic. Delta connects.
