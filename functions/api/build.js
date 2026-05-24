@@ -28,8 +28,32 @@
 // TTL: 24h.
 
 const JOB_TTL_SECONDS = 24 * 60 * 60;
-const FLUSH_INTERVAL_MS = 750;
-const FLUSH_CHARS = 800;
+// KV flush cadence. Cloudflare's free-tier KV is hard-capped at 1000 puts/day
+// per namespace. Aggressive flushing (every 750ms / 800 chars) blew that cap
+// in a single afternoon and surfaced as Worker error 1101 ("KV put() limit
+// exceeded for the day") to the client. With 5s / 5000 chars a typical
+// 90-second build does ~20 puts, leaving headroom for many builds/day.
+const FLUSH_INTERVAL_MS = 5000;
+const FLUSH_CHARS = 5000;
+
+// Safely write to KV. If the namespace is over quota or otherwise unhappy,
+// log it and continue — the client is still receiving the live NDJSON stream,
+// so the build succeeds even when KV mirroring is dead. Resume-via-poll is
+// the only thing that degrades, and the client already falls back gracefully.
+async function safeKvPut(env, key, value, opts, state) {
+  if (!env.JOBS) return;
+  if (state?.kvDisabled) return;
+  try {
+    await env.JOBS.put(key, value, opts);
+  } catch (err) {
+    const msg = String(err?.message || err);
+    // Latch the disabled flag so we stop hammering KV for the rest of the job.
+    if (state) {
+      state.kvDisabled = true;
+      state.kvError = msg;
+    }
+  }
+}
 
 export async function onRequestPost(context) {
   const { request, env } = context;
@@ -37,9 +61,8 @@ export async function onRequestPost(context) {
   if (!env.ANTHROPIC_API_KEY) {
     return json({ error: { message: "Server missing ANTHROPIC_API_KEY" } }, 500);
   }
-  if (!env.JOBS) {
-    return json({ error: { message: "Server missing JOBS KV binding. Add it in Cloudflare Pages -> Settings -> Functions." } }, 500);
-  }
+  // env.JOBS is preferred but no longer required — the build still works
+  // without it (resume-via-poll is the only feature that degrades).
 
   let body;
   try {
@@ -50,15 +73,19 @@ export async function onRequestPost(context) {
 
   const jobId = makeJobId();
   const startedAt = Date.now();
+  const kvState = { kvDisabled: !env.JOBS, kvError: null };
 
   // Seed status in KV BEFORE we start streaming so any concurrent poll finds
-  // the job immediately.
-  await env.JOBS.put(
+  // the job immediately. Safe-wrapped: if KV is over quota, we skip and the
+  // build continues on the live NDJSON stream alone.
+  await safeKvPut(
+    env,
     `job:${jobId}:status`,
     JSON.stringify({ status: "running", len: 0, model: body.model || "", startedAt, updatedAt: startedAt }),
     { expirationTtl: JOB_TTL_SECONDS },
+    kvState,
   );
-  await env.JOBS.put(`job:${jobId}:text`, "", { expirationTtl: JOB_TTL_SECONDS });
+  await safeKvPut(env, `job:${jobId}:text`, "", { expirationTtl: JOB_TTL_SECONDS }, kvState);
 
   // Streaming response back to the client. We use TransformStream so the
   // Response is constructed and returned IMMEDIATELY with a readable body
@@ -86,7 +113,7 @@ export async function onRequestPost(context) {
     try {
       // First event: jobId, so the client can record it for resume.
       await writeEvent({ type: "job", jobId });
-      await runBuild({ env, jobId, body, startedAt, writeEvent });
+      await runBuild({ env, jobId, body, startedAt, writeEvent, kvState });
     } catch (err) {
       await writeEvent({ type: "error", error: String(err?.message || err) });
     } finally {
@@ -115,7 +142,7 @@ export async function onRequestOptions() {
   });
 }
 
-async function runBuild({ env, jobId, body, startedAt, writeEvent }) {
+async function runBuild({ env, jobId, body, startedAt, writeEvent, kvState }) {
   const statusKey = `job:${jobId}:status`;
   const textKey = `job:${jobId}:text`;
   const upstreamBody = { ...body, stream: true };
@@ -126,8 +153,9 @@ async function runBuild({ env, jobId, body, startedAt, writeEvent }) {
 
   async function flushKV(final = false, extra = {}) {
     const now = Date.now();
-    await env.JOBS.put(textKey, accumulated, { expirationTtl: JOB_TTL_SECONDS });
-    await env.JOBS.put(
+    await safeKvPut(env, textKey, accumulated, { expirationTtl: JOB_TTL_SECONDS }, kvState);
+    await safeKvPut(
+      env,
       statusKey,
       JSON.stringify({
         status: final ? (extra.error ? "error" : "done") : "running",
@@ -139,6 +167,7 @@ async function runBuild({ env, jobId, body, startedAt, writeEvent }) {
         ...(extra.error ? { error: String(extra.error) } : {}),
       }),
       { expirationTtl: JOB_TTL_SECONDS },
+      kvState,
     );
     lastFlush = now;
     lastFlushedLen = accumulated.length;
