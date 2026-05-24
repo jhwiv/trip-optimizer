@@ -58,13 +58,53 @@ async function networkFirst(request) {
 }
 
 // Cache-first for hashed assets: serve instantly, hydrate cache in the background.
+// CRITICAL: Cloudflare Pages serves `index.html` (text/html, 200) when a hashed
+// asset is missing (e.g. a stale shell references an old chunk hash). If we
+// blindly cached that, dynamic imports throw "Failed to fetch dynamically
+// imported module" forever. So we *validate* the response content-type matches
+// what the URL implies, never cache mismatches, and surface a real network
+// error to the caller so the app can self-heal.
+function expectedTypeFor(pathname) {
+  if (pathname.endsWith('.js') || pathname.endsWith('.mjs')) return 'javascript';
+  if (pathname.endsWith('.css')) return 'css';
+  if (pathname.endsWith('.json')) return 'json';
+  if (pathname.endsWith('.svg')) return 'svg';
+  return null; // images / fonts / other binary — don't validate
+}
+function contentTypeMatches(resp, expected) {
+  if (!expected) return true;
+  const ct = (resp.headers.get('content-type') || '').toLowerCase();
+  if (ct.includes('text/html')) return false; // never HTML for hashed assets
+  if (expected === 'javascript') return ct.includes('javascript') || ct.includes('ecmascript');
+  if (expected === 'css') return ct.includes('css');
+  if (expected === 'json') return ct.includes('json');
+  if (expected === 'svg') return ct.includes('svg');
+  return true;
+}
 async function cacheFirst(request, cacheName) {
+  const url = new URL(request.url);
+  const expected = expectedTypeFor(url.pathname);
   const cached = await caches.match(request);
-  if (cached) return cached;
-  const resp = await fetch(request);
-  if (resp && resp.ok) {
+  if (cached && contentTypeMatches(cached, expected)) return cached;
+  // If cache was poisoned with HTML (or any wrong type), evict it before refetch.
+  if (cached && !contentTypeMatches(cached, expected)) {
+    try {
+      const cache = await caches.open(cacheName);
+      await cache.delete(request);
+    } catch (_) { /* ignore */ }
+  }
+  // Force a network fetch that bypasses any HTTP cache layer too.
+  const resp = await fetch(request, { cache: 'no-store' });
+  if (resp && resp.ok && contentTypeMatches(resp, expected)) {
     const cache = await caches.open(cacheName);
     cache.put(request, resp.clone()).catch(() => {});
+    return resp;
+  }
+  // Wrong content-type means CF returned the SPA shell for a missing chunk.
+  // Synthesize a real 404 so dynamic imports fail fast and the app's PDF
+  // catch-handler can trigger a hard reload to pick up the fresh shell.
+  if (resp && resp.ok && !contentTypeMatches(resp, expected)) {
+    return new Response('', { status: 404, statusText: 'Asset hash not in current deploy' });
   }
   return resp;
 }

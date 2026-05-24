@@ -1844,6 +1844,42 @@ async function saveItineraryAsPDF(filename, setStatus) {
   }
 }
 
+// Detect the specific failure where a dynamic import resolves to a chunk hash
+// that's no longer in the current deploy. The user's open tab is running stale
+// HTML referencing an old hash; the only fix is to reload the shell (which is
+// network-first, so it'll pick up the new index.html with the new hashes).
+// We unregister the SW and purge caches first so the reload is clean.
+function isStaleChunkError(err) {
+  if (!err) return false;
+  const msg = String(err.message || err);
+  return (
+    msg.includes('Failed to fetch dynamically imported module') ||
+    msg.includes('Importing a module script failed') ||
+    msg.includes('error loading dynamically imported module') ||
+    // Chromium also emits this when MIME-checking fails on a module
+    msg.includes('Failed to load module script') ||
+    msg.includes('strict MIME type checking')
+  );
+}
+async function recoverFromStaleShell() {
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+  } catch (_) { /* ignore */ }
+  try {
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch (_) { /* ignore */ }
+  // Reload with a cache-buster so the shell is fetched fresh from origin.
+  const url = new URL(window.location.href);
+  url.searchParams.set('_r', Date.now().toString(36));
+  window.location.replace(url.toString());
+}
+
 function PrintButton({ data }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
@@ -1856,6 +1892,15 @@ function PrintButton({ data }) {
       await saveItineraryAsPDF(pdfFilename(data), setStatus);
     } catch (err) {
       console.error("PDF save failed", err);
+      if (isStaleChunkError(err)) {
+        // App shell is stale — the PDF library chunk hash changed between
+        // when this tab loaded and now. Self-heal: clear SW + caches and
+        // reload so the user gets a fresh shell with valid asset hashes.
+        setStatus("Updating app…");
+        setError("App was updated. Refreshing…");
+        await recoverFromStaleShell();
+        return; // page is reloading; don't reset state
+      }
       setError("Could not save PDF. Try again.");
     } finally {
       setBusy(false);
