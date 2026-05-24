@@ -1007,6 +1007,107 @@ function QualityBadge({ qc }) {
 // PDF / Print: triggers the OS print dialog. On iOS Chrome this opens the
 // share sheet → 'Print' or 'Save as PDF'. On desktop it opens the native
 // print dialog with PDF option. Zero new dependencies.
+// Saved-trips storage. Keeps up to MAX_SAVED most recent trips in localStorage.
+// Each entry: { id, name, savedAt (ISO), inputs, result }.
+const SAVED_TRIPS_KEY = "trip-optimizer-saved-v2";
+const MAX_SAVED = 12;
+function loadSavedTrips() {
+  try {
+    const raw = localStorage.getItem(SAVED_TRIPS_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function writeSavedTrips(arr) {
+  try { localStorage.setItem(SAVED_TRIPS_KEY, JSON.stringify(arr.slice(0, MAX_SAVED))); } catch {}
+}
+function makeTripId() {
+  return "trip_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
+}
+function defaultTripName(inputs, result) {
+  const dest = result?.destination || inputs?.basics?.destination || "Trip";
+  const start = inputs?.basics?.startDate;
+  const monthDay = start ? new Date(start + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
+  return monthDay ? `${dest} · ${monthDay}` : dest;
+}
+
+// SaveTripButton — prompts for a name, persists trip, calls onSaved with the saved entry.
+function SaveTripButton({ inputs, result, onSaved }) {
+  const [justSaved, setJustSaved] = useState(false);
+  const handleClick = () => {
+    const fallback = defaultTripName(inputs, result);
+    const name = (typeof window !== "undefined" && window.prompt) ? (window.prompt("Name this trip", fallback) || fallback) : fallback;
+    const entry = { id: makeTripId(), name: name.trim() || fallback, savedAt: new Date().toISOString(), inputs, result };
+    const existing = loadSavedTrips();
+    writeSavedTrips([entry, ...existing]);
+    setJustSaved(true);
+    setTimeout(() => setJustSaved(false), 2200);
+    if (typeof onSaved === "function") onSaved(entry);
+  };
+  return (
+    <button
+      onClick={handleClick}
+      className="no-print"
+      style={{
+        background: justSaved ? GOLD : "var(--color-background-primary)",
+        color: justSaved ? "#0F0F0F" : "var(--color-text-primary)",
+        border: `0.5px solid ${justSaved ? GOLD : "var(--color-border-secondary)"}`,
+        borderRadius: "var(--border-radius-md)",
+        padding: "10px 16px",
+        fontSize: "11px",
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        cursor: "pointer",
+        fontFamily: "inherit",
+        fontWeight: 600,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "8px",
+        transition: "background 200ms ease",
+      }}
+      aria-label="Save this trip"
+    >
+      <span aria-hidden="true">{justSaved ? "✓" : "☆"}</span> {justSaved ? "Saved" : "Save trip"}
+    </button>
+  );
+}
+
+// SavedTripsPanel — shown above the form on step 1 when at least one trip exists.
+// Each row: name, route summary, savedAt, [Open] [×].
+function SavedTripsPanel({ trips, onOpen, onDelete }) {
+  if (!trips || trips.length === 0) return null;
+  return (
+    <div style={{ marginBottom: "1.25rem", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "14px 16px", background: "var(--color-background-primary)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "10px" }}>
+        <p style={{ fontSize: "10.5px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: 0 }}>Saved trips</p>
+        <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: 0 }}>{trips.length} saved</p>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "0" }}>
+        {trips.map((t, i) => {
+          const dest = t.result?.destination || t.inputs?.basics?.destination || "—";
+          const start = t.inputs?.basics?.startDate;
+          const nights = t.inputs?.basics?.nights;
+          const meta = [
+            start ? new Date(start + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : null,
+            nights ? `${nights} nights` : null,
+          ].filter(Boolean).join(" · ");
+          const savedAgo = new Date(t.savedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          return (
+            <div key={t.id} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 0", borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontSize: "13.5px", color: "var(--color-text-primary)", margin: "0 0 2px", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}</p>
+                <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: 0 }}>{dest !== t.name ? `${dest} · ` : ""}{meta || `saved ${savedAgo}`}</p>
+              </div>
+              <button onClick={() => onOpen(t)} style={{ background: "var(--color-text-primary)", color: "var(--color-background-primary)", border: "none", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>Open</button>
+              <button onClick={() => onDelete(t.id)} aria-label={`Delete ${t.name}`} style={{ background: "none", border: "none", color: "var(--color-text-tertiary)", fontSize: "18px", cursor: "pointer", padding: "4px 6px", lineHeight: 1 }}>×</button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function PrintButton() {
   return (
     <button
@@ -1187,7 +1288,7 @@ function DayNav({ days }) {
   );
 }
 
-function ItineraryView({ data: rawData, inputs, onBack }) {
+function ItineraryView({ data: rawData, inputs, onBack, onSaved }) {
   const [menuRestaurant, setMenuRestaurant] = useState(null);
   // Apply the pass-three quality layer once before render. This dedupes
   // restaurants, fills verify microcopy, and computes a QC summary.
@@ -1298,6 +1399,7 @@ function ItineraryView({ data: rawData, inputs, onBack }) {
           onClick={onBack}
           style={{ background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", color: "var(--color-text-secondary)" }}
         >← Plan another trip</button>
+        <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
         <PrintButton />
       </div>
     </div>
@@ -1961,6 +2063,32 @@ export default function TripOptimizer() {
   const [activities, setActs] = useState(saved.activities || DEFAULTS.activities);
   const [interests, setInt] = useState(saved.interests || DEFAULTS.interests);
 
+  // Saved trips list — hydrated from localStorage. Refreshed on save/delete/open.
+  const [savedTrips, setSavedTrips] = useState(() => loadSavedTrips());
+  const refreshSavedTrips = () => setSavedTrips(loadSavedTrips());
+  const handleOpenSavedTrip = (entry) => {
+    if (!entry || !entry.inputs || !entry.result) return;
+    const i = entry.inputs;
+    if (i.basics) setB(normalizeBasics(i.basics));
+    if (i.flights) setF(i.flights);
+    if (i.hotel) setH(i.hotel);
+    if (i.transport) setT(i.transport);
+    if (i.dining) setD(i.dining);
+    if (Array.isArray(i.restaurants)) setRest(i.restaurants);
+    if (Array.isArray(i.activities)) setActs(i.activities);
+    if (i.interests) setInt(i.interests);
+    if (i.outputs) setOut(i.outputs);
+    setResult(entry.result);
+    setStep(3);
+    setError("");
+    window.scrollTo({ top: 0, behavior: "instant" });
+  };
+  const handleDeleteSavedTrip = (id) => {
+    const next = loadSavedTrips().filter(t => t.id !== id);
+    writeSavedTrips(next);
+    setSavedTrips(next);
+  };
+
   // Auto-save form on every change.
   useEffect(() => {
     try {
@@ -2504,6 +2632,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
 
         {step === 1 && (
           <div>
+            <SavedTripsPanel trips={savedTrips} onOpen={handleOpenSavedTrip} onDelete={handleDeleteSavedTrip} />
             <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Four essentials to start. Refine the details after, or build immediately.</p>
 
             <div style={cardStyle}>
@@ -2674,6 +2803,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
             data={result}
             inputs={{ basics, flights, hotel, transport, dining, restaurants, activities, interests, outputs }}
             onBack={() => { setStep(1); setResult(null); }}
+            onSaved={refreshSavedTrips}
           />
         )}
 
