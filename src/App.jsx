@@ -1237,31 +1237,142 @@ function StaleChipsBanner({ suggestion, onClear, onDismiss }) {
   );
 }
 
-function PrintButton() {
+// Build a clean filename from trip basics: "trip-YYYY-MM-DD-destination-Nn.pdf".
+function pdfFilename(data) {
+  const dest = (data?.destination || (Array.isArray(data?.cities) && data.cities[0]?.name) || "trip").toString();
+  const slug = dest.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "trip";
+  const date = (data?.start_date || data?.startDate || new Date().toISOString().slice(0, 10)).toString().slice(0, 10);
+  const n = data?.nights ? `-${data.nights}n` : "";
+  return `trip-${date}-${slug}${n}.pdf`;
+}
+
+// Render the itinerary DOM to a multi-page PDF using html2canvas-pro + jsPDF.
+// This works on iOS Chrome where window.print() is unreliable.
+async function saveItineraryAsPDF(filename, setStatus) {
+  const root = document.getElementById("trip-print-root");
+  if (!root) throw new Error("Itinerary container not found");
+
+  setStatus("Preparing…");
+  // Reveal the print-only input summary, hide no-print controls during capture.
+  const printOnly = Array.from(root.querySelectorAll(".print-only"));
+  const noPrint = Array.from(root.querySelectorAll(".no-print"));
+  const prevPrintOnly = printOnly.map(el => el.style.display);
+  const prevNoPrint = noPrint.map(el => el.style.display);
+  printOnly.forEach(el => { el.style.display = "block"; });
+  noPrint.forEach(el => { el.style.display = "none"; });
+  const prevBg = root.style.background;
+  root.style.background = "#ffffff";
+
+  try {
+    const [{ default: html2canvas }, jsPDFModule] = await Promise.all([
+      import("html2canvas-pro"),
+      import("jspdf"),
+    ]);
+    const { jsPDF } = jsPDFModule;
+
+    setStatus("Rendering…");
+    const canvas = await html2canvas(root, {
+      scale: 2,
+      backgroundColor: "#ffffff",
+      useCORS: true,
+      logging: false,
+      windowWidth: Math.max(root.scrollWidth, 800),
+    });
+
+    setStatus("Building PDF…");
+    const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter" });
+    const pageW = pdf.internal.pageSize.getWidth();
+    const pageH = pdf.internal.pageSize.getHeight();
+    const margin = 8;
+    const usableW = pageW - margin * 2;
+    const usableH = pageH - margin * 2;
+
+    const imgW = usableW;
+    const imgH = (canvas.height * imgW) / canvas.width;
+
+    if (imgH <= usableH) {
+      pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", margin, margin, imgW, imgH, undefined, "FAST");
+    } else {
+      const pxPerMm = canvas.width / imgW;
+      const pageSliceHpx = Math.floor(usableH * pxPerMm);
+      let yPx = 0;
+      let pageIndex = 0;
+      while (yPx < canvas.height) {
+        const sliceHpx = Math.min(pageSliceHpx, canvas.height - yPx);
+        const slice = document.createElement("canvas");
+        slice.width = canvas.width;
+        slice.height = sliceHpx;
+        const ctx = slice.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, slice.width, slice.height);
+        ctx.drawImage(canvas, 0, yPx, canvas.width, sliceHpx, 0, 0, canvas.width, sliceHpx);
+        const sliceImgH = sliceHpx / pxPerMm;
+        if (pageIndex > 0) pdf.addPage();
+        pdf.addImage(slice.toDataURL("image/jpeg", 0.9), "JPEG", margin, margin, imgW, sliceImgH, undefined, "FAST");
+        yPx += sliceHpx;
+        pageIndex++;
+      }
+    }
+
+    setStatus("Saving…");
+    pdf.save(filename);
+  } finally {
+    printOnly.forEach((el, i) => { el.style.display = prevPrintOnly[i]; });
+    noPrint.forEach((el, i) => { el.style.display = prevNoPrint[i]; });
+    root.style.background = prevBg;
+  }
+}
+
+function PrintButton({ data }) {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+
+  const handleClick = async () => {
+    if (busy) return;
+    setBusy(true); setError(""); setStatus("Starting…");
+    try {
+      await saveItineraryAsPDF(pdfFilename(data), setStatus);
+    } catch (err) {
+      console.error("PDF save failed", err);
+      setError("Could not save PDF. Try again.");
+    } finally {
+      setBusy(false);
+      setStatus("");
+      setTimeout(() => setError(""), 5000);
+    }
+  };
+
   return (
-    <button
-      onClick={() => window.print()}
-      className="no-print"
-      style={{
-        background: "var(--color-text-primary)",
-        color: "var(--color-background-primary)",
-        border: "none",
-        borderRadius: "var(--border-radius-md)",
-        padding: "10px 16px",
-        fontSize: "11px",
-        letterSpacing: "0.08em",
-        textTransform: "uppercase",
-        cursor: "pointer",
-        fontFamily: "inherit",
-        fontWeight: 600,
-        display: "inline-flex",
-        alignItems: "center",
-        gap: "8px",
-      }}
-      aria-label="Save itinerary as PDF"
-    >
-      <span aria-hidden="true">⤓</span> Save as PDF
-    </button>
+    <div className="no-print" style={{ display: "inline-flex", flexDirection: "column", gap: "4px" }}>
+      <button
+        onClick={handleClick}
+        disabled={busy}
+        style={{
+          background: "var(--color-text-primary)",
+          color: "var(--color-background-primary)",
+          border: "none",
+          borderRadius: "var(--border-radius-md)",
+          padding: "10px 16px",
+          fontSize: "11px",
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          cursor: busy ? "wait" : "pointer",
+          fontFamily: "inherit",
+          fontWeight: 600,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "8px",
+          opacity: busy ? 0.7 : 1,
+        }}
+        aria-label="Save itinerary as PDF"
+      >
+        <span aria-hidden="true">⤓</span> {busy ? (status || "Working…") : "Save as PDF"}
+      </button>
+      {error && (
+        <span style={{ fontSize: "11px", color: "#B85C00" }}>{error}</span>
+      )}
+    </div>
   );
 }
 
@@ -1429,7 +1540,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onSaved }) {
   const cityByDay = (data.days || []).map(d => d.city || null);
   const isMultiCityPlan = Array.isArray(data.cities) && data.cities.length > 1;
   return (
-    <div>
+    <div id="trip-print-root">
       <InputSummary inputs={inputs} />
       <MenuModal restaurant={menuRestaurant} onClose={() => setMenuRestaurant(null)} />
       <TripHero data={data} />
@@ -1529,7 +1640,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onSaved }) {
           style={{ background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", color: "var(--color-text-secondary)" }}
         >← Plan another trip</button>
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
-        <PrintButton />
+        <PrintButton data={data} />
       </div>
     </div>
   );
