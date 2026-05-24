@@ -2137,14 +2137,12 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
         tools: [REVIEW_TOOL],
         tool_choice: { type: "tool", name: "submit_review" },
       };
-      const jobId = await startBuildJob(body);
       let toolJson = "";
-      await pollBuildJob({
-        jobId,
+      const { toolJson: finalJson } = await streamBuildJob(body, {
         signal: controller.signal,
-        onDelta: (delta) => {
+        onDelta: (delta, totalLen) => {
           toolJson += delta;
-          const estTokens = toolJson.length / 3.5;
+          const estTokens = totalLen / 3.5;
           const tokFrac = Math.min(0.95, estTokens / 1800);
           lastTokFrac = tokFrac;
           setProgress(prev => Math.max(prev, tokFrac));
@@ -2154,6 +2152,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           else setProgressLabel(`Drafting findings (${fMatches.length})`);
         },
       });
+      toolJson = finalJson;
       setProgress(1);
       setProgressLabel("Finalizing…");
       const { parsed } = parseToolJson(toolJson);
@@ -2234,14 +2233,12 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             tools: [REVISION_TOOL_FULL],
             tool_choice: { type: "tool", name: "submit_trip_plan" },
           };
-      const jobId = await startBuildJob(body);
       let toolJson = "";
-      await pollBuildJob({
-        jobId,
+      const { toolJson: finalJson } = await streamBuildJob(body, {
         signal: controller.signal,
-        onDelta: (delta) => {
+        onDelta: (delta, totalLen) => {
           toolJson += delta;
-          const estTokens = toolJson.length / 3.5;
+          const estTokens = totalLen / 3.5;
           const tokFrac = Math.min(0.95, estTokens / (revisionMode === "surgical" ? 1500 : 7000));
           lastTokFrac = tokFrac;
           setProgress(prev => Math.max(prev, tokFrac));
@@ -2254,6 +2251,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           }
         },
       });
+      toolJson = finalJson;
       setProgress(1);
       setProgressLabel("Finalizing…");
       const { parsed } = parseToolJson(toolJson);
@@ -2928,52 +2926,6 @@ function salvageTruncatedJSON(str) {
     head += open === "{" ? "}" : "]";
   }
   return head;
-}
-
-// Module-level poller for /api/build/<jobId>. Used by both the main plan-build
-// flow and the professional-review / revision flows. Polls GET with cursor,
-// appends server-side deltas to a running buffer via onDelta, resolves with
-// the final accumulated length when status flips to 'done'. Throws on error
-// or notFound. The signal cancels polling without killing the server-side
-// job (build keeps running for the next reconnect).
-async function pollBuildJob({ jobId, signal, onDelta, pollMs = 1500 }) {
-  let cursor = 0;
-  while (true) {
-    if (signal?.aborted) {
-      const err = new Error("Aborted");
-      err.name = "AbortError";
-      throw err;
-    }
-    let resp;
-    try {
-      resp = await fetch(`/api/build/${encodeURIComponent(jobId)}?cursor=${cursor}`, {
-        signal,
-        headers: { "Cache-Control": "no-cache" },
-      });
-    } catch (netErr) {
-      if (netErr?.name === "AbortError") throw netErr;
-      await new Promise(r => setTimeout(r, pollMs));
-      continue;
-    }
-    if (resp.status === 404) {
-      const err = new Error("Job not found or expired.");
-      err.notFound = true;
-      throw err;
-    }
-    if (!resp.ok) {
-      await new Promise(r => setTimeout(r, pollMs));
-      continue;
-    }
-    const data = await resp.json();
-    if (data?.error?.message) throw new Error(data.error.message);
-    if (data.delta) {
-      cursor = data.cursor;
-      if (typeof onDelta === "function") onDelta(data.delta, cursor);
-    }
-    if (data.status === "done") return { len: data.cursor };
-    if (data.status === "error") throw new Error(data.error || "Build failed on server.");
-    await new Promise(r => setTimeout(r, pollMs));
-  }
 }
 
 // Run a /api/build job end-to-end against the current NDJSON streaming server.
