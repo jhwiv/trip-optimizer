@@ -73,11 +73,17 @@ export async function onRequestOptions() {
 async function runBuild({ env, jobId, body, startedAt }) {
   const statusKey = `job:${jobId}:status`;
   const textKey = `job:${jobId}:text`;
+  const debugKey = `job:${jobId}:debug`;
   const upstreamBody = { ...body, stream: true };
 
   let accumulated = "";
   let lastFlush = 0;
   let lastFlushedLen = 0;
+  const debugLog = [];
+  const dbg = async (msg) => {
+    debugLog.push(`${((Date.now() - startedAt) / 1000).toFixed(2)}s ${msg}`);
+    try { await env.JOBS.put(debugKey, debugLog.join("\n"), { expirationTtl: JOB_TTL_SECONDS }); } catch {}
+  };
 
   const FLUSH_INTERVAL_MS = 750;
   const FLUSH_CHARS = 800;
@@ -119,8 +125,10 @@ async function runBuild({ env, jobId, body, startedAt }) {
     );
   }
 
+  await dbg("runBuild start");
   let anthropicRes;
   try {
+    await dbg("fetch upstream begin");
     anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -130,13 +138,16 @@ async function runBuild({ env, jobId, body, startedAt }) {
       },
       body: JSON.stringify(upstreamBody),
     });
+    await dbg(`fetch upstream returned status=${anthropicRes.status} hasBody=${!!anthropicRes.body}`);
   } catch (err) {
+    await dbg(`fetch threw: ${err?.message || err}`);
     await fail(`Upstream fetch failed: ${err?.message || err}`);
     return;
   }
 
   if (!anthropicRes.ok || !anthropicRes.body) {
     const text = await anthropicRes.text().catch(() => "");
+    await dbg(`upstream not-ok body=${text.slice(0,200)}`);
     await fail(`Anthropic ${anthropicRes.status}: ${text.slice(0, 500)}`);
     return;
   }
@@ -144,11 +155,18 @@ async function runBuild({ env, jobId, body, startedAt }) {
   const reader = anthropicRes.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let chunkCount = 0;
+  let eventCount = 0;
 
   try {
     while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
+      const readPromise = reader.read();
+      const { value, done } = await readPromise;
+      if (done) { await dbg(`reader done, chunks=${chunkCount} events=${eventCount} acc=${accumulated.length}`); break; }
+      chunkCount++;
+      if (chunkCount <= 5 || chunkCount % 20 === 0) {
+        await dbg(`chunk#${chunkCount} bytes=${value?.length || 0} acc=${accumulated.length}`);
+      }
       buffer += decoder.decode(value, { stream: true });
 
       // SSE messages are separated by double-newline. Each message has
@@ -164,6 +182,7 @@ async function runBuild({ env, jobId, body, startedAt }) {
           if (!dataStr || dataStr === "[DONE]") continue;
           let evt;
           try { evt = JSON.parse(dataStr); } catch { continue; }
+          eventCount++;
           if (evt.type === "content_block_delta") {
             // tool_use path: input_json_delta carries the streaming JSON.
             if (evt.delta?.type === "input_json_delta") {

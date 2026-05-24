@@ -18,9 +18,11 @@ export async function onRequestGet(context) {
   const url = new URL(request.url);
   const cursor = Math.max(0, parseInt(url.searchParams.get("cursor") || "0", 10) || 0);
 
-  const [statusRaw, text] = await Promise.all([
+  const wantDebug = url.searchParams.get("debug") === "1";
+  const [statusRaw, text, debugLog] = await Promise.all([
     env.JOBS.get(`job:${id}:status`),
     env.JOBS.get(`job:${id}:text`),
+    wantDebug ? env.JOBS.get(`job:${id}:debug`) : Promise.resolve(null),
   ]);
 
   if (statusRaw == null) {
@@ -37,6 +39,7 @@ export async function onRequestGet(context) {
     ...status,
     cursor: full.length,
     delta,
+    ...(wantDebug ? { debug: debugLog || "" } : {}),
   });
 }
 
