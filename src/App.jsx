@@ -489,6 +489,40 @@ function findStaleChips(chips, prevKey, newKey, byDestMap) {
   return chips.filter(c => prevList.includes(c) && !newList.includes(c));
 }
 
+// Find chips that belong to SOME destination bucket other than the current
+// destination's bucket. Returns { staleChips, sourceKey } where sourceKey is
+// the bucket those chips came from (e.g. "santa fe"). Used at mount + when
+// the destination changes to catch chips that don't belong to the current
+// destination at all -- even if we never observed the destination transition.
+function findOrphanedChips(chips, currentKey, byDestMap) {
+  if (!Array.isArray(chips) || chips.length === 0) return { staleChips: [], sourceKey: "" };
+  const currentList = currentKey ? (byDestMap[currentKey] || []) : [];
+  // Tally which OTHER bucket each chip belongs to; pick the most-represented one as source.
+  const tally = new Map(); // bucketKey -> count
+  const staleByKey = new Map(); // bucketKey -> chips[]
+  for (const chip of chips) {
+    if (currentList.includes(chip)) continue;
+    for (const [k, list] of Object.entries(byDestMap)) {
+      if (k === currentKey) continue;
+      if (list.includes(chip)) {
+        tally.set(k, (tally.get(k) || 0) + 1);
+        const arr = staleByKey.get(k) || [];
+        arr.push(chip);
+        staleByKey.set(k, arr);
+        break;
+      }
+    }
+  }
+  if (tally.size === 0) return { staleChips: [], sourceKey: "" };
+  // Pick the bucket with the most chips; ties broken by first-seen.
+  let bestKey = "";
+  let bestCount = 0;
+  for (const [k, n] of tally) {
+    if (n > bestCount) { bestCount = n; bestKey = k; }
+  }
+  return { staleChips: staleByKey.get(bestKey) || [], sourceKey: bestKey };
+}
+
 // Cuisine preferences suggestions (single-field, comma-friendly).
 const CUISINE_SUGGESTIONS = [
   "Local / traditional", "Seafood-focused", "Wine-focused",
@@ -1692,7 +1726,7 @@ function Autocomplete({ value, onChange, placeholder, getSuggestions, renderItem
   const [activeIdx, setActiveIdx] = useState(-1);
   const wrapRef = useRef(null);
 
-  const q = value.trim().toLowerCase();
+  const q = (value ?? "").toString().trim().toLowerCase();
   const showList = (q.length >= minChars || (openOnFocusEmpty && q.length === 0));
   const suggestions = showList ? getSuggestions(q).slice(0, 8) : [];
   const showPanel = open && (suggestions.length > 0 || (showList && (loading || emptyHint)));
@@ -1835,7 +1869,8 @@ function CityAutocomplete({ value, onChange, placeholder }) {
   const abortRef = useRef(null);
   const timerRef = useRef(null);
 
-  const q = value.trim();
+  const safeValue = (value ?? "").toString();
+  const q = safeValue.trim();
   useEffect(() => {
     // Cancel any pending request/debounce.
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -1861,7 +1896,7 @@ function CityAutocomplete({ value, onChange, placeholder }) {
 
   return (
     <Autocomplete
-      value={value}
+      value={safeValue}
       onChange={onChange}
       placeholder={placeholder}
       loading={loading}
@@ -2436,31 +2471,36 @@ export default function TripOptimizer() {
     setSavedTrips(next);
   };
 
-  // Destination-change stale-chip detector.
-  // When the primary destination's bucket (e.g. "santa fe" -> "copenhagen") changes,
-  // detect chips that came from the OLD bucket so we can offer to clear them.
+  // Stale-chip detector. Runs on mount AND on any change to destination/chips.
+  // Catches two scenarios:
+  //  (a) user switches destination during the session
+  //  (b) form loads from localStorage with destination + chips that don't match
+  //      (the common real-world failure mode -- the prior fix only handled (a))
   const primaryDest = (basics.cities && basics.cities[0]?.name) || basics.destination || "";
-  const prevDestKeyRef = useRef(destinationKey(primaryDest));
-  const [staleSuggestion, setStaleSuggestion] = useState(null); // { prevKey, newKey, staleRestaurants, staleActivities, prevLabel, newLabel }
+  const [staleSuggestion, setStaleSuggestion] = useState(null);
+  const dismissedRef = useRef(""); // remember dismissed signature to not re-pop after user dismissed
   useEffect(() => {
-    const newKey = destinationKey(primaryDest);
-    const prevKey = prevDestKeyRef.current;
-    if (newKey !== prevKey) {
-      const staleRestaurants = findStaleChips(restaurants, prevKey, newKey, RESTAURANT_BY_DEST);
-      const staleActivities = findStaleChips(activities, prevKey, newKey, ACTIVITY_BY_DEST);
-      if (staleRestaurants.length > 0 || staleActivities.length > 0) {
-        setStaleSuggestion({
-          prevKey, newKey, staleRestaurants, staleActivities,
-          prevLabel: prevKey ? prevKey.replace(/\b\w/g, c => c.toUpperCase()) : "previous destination",
-          newLabel: primaryDest,
-        });
-      } else {
-        setStaleSuggestion(null);
-      }
-      prevDestKeyRef.current = newKey;
+    const currentKey = destinationKey(primaryDest);
+    const r = findOrphanedChips(restaurants, currentKey, RESTAURANT_BY_DEST);
+    const a = findOrphanedChips(activities, currentKey, ACTIVITY_BY_DEST);
+    if (r.staleChips.length === 0 && a.staleChips.length === 0) {
+      setStaleSuggestion(null);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [primaryDest]);
+    // Source key: prefer whichever has the most chips; fall back to either.
+    const sourceKey = (r.staleChips.length >= a.staleChips.length ? r.sourceKey : a.sourceKey) || r.sourceKey || a.sourceKey;
+    const signature = `${currentKey}|${sourceKey}|${r.staleChips.join(",")}|${a.staleChips.join(",")}`;
+    if (dismissedRef.current === signature) return; // user already dismissed this exact set
+    setStaleSuggestion({
+      prevKey: sourceKey,
+      newKey: currentKey,
+      staleRestaurants: r.staleChips,
+      staleActivities: a.staleChips,
+      prevLabel: sourceKey ? sourceKey.replace(/\b\w/g, c => c.toUpperCase()) : "a different destination",
+      newLabel: primaryDest || "your new destination",
+      _sig: signature,
+    });
+  }, [primaryDest, restaurants, activities]);
   const clearStaleChips = () => {
     if (!staleSuggestion) return;
     if (staleSuggestion.staleRestaurants.length > 0) {
@@ -2469,6 +2509,10 @@ export default function TripOptimizer() {
     if (staleSuggestion.staleActivities.length > 0) {
       setActs(activities.filter(a => !staleSuggestion.staleActivities.includes(a)));
     }
+    setStaleSuggestion(null);
+  };
+  const dismissStale = () => {
+    if (staleSuggestion?._sig) dismissedRef.current = staleSuggestion._sig;
     setStaleSuggestion(null);
   };
 
@@ -3016,7 +3060,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
         {step === 1 && (
           <div>
             <SavedTripsPanel trips={savedTrips} onOpen={handleOpenSavedTrip} onDelete={handleDeleteSavedTrip} />
-            <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={() => setStaleSuggestion(null)} />
+            <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={dismissStale} />
             <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Four essentials to start. Refine the details after, or build immediately.</p>
 
             <div style={cardStyle}>
@@ -3080,7 +3124,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
 
         {step === 2 && (
           <div>
-            <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={() => setStaleSuggestion(null)} />
+            <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={dismissStale} />
             <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Fill in what you know. Leave anything blank and the planner will suggest.</p>
 
             <div style={cardStyle}>
