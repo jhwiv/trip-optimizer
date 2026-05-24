@@ -2602,12 +2602,57 @@ function BaseAreaAutocomplete({ value, onChange, placeholder, destination }) {
   );
 }
 
-function Sel({ value, onChange, opts }) {
+// Sel supports two modes:
+//  - single (default): controlled by a string `value` + onChange({target:{value}})
+//  - multi: pass `multi` + array `value` (e.g. ["Marriott","Hyatt"]); selection
+//    is rendered as toggle-chip list, onChange receives the new array via
+//    {target:{value:newArr}}.
+// First option is treated as the "no preference" sentinel for the multi flow
+// (selecting it clears all other selections; selecting any other unselects it).
+function Sel({ value, onChange, opts, multi = false, placeholder = "No preference" }) {
+  if (!multi) {
+    const safeVal = value || "";
+    return (
+      <select value={safeVal} onChange={onChange} style={{ fontSize: "13px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: safeVal ? "var(--color-text-primary)" : "var(--color-text-secondary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", appearance: "none", cursor: "pointer" }}>
+        <option value="">{placeholder}</option>
+        {opts.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    );
+  }
+  // Multi: chip toggles. `value` is array (or stringy-legacy; coerce).
+  const arr = Array.isArray(value) ? value : (value ? [value] : []);
+  const isNone = arr.length === 0;
+  const toggle = (opt) => {
+    let next;
+    if (arr.includes(opt)) next = arr.filter(x => x !== opt);
+    else next = [...arr, opt];
+    onChange({ target: { value: next } });
+  };
+  const clearAll = () => onChange({ target: { value: [] } });
   return (
-    <select value={value} onChange={onChange} style={{ fontSize: "13px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", appearance: "none", cursor: "pointer" }}>
-      {opts.map(o => <option key={o}>{o}</option>)}
-    </select>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", padding: "6px 0", borderBottom: "0.5px solid var(--color-border-primary)" }}>
+      <button type="button" onClick={clearAll}
+        style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${isNone ? GOLD : "var(--color-border-secondary)"}`, background: isNone ? `${GOLD}22` : "transparent", color: isNone ? GOLD : "var(--color-text-secondary)", fontWeight: isNone ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
+        {placeholder}
+      </button>
+      {opts.map(o => {
+        const on = arr.includes(o);
+        return (
+          <button key={o} type="button" onClick={() => toggle(o)}
+            style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${on ? GOLD : "var(--color-border-secondary)"}`, background: on ? `${GOLD}22` : "transparent", color: on ? GOLD : "var(--color-text-primary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
+            {o}
+          </button>
+        );
+      })}
+    </div>
   );
+}
+
+// Coerce an array-or-string preference field into a human-readable phrase
+// for the system prompt. Returns "No preference" when empty.
+function prefToText(v) {
+  if (Array.isArray(v)) return v.length ? v.join(", ") : "No preference";
+  return v || "No preference";
 }
 
 function TagInput({ placeholder, tags, setTags, suggestions = [] }) {
@@ -2899,10 +2944,10 @@ export default function TripOptimizer() {
 
   // BLANK = truly empty state. Used on every launch and on "Plan another trip".
   const BLANK = {
-    basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", nights: "", travelers: "", baseArea: "", style: "", pace: "", budget: "" },
+    basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: "" },
     flights: { homeAirport: "", airline: "", cabin: "", flex: "", noFlight: false },
-    hotel: { brand: "", tier: "", mustHave: "" },
-    transport: { type: "", company: "", vehicle: "" },
+    hotel: { brand: [], tier: "", mustHave: "" },
+    transport: { type: [], company: "", vehicle: "" },
     dining: { cuisine: "", budget: "" },
     restaurants: [],
     activities: [],
@@ -3238,14 +3283,14 @@ Base area: ${basics.baseArea || (isMultiCity ? "—" : "suggest best area")}
 Start date: ${formatDateForDisplay(basics.startDate) || basics.startDate}
 Nights: ${isMultiCity ? totalNightsFromCities : basics.nights}${isMultiCity ? "  (" + cities.map(c => `${c.nights} in ${c.name}`).join(" + ") + ")" : ""}
 Travelers: ${basics.travelers}
-Style: ${basics.style} · Pace: ${basics.pace} · Budget: ${basics.budget}
-${flights.noFlight ? `Transportation mode: GROUND ONLY (driving / train). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the drive or rail journey from the user's origin to the destination, with realistic time + distance.` : `Home airport: ${flights.homeAirport} · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin}`}
-Hotel brand: ${hotel.brand}${hotel.tier ? ` · ${hotel.tier}` : ""} · Must-haves: ${hotel.mustHave || "none"}
-Transport: ${transport.type}${transport.company ? ` · ${transport.company}` : ""}
-Cuisine: ${dining.cuisine || "local"} · Dinner budget: ${dining.budget}
+Style: ${prefToText(basics.style)} · Pace: ${basics.pace || "No preference"} · Budget: ${basics.budget || "No preference"}
+${flights.noFlight ? `Transportation mode: GROUND ONLY (driving / train). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the drive or rail journey from the user's origin to the destination, with realistic time + distance.` : `Home airport: ${flights.homeAirport} · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin || "no preference"}`}
+Hotel brand: ${prefToText(hotel.brand)}${hotel.tier ? ` · ${hotel.tier}` : ""} · Must-haves: ${hotel.mustHave || "none"}
+Transport: ${prefToText(transport.type)}${transport.company ? ` · ${transport.company}` : ""}
+Cuisine: ${dining.cuisine || "local"} · Dinner budget: ${dining.budget || "No preference"}
 Restaurants requested: ${restaurants.length ? restaurants.join(", ") : "suggest"}
 Activities requested: ${activities.length ? activities.join(", ") : "suggest based on style"}
-Interests: ${interests.text || "not specified"} · Level: ${interests.level}
+Interests: ${interests.text || "not specified"} · Level: ${interests.level || "No preference"}
 Include sections: ${active}
 
 ${flights.noFlight ? `IMPORTANT: NO FLIGHTS. The user is driving or taking the train. Day 1 must be a Transport item describing the surface-travel arrival; do not invent flights, do not include any Flight items in days[].items.` : `IMPORTANT: Prefer NONSTOP flights. If ${flights.homeAirport} has no nonstop to the primary airport for ${isMultiCity ? cities[0]?.name : basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.`}
@@ -3270,17 +3315,25 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
     setElapsedSec(0);
     setLoadingMsg("Researching destination…");
 
-    // Track elapsed time for the progress display.
+    // Track elapsed time for the progress display + drive time-based progress.
+    // Token-based estimation undercounts on long plans (real builds run
+    // 2–3 minutes); we take the max of the two so the bar always advances.
     const startedAt = Date.now();
+    // Empirically, recent builds land ~120–180s. Target 160s as the
+    // "95% reached" point; the bar caps there until message_stop hits.
+    const targetSec = 160;
+    let lastTokenFrac = 0;
     const elapsedTimer = setInterval(() => {
-      setElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
+      const sec = Math.floor((Date.now() - startedAt) / 1000);
+      setElapsedSec(sec);
+      // Update progress with the time-based floor so the bar keeps moving
+      // even if the model pauses on a long restaurant card.
+      const timeFrac = Math.min(0.95, sec / targetSec);
+      const frac = Math.max(lastTokenFrac, timeFrac);
+      setProgress(prev => (prev >= 1 ? prev : Math.max(prev, frac)));
     }, 250);
 
-    // Expected output size for the progress estimate.
-    // Empirically: ~1300 tokens per day with the full restaurant-card schema
-    // (dinner card + menu + backup + activities), plus ~1200 of overhead
-    // (logistics, flags, planb, snobs, tonight). Tuned to land near 90% just
-    // as the final message_stop arrives.
+    // Expected output size for the token-side of the estimate.
     const nightsNum = Math.max(1, parseInt(basics.nights || "3", 10) || 3);
     const expectedTokens = 1200 + (nightsNum + 1) * 1300;
 
@@ -3305,18 +3358,35 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
     abortRef.current = controller;
     const hardTimeout = setTimeout(() => controller.abort(new Error("Timed out after 4 minutes")), 240000);
 
-    // Reassure the user after 60s that we're still working.
+    // Reassure the user partway through. Realistic build times are 2–3 min;
+    // bump the message at ~90s so it doesn't lie about being almost done.
     const slowNotice = setTimeout(() => {
-      setLoadingMsg(prev => prev.includes("longer") ? prev : "Still working — detailed plans can take 1–3 minutes…");
-    }, 60000);
+      setLoadingMsg(prev => prev.includes("still building") ? prev : "Still building — detailed plans typically take 2–3 minutes…");
+    }, 90000);
 
     // Keep iOS Safari from sleeping the screen and dropping the stream.
+    // Wake locks auto-release whenever the page becomes hidden; we need to
+    // re-acquire it when the user returns. This is the most common cause of
+    // "app crashed when I switched windows" — the screen slept, the connection
+    // dropped, and the stream died silently.
     let wakeLock = null;
-    try {
-      if ("wakeLock" in navigator && navigator.wakeLock?.request) {
-        wakeLock = await navigator.wakeLock.request("screen");
+    const requestWakeLock = async () => {
+      try {
+        if ("wakeLock" in navigator && navigator.wakeLock?.request) {
+          wakeLock = await navigator.wakeLock.request("screen");
+        }
+      } catch { /* not available; safe to ignore */ }
+    };
+    const onVisibilityChange = () => {
+      // When the tab returns to the foreground mid-build, re-grab the wake
+      // lock so the screen doesn't sleep again. Do NOT abort the controller
+      // here — the stream may still be live in the background.
+      if (document.visibilityState === "visible" && abortRef.current === controller) {
+        requestWakeLock();
       }
-    } catch { /* not available; safe to ignore */ }
+    };
+    await requestWakeLock();
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     // One inner attempt that runs the fetch + stream-reading. Returns parsed plan or throws.
     const attemptOnce = async () => {
@@ -3415,8 +3485,9 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
 
                     // Progress: estimate by character count vs expected budget. Cap at 95%.
                     const estTokens = toolJson.length / 3.5;
-                    const frac = Math.min(0.95, estTokens / expectedTokens);
-                    setProgress(frac);
+                    const tokFrac = Math.min(0.95, estTokens / expectedTokens);
+                    lastTokenFrac = tokFrac;
+                    setProgress(prev => Math.max(prev, tokFrac));
 
                     // Friendly progress label based on what's been generated so far.
                     // Count "label":" occurrences — those only appear inside days[]
@@ -3582,6 +3653,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
       }
       setError(msg);
     } finally {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       try { if (wakeLock) await wakeLock.release(); } catch {}
       clearInterval(phaseTimer);
       clearInterval(elapsedTimer);
@@ -3715,8 +3787,8 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
 
             <div style={cardStyle}>
               <p style={ctStyle}>Trip style</p>
-              <div style={g3}>
-                <Field label="Style"><Sel value={basics.style} onChange={e => setB({ ...basics, style: e.target.value })} opts={["Cultural / sightseeing","Golf / sport","Food & wine","Beach / relaxation","Adventure / outdoor","Mixed"]} /></Field>
+              <Field label="Style" hint="Tap one or more"><Sel multi value={basics.style} onChange={e => setB({ ...basics, style: e.target.value })} opts={["Cultural / sightseeing","Golf / sport","Food & wine","Beach / relaxation","Adventure / outdoor","Mixed"]} /></Field>
+              <div style={{ ...g2, marginTop: "16px" }}>
                 <Field label="Pace"><Sel value={basics.pace} onChange={e => setB({ ...basics, pace: e.target.value })} opts={["Relaxed (1–2 things/day)","Moderate (2–3 things/day)","Full (3–4 things/day)"]} /></Field>
                 <Field label="Budget"><Sel value={basics.budget} onChange={e => setB({ ...basics, budget: e.target.value })} opts={["$$ — value","$$$ — mid range","$$$$ — luxury","$$$$$ — ultra high end"]} /></Field>
               </div>
@@ -3735,8 +3807,8 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
 
             <div style={cardStyle}>
               <p style={ctStyle}>Hotel</p>
-              <div style={g2}>
-                <Field label="Brand family"><Sel value={hotel.brand} onChange={e => setH({ ...hotel, brand: e.target.value })} opts={["Marriott / Bonvoy","Hilton Honors","Hyatt","IHG","Independent / boutique","No preference"]} /></Field>
+              <Field label="Brand family" hint="Tap one or more"><Sel multi value={hotel.brand} onChange={e => setH({ ...hotel, brand: e.target.value })} opts={["Marriott / Bonvoy","Hilton Honors","Hyatt","IHG","Four Seasons","Ritz-Carlton","Aman","Independent / boutique"]} /></Field>
+              <div style={{ marginTop: "16px" }}>
                 <Field label="Sub-brand or tier"><HotelTierAutocomplete value={hotel.tier} onChange={e => setH({ ...hotel, tier: e.target.value })} placeholder="e.g. Ritz-Carlton, W, Autograph" /></Field>
               </div>
               <Field label="Must-haves"><HotelMustHaveAutocomplete value={hotel.mustHave} onChange={e => setH({ ...hotel, mustHave: e.target.value })} placeholder="e.g. pool, walkable to dining" /></Field>
@@ -3744,8 +3816,8 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
 
             <div style={cardStyle}>
               <p style={ctStyle}>Ground transport</p>
-              <div style={g3}>
-                <Field label="Type"><Sel value={transport.type} onChange={e => setT({ ...transport, type: e.target.value })} opts={["Rental car","Private driver","Rideshare / taxi","Train / rail","No car needed"]} /></Field>
+              <Field label="Type" hint="Tap one or more"><Sel multi value={transport.type} onChange={e => setT({ ...transport, type: e.target.value })} opts={["Rental car","Private driver","Rideshare / taxi","Train / rail","No car needed"]} /></Field>
+              <div style={{ ...g2, marginTop: "16px" }}>
                 <Field label="Preferred company"><RentalCompanyAutocomplete value={transport.company} onChange={e => setT({ ...transport, company: e.target.value })} placeholder="e.g. Hertz, Sixt" airport={flights.homeAirport} /></Field>
                 <Field label="Vehicle type"><VehicleAutocomplete value={transport.vehicle} onChange={e => setT({ ...transport, vehicle: e.target.value })} placeholder="e.g. SUV, sedan" /></Field>
               </div>
@@ -3811,7 +3883,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
               </div>
             )}
             {error && <p style={{ fontSize: "12px", color: "var(--color-text-danger, #c0392b)", marginTop: "8px", textAlign: "center" }}>{error}</p>}
-            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>Typical plan: 15–40 seconds. Itinerary streams as it's built.</p>
+            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>Typical plan: 2–3 minutes. Stays building if you switch tabs.</p>
           </div>
         )}
 
