@@ -4643,10 +4643,14 @@ The user explicitly asked for a private driver / chauffeur. You MUST surface thi
     //  • activities list containing "private" + "tour/guide/walking" phrasing
     //  • free-text interests mentioning private tour/guide
     //  • style preference including "VIP" or "private experiences"
+    // "Private" anywhere on the same line as tour/guide/walking handles the
+    // canned activity labels (e.g. "Private city walking tour") which weren't
+    // matched by a stricter "private (city|walking)?\s*(tour|guide)" form.
+    const _tourRe = /\bprivate\b.*\b(tour|guide|walking)\b|skip[- ]the[- ]line|\bVIP\b/i;
     const wantsPrivateTour =
-      (Array.isArray(activities) && activities.some(a => /private (city|walking|food)?\s*(tour|guide)|skip[- ]the[- ]line|VIP/i.test(a))) ||
-      /\b(private (tour|guide|walking tour)|VIP tour|skip[- ]the[- ]line)\b/i.test(interests?.text || "") ||
-      (Array.isArray(basics.style) && basics.style.some(s => /VIP|private/i.test(s)));
+      (Array.isArray(activities) && activities.some(a => _tourRe.test(a) && !/private driver/i.test(a))) ||
+      _tourRe.test(interests?.text || "") ||
+      (Array.isArray(basics.style) && basics.style.some(s => /\bVIP\b|\bprivate\b/i.test(s)));
     const privateTourBlock = !wantsPrivateTour ? "" : `
 
 PRIVATE TOURS / PRIVATE GUIDES — HARD RULE (USER REQUESTED THIS):
@@ -4806,10 +4810,11 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
       (Array.isArray(transport.type) && transport.type.some(t => /private\s*driver|chauffeur/i.test(t))) ||
       (Array.isArray(activities) && activities.some(a => /private driver/i.test(a))) ||
       /\b(private driver|chauffeur|car service|black car)\b/i.test(interests?.text || "");
+    const _userTourRe = /\bprivate\b.*\b(tour|guide|walking)\b|skip[- ]the[- ]line|\bVIP\b/i;
     const userWantsPrivateTour =
-      (Array.isArray(activities) && activities.some(a => /private (city|walking|food)?\s*(tour|guide)|skip[- ]the[- ]line|VIP/i.test(a))) ||
-      /\b(private (tour|guide|walking tour)|VIP tour|skip[- ]the[- ]line)\b/i.test(interests?.text || "") ||
-      (Array.isArray(basics.style) && basics.style.some(s => /VIP|private/i.test(s)));
+      (Array.isArray(activities) && activities.some(a => _userTourRe.test(a) && !/private driver/i.test(a))) ||
+      _userTourRe.test(interests?.text || "") ||
+      (Array.isArray(basics.style) && basics.style.some(s => /\bVIP\b|\bprivate\b/i.test(s)));
     const groundModeText = trainAllowed
       ? "driving or train (user opted into rail)"
       : "driving only — NO trains, NO rail, NO Amtrak under any circumstances";
