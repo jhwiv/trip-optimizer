@@ -687,30 +687,61 @@ function TimePill({ time, end_time }) {
   );
 }
 
-function FlightCard({ type, time, end_time, flight: f, text }) {
+function FlightCard({ type, time, end_time, flight: f, text, flags }) {
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
   const stopLabel = f.nonstop ? "Nonstop" : (f.connection ? `Connect ${f.connection}` : "Connecting");
   const note = f.confirmation_note || "";
   const hasVerify = /verify/i.test(note);
   const carrierLower = (f.carrier || "").toLowerCase();
-  const bookHost = carrierLower.includes("united") ? "united.com"
+  // Multi-carrier strings like "SAS or Delta" — don't pick a single booking host;
+  // user needs to pick the carrier first.
+  const isMultiCarrier = / or | \/ |,/.test(f.carrier || "");
+  const bookHost = isMultiCarrier ? null
+    : carrierLower.includes("united") ? "united.com"
     : carrierLower.includes("delta") ? "delta.com"
     : carrierLower.includes("american") ? "aa.com"
     : carrierLower.includes("jetblue") ? "jetblue.com"
     : carrierLower.includes("southwest") ? "southwest.com"
     : carrierLower.includes("alaska") ? "alaskaair.com"
+    : carrierLower.includes("sas") || carrierLower.includes("scandinavian") ? "flysas.com"
+    : carrierLower.includes("british airways") || carrierLower === "ba" ? "britishairways.com"
+    : carrierLower.includes("virgin") ? "virginatlantic.com"
+    : carrierLower.includes("air france") ? "airfrance.com"
+    : carrierLower.includes("klm") ? "klm.com"
+    : carrierLower.includes("lufthansa") ? "lufthansa.com"
+    : carrierLower.includes("swiss") ? "swiss.com"
+    : carrierLower.includes("iberia") ? "iberia.com"
+    : carrierLower.includes("ana") || carrierLower.includes("all nippon") ? "ana.co.jp"
+    : carrierLower.includes("jal") || carrierLower.includes("japan airlines") ? "jal.com"
+    : carrierLower.includes("cathay") ? "cathaypacific.com"
+    : carrierLower.includes("korean") ? "koreanair.com"
+    : carrierLower.includes("aer lingus") ? "aerlingus.com"
+    : carrierLower.includes("ita") ? "itaspa.com"
+    : carrierLower.includes("norse") ? "flynorse.com"
     : null;
   const bookUrl = bookHost ? `https://www.${bookHost}` : null;
+  const hasFlightNum = f.flight_number && String(f.flight_number).trim() && String(f.flight_number).toLowerCase() !== "null";
+  const titleLine = hasFlightNum
+    ? `${f.carrier || ""} ${f.flight_number} · ${route}`.trim()
+    : `${f.carrier || "Carrier TBD"} · ${route}`;
+  // Carrier-correction or missing-number banner: tell the user the app cleaned
+  // up a hallucinated number / wrong carrier instead of silently showing junk.
+  const overrideBanner = f._carrierOverride
+    ? `App corrected carrier: ${f._originalCarrier || "the model's pick"} does not operate this nonstop. Verify with ${f.carrier}.`
+    : (!hasFlightNum ? `Flight number not confirmed — look it up on ${f.carrier || "the carrier"}'s site before booking.` : null);
   return (
     <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
         <TimePill time={time} end_time={end_time} />
         <Badge type={type || "Flight"} />
         <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1, minWidth: 0 }}>
-          {f.carrier} {f.flight_number} · {route}
+          {titleLine}
         </p>
       </div>
+      {overrideBanner && (
+        <p style={{ fontSize: "11px", color: "#B85C00", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 500, padding: "6px 8px", background: "rgba(184,92,0,0.06)", borderLeft: "2px solid #B85C00", borderRadius: "2px" }}>⚠︎ {overrideBanner}</p>
+      )}
       <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "2px 0 6px", letterSpacing: "0.02em" }}>
         Depart {formatTime(f.depart_time)} · Arrive {formatTime(f.arrive_time)}{f.duration ? `  ·  ${f.duration}` : ""}  ·  {stopLabel}
       </p>
@@ -735,6 +766,13 @@ function FlightCard({ type, time, end_time, flight: f, text }) {
       )}
       {text && !f.carrier && (
         <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "4px 0 0" }}>{text}</p>
+      )}
+      {Array.isArray(flags) && flags.length > 0 && (
+        <div style={{ marginTop: "8px", paddingTop: "6px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
+          {flags.map((fl, i) => (
+            <p key={i} style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "2px 0", lineHeight: 1.4 }}>· {fl}</p>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -826,7 +864,7 @@ function DayBlock({ day, dayIndex, onOpenMenu }) {
       {sortedItems.map((item, i) => {
         // Structured flight → rich card.
         if (item.type === "Flight" && item.flight) {
-          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} />;
+          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} />;
         }
         // Structured hotel → rich card.
         if (item.type === "Hotel" && item.hotel) {
@@ -1033,6 +1071,94 @@ function stripTonightPrefix(s) {
     .trim();
 }
 
+// Curated truth table for routes where the LLM frequently hallucinates. Each
+// entry lists the carriers that ACTUALLY operate a nonstop today. If the
+// model emits a flight whose carrier is not in this set, applyQualityLayer
+// rewrites it. Keep keys sorted as "AAA-BBB" with the alphabetically smaller
+// IATA first — lookup is direction-agnostic.
+const KNOWN_NONSTOPS = {
+  // Transatlantic
+  "CPH-EWR": ["SAS"],
+  "CPH-JFK": ["SAS", "Norse Atlantic"],
+  "EWR-ZRH": ["United", "Swiss", "Swiss International"],
+  "JFK-ZRH": ["Swiss", "Swiss International", "Delta"],
+  "EWR-LHR": ["United", "British Airways", "Virgin Atlantic"],
+  "JFK-LHR": ["British Airways", "American", "Delta", "Virgin Atlantic", "JetBlue"],
+  "CDG-JFK": ["Air France", "Delta", "American", "French Bee"],
+  "CDG-EWR": ["United", "Air France"],
+  "EWR-FRA": ["United", "Lufthansa"],
+  "FRA-JFK": ["Lufthansa", "Singapore Airlines", "Condor"],
+  "AMS-EWR": ["United", "KLM"],
+  "AMS-JFK": ["KLM", "Delta"],
+  "EWR-MUC": ["United", "Lufthansa"],
+  "JFK-MUC": ["Lufthansa", "Delta"],
+  "DUB-EWR": ["United", "Aer Lingus"],
+  "DUB-JFK": ["Aer Lingus", "Delta", "JetBlue"],
+  "FCO-JFK": ["ITA Airways", "Delta", "American"],
+  "EWR-FCO": ["United", "ITA Airways"],
+  "BCN-EWR": ["United"],
+  "BCN-JFK": ["American", "Delta", "Iberia"],
+  "JFK-MAD": ["Iberia", "American", "Delta", "Air Europa"],
+  "EWR-MAD": ["United", "Iberia"],
+  // Transpacific
+  "HND-JFK": ["ANA", "Japan Airlines", "Delta", "American"],
+  "JFK-NRT": ["ANA", "Japan Airlines"],
+  "HND-LAX": ["ANA", "Japan Airlines", "Delta", "American", "United"],
+  "LAX-NRT": ["ANA", "Japan Airlines", "United", "Singapore Airlines"],
+  "HKG-JFK": ["Cathay Pacific"],
+  "HKG-LAX": ["Cathay Pacific", "American"],
+  "ICN-JFK": ["Korean Air", "Asiana"],
+  "ICN-LAX": ["Korean Air", "Asiana", "Delta"],
+};
+
+// Carrier-name aliases so a model emitting "Scandinavian Airlines System" or
+// "BA" still matches an entry that says "SAS" / "British Airways".
+const CARRIER_ALIASES = {
+  "sas": ["scandinavian", "sas"],
+  "scandinavian airlines": ["sas", "scandinavian"],
+  "british airways": ["ba", "british"],
+  "ba": ["british airways", "british"],
+  "american": ["american airlines", "aa"],
+  "american airlines": ["american", "aa"],
+  "united": ["united airlines", "ua"],
+  "united airlines": ["united", "ua"],
+  "delta": ["delta air lines", "dl"],
+  "virgin atlantic": ["virgin"],
+  "japan airlines": ["jal"],
+  "jal": ["japan airlines"],
+  "ana": ["all nippon", "all nippon airways"],
+  "all nippon": ["ana"],
+  "swiss": ["swiss international", "swiss air"],
+  "singapore airlines": ["singapore"],
+  "cathay pacific": ["cathay"],
+  "korean air": ["korean"],
+  "ita airways": ["ita", "alitalia"],
+  "norse atlantic": ["norse"],
+  "aer lingus": ["aerlingus"],
+};
+
+function routeKey(a, b) {
+  if (!a || !b) return null;
+  const x = String(a).toUpperCase().trim();
+  const y = String(b).toUpperCase().trim();
+  if (x === y) return null;
+  return [x, y].sort().join("-");
+}
+
+function carrierMatchesKnown(carrier, knownList) {
+  if (!carrier || !Array.isArray(knownList)) return false;
+  const c = carrier.toLowerCase();
+  for (const k of knownList) {
+    const kl = k.toLowerCase();
+    if (c.includes(kl) || kl.includes(c)) return true;
+    const aliases = CARRIER_ALIASES[kl] || [];
+    for (const a of aliases) {
+      if (c.includes(a) || a.includes(c)) return true;
+    }
+  }
+  return false;
+}
+
 // Pass-three quality layer: dedupe restaurant repeats with an explicit
 // "Return to X for [meal]" annotation, and surface a QC summary of any
 // fixes/warnings the renderer applied so the user knows the app is on it.
@@ -1093,6 +1219,43 @@ function applyQualityLayer(input) {
             fixes.push(`Appended verify-at-booking microcopy to Day ${dayIdx + 1} flight`);
           }
         }
+      });
+    });
+  }
+
+  // 2b. KNOWN_NONSTOPS override: if the model claimed a nonstop with a carrier
+  // that doesn't actually operate the route, rewrite to the truth. This is the
+  // strongest anti-hallucination guardrail — e.g. "United nonstop EWR→CPH" gets
+  // rewritten to SAS, flight_number cleared, and an explanatory flag added.
+  if (Array.isArray(days)) {
+    days.forEach((day, dayIdx) => {
+      (day.items || []).forEach(item => {
+        if (item.type !== "Flight" || !item.flight) return;
+        const f = item.flight;
+        if (f.nonstop === false) return; // model already says connecting, trust it
+        const key = routeKey(f.from_airport, f.to_airport);
+        if (!key || !KNOWN_NONSTOPS[key]) return;
+        const known = KNOWN_NONSTOPS[key];
+        if (carrierMatchesKnown(f.carrier, known)) return; // carrier is legit for this route
+
+        // Mismatch — rewrite.
+        const claimedCarrier = f.carrier || "the listed carrier";
+        const allCorrect = known.slice(0, 3);
+        f._originalCarrier = f.carrier;
+        f._originalFlightNumber = f.flight_number;
+        f._originalConfirmationNote = f.confirmation_note;
+        f.carrier = allCorrect.length > 1 ? allCorrect.join(" or ") : allCorrect[0];
+        f.flight_number = null; // strip the made-up number
+        f._carrierOverride = true;
+        // Strip carrier-specific references from confirmation_note (e.g. "book on
+        // united.com") since they're misleading now — keep only the verify sentence.
+        const VERIFY_SENT = "Verify flight number, times and equipment at booking — schedules change.";
+        f.confirmation_note = `Book directly with ${allCorrect[0]}. ${VERIFY_SENT}`;
+        // Add a flag so the user sees why the carrier changed.
+        item.flags = Array.isArray(item.flags) ? item.flags.slice() : [];
+        const operators = allCorrect.length > 1 ? `${allCorrect.join(" / ")} are the` : `${allCorrect[0]} is the`;
+        item.flags.push(`Carrier corrected: ${claimedCarrier} does not operate a nonstop ${f.from_airport}→${f.to_airport}. ${operators} actual nonstop operator${allCorrect.length > 1 ? "s" : ""}.`);
+        fixes.push(`Day ${dayIdx + 1} flight: corrected carrier (${claimedCarrier} → ${f.carrier}) for ${f.from_airport}→${f.to_airport}`);
       });
     });
   }
@@ -2610,17 +2773,30 @@ VARIETY RULES — STRICT, NON-NEGOTIABLE:
 • If the user asked for a specific cuisine focus, give each day a different EXPRESSION of that cuisine: a market café, an institution, a chef-driven spot, a wine bar, a hole-in-the-wall.
 • Never repeat the same activity venue across days. Vary neighborhoods — Plaza one day, Railyard another, Tesuque another.
 
-FLIGHTS — PREFER NONSTOP, ALWAYS STRUCTURED:
-• Every Flight item MUST include the full "flight" object: carrier, flight_number (realistic, e.g. 'UA 1234' — use a flight number the carrier is known to operate on this exact route), from_airport (IATA), to_airport (IATA), depart_time, arrive_time, duration, nonstop (boolean), cabin, aircraft, confirmation_note.
-• Flight numbers and times are STARTING POINTS for booking, not guarantees. Every confirmation_note MUST literally end with this exact sentence: "Verify flight number, times and equipment at booking — schedules change." Use real flight numbers from the carrier's published schedule when you can recall them; otherwise pick a plausible number in that carrier's range for that route.
+FLIGHTS — ACCURACY OVER SPECIFICITY, PREFER NONSTOP, ALWAYS STRUCTURED:
+• Every Flight item MUST include a "flight" object with: carrier, from_airport (IATA), to_airport (IATA), depart_time (rough window OK), arrive_time (rough window OK), duration, nonstop (boolean), cabin, aircraft, confirmation_note.
+• CARRIER SELECTION — DO THIS FIRST: name a carrier you are HIGHLY CONFIDENT actually operates a nonstop on this exact city pair. If you cannot name one with confidence, leave carrier as a comma-separated short list of candidates (e.g. "SAS or Delta") and add a flags[] entry like "Verify which carrier operates nonstop — candidates: SAS, Delta". Do NOT invent a carrier that doesn't fly the route.
+• FLIGHT NUMBERS — NEVER INVENT. This rule overrides all others. If you do not know the carrier's actual published flight number for this exact route with high confidence, OMIT the "flight_number" field entirely (or set it to null). Do NOT make up a number like "UA 1234" just to fill the field. A missing flight_number is correct; a fake flight_number is wrong and breaks the user's trust.
+• ROUTE TRUTH — common transatlantic / long-haul nonstops you MUST get right:
+   - EWR ↔ CPH: SAS operates the daily nonstop. United sells the route only as codeshare/connecting (via FRA, MUC, ZRH). Do NOT emit "United nonstop EWR-CPH".
+   - JFK ↔ CPH: SAS and Norse Atlantic. Delta connects.
+   - EWR ↔ ZRH: United and Swiss both operate nonstop daily.
+   - JFK ↔ ZRH: Swiss and Delta operate nonstop.
+   - EWR/JFK ↔ LHR: BA, United (EWR), Virgin Atlantic, American (JFK), Delta (JFK) all run nonstops.
+   - JFK ↔ CDG: Air France, Delta, American operate nonstop.
+   - EWR ↔ CDG: United and Air France nonstop.
+   - EWR/JFK ↔ FRA: Lufthansa, United (EWR), Singapore (JFK via FRA).
+   - JFK ↔ NRT/HND: ANA, JAL, Delta (HND), American (HND).
+   - LAX ↔ NRT/HND: ANA, JAL, Delta, American, United.
+  If the user's route is NOT in this list and you're unsure, list 2–3 candidate carriers in flags[] and DO NOT invent a single specific carrier.
+• Every confirmation_note MUST literally end with this exact sentence: "Verify flight number, times and equipment at booking — schedules change." Copy it verbatim; do not paraphrase.
 • WRONG confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C"
 • RIGHT confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C. Verify flight number, times and equipment at booking — schedules change."
-• Do not paraphrase the verify sentence. Copy it verbatim. The literal substring "Verify flight number, times and equipment at booking" MUST be in every flight's confirmation_note.
 • Search for nonstop service from the home airport to the destination's primary airport first.
 • If no nonstop exists to the requested airport but one exists to a nearby airport in the same metro (e.g., ABQ ~60min from Santa Fe instead of SAF), RECOMMEND THE NONSTOP and add a flags[] note mentioning the drive time.
 • Only return a connecting itinerary if no nonstop exists to any reasonable nearby airport. Set nonstop=false and fill "connection" with the connecting airport IATA.
 • In each Flight item's text, explicitly state "nonstop" or "connecting via X".
-• If the user's preferred airline doesn't fly nonstop but a competitor does, mention the competitor nonstop in flags[].
+• If the user's preferred airline doesn't fly nonstop but a competitor does, mention the competitor nonstop in flags[] AND use the competitor as the carrier — do not falsely claim the preferred airline operates a nonstop it doesn't actually fly.
 
 HOTEL ITEMS:
 • Use a Hotel-type item on arrival day (check-in) and departure day (check-out). Populate the "hotel" object with name, address, phone (formatted, tappable), check_in_time, check_out_time, room_type, confirmation_note.
