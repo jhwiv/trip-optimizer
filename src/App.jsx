@@ -1697,14 +1697,45 @@ function applyQualityLayer(input, inputs) {
   // shows on the card. We err on the side of asking the traveler to confirm
   // rather than blindly trusting a stale recommendation. Also propagate the
   // same default to backup restaurants.
+  //
+  // Belt-and-suspenders: also backfill verify_url with a Google Maps search
+  // link when the model omits it. The prompt marks verify_url MANDATORY but
+  // live observation shows the model still skips it on ~half of cards, which
+  // leaves the amber Verify chip without its tappable "Check listing →" CTA.
+  // The Google Maps search URL is universal, never 404s, and lets the
+  // traveler confirm hours/status with one tap — far better than no link.
+  const verifyCityHint = (() => {
+    const parts = [];
+    if (inputs?.destination) parts.push(String(inputs.destination));
+    if (Array.isArray(inputs?.cities)) {
+      inputs.cities.forEach(c => { if (c?.name) parts.push(String(c.name)); });
+    }
+    // Take the first non-empty token-ish chunk to keep the URL short and
+    // unambiguous (the destination string itself is usually "Greenville, SC").
+    return parts[0] || "";
+  })();
+  const buildMapsUrl = (name, neighborhood) => {
+    if (!name) return "";
+    const queryParts = [name];
+    if (neighborhood) queryParts.push(neighborhood);
+    if (verifyCityHint) queryParts.push(verifyCityHint);
+    const q = queryParts.join(" ").replace(/\s+/g, " ").trim();
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+  };
   if (Array.isArray(days)) {
     days.forEach(day => {
       (day.items || []).forEach(item => {
         const r = item.restaurant;
         if (r && r.name) {
           if (!r.verify_status) r.verify_status = "verify_before_booking";
-          if (r.backup && r.backup.name && !r.backup.verify_status) {
-            r.backup.verify_status = "verify_before_booking";
+          if (!r.verify_url) {
+            r.verify_url = buildMapsUrl(r.name, r.neighborhood);
+          }
+          if (r.backup && r.backup.name) {
+            if (!r.backup.verify_status) r.backup.verify_status = "verify_before_booking";
+            if (!r.backup.verify_url) {
+              r.backup.verify_url = buildMapsUrl(r.backup.name, r.backup.neighborhood || r.neighborhood);
+            }
           }
         }
       });
