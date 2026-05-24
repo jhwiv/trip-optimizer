@@ -2718,6 +2718,275 @@ function DateInput({ value, onChange }) {
   );
 }
 
+// Pick BOTH start + return on a single calendar. First click sets start,
+// second click sets end. Clicking a date earlier than the current start
+// resets the selection to that new start.
+function DateRangeInput({ startDate, endDate, onRangeChange }) {
+  const [open, setOpen] = useState(false);
+  // Two-month view: visibleMonth is the LEFT month. Right is +1.
+  const initialMonth = (() => {
+    const seed = startDate || new Date().toISOString().slice(0, 10);
+    const d = new Date(seed + "T12:00:00");
+    if (isNaN(d)) return new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  })();
+  const [visibleMonth, setVisibleMonth] = useState(initialMonth);
+  // Hover preview while choosing the end date.
+  const [hoverISO, setHoverISO] = useState("");
+  const popRef = useRef(null);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    function onDocClick(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    if (open) {
+      document.addEventListener("mousedown", onDocClick);
+      document.addEventListener("keydown", onKey);
+    }
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  // When opening, jump the calendar to the user's chosen start (or today).
+  useEffect(() => {
+    if (!open) return;
+    const seed = startDate || new Date().toISOString().slice(0, 10);
+    const d = new Date(seed + "T12:00:00");
+    if (!isNaN(d)) setVisibleMonth(new Date(d.getFullYear(), d.getMonth(), 1));
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toISO = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
+  const fromISO = (iso) => {
+    if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+    const d = new Date(iso + "T12:00:00");
+    return isNaN(d) ? null : d;
+  };
+  const sameDay = (a, b) => a && b && a.toDateString() === b.toDateString();
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const fmtRange = () => {
+    if (!startDate && !endDate) return "";
+    const s = fromISO(startDate);
+    const e = fromISO(endDate);
+    if (s && e) {
+      const sameYear = s.getFullYear() === e.getFullYear();
+      const sOpts = { month: "short", day: "numeric", year: sameYear ? undefined : "numeric" };
+      const eOpts = { month: "short", day: "numeric", year: "numeric" };
+      return `${s.toLocaleDateString("en-US", sOpts)} \u2013 ${e.toLocaleDateString("en-US", eOpts)}`;
+    }
+    if (s) return `${s.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} \u2013 \u2026`;
+    return "";
+  };
+
+  const handleDayClick = (iso) => {
+    const d = fromISO(iso);
+    if (!d) return;
+    const s = fromISO(startDate);
+    // Case 1: no selection yet OR clicking before current start → set start, clear end.
+    if (!startDate || !s || d < s) {
+      onRangeChange({ startDate: iso, endDate: "" });
+      return;
+    }
+    // Case 2: clicking exactly on start → ignore (keep the picker open).
+    if (sameDay(d, s)) return;
+    // Case 3: start exists, end empty → set end.
+    if (!endDate) {
+      onRangeChange({ startDate, endDate: iso });
+      // Auto-close after picking the end, with a tiny delay so the user
+      // sees the completed range highlight before the popover dismisses.
+      setTimeout(() => setOpen(false), 220);
+      return;
+    }
+    // Case 4: both exist → start a fresh range with this click.
+    onRangeChange({ startDate: iso, endDate: "" });
+  };
+
+  // Build the day grid for a given month (Sun-first weeks).
+  const buildMonth = (monthDate) => {
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const first = new Date(year, month, 1);
+    const startOffset = first.getDay(); // 0 = Sun
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < startOffset; i++) cells.push(null);
+    for (let day = 1; day <= daysInMonth; day++) cells.push(new Date(year, month, day));
+    while (cells.length % 7 !== 0) cells.push(null);
+    return cells;
+  };
+
+  const s = fromISO(startDate);
+  const e = fromISO(endDate);
+  const hov = fromISO(hoverISO);
+  // Preview-end is hover when picking the end, otherwise the real end.
+  const previewEnd = (s && !e && hov && hov > s) ? hov : e;
+
+  const inRange = (d) => {
+    if (!d || !s) return false;
+    const end = previewEnd;
+    if (!end) return false;
+    return d > s && d < end;
+  };
+
+  const monthLabel = (d) => d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const nextMonth = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1);
+  const shiftMonth = (delta) => setVisibleMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + delta, 1));
+
+  const displayValue = fmtRange();
+
+  const dayCell = (date, monthDate) => {
+    if (!date) return <div style={{ height: "34px" }} />;
+    const iso = toISO(date);
+    const isStart = sameDay(date, s);
+    const isEnd = sameDay(date, e) || (sameDay(date, previewEnd) && !sameDay(previewEnd, s));
+    const within = inRange(date);
+    const isToday = sameDay(date, today);
+    const isPast = date < today && !isStart && !isEnd && !within;
+    const isOtherMonth = date.getMonth() !== monthDate.getMonth();
+    if (isOtherMonth) return <div style={{ height: "34px" }} />;
+    let bg = "transparent";
+    let color = "var(--color-text-primary)";
+    let weight = 400;
+    if (within) { bg = "rgba(196, 168, 98, 0.18)"; color = "var(--color-text-primary)"; }
+    if (isStart || isEnd) { bg = GOLD; color = "#fff"; weight = 600; }
+    if (isPast) color = "var(--color-text-tertiary)";
+    const borderRadius = isStart && isEnd ? "50%"
+      : isStart ? "50% 0 0 50%"
+      : isEnd ? "0 50% 50% 0"
+      : within ? "0"
+      : "50%";
+    return (
+      <button
+        key={iso}
+        type="button"
+        onClick={() => handleDayClick(iso)}
+        onMouseEnter={() => s && !e && setHoverISO(iso)}
+        onMouseLeave={() => setHoverISO("")}
+        aria-label={date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+        style={{
+          height: "34px",
+          width: "100%",
+          background: bg,
+          color,
+          border: isToday && !isStart && !isEnd && !within ? `1px solid ${GOLD}` : "none",
+          borderRadius,
+          cursor: "pointer",
+          fontFamily: "inherit",
+          fontSize: "13px",
+          fontWeight: weight,
+          padding: 0,
+          outline: "none",
+        }}
+      >
+        {date.getDate()}
+      </button>
+    );
+  };
+
+  const renderMonth = (monthDate) => {
+    const cells = buildMonth(monthDate);
+    return (
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ textAlign: "center", fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "8px", letterSpacing: "0.02em" }}>
+          {monthLabel(monthDate)}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "2px", marginBottom: "4px" }}>
+          {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
+            <div key={`${monthDate.getMonth()}-h-${i}`} style={{ textAlign: "center", fontSize: "10px", color: "var(--color-text-tertiary)", padding: "4px 0", textTransform: "uppercase", letterSpacing: "0.06em" }}>{d}</div>
+          ))}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "2px" }}>
+          {cells.map((c, i) => (
+            <div key={`${monthDate.getMonth()}-${i}`}>{dayCell(c, monthDate)}</div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: "100%",
+          textAlign: "left",
+          fontSize: "14px",
+          padding: "9px 0",
+          border: "none",
+          borderBottom: "0.5px solid var(--color-border-primary)",
+          background: "transparent",
+          color: displayValue ? "var(--color-text-primary)" : "var(--color-text-tertiary)",
+          fontFamily: "inherit",
+          cursor: "pointer",
+          outline: "none",
+          lineHeight: "1.4",
+        }}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+      >
+        {displayValue || "Pick start \u2192 return"}
+      </button>
+      {open && (
+        <div
+          ref={popRef}
+          role="dialog"
+          aria-label="Pick trip dates"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            left: 0,
+            zIndex: 50,
+            background: "var(--color-background-primary)",
+            border: "1px solid var(--color-border-secondary)",
+            borderRadius: "var(--border-radius-lg)",
+            boxShadow: "0 10px 30px rgba(0,0,0,0.14)",
+            padding: "14px",
+            width: "min(640px, 92vw)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+            <button type="button" onClick={() => shiftMonth(-1)} aria-label="Previous month"
+              style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: "18px", color: "var(--color-text-secondary)", padding: "4px 10px", fontFamily: "inherit" }}>‹</button>
+            <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              {!startDate ? "Pick start date" : !endDate ? "Pick return date" : "Trip dates"}
+            </div>
+            <button type="button" onClick={() => shiftMonth(1)} aria-label="Next month"
+              style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: "18px", color: "var(--color-text-secondary)", padding: "4px 10px", fontFamily: "inherit" }}>›</button>
+          </div>
+          <div style={{ display: "flex", gap: "18px" }}>
+            {renderMonth(visibleMonth)}
+            <div className="date-range-second-month" style={{ display: "flex", flex: 1, minWidth: 0 }}>
+              {renderMonth(nextMonth)}
+            </div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "12px", paddingTop: "10px", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+            <button type="button" onClick={() => onRangeChange({ startDate: "", endDate: "" })}
+              style={{ background: "transparent", border: "none", color: "var(--color-text-secondary)", fontSize: "11px", cursor: "pointer", padding: "4px 0", textDecoration: "underline", fontFamily: "inherit" }}>Clear</button>
+            <button type="button" onClick={() => setOpen(false)}
+              style={{ background: "var(--color-text-primary)", color: "var(--color-background-primary)", border: "none", borderRadius: "var(--border-radius-md)", padding: "8px 18px", fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}>Done</button>
+          </div>
+        </div>
+      )}
+      {/* On narrow screens, hide the second month to keep the popover compact. */}
+      <style>{`@media (max-width: 520px) { .date-range-second-month { display: none !important; } }`}</style>
+    </div>
+  );
+}
+
 // Generic autocomplete: free-text input + filtered dropdown.
 // `getSuggestions(q)` returns an array of items; `renderItem(item)` renders each row;
 // `itemToValue(item)` converts a picked item to the string written into the input.
@@ -5077,6 +5346,60 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
 
         {step === 2 && (
           <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm("Return to the start? Your current trip details will be cleared.")) {
+                    resetFormToBlank();
+                    setCurrentSavedTripId(null);
+                    setReviewState(null);
+                    setStep(1);
+                  }
+                }}
+                aria-label="Return to the start"
+                title="Return to the start"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  background: "transparent",
+                  color: "var(--color-text-secondary)",
+                  border: "0.5px solid var(--color-border-secondary)",
+                  borderRadius: "var(--border-radius-md)",
+                  padding: "7px 12px",
+                  fontSize: "11px",
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M3 10.5 12 3l9 7.5" />
+                  <path d="M5 9.5V21h14V9.5" />
+                </svg>
+                <span>Home</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setStep(1)}
+                aria-label="Back to essentials"
+                style={{
+                  background: "transparent",
+                  color: "var(--color-text-secondary)",
+                  border: "none",
+                  fontSize: "11px",
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  padding: "7px 4px",
+                }}
+              >
+                ← Essentials
+              </button>
+            </div>
             <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={dismissStale} />
             <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Fill in what you know. Leave anything blank and the planner will suggest.</p>
 
