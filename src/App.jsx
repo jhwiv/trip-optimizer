@@ -3781,10 +3781,27 @@ function parseToolJson(toolJson) {
   }
 }
 
+// Extract the IATA code from a home-airport string. The Home Airport field
+// now stores the picked airport as "EWR — Newark Liberty Intl" so the user
+// sees the full name after selection, but downstream logic still needs just
+// the 3-letter code. This helper handles both raw codes and the rich format.
+function extractAirportCode(value) {
+  if (!value) return "";
+  const m = String(value).trim().match(/^([A-Za-z]{3})\b/);
+  return m ? m[1].toUpperCase() : "";
+}
+
 // Look up an airport record by IATA code, city, or name fragment.
+// Also handles the rich "EWR — Newark Liberty Intl" format produced by
+// AirportAutocomplete by first attempting an exact code-prefix extraction.
 function lookupAirport(value) {
   if (!value) return null;
-  const v = value.trim().toLowerCase();
+  const code = extractAirportCode(value);
+  if (code) {
+    const byCode = AIRPORTS.find(a => a.code.toUpperCase() === code);
+    if (byCode) return byCode;
+  }
+  const v = String(value).trim().toLowerCase();
   return (
     AIRPORTS.find(a => a.code.toLowerCase() === v) ||
     AIRPORTS.find(a => a.city.toLowerCase() === v) ||
@@ -3799,25 +3816,83 @@ function AirportAutocomplete({ value, onChange, placeholder }) {
       value={value}
       onChange={onChange}
       placeholder={placeholder}
-      getSuggestions={(q) => AIRPORTS.filter(a =>
-        a.code.toLowerCase().includes(q) ||
-        a.city.toLowerCase().includes(q) ||
-        a.name.toLowerCase().includes(q)
-      )}
+      getSuggestions={(q) => {
+        // Match against code, city, name, AND the rich display string itself
+        // so re-opening the dropdown after selection still surfaces matches.
+        const query = q.toLowerCase();
+        return AIRPORTS.filter(a =>
+          a.code.toLowerCase().includes(query) ||
+          a.city.toLowerCase().includes(query) ||
+          a.name.toLowerCase().includes(query)
+        );
+      }}
       renderItem={(a) => <>{a.code}<span className="country">{a.city} · {a.name}</span></>}
-      itemToValue={(a) => a.code}
+      // Store the rich display string so the input field shows the full
+      // airport name after the user picks one. Downstream code extracts
+      // the IATA code via extractAirportCode() / lookupAirport().
+      itemToValue={(a) => `${a.code} — ${a.name}`}
       itemKey={(a) => a.code}
     />
   );
 }
 
-function AirlineAutocomplete({ value, onChange, placeholder }) {
+// Pop the airline list open on click and — if we know the home airport —
+// surface carriers that actually fly the user's route at the top of the list.
+// We pull route hints from KNOWN_NONSTOPS keyed by home-airport IATA against
+// every destination airport we have for the trip's primary city. Anything
+// not in those route hints sorts to the bottom in the global AIRLINES order.
+function getRouteHintAirlines(homeAirportRaw, destinationName) {
+  const home = extractAirportCode(homeAirportRaw);
+  if (!home || !destinationName) return [];
+  const key = String(destinationName).trim().toLowerCase();
+  const destEntries = DEST_AIRPORTS[key];
+  if (!Array.isArray(destEntries) || destEntries.length === 0) return [];
+  const seen = new Set();
+  const out = [];
+  for (const d of destEntries) {
+    const dCode = (d.iata || "").toUpperCase();
+    if (!dCode) continue;
+    // KNOWN_NONSTOPS keys are stored as HOME-DEST or DEST-HOME (the table
+    // mixes both directions — e.g. "CPH-EWR" and "EWR-FRA"). Try both.
+    const variants = [`${home}-${dCode}`, `${dCode}-${home}`];
+    for (const v of variants) {
+      const list = KNOWN_NONSTOPS[v];
+      if (Array.isArray(list)) {
+        for (const a of list) {
+          if (!seen.has(a)) { seen.add(a); out.push(a); }
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function AirlineAutocomplete({ value, onChange, placeholder, homeAirport, destination }) {
+  // Build the suggestion list: route-relevant carriers first (when known),
+  // then the rest of AIRLINES in the canonical order. When the user starts
+  // typing, normal substring filtering kicks in across the merged list.
+  const buildList = () => {
+    const route = getRouteHintAirlines(homeAirport, destination);
+    if (route.length === 0) return AIRLINES;
+    const routeSet = new Set(route.map(a => a.toLowerCase()));
+    const rest = AIRLINES.filter(a => !routeSet.has(a.toLowerCase()));
+    // Filter route hints down to ones we actually have in AIRLINES (drop
+    // aliases like "Swiss International" so users see a single entry).
+    const known = route.filter(a => AIRLINES.some(b => b.toLowerCase() === a.toLowerCase()));
+    return [...known, ...rest];
+  };
   return (
     <Autocomplete
       value={value}
       onChange={onChange}
       placeholder={placeholder}
-      getSuggestions={(q) => AIRLINES.filter(a => a.toLowerCase().includes(q))}
+      openOnFocusEmpty={true}
+      minChars={0}
+      getSuggestions={(q) => {
+        const list = buildList();
+        if (!q) return list;
+        return list.filter(a => a.toLowerCase().includes(q));
+      }}
       renderItem={(a) => <>{a}</>}
       itemToValue={(a) => a}
       itemKey={(a) => a}
@@ -5263,7 +5338,7 @@ Return date: ${formatDateForDisplay(basics.endDate) || basics.endDate}` : ""}
 Nights: ${isMultiCity ? totalNightsFromCities : basics.nights}${isMultiCity ? "  (" + cities.map(c => `${c.nights} in ${c.name}`).join(" + ") + ")" : ""}
 Travelers: ${basics.travelers}
 Style: ${prefToText(basics.style)} · Pace: ${basics.pace || "No preference"} · Budget: ${basics.budget || "No preference"}
-${flights.noFlight ? `Transportation mode: GROUND ONLY (${groundModeText}). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the ${trainAllowed ? "drive or rail" : "drive"} journey from the user's origin to the destination, with realistic time + distance.` : `Home airport: ${flights.homeAirport} · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin || "no preference"}`}
+${flights.noFlight ? `Transportation mode: GROUND ONLY (${groundModeText}). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the ${trainAllowed ? "drive or rail" : "drive"} journey from the user's origin to the destination, with realistic time + distance.` : `Home airport: ${flights.homeAirport} (use IATA ${extractAirportCode(flights.homeAirport)} on Flight items) · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin || "no preference"}`}
 Hotel brand: ${prefToText(hotel.brand)}${hotel.tier ? ` · ${hotel.tier}` : ""} · Must-haves: ${hotel.mustHave || "none"}
 Transport: ${prefToText(transport.type)}${transport.company ? ` · ${transport.company}` : ""}
 Cuisine: ${dining.cuisine || "local"} · Dinner budget: ${prefToText(dining.budget)}
@@ -5272,7 +5347,7 @@ Activities requested: ${activities.length ? activities.join(", ") : "suggest bas
 Interests: ${interests.text || "not specified"} · Level: ${interests.level || "No preference"}
 Include sections: ${active}
 
-${flights.noFlight ? `IMPORTANT: NO FLIGHTS. The user is ${trainAllowed ? "driving or taking the train" : "driving"}. Day 1 must be a Transport item describing the surface-travel arrival; do not invent flights, do not include any Flight items in days[].items.` : `IMPORTANT: Prefer NONSTOP flights. If ${flights.homeAirport} has no nonstop to the primary airport for ${isMultiCity ? cities[0]?.name : basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.`}
+${flights.noFlight ? `IMPORTANT: NO FLIGHTS. The user is ${trainAllowed ? "driving or taking the train" : "driving"}. Day 1 must be a Transport item describing the surface-travel arrival; do not invent flights, do not include any Flight items in days[].items.` : `IMPORTANT: Prefer NONSTOP flights. If ${extractAirportCode(flights.homeAirport) || flights.homeAirport} has no nonstop to the primary airport for ${isMultiCity ? cities[0]?.name : basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.`}
 ${trainAllowed ? "" : "IMPORTANT — NO TRAINS: The user did NOT request train or rail transportation. Do NOT suggest Amtrak, regional rail, commuter rail, or any train segment anywhere in the plan — not as primary transport, not as an alternative in flags[], not in planb[], not in plan-B fallbacks, not in transport_in for any leg, not in any item.text. Every transport segment must be by car, flight (if applicable), or walking. If the destination is rail-friendly (e.g. Saratoga, the Hudson Valley, Hudson NY, Westchester, Connecticut shore, DC corridor, anywhere on the Northeast Corridor) you still must NOT suggest a train. Pretend rail does not exist for this trip."}
 IMPORTANT: Return a complete days[] array with ${(isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)) + 1} entries (arrival day + ${isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)} nights). Do not collapse the plan into the logistics chip list.${isMultiCity ? `
 IMPORTANT: This is a ${cities.length}-city trip. Emit cities[] with ${cities.length} entries. Each day's "city" field must match a city in cities[] (or use From→To format for transit days). Inter-city transit is a Transport item at the start of legs 2+ with realistic drive time + distance.` : ""}
@@ -6048,7 +6123,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               <div style={cardStyle}>
                 <p style={ctStyle}>Flights</p>
                 <div style={g3}>
-                  <Field label="Preferred airline"><AirlineAutocomplete value={flights.airline} onChange={e => setF({ ...flights, airline: e.target.value })} placeholder="e.g. United" /></Field>
+                  <Field label="Preferred airline"><AirlineAutocomplete value={flights.airline} onChange={e => setF({ ...flights, airline: e.target.value })} placeholder="Click to see airlines…" homeAirport={flights.homeAirport} destination={basics.destination} /></Field>
                   <Field label="Cabin"><Sel value={flights.cabin} onChange={e => setF({ ...flights, cabin: e.target.value })} opts={["Business / Polaris","Premium economy","Economy"]} /></Field>
                   <Field label="Date flexibility"><Sel value={flights.flex} onChange={e => setF({ ...flights, flex: e.target.value })} opts={["Exact date only","± 1 day","± 2 days"]} /></Field>
                 </div>
@@ -6179,7 +6254,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 5px" }}>Your trip</p>
               <p style={{ fontSize: "20px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)" }}>{basics.destination || "Destination not set"}</p>
               <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: "1.6" }}>
-                {[basics.baseArea, (basics.startDate && basics.endDate) ? `${formatDateForDisplay(basics.startDate)} – ${formatDateForDisplay(basics.endDate)}` : formatDateForDisplay(basics.startDate), basics.nights ? `${basics.nights} nights` : null, flights.homeAirport ? `from ${flights.homeAirport}` : null].filter(Boolean).join("  ·  ") || "Complete the form above"}
+                {[basics.baseArea, (basics.startDate && basics.endDate) ? `${formatDateForDisplay(basics.startDate)} – ${formatDateForDisplay(basics.endDate)}` : formatDateForDisplay(basics.startDate), basics.nights ? `${basics.nights} nights` : null, flights.homeAirport ? `from ${extractAirportCode(flights.homeAirport) || flights.homeAirport}` : null].filter(Boolean).join("  ·  ") || "Complete the form above"}
               </p>
               {(restaurants.length > 0 || activities.length > 0) && (
                 <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: "10px", marginTop: "12px" }}>
