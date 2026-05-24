@@ -1671,6 +1671,14 @@ function applyQualityLayer(input, inputs) {
   }
 
   // 3. Validators — surface as warnings, never block render.
+  // Truncation / partial-plan flags propagated from the parse layer get top
+  // billing so the user knows the itinerary they're looking at is incomplete.
+  if (input._truncated) {
+    warnings.push("Plan was cut off before finishing — some sections may be incomplete. Tap Build again for a full plan.");
+  }
+  if (input._dayCountWarning) {
+    warnings.push(input._dayCountWarning);
+  }
   const planbLen = Array.isArray(input.planb) ? input.planb.length : 0;
   if (planbLen < 5) warnings.push(`Plan B has only ${planbLen} entries (expected ≥5)`);
   if (!input.weather_window) warnings.push("Missing weather_window summary");
@@ -3479,14 +3487,29 @@ async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
 
   // Stream ended without `done`. If we know the jobId, fall back to KV polling
   // so we can still finish reading whatever the server produced.
+  //
+  // Bounded by two signals so the UI never spins forever:
+  //   - MAX_POLL_MS:    absolute ceiling on total polling time (10 minutes)
+  //   - MAX_STALL_MS:   bail if we go this long without any new bytes
+  //                     (the server is alive but the generation has stopped)
   if (!doneSeen && jobId) {
     let cursor = toolJson.length;
     const POLL_MS = 1500;
+    const MAX_POLL_MS = 10 * 60 * 1000;
+    const MAX_STALL_MS = 90 * 1000;
+    const pollStart = Date.now();
+    let lastProgressAt = Date.now();
     while (true) {
       if (signal?.aborted) {
         const err = new Error("Aborted");
         err.name = "AbortError";
         throw err;
+      }
+      if (Date.now() - pollStart > MAX_POLL_MS) {
+        throw new Error("Build is taking longer than expected. Tap Build again to retry.");
+      }
+      if (Date.now() - lastProgressAt > MAX_STALL_MS) {
+        throw new Error("Build stalled — no new content for 90 seconds. Tap Build again to retry.");
       }
       let r;
       try {
@@ -3513,6 +3536,7 @@ async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
       if (data.delta) {
         toolJson += data.delta;
         cursor = data.cursor;
+        lastProgressAt = Date.now();
         if (typeof onDelta === "function") onDelta(data.delta, toolJson.length);
       }
       if (data.status === "done") return { jobId, toolJson };
@@ -5111,11 +5135,25 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   const pollJob = async ({ jobId, signal, onDelta, startCursor = 0 }) => {
     let cursor = startCursor;
     const POLL_MS = 1500;
+    // Bound both wall-clock and stall so the UI never spins forever.
+    // MAX_POLL_MS is the hard ceiling; MAX_STALL_MS catches the "server is
+    // up but generation has frozen" case where 5xx polls succeed but
+    // no new bytes arrive.
+    const MAX_POLL_MS = 10 * 60 * 1000;
+    const MAX_STALL_MS = 90 * 1000;
+    const pollStart = Date.now();
+    let lastProgressAt = Date.now();
     while (true) {
       if (signal?.aborted) {
         const err = new Error("Aborted");
         err.name = "AbortError";
         throw err;
+      }
+      if (Date.now() - pollStart > MAX_POLL_MS) {
+        throw new Error("Build is taking longer than expected. Tap Build again to retry.");
+      }
+      if (Date.now() - lastProgressAt > MAX_STALL_MS) {
+        throw new Error("Build stalled — no new content for 90 seconds. Tap Build again to retry.");
       }
       let resp;
       try {
@@ -5145,6 +5183,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
       if (data.delta) {
         cursor = data.cursor;
+        lastProgressAt = Date.now();
         onDelta(data.delta, cursor);
       }
       if (data.status === "done") return { len: data.cursor };
