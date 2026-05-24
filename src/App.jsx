@@ -1051,13 +1051,24 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
   const platformLabel = resv ? ({
     opentable: "OpenTable", resy: "Resy", tock: "Tock", yelp: "Yelp", phone: "Call",
   }[resv.platform] || "Reserve") : null;
+  // Hard closure state: the closure gate identified this restaurant as on the
+  // denylist (verify_status="permanently_closed"). Render a destructive red
+  // banner across the whole card, strike through the name, and hide all
+  // action buttons so the user CANNOT accidentally book a closed restaurant.
+  const isClosed = r.verify_status === "permanently_closed";
 
   return (
-    <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
+    <div style={{ marginBottom: "12px", border: isClosed ? "1px solid #C92A2A" : "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: isClosed ? "#FFF5F5" : "var(--color-background-primary)", position: "relative" }}>
+      {isClosed && (
+        <div style={{ margin: "-2px 0 10px", padding: "7px 10px", background: "#C92A2A", color: "#FFFFFF", borderRadius: "4px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", display: "flex", alignItems: "center", gap: "6px" }}>
+          <span style={{ fontSize: "13px" }}>⚠</span>
+          <span>Permanently closed — do not book</span>
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
         <Badge type={type} />
-        <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1 }}>{r.name}</p>
-        {r._isReturnVisit && (
+        <p style={{ fontSize: "14px", fontWeight: 600, color: isClosed ? "#8C1F1F" : "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1, textDecoration: isClosed ? "line-through" : "none" }}>{r.name}</p>
+        {r._isReturnVisit && !isClosed && (
           <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: `0.5px solid ${GOLD}`, borderRadius: "3px", whiteSpace: "nowrap" }}>Return visit</span>
         )}
       </div>
@@ -1066,9 +1077,9 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
           {[r.neighborhood, r.cuisine, r.price_range].filter(Boolean).join("  ·  ")}
         </p>
       )}
-      {r.why && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{r.why}</p>}
+      {r.why && !isClosed && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{r.why}</p>}
       {r.closure_note && (
-        <p style={{ fontSize: "11px", color: r.closure_note.toLowerCase().includes("confirm") ? "#B85C00" : "var(--color-text-tertiary)", margin: "0 0 8px", fontStyle: "italic" }}>
+        <p style={{ fontSize: "11px", color: isClosed ? "#8C1F1F" : (r.closure_note.toLowerCase().includes("confirm") ? "#B85C00" : "var(--color-text-tertiary)"), margin: "0 0 8px", fontStyle: "italic", fontWeight: isClosed ? 600 : "normal" }}>
           ⚠︎ {r.closure_note}
         </p>
       )}
@@ -1078,11 +1089,11 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
       {/* failure this app can ship is recommending a permanently-closed */}
       {/* restaurant, so we default to the conservative "verify before booking" */}
       {/* microcopy whenever the model isn't certain. */}
-      {(r.verify_status === "verify_before_booking" || (!r.verify_status && r.verify_url)) && (
+      {!isClosed && (r.verify_status === "verify_before_booking" || (!r.verify_status && r.verify_url)) && (
         <div style={{ margin: "0 0 8px", padding: "6px 9px", background: "#FFF8EC", border: "0.5px solid #E8C063", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
           <span style={{ fontSize: "10.5px", fontWeight: 600, color: "#8A6500", letterSpacing: "0.04em", textTransform: "uppercase" }}>Verify</span>
           <span style={{ fontSize: "11.5px", color: "#5A4A1F" }}>
-            Confirm this spot is still open before booking.
+            We can't confirm this spot's status — check before booking.
           </span>
           {r.verify_url && (
             <a
@@ -1094,7 +1105,7 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
           )}
         </div>
       )}
-      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px" }}>
+      <div style={{ display: isClosed ? "none" : "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px" }}>
         {r.menu && (
           <button
             onClick={() => onOpenMenu(r)}
@@ -1511,6 +1522,95 @@ function carrierMatchesKnown(carrier, knownList) {
   return false;
 }
 
+// ===========================================================================
+// CLOSED RESTAURANTS DENYLIST — the single source of truth for restaurants
+// the planner must NEVER recommend. The amber Verify chip is a polite warning;
+// this list is the actual gate. Anything matched here is stripped from days[]
+// and replaced with the model's backup (or annotated as a fix-it-yourself QC
+// warning if no backup exists). When in doubt about a closure, leave it OUT
+// of this list — a false positive (removing a still-open restaurant) is worse
+// than a false negative (letting a closed one through with the Verify chip).
+//
+// Entry format: { name, city, closed: "YYYY-MM" | "YYYY", source }.
+//   - name: canonical name as commonly used. Substring matching is
+//     case-insensitive and aliases (e.g. "Husk Barbeque", "Husk Greenville")
+//     are handled via the aliases[] array.
+//   - city: lowercase city or region substring matched against the trip's
+//     destination + cities[] so we don't strip a still-open same-name spot
+//     in another city (Husk Charleston, Nashville, Savannah remain open).
+//   - aliases: optional additional names the model might emit.
+const CLOSED_RESTAURANTS = [
+  {
+    name: "Husk",
+    aliases: ["Husk Barbeque", "Husk BBQ", "Husk Greenville", "Husk Barbecue"],
+    city: "greenville",
+    closed: "2021-10",
+    source: "https://southeasterndispatch.com/features/Neighborhood-Dining-Group-Shutters-Husk-Barbeque-in-Greenville",
+  },
+  // NYC — from The Infatuation closures list (Jan 2025) + Time Out's running list
+  { name: "Frog Club", city: "new york", closed: "2024-12", source: "https://www.theinfatuation.com/new-york/features/nyc-restaurant-closings" },
+  { name: "Absolute Bagels", city: "new york", closed: "2024-12", source: "https://www.theinfatuation.com/new-york/features/nyc-restaurant-closings" },
+  { name: "Piccolo Angolo", city: "new york", closed: "2024-12", source: "https://www.theinfatuation.com/new-york/features/nyc-restaurant-closings" },
+  { name: "Ugly Baby", city: "new york", closed: "2024-12", source: "https://www.theinfatuation.com/new-york/features/nyc-restaurant-closings" },
+  { name: "M.Wells", aliases: ["M Wells", "M. Wells"], city: "new york", closed: "2024-12", source: "https://www.theinfatuation.com/new-york/features/nyc-restaurant-closings" },
+  { name: "Buttermilk Channel", city: "new york", closed: "2024-12", source: "https://www.theinfatuation.com/new-york/features/nyc-restaurant-closings" },
+  { name: "En Japanese Brasserie", city: "new york", closed: "2024-12", source: "https://www.theinfatuation.com/new-york/features/nyc-restaurant-closings" },
+  { name: "Sushi Azabu", city: "new york", closed: "2025-01", source: "https://www.theinfatuation.com/new-york/features/nyc-restaurant-closings" },
+  { name: "La Grenouille", city: "new york", closed: "2024-09", source: "https://www.theinfatuation.com/new-york/features/nyc-restaurant-closings" },
+  { name: "Holiday Bar", city: "new york", closed: "2024-09", source: "https://www.theinfatuation.com/new-york/features/nyc-restaurant-closings" },
+  { name: "Contento", city: "new york", closed: "2024-12", source: "https://www.theinfatuation.com/new-york/features/nyc-restaurant-closings" },
+  { name: "Khe-Yo", aliases: ["Khe Yo"], city: "new york", closed: "2024-06", source: "https://www.timeout.com/newyork/restaurants/notable-nyc-restaurants-and-bars-that-have-now-permanently-closed" },
+  { name: "Momofuku Ko", city: "new york", closed: "2023", source: "https://www.thetakeout.com/1810450/michelin-star-restaurants-vanished/" },
+  { name: "Contra", city: "new york", closed: "2023", source: "https://www.thetakeout.com/1810450/michelin-star-restaurants-vanished/" },
+  // San Francisco — from The Takeout Michelin closures list
+  { name: "Mourad", city: "san francisco", closed: "2024-10", source: "https://www.thetakeout.com/1810450/michelin-star-restaurants-vanished/" },
+  // LA
+  { name: "Manzke", city: "los angeles", closed: "2024", source: "https://www.thetakeout.com/1810450/michelin-star-restaurants-vanished/" },
+  // London (covered in case the app ever serves UK trips)
+  { name: "Le Gavroche", city: "london", closed: "2024-01", source: "https://www.thetakeout.com/1810450/michelin-star-restaurants-vanished/" },
+  { name: "Locanda Locatelli", city: "london", closed: "2025-01", source: "https://www.thetakeout.com/1810450/michelin-star-restaurants-vanished/" },
+];
+
+// Normalize a name for matching: lowercase, strip punctuation, collapse spaces.
+function normalizeRestaurantName(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+// Build a haystack of city tokens from the trip inputs so we can scope
+// closure matches to the right destination (avoid stripping Husk Charleston
+// when the user is going to Charleston).
+function buildCityHaystack(inputs) {
+  const parts = [];
+  if (inputs?.destination) parts.push(String(inputs.destination));
+  if (Array.isArray(inputs?.cities)) {
+    inputs.cities.forEach(c => { if (c?.name) parts.push(String(c.name)); });
+  }
+  return parts.join(" ").toLowerCase();
+}
+
+// Determine whether a given restaurant matches a denylist entry. Both the
+// name AND the city must match: we never strip a same-name restaurant in
+// a different city. Matches against name + aliases via word-boundary regex
+// so "Husk" matches "Husk Greenville" but not "Buschu's Husk Cellar".
+function findClosedRestaurantMatch(restaurantName, cityHaystack) {
+  if (!restaurantName) return null;
+  const norm = normalizeRestaurantName(restaurantName);
+  if (!norm) return null;
+  for (const entry of CLOSED_RESTAURANTS) {
+    if (!cityHaystack.includes(entry.city)) continue;
+    const names = [entry.name, ...(entry.aliases || [])];
+    for (const candidate of names) {
+      const cNorm = normalizeRestaurantName(candidate);
+      if (!cNorm) continue;
+      // Word-boundary match: candidate must appear as a discrete token sequence
+      // in the restaurant's normalized name.
+      const re = new RegExp(`(^|\\s)${cNorm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|$)`);
+      if (re.test(norm)) return entry;
+    }
+  }
+  return null;
+}
+
 // Pass-three quality layer: dedupe restaurant repeats with an explicit
 // "Return to X for [meal]" annotation, and surface a QC summary of any
 // fixes/warnings the renderer applied so the user knows the app is on it.
@@ -1690,6 +1790,62 @@ function applyQualityLayer(input, inputs) {
         });
       });
     }
+  }
+
+  // 2.4 CLOSURE GATE — strip restaurants on the CLOSED_RESTAURANTS denylist
+  // and substitute the model's backup. This is the actual fix for the
+  // Husk Greenville incident: the Verify chip below is a polite warning, but
+  // a recommendation that has been closed for years should NEVER reach the
+  // user as a primary card. If the closure-matched restaurant has a backup
+  // we know to be in a different name slot, we promote that backup to be the
+  // new primary. If no backup, we leave the item but tag the restaurant with
+  // verify_status="permanently_closed" so the renderer can hide the menu and
+  // surface a hard red banner instead of the soft amber chip. Every removal
+  // also emits a QC fix so the user sees the substitution was deliberate.
+  const cityHaystack = buildCityHaystack(inputs);
+  if (Array.isArray(days) && cityHaystack) {
+    days.forEach((day, dayIdx) => {
+      (day.items || []).forEach(item => {
+        const r = item.restaurant;
+        if (!r || !r.name) return;
+        const match = findClosedRestaurantMatch(r.name, cityHaystack);
+        if (!match) return;
+        const dayLabel = `Day ${dayIdx + 1}`;
+        const mealLabel = (item.type || "meal").toLowerCase();
+        const closedSrc = match.source ? ` (${match.source})` : "";
+        const closedWhen = match.closed ? ` closed ${match.closed}` : "";
+        if (r.backup && r.backup.name && !findClosedRestaurantMatch(r.backup.name, cityHaystack)) {
+          // Promote the backup to be the new primary. Move the original
+          // backup fields up. Note explicitly in why so the traveler
+          // understands the substitution.
+          const removedName = r.name;
+          const promoted = r.backup;
+          // Carry over fields the backup typically lacks. Don't overwrite
+          // backup-provided values — the backup is its own restaurant.
+          item.restaurant = {
+            name: promoted.name,
+            neighborhood: promoted.neighborhood || r.neighborhood,
+            cuisine: promoted.cuisine || r.cuisine,
+            price_range: promoted.price_range || r.price_range,
+            why: `Substituted in place of ${removedName} —${closedWhen}. ${promoted.why || ""}`.trim(),
+            closure_note: promoted.closure_note || "",
+            reservation: promoted.reservation || r.reservation,
+            menu: promoted.menu || null,
+            backup: null, // backup-of-backup is too thin to trust
+            verify_status: "verify_before_booking",
+            verify_url: promoted.verify_url || "", // filled by 2.5 below
+          };
+          fixes.push(`Removed ${removedName} (${dayLabel} ${mealLabel}) —${closedWhen}. Substituted ${promoted.name} from your backup slot.${closedSrc}`);
+        } else {
+          // No usable backup. Don't fabricate a replacement — instead flag
+          // the restaurant as permanently closed so the renderer can show a
+          // hard red banner and the user knows to pick their own spot.
+          r.verify_status = "permanently_closed";
+          r.closure_note = `Reported permanently closed${closedWhen}. Pick a different spot before the trip.`;
+          warnings.push(`${r.name} (${dayLabel} ${mealLabel}) is reported permanently closed${closedWhen} — we left it in place so you can see what to replace, but it must NOT be booked. No backup was supplied; please pick a different restaurant.${closedSrc}`);
+        }
+      });
+    });
   }
 
   // 2.5 Restaurant freshness defaulter — if the model omitted verify_status,
@@ -5282,6 +5438,13 @@ RESTAURANTS:
   — If you cannot find ANY restaurant in the destination you have high confidence in, default to the hotel restaurant or a well-known chain/institution — do not invent or guess.
   — The backup field is not optional and must be a DIFFERENT operator (not a sister restaurant of the primary). The backup is what the traveler uses when the primary is closed/booked/gone.
   — For every restaurant, also include verify_url (TheFork / OpenTable / Resy / Google Maps / the restaurant's own website) the traveler can tap to confirm hours before they walk over.
+  — EXPLICIT DENYLIST — these restaurants are confirmed permanently closed. Do NOT recommend any of them under any circumstances, anywhere in the plan, not as primary, not as backup, not in flags[], not in snobs, not in tonight, not in plan-B fallbacks:
+      • Greenville, SC: Husk (any variant — Husk Greenville, Husk Barbeque, Husk BBQ). Closed October 2021.
+      • New York: Frog Club, Absolute Bagels, Piccolo Angolo, Ugly Baby, M.Wells, Buttermilk Channel, En Japanese Brasserie, Sushi Azabu, La Grenouille, Holiday Bar, Contento, Khe-Yo, Momofuku Ko, Contra.
+      • San Francisco: Mourad.
+      • Los Angeles: Manzke.
+      • London: Le Gavroche, Locanda Locatelli.
+      Note: same-name restaurants in OTHER cities may remain open (e.g. Husk Charleston / Husk Nashville / Husk Savannah are all still operating — only the Greenville location is closed). Match closures by name AND city.
 
 LOGISTICS chips:
 • Short chips only — max 6, each ≤40 chars. Top-line facts only (airline summary, hotel name, car). DO NOT write sentences here. The full plan goes in days[].
