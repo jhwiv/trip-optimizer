@@ -4211,14 +4211,66 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
   // explicit cancel, or hard error.
   const ACTIVE_JOB_KEY = "trip-optimizer-active-job-v1";
 
+  // Read NDJSON lines from a streaming Response body. Calls onJob with the
+  // jobId as soon as it lands, then onDelta with each text chunk, then
+  // resolves with the final accumulated length when {"type":"done"} arrives.
+  // Throws on {"type":"error"} or transport error. This is the FAST PATH:
+  // when the client stays connected to the POST, we get deltas with zero
+  // KV-poll latency. If the connection breaks (network blip, mobile sleep)
+  // the caller falls back to pollJob() against KV.
+  const streamBuildResponse = async ({ resp, signal, onJob, onDelta }) => {
+    if (!resp.body) throw new Error("Server did not return a stream body.");
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let totalLen = 0;
+    try {
+      while (true) {
+        if (signal?.aborted) {
+          try { await reader.cancel(); } catch {}
+          const err = new Error("Aborted");
+          err.name = "AbortError";
+          throw err;
+        }
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        // NDJSON: each event is a single line terminated with \n.
+        let nl;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          let evt;
+          try { evt = JSON.parse(line); } catch { continue; }
+          if (evt.type === "job" && evt.jobId) {
+            if (onJob) onJob(evt.jobId);
+          } else if (evt.type === "delta" && evt.text) {
+            totalLen += evt.text.length;
+            onDelta(evt.text, totalLen);
+          } else if (evt.type === "done") {
+            return { len: evt.len ?? totalLen };
+          } else if (evt.type === "error") {
+            throw new Error(evt.error || "Build failed on server.");
+          }
+        }
+      }
+    } finally {
+      try { reader.releaseLock(); } catch {}
+    }
+    // Stream ended without an explicit done — treat as soft EOF; caller can
+    // fall back to polling KV.
+    return { len: totalLen, softEnd: true };
+  };
+
   // Shared poller used by both fresh builds and the resume-on-mount path.
   // Polls GET /api/build/<jobId>?cursor=N, appends server-side deltas to a
   // running toolJson buffer, updates progress, and resolves with the final
   // accumulated text when status flips to "done". Throws on "error" or
   // notFound. The signal cancels the poll loop without killing the
   // server-side job (build keeps running for next time).
-  const pollJob = async ({ jobId, signal, onDelta }) => {
-    let cursor = 0;
+  const pollJob = async ({ jobId, signal, onDelta, startCursor = 0 }) => {
+    let cursor = startCursor;
     const POLL_MS = 1500;
     while (true) {
       if (signal?.aborted) {
@@ -4317,7 +4369,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
   // localStorage). Caller provides the expected nights so progress can be
   // computed without re-deriving from current form state (which may be empty
   // on a resume into a fresh tab).
-  const runBuildForJob = async ({ jobId, nightsNum, expectedTokens, startedAt, citiesCount = 1 }) => {
+  const runBuildForJob = async ({ jobId, nightsNum, expectedTokens, startedAt, citiesCount = 1, streamResp = null, onJobIdReady = null }) => {
     setLoading(true);
     setError("");
     setProgress(0);
@@ -4391,21 +4443,54 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
     document.addEventListener("visibilitychange", onVisibilityChange);
 
     let toolJson = "";
+    const onDelta = (delta /*, totalLen */) => {
+      toolJson += delta;
+      const estTokens = toolJson.length / 3.5;
+      const tokFrac = Math.min(0.95, estTokens / expectedTokens);
+      lastTokenFrac = tokFrac;
+      setProgress(prev => Math.max(prev, tokFrac));
+      updateProgressLabel(toolJson, totalDays);
+    };
 
     try {
-      await pollJob({
-        jobId,
-        signal: controller.signal,
-        onDelta: (delta /*, totalLen */) => {
-          toolJson += delta;
-          // Char-based token estimate + progress label, same logic as before.
-          const estTokens = toolJson.length / 3.5;
-          const tokFrac = Math.min(0.95, estTokens / expectedTokens);
-          lastTokenFrac = tokFrac;
-          setProgress(prev => Math.max(prev, tokFrac));
-          updateProgressLabel(toolJson, totalDays);
-        },
-      });
+      // Primary path: read the open POST stream (zero-latency deltas, no 30s
+      // waitUntil ceiling because the client is the lifeline). Falls back to
+      // KV polling if the connection drops mid-build.
+      let needPollFallback = !streamResp;
+      let resolvedJobId = jobId;
+      if (streamResp) {
+        try {
+          const out = await streamBuildResponse({
+            resp: streamResp,
+            signal: controller.signal,
+            onJob: (id) => {
+              resolvedJobId = id;
+              if (onJobIdReady) onJobIdReady(id);
+            },
+            onDelta,
+          });
+          if (out.softEnd) needPollFallback = true;
+        } catch (streamErr) {
+          if (streamErr?.name === "AbortError") throw streamErr;
+          // Network drop during stream — keep what we have and resume via KV.
+          needPollFallback = true;
+        }
+      }
+      if (needPollFallback) {
+        if (!resolvedJobId) {
+          // Connection died before the server even sent the jobId. Nothing
+          // to resume from in KV.
+          throw new Error("Lost connection to server before build started. Tap Build again.");
+        }
+        // toolJson may already hold partial bytes from the stream — tell the
+        // poller our cursor so it doesn't re-deliver them.
+        await pollJob({
+          jobId: resolvedJobId,
+          signal: controller.signal,
+          onDelta,
+          startCursor: toolJson.length,
+        });
+      }
 
       setProgress(1);
       setProgressLabel("Finalizing…");
@@ -4518,22 +4603,37 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
     setError("");
     setLoadingMsg("Starting build…");
 
+    // Open the streaming POST. The server now returns an NDJSON body whose
+    // FIRST line is {"type":"job","jobId":"..."} so we read just enough to
+    // capture the jobId, persist it for resume, and then hand the same
+    // open response to runBuildForJob which reads the remaining deltas.
+    let streamResp;
     let jobId;
+    let startedAt;
     try {
-      const r = await fetch("/api/build", {
+      streamResp = await fetch("/api/build", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!r.ok) {
-        const txt = await r.text();
-        let msg = `Could not start build (HTTP ${r.status}).`;
+      if (!streamResp.ok) {
+        const txt = await streamResp.text();
+        let msg = `Could not start build (HTTP ${streamResp.status}).`;
         try { const j = JSON.parse(txt); msg = j?.error?.message || msg; } catch { if (txt) msg = txt.slice(0, 240); }
         throw new Error(msg);
       }
-      const out = await r.json();
-      jobId = out.jobId;
-      if (!jobId) throw new Error("Server did not return a jobId.");
+      // Peek the first NDJSON line via a tee'd reader so runBuildForJob can
+      // still consume the full body. Simpler: read the head ourselves and
+      // pre-prime toolJson via a small jobOnly handler. We use a one-shot
+      // reader that grabs lines until we see the job event, then we pass the
+      // SAME reader-bound body to the streamer by reading the underlying
+      // body's reader via a TransformStream pipe. Implementation: use a
+      // Response/ReadableStream split.
+      //
+      // Implementation chosen for simplicity: read the body ourselves in
+      // streamBuildResponse() from inside runBuildForJob and use the
+      // onJob callback to capture the jobId.
+      startedAt = Date.now();
     } catch (err) {
       setError(err?.message || "Could not start build. Please try again.");
       setLoading(false);
@@ -4541,22 +4641,34 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
       return;
     }
 
-    const startedAt = Date.now();
-    // Persist enough to resume in a fresh tab. We don't need the full form —
-    // the server has the request — but we keep destination + nights so the
-    // resume UI can show context before the first delta arrives.
-    try {
-      localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({
-        jobId,
-        startedAt,
-        nightsNum,
-        expectedTokens,
-        citiesCount,
-        destination: basics.destination || (basics.cities?.[0]?.name) || "your trip",
-      }));
-    } catch {}
-
-    await runBuildForJob({ jobId, nightsNum, expectedTokens, startedAt, citiesCount });
+    // We need the jobId for the localStorage active-job key before we hand
+    // the response off to runBuildForJob. Read just the first line here.
+    // streamBuildResponse() inside runBuildForJob will continue from the
+    // remaining bytes (the TextDecoder buffer is per-reader so we keep one).
+    //
+    // To keep this simple and robust, runBuildForJob accepts the open
+    // response and calls streamBuildResponse with an onJob callback that
+    // writes localStorage as soon as the jobId lands.
+    await runBuildForJob({
+      jobId: null,
+      nightsNum,
+      expectedTokens,
+      startedAt,
+      citiesCount,
+      streamResp,
+      onJobIdReady: (id) => {
+        try {
+          localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({
+            jobId: id,
+            startedAt,
+            nightsNum,
+            expectedTokens,
+            citiesCount,
+            destination: basics.destination || (basics.cities?.[0]?.name) || "your trip",
+          }));
+        } catch {}
+      },
+    });
   };
 
   // Resume an in-flight build if the user reopens the page during one. We
