@@ -394,6 +394,27 @@ function getActivitySuggestions(destination) {
   return [...extra, ...ACTIVITY_TYPES_BASE];
 }
 
+// Return the matched key (e.g. "copenhagen") for a given destination string,
+// or "" if no destination-specific bucket matched. We use the dining map as
+// the canonical source; both dining and activity maps use the same keys.
+function destinationKey(destination) {
+  const d = (destination || "").toLowerCase();
+  for (const k of Object.keys(RESTAURANT_BY_DEST)) {
+    if (d.includes(k)) return k;
+  }
+  return "";
+}
+
+// Given an array of currently-added chips and the previous destination key,
+// return which chips came from THAT destination's specific list and are NOT
+// in the new destination's specific list (i.e. stale picks worth flagging).
+function findStaleChips(chips, prevKey, newKey, byDestMap) {
+  if (!prevKey || prevKey === newKey || !Array.isArray(chips) || chips.length === 0) return [];
+  const prevList = byDestMap[prevKey] || [];
+  const newList = newKey ? (byDestMap[newKey] || []) : [];
+  return chips.filter(c => prevList.includes(c) && !newList.includes(c));
+}
+
 // Cuisine preferences suggestions (single-field, comma-friendly).
 const CUISINE_SUGGESTIONS = [
   "Local / traditional", "Seafood-focused", "Wine-focused",
@@ -1103,6 +1124,40 @@ function SavedTripsPanel({ trips, onOpen, onDelete }) {
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// StaleChipsBanner — warns when the user has chips lingering from a previous
+// destination and offers a one-tap clear. Non-blocking; dismissible.
+function StaleChipsBanner({ suggestion, onClear, onDismiss }) {
+  if (!suggestion) return null;
+  const total = (suggestion.staleRestaurants?.length || 0) + (suggestion.staleActivities?.length || 0);
+  if (total === 0) return null;
+  const items = [
+    ...(suggestion.staleRestaurants || []),
+    ...(suggestion.staleActivities || []),
+  ];
+  return (
+    <div role="status" style={{ marginBottom: "1.25rem", border: "0.5px solid #B85C00", background: "#FFF7E8", borderRadius: "var(--border-radius-md)", padding: "12px 14px" }}>
+      <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+        <span aria-hidden="true" style={{ fontSize: "14px", color: "#B85C00", marginTop: "1px" }}>⚠︎</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontSize: "11px", color: "#7A3D00", letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 4px" }}>Destination changed</p>
+          <p style={{ fontSize: "13px", color: "#3D2400", margin: "0 0 8px", lineHeight: 1.5 }}>
+            {total} pick{total === 1 ? "" : "s"} from {suggestion.prevLabel} {total === 1 ? "is" : "are"} still selected for {suggestion.newLabel || "your new destination"}.
+          </p>
+          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "10px" }}>
+            {items.map((it, i) => (
+              <span key={i} style={{ fontSize: "11px", background: "#FFE9C4", border: "0.5px solid #E5B870", color: "#5C3A00", borderRadius: "3px", padding: "3px 7px" }}>{it}</span>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button onClick={onClear} style={{ background: "#B85C00", color: "#FFF", border: "none", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Clear those picks</button>
+            <button onClick={onDismiss} style={{ background: "transparent", color: "#7A3D00", border: "0.5px solid #B85C00", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Keep them</button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -2089,6 +2144,42 @@ export default function TripOptimizer() {
     setSavedTrips(next);
   };
 
+  // Destination-change stale-chip detector.
+  // When the primary destination's bucket (e.g. "santa fe" -> "copenhagen") changes,
+  // detect chips that came from the OLD bucket so we can offer to clear them.
+  const primaryDest = (basics.cities && basics.cities[0]?.name) || basics.destination || "";
+  const prevDestKeyRef = useRef(destinationKey(primaryDest));
+  const [staleSuggestion, setStaleSuggestion] = useState(null); // { prevKey, newKey, staleRestaurants, staleActivities, prevLabel, newLabel }
+  useEffect(() => {
+    const newKey = destinationKey(primaryDest);
+    const prevKey = prevDestKeyRef.current;
+    if (newKey !== prevKey) {
+      const staleRestaurants = findStaleChips(restaurants, prevKey, newKey, RESTAURANT_BY_DEST);
+      const staleActivities = findStaleChips(activities, prevKey, newKey, ACTIVITY_BY_DEST);
+      if (staleRestaurants.length > 0 || staleActivities.length > 0) {
+        setStaleSuggestion({
+          prevKey, newKey, staleRestaurants, staleActivities,
+          prevLabel: prevKey ? prevKey.replace(/\b\w/g, c => c.toUpperCase()) : "previous destination",
+          newLabel: primaryDest,
+        });
+      } else {
+        setStaleSuggestion(null);
+      }
+      prevDestKeyRef.current = newKey;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [primaryDest]);
+  const clearStaleChips = () => {
+    if (!staleSuggestion) return;
+    if (staleSuggestion.staleRestaurants.length > 0) {
+      setRest(restaurants.filter(r => !staleSuggestion.staleRestaurants.includes(r)));
+    }
+    if (staleSuggestion.staleActivities.length > 0) {
+      setActs(activities.filter(a => !staleSuggestion.staleActivities.includes(a)));
+    }
+    setStaleSuggestion(null);
+  };
+
   // Auto-save form on every change.
   useEffect(() => {
     try {
@@ -2633,6 +2724,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
         {step === 1 && (
           <div>
             <SavedTripsPanel trips={savedTrips} onOpen={handleOpenSavedTrip} onDelete={handleDeleteSavedTrip} />
+            <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={() => setStaleSuggestion(null)} />
             <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Four essentials to start. Refine the details after, or build immediately.</p>
 
             <div style={cardStyle}>
@@ -2696,6 +2788,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
 
         {step === 2 && (
           <div>
+            <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={() => setStaleSuggestion(null)} />
             <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Fill in what you know. Leave anything blank and the planner will suggest.</p>
 
             <div style={cardStyle}>
