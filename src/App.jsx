@@ -4299,7 +4299,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
   // localStorage). Caller provides the expected nights so progress can be
   // computed without re-deriving from current form state (which may be empty
   // on a resume into a fresh tab).
-  const runBuildForJob = async ({ jobId, nightsNum, expectedTokens, startedAt }) => {
+  const runBuildForJob = async ({ jobId, nightsNum, expectedTokens, startedAt, citiesCount = 1 }) => {
     setLoading(true);
     setError("");
     setProgress(0);
@@ -4308,7 +4308,10 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
     setLoadingMsg("Researching destination…");
 
     const totalDays = nightsNum + 1;
-    const targetSec = 160;
+    // Build-time scales with trip size. A single-city 3-night plan finishes in
+    // ~2.5 min; a 3-city 9-night plan needs ~5-6 min because the model emits
+    // many more days, hotels, transit legs, and restaurants.
+    const targetSec = Math.round(120 + totalDays * 12 + Math.max(0, citiesCount - 1) * 60);
     let lastTokenFrac = 0;
 
     const elapsedTimer = setInterval(() => {
@@ -4333,16 +4336,22 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
       setLoadingMsg(phases[phaseIdx]);
     }, 7000);
 
-    // The client-side hard timeout is now generous (5 min) because the server
-    // keeps running independently. If the user wants to walk away we don't
-    // need to abort early — we just stop polling.
+    // The client-side hard timeout has to outlast the server build for any
+    // trip size. Single-city ~5 min; multi-city scales up. The server keeps
+    // running independently — we just stop polling if we hit the ceiling.
     const controller = new AbortController();
     abortRef.current = controller;
-    const hardTimeout = setTimeout(() => controller.abort(new Error("Polled too long")), 300000);
+    const hardTimeoutMs = Math.max(300000, targetSec * 1000 * 3); // 3× the target, floor 5 min
+    const hardTimeout = setTimeout(() => controller.abort(new Error("Polled too long")), hardTimeoutMs);
 
+    // "Still building" notice scales with expected build time so we don't
+    // claim a 3-city plan is slow at 90s when 4-5 min is normal.
+    const slowNoticeMs = Math.max(90000, Math.round(targetSec * 1000 * 0.75));
+    const typicalMin = Math.max(2, Math.round(targetSec / 60));
+    const typicalRange = citiesCount > 1 ? `${typicalMin}–${typicalMin + 2} minutes` : "2–3 minutes";
     const slowNotice = setTimeout(() => {
-      setLoadingMsg(prev => prev.includes("still building") ? prev : "Still building — detailed plans typically take 2–3 minutes…");
-    }, 90000);
+      setLoadingMsg(prev => prev.includes("still building") ? prev : `Still building — detailed plans typically take ${typicalRange}…`);
+    }, slowNoticeMs);
 
     // Wake lock keeps the screen alive on iOS so polling stays fluid; with
     // server-side jobs even a screen sleep no longer kills the build, but a
@@ -4450,9 +4459,18 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
   };
 
   const handleBuild = async () => {
-    // Estimate plan size for the progress-bar token model.
-    const nightsNum = Math.max(1, parseInt(basics.nights || "3", 10) || 3);
-    const expectedTokens = 1200 + (nightsNum + 1) * 1300;
+    // Estimate plan size for the progress-bar token model. For multi-city the
+    // user puts nights per leg (basics.nights stays empty) so we must derive
+    // the true total from cities[] — otherwise progress caps at the wrong
+    // ceiling and we under-budget the timeout.
+    const totalNightsBuild = isMultiCity
+      ? cities.reduce((sum, c) => sum + (parseInt(c?.nights, 10) || 0), 0)
+      : (parseInt(basics.nights || "3", 10) || 3);
+    const nightsNum = Math.max(1, totalNightsBuild);
+    const citiesCount = isMultiCity ? cities.length : 1;
+    // Multi-city plans add inter-city legs, more hotels, more restaurants —
+    // budget extra tokens per additional city so progress doesn't peg at 95%.
+    const expectedTokens = 1200 + (nightsNum + 1) * 1300 + Math.max(0, citiesCount - 1) * 1500;
 
     // Build the Anthropic request body once and ship it to the server. The
     // server stores it under a jobId, returns immediately, and runs the
@@ -4504,11 +4522,12 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
         startedAt,
         nightsNum,
         expectedTokens,
+        citiesCount,
         destination: basics.destination || (basics.cities?.[0]?.name) || "your trip",
       }));
     } catch {}
 
-    await runBuildForJob({ jobId, nightsNum, expectedTokens, startedAt });
+    await runBuildForJob({ jobId, nightsNum, expectedTokens, startedAt, citiesCount });
   };
 
   // Resume an in-flight build if the user reopens the page during one. We
@@ -4547,6 +4566,7 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
           nightsNum: saved.nightsNum || 3,
           expectedTokens: saved.expectedTokens || 6500,
           startedAt: saved.startedAt || Date.now(),
+          citiesCount: saved.citiesCount || 1,
         });
       })
       .catch(() => {});
@@ -4789,7 +4809,11 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
               <div style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px", gap: "10px" }}>
                   <p style={{ fontSize: "12px", color: "var(--color-text-primary)", margin: 0, fontWeight: 500, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {progressLabel || loadingMsg || "Working…"}
+                    {/* Bold header always reflects the cycling phase (loadingMsg). The
+                       stream-driven progressLabel goes in the sub-line so we never
+                       show two contradictory states (e.g. "Starting plan…" header
+                       while sub-line says "Finalizing your plan…"). */}
+                    {loadingMsg || progressLabel || "Working…"}
                   </p>
                   <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
                     {progress > 0 ? `${Math.round(progress * 100)}%` : ""}
@@ -4804,11 +4828,16 @@ IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "wea
                     <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
                   )}
                 </div>
-                <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "6px 0 0" }}>{loadingMsg}</p>
+                {/* Sub-line: only show progressLabel if it adds detail beyond the
+                   phase header (e.g. "Day 4 of 8 · dining"). Suppress when it
+                   would just duplicate the header. */}
+                {progressLabel && progressLabel !== loadingMsg && (
+                  <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "6px 0 0" }}>{progressLabel}</p>
+                )}
               </div>
             )}
             {error && <p style={{ fontSize: "12px", color: "var(--color-text-danger, #c0392b)", marginTop: "8px", textAlign: "center" }}>{error}</p>}
-            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>Typical plan: 2–3 minutes. Stays building if you switch tabs.</p>
+            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>{isMultiCity && cities.length >= 3 ? "Typical 3‑city plan: 5–7 minutes. Stays building if you switch tabs." : isMultiCity ? "Typical multi‑city plan: 3–5 minutes. Stays building if you switch tabs." : "Typical plan: 2–3 minutes. Stays building if you switch tabs."}</p>
           </div>
         )}
 
