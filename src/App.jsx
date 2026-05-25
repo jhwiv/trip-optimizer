@@ -179,6 +179,48 @@ const CITIES = [
   { name: "Lima", country: "Peru" },
   { name: "Cusco", country: "Peru" },
   { name: "Cartagena", country: "Colombia" },
+  // Caribbean & island destinations — typically searched by island/country name.
+  { name: "Aruba", country: "Aruba" },
+  { name: "Curaçao", country: "Curaçao" },
+  { name: "Bonaire", country: "Bonaire" },
+  { name: "Bermuda", country: "Bermuda" },
+  { name: "Bahamas", country: "Bahamas" },
+  { name: "Nassau", country: "Bahamas" },
+  { name: "Harbour Island", country: "Bahamas" },
+  { name: "Exuma", country: "Bahamas" },
+  { name: "Turks & Caicos", country: "Turks & Caicos" },
+  { name: "Providenciales", country: "Turks & Caicos" },
+  { name: "Barbados", country: "Barbados" },
+  { name: "St. Barts", country: "Saint Barthélemy" },
+  { name: "St. Lucia", country: "Saint Lucia" },
+  { name: "St. Martin", country: "Saint Martin" },
+  { name: "Sint Maarten", country: "Sint Maarten" },
+  { name: "Antigua", country: "Antigua and Barbuda" },
+  { name: "Anguilla", country: "Anguilla" },
+  { name: "British Virgin Islands", country: "BVI" },
+  { name: "Grand Cayman", country: "Cayman Islands" },
+  { name: "Jamaica", country: "Jamaica" },
+  { name: "Montego Bay", country: "Jamaica" },
+  { name: "Punta Cana", country: "Dominican Republic" },
+  { name: "Puerto Rico", country: "Puerto Rico" },
+  { name: "San Juan, PR", country: "Puerto Rico" },
+  { name: "St. Thomas", country: "US Virgin Islands" },
+  { name: "St. John", country: "US Virgin Islands" },
+  { name: "St. Croix", country: "US Virgin Islands" },
+  // Other commonly-searched islands & small destinations.
+  { name: "Maldives", country: "Maldives" },
+  { name: "Seychelles", country: "Seychelles" },
+  { name: "Mauritius", country: "Mauritius" },
+  { name: "Fiji", country: "Fiji" },
+  { name: "Bora Bora", country: "French Polynesia" },
+  { name: "Tahiti", country: "French Polynesia" },
+  { name: "Ibiza", country: "Spain" },
+  { name: "Mallorca", country: "Spain" },
+  { name: "Capri", country: "Italy" },
+  { name: "Positano", country: "Italy" },
+  { name: "Madeira", country: "Portugal" },
+  { name: "Azores", country: "Portugal" },
+  { name: "Galápagos", country: "Ecuador" },
 ];
 
 // Airports — major US + key international hubs. Keyed by code; searchable by code, city, or name.
@@ -3605,21 +3647,37 @@ const US_STATE_ABBR = {
 // In-memory cache of Nominatim queries (per page load).
 const NOMINATIM_CACHE = new Map();
 
-// Acceptable place types -- skips countries, regions, roads, POIs.
-const CITY_TYPES = new Set(["city","town","village","hamlet","municipality","suburb","borough","neighbourhood","locality"]);
+// Acceptable place types. Includes country/island/state so small destinations
+// like "Aruba", "Bermuda", "Maui", "Bali" surface when typed by name. Skips
+// roads, POIs, businesses, postcodes.
+const CITY_TYPES = new Set([
+  "city","town","village","hamlet","municipality","suburb","borough","neighbourhood","locality",
+  "country","island","archipelago","state","region","county","administrative","isolated_dwelling"
+]);
 
 function formatNominatim(r) {
   const a = r.address || {};
-  const place = a.city || a.town || a.village || a.hamlet || a.municipality || a.suburb || a.borough || a.locality || (r.name || "").split(",")[0].trim();
+  // Prefer city-level address fields; fall back to island/country/state names,
+  // then to the place's own name. This is what makes "Aruba", "Bermuda",
+  // "Maui", etc. surface — Nominatim returns them with no city in the address.
+  const place =
+    a.city || a.town || a.village || a.hamlet || a.municipality || a.suburb || a.borough || a.locality ||
+    a.island || a.archipelago || a.county || a.state || a.country ||
+    (r.name || "").split(",")[0].trim();
   if (!place) return null;
   const cc = (a.country_code || "").toLowerCase();
   if (cc === "us") {
     const stateName = (a.state || "").toLowerCase();
     const abbr = US_STATE_ABBR[stateName] || (a.state || "");
+    // For US results with no state (e.g. someone types "USA"), skip.
     if (!abbr) return null;
     return { name: `${place}, ${abbr}`, country: "USA", _src: "world" };
   }
-  return { name: place, country: a.country || "", _src: "world" };
+  const country = a.country || "";
+  // If the place name equals the country (Aruba, Bermuda, Monaco, etc.), show
+  // it once instead of "Aruba · Aruba".
+  const displayCountry = (place && country && place.toLowerCase() === country.toLowerCase()) ? "" : country;
+  return { name: place, country: displayCountry, _src: "world" };
 }
 
 async function geocodeNominatim(q, signal) {
