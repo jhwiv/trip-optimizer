@@ -1042,6 +1042,10 @@ function DayBlock({ day, dayIndex, onOpenMenu }) {
         if (item.type === "Hotel" && item.hotel) {
           return <HotelCard key={i} type={item.type} time={item.time} end_time={item.end_time} hotel={item.hotel} text={item.text} />;
         }
+        // Activity items: rich card whenever there's contact info or a why blurb.
+        if (item.type === "Activity" && (item.contact || item.why)) {
+          return <ActivityCard key={i} time={item.time} end_time={item.end_time} item={item} />;
+        }
         // Dining items with a structured restaurant payload render as a rich card with a time pill.
         if (item.restaurant && (item.type === "Dinner" || item.type === "Lunch" || item.type === "Breakfast" || item.type === "Brunch" || item.type === "Dining")) {
           return (
@@ -1086,6 +1090,87 @@ function reservationLink(r) {
   if (platform === "yelp") return { platform, url: `https://www.yelp.com/search?find_desc=${q}` };
   if (platform === "phone" && r.reservation.phone) return { platform, url: `tel:${r.reservation.phone}` };
   return null;
+}
+
+// Render contact info (phone, address, hours, website, booking) as a compact
+// tappable block. Used by ActivityCard and the activity About modal. Mirrors
+// the visual treatment of the hotel/restaurant action rows but unified across
+// all venue types so a user can call, open in Maps, or book in two taps.
+function ContactBlock({ contact, name }) {
+  if (!contact) return null;
+  const c = contact;
+  const telUrl = c.phone ? `tel:${String(c.phone).replace(/[^0-9+]/g, "")}` : null;
+  const mapsUrl = (c.address || name) ? `https://maps.google.com/?q=${encodeURIComponent(`${name || ""} ${c.address || ""}`.trim())}` : null;
+  const showWebsite = !!c.website;
+  const showBooking = !!c.booking_url;
+  const hasAnyAction = telUrl || mapsUrl || showWebsite || showBooking;
+  return (
+    <>
+      {c.address && (
+        <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 4px", lineHeight: 1.5 }}>{c.address}</p>
+      )}
+      {(c.hours || c.price) && (
+        <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "0 0 6px", letterSpacing: "0.02em" }}>
+          {[c.hours && `· ${c.hours}`, c.price && `· ${c.price}`].filter(Boolean).join("  ")}
+        </p>
+      )}
+      {c.booking_note && (
+        <p style={{ fontSize: "11px", color: GOLD_DARK, margin: "4px 0 6px", fontStyle: "italic" }}>✎ {c.booking_note}</p>
+      )}
+      {hasAnyAction && (
+        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "8px" }}>
+          {telUrl && (
+            <a href={telUrl} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>Call</a>
+          )}
+          {showBooking && (
+            <a href={c.booking_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: GOLD, color: "#0F0F0F", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>Book ↗</a>
+          )}
+          {showWebsite && (
+            <a href={c.website} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>Website ↗</a>
+          )}
+          {mapsUrl && (
+            <a href={mapsUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>Directions</a>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+// Activity card: rich treatment matching restaurant/hotel cards. Triggered
+// whenever an Activity item has contact info or a why blurb — otherwise we
+// fall back to the plain text-row rendering. Includes day badge for use in
+// the Activities tab (where items are pulled out of day context).
+function ActivityCard({ time, end_time, item, dayLabel }) {
+  if (!item) return null;
+  const contact = item.contact;
+  const why = item.why;
+  // Title splits as 'Venue — short description' when the model writes 'Visit
+  // the Acropolis — timed entry'. We render the part before the em-dash bold.
+  const dashIdx = (item.text || "").indexOf(" — ");
+  const head = dashIdx > 0 ? (item.text || "").slice(0, dashIdx) : (item.text || "");
+  const tail = dashIdx > 0 ? (item.text || "").slice(dashIdx + 3) : "";
+  return (
+    <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+        {time && <TimePill time={time} end_time={end_time} />}
+        <Badge type={item.type || "Activity"} />
+        {dayLabel && (
+          <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{dayLabel}</span>
+        )}
+      </div>
+      <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.3 }}>{head}</p>
+      {tail && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 6px", lineHeight: 1.5 }}>{tail}</p>}
+      {item.location && !contact?.address && (
+        <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: "0 0 6px" }}>{item.location}</p>
+      )}
+      {item.duration && (
+        <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "0 0 6px", letterSpacing: "0.02em" }}>⏱ {item.duration}</p>
+      )}
+      {why && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "4px 0 6px", lineHeight: 1.5 }}>{why}</p>}
+      <ContactBlock contact={contact} name={head} />
+    </div>
+  );
 }
 
 function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
@@ -2651,6 +2736,298 @@ function DayNav({ days }) {
   );
 }
 
+
+// ============================================================================
+// Section views — pulled-out cards by category for the tabbed layout.
+// ----------------------------------------------------------------------------
+// Each view flattens days[].items[] into a single category list. Items keep
+// their day label so the user knows which day they belong to. Refs:
+// santafejune.com (Dining / Activities tabs), zurich-weekend.com (Air & Hotel).
+// ============================================================================
+
+// Helper: short day label e.g. "Day 2 · Fri Jun 5" → "Fri Jun 5"
+function dayShort(d, i) {
+  const parts = (d?.label || "").split(" · ");
+  return parts[1] || `Day ${i + 1}`;
+}
+
+// Flights view — all Flight items across all days, grouped by direction.
+function FlightsView({ data }) {
+  const flights = [];
+  (data.days || []).forEach((d, di) => {
+    (d.items || []).forEach((item) => {
+      if (item.type === "Flight" && item.flight) {
+        flights.push({ item, day: d, dayIndex: di });
+      }
+    });
+  });
+  if (flights.length === 0) {
+    return (
+      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "20px 0", textAlign: "center" }}>
+        No flights on this trip — you're driving or staying local.
+      </p>
+    );
+  }
+  return (
+    <div>
+      <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Flights · {flights.length}</p>
+      {flights.map(({ item, day, dayIndex }, i) => (
+        <div key={i} style={{ marginBottom: "10px" }}>
+          <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>{dayShort(day, dayIndex)}</p>
+          <FlightCard type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Lodging view — all hotel items, grouped chronologically (multi-city trips
+// have multiple hotels). Shows full hotel card with check-in/check-out + tel.
+function LodgingView({ data }) {
+  const hotels = [];
+  const seen = new Set();
+  (data.days || []).forEach((d, di) => {
+    (d.items || []).forEach((item) => {
+      if (item.type === "Hotel" && item.hotel) {
+        const key = (item.hotel.name || "") + "|" + (item.hotel.address || "");
+        if (!seen.has(key)) {
+          seen.add(key);
+          hotels.push({ item, day: d, dayIndex: di });
+        }
+      }
+    });
+  });
+  if (hotels.length === 0) {
+    return (
+      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "20px 0", textAlign: "center" }}>
+        No lodging set yet.
+      </p>
+    );
+  }
+  return (
+    <div>
+      <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Lodging · {hotels.length}</p>
+      {hotels.map(({ item, day, dayIndex }, i) => (
+        <div key={i} style={{ marginBottom: "10px" }}>
+          <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>From {dayShort(day, dayIndex)}</p>
+          <HotelCard type={item.type} time={item.time} end_time={item.end_time} hotel={item.hotel} text={item.text} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Transport view — Transport items (drives, trains, transfers, car rentals).
+// Renders a compact card with time + description + any contact info (rental
+// agency phone, transfer service link).
+function TransportView({ data }) {
+  const transport = [];
+  (data.days || []).forEach((d, di) => {
+    (d.items || []).forEach((item) => {
+      if (item.type === "Transport") {
+        transport.push({ item, day: d, dayIndex: di });
+      }
+    });
+  });
+  if (transport.length === 0) {
+    return (
+      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "20px 0", textAlign: "center" }}>
+        No structured ground transport. Check the day-by-day for walks and short drives.
+      </p>
+    );
+  }
+  return (
+    <div>
+      <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Ground transport · {transport.length}</p>
+      {transport.map(({ item, day, dayIndex }, i) => (
+        <div key={i} style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+            {item.time && <TimePill time={item.time} end_time={item.end_time} />}
+            <Badge type="Transport" />
+            <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{dayShort(day, dayIndex)}</span>
+          </div>
+          <p style={{ fontSize: "13.5px", color: "var(--color-text-primary)", margin: "0 0 6px", lineHeight: 1.5 }}>{item.text}</p>
+          {item.location && <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: "0 0 6px" }}>{item.location}</p>}
+          {item.duration && <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "0 0 6px" }}>⏱ {item.duration}</p>}
+          <ContactBlock contact={item.contact} name={item.text} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Dining view — every restaurant (primary + backup) flattened, with date
+// grouping and full RestaurantCard. Matches the santafejune.com Dining tab.
+function DiningView({ data, onOpenMenu }) {
+  const meals = [];
+  (data.days || []).forEach((d, di) => {
+    (d.items || []).forEach((item) => {
+      if (item.restaurant && /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/.test(item.type)) {
+        meals.push({ item, day: d, dayIndex: di });
+      }
+    });
+  });
+  if (meals.length === 0) {
+    return (
+      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "20px 0", textAlign: "center" }}>
+        No dining picks yet.
+      </p>
+    );
+  }
+  // Group by day so the user can scan "what am I eating Fri?"
+  const byDay = new Map();
+  meals.forEach(({ item, day, dayIndex }) => {
+    const k = `${dayIndex}|${day?.label || ""}`;
+    if (!byDay.has(k)) byDay.set(k, { day, dayIndex, items: [] });
+    byDay.get(k).items.push(item);
+  });
+  return (
+    <div>
+      <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Dining · {meals.length} reservations</p>
+      {Array.from(byDay.values()).map(({ day, dayIndex, items }, di) => (
+        <div key={di} style={{ marginBottom: "14px" }}>
+          <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.1em", textTransform: "uppercase", margin: "0 0 8px", fontWeight: 600, paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{dayShort(day, dayIndex)}</p>
+          {items.map((item, i) => (
+            <div key={i}>
+              {item.time && (
+                <div style={{ marginBottom: "4px" }}>
+                  <TimePill time={item.time} end_time={item.end_time} />
+                  <span style={{ marginLeft: "8px", fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>{item.type}</span>
+                </div>
+              )}
+              <RestaurantCard type={item.type} restaurant={item.restaurant} onOpenMenu={onOpenMenu} />
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Activities view — every Activity flattened, grouped by day. Each renders as
+// an ActivityCard with full contact info (phone, website, directions, hours).
+// Mirrors the santafejune.com Activities tab. Booked-vs-paid status is not
+// tracked yet; we keep it simple and let the contact.booking_note carry that.
+function ActivitiesView({ data }) {
+  const acts = [];
+  (data.days || []).forEach((d, di) => {
+    (d.items || []).forEach((item) => {
+      if (item.type === "Activity") {
+        acts.push({ item, day: d, dayIndex: di });
+      }
+    });
+  });
+  if (acts.length === 0) {
+    return (
+      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "20px 0", textAlign: "center" }}>
+        No standalone activities on this trip.
+      </p>
+    );
+  }
+  const byDay = new Map();
+  acts.forEach(({ item, day, dayIndex }) => {
+    const k = `${dayIndex}|${day?.label || ""}`;
+    if (!byDay.has(k)) byDay.set(k, { day, dayIndex, items: [] });
+    byDay.get(k).items.push(item);
+  });
+  return (
+    <div>
+      <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Activities · {acts.length}</p>
+      {Array.from(byDay.values()).map(({ day, dayIndex, items }, di) => (
+        <div key={di} style={{ marginBottom: "14px" }}>
+          <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.1em", textTransform: "uppercase", margin: "0 0 8px", fontWeight: 600, paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{dayShort(day, dayIndex)}</p>
+          {items.map((item, i) => (
+            <ActivityCard key={i} time={item.time} end_time={item.end_time} item={item} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Tabbed shell. Row 1 of the sticky nav is the day-tab strip (unchanged from
+// the old DayNav), Row 2 is the section/reference strip. Default tab is
+// "Overview" which renders the existing day-by-day timeline so nothing the
+// user already loves is lost. Section tabs flatten the plan into category
+// cards. Phone numbers and bookings live on every restaurant + activity.
+function TripTabs({ data, tab, onTabChange, onOpenMenu }) {
+  const days = data.days || [];
+  // Compute counts so we can show e.g. "Dining · 12" inline.
+  const counts = useMemo(() => {
+    let flights = 0, hotels = 0, transport = 0, dining = 0, activities = 0;
+    const hotelSeen = new Set();
+    days.forEach(d => (d.items || []).forEach(it => {
+      if (it.type === "Flight" && it.flight) flights++;
+      else if (it.type === "Hotel" && it.hotel) {
+        const k = (it.hotel.name || "") + "|" + (it.hotel.address || "");
+        if (!hotelSeen.has(k)) { hotelSeen.add(k); hotels++; }
+      }
+      else if (it.type === "Transport") transport++;
+      else if (it.restaurant && /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/.test(it.type)) dining++;
+      else if (it.type === "Activity") activities++;
+    }));
+    return { flights, hotels, transport, dining, activities };
+  }, [days]);
+  const TABS = [
+    { id: "overview", label: "Overview" },
+    counts.flights > 0 && { id: "flights", label: `Flights · ${counts.flights}` },
+    counts.hotels > 0 && { id: "lodging", label: `Lodging · ${counts.hotels}` },
+    counts.transport > 0 && { id: "transport", label: `Transport · ${counts.transport}` },
+    counts.dining > 0 && { id: "dining", label: `Dining · ${counts.dining}` },
+    counts.activities > 0 && { id: "activities", label: `Activities · ${counts.activities}` },
+  ].filter(Boolean);
+  return (
+    <>
+      <div className="no-print" style={{ position: "sticky", top: 0, zIndex: 6, background: "var(--color-background-primary)", paddingTop: "6px", paddingBottom: "8px", marginBottom: "12px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+        {/* Row 1 — day tabs (only visible when on Overview, since the section tabs are not day-scoped). */}
+        {tab === "overview" && days.length >= 2 && (
+          <div style={{ display: "flex", gap: "6px", overflowX: "auto", scrollbarWidth: "none", WebkitOverflowScrolling: "touch", marginBottom: "6px" }}>
+            {days.map((d, i) => {
+              const short = dayShort(d, i);
+              return (
+                <a key={i} href={`#day-${i + 1}`} style={{ flex: "0 0 auto", fontSize: "10.5px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600, color: "var(--color-text-secondary)", padding: "5px 9px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", textDecoration: "none", whiteSpace: "nowrap", background: "var(--color-background-primary)" }}>{i + 1} · {short}</a>
+              );
+            })}
+          </div>
+        )}
+        {/* Row 2 — section/reference tabs (the new thing). Always visible. */}
+        <div style={{ display: "flex", gap: "6px", overflowX: "auto", scrollbarWidth: "none", WebkitOverflowScrolling: "touch" }}>
+          {TABS.map(t => {
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => onTabChange(t.id)}
+                style={{
+                  flex: "0 0 auto",
+                  fontSize: "11px",
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  fontWeight: 700,
+                  color: active ? "#0F0F0F" : "var(--color-text-secondary)",
+                  padding: "7px 13px",
+                  border: active ? "none" : "0.5px solid var(--color-border-secondary)",
+                  borderRadius: "20px",
+                  whiteSpace: "nowrap",
+                  background: active ? GOLD : "var(--color-background-primary)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >{t.label}</button>
+            );
+          })}
+        </div>
+      </div>
+      {tab === "flights" && <FlightsView data={data} />}
+      {tab === "lodging" && <LodgingView data={data} />}
+      {tab === "transport" && <TransportView data={data} />}
+      {tab === "dining" && <DiningView data={data} onOpenMenu={onOpenMenu} />}
+      {tab === "activities" && <ActivitiesView data={data} />}
+    </>
+  );
+}
+
+
 // ============================================================================
 // ReviewPanel — the post-build Professional Review surface.
 // ----------------------------------------------------------------------------
@@ -3105,6 +3482,17 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
 
 function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, savedTripId, onPlanRevised, onReviewChange, initialReview }) {
   const [menuRestaurant, setMenuRestaurant] = useState(null);
+  // Section tab state — default "overview" keeps the existing day-by-day
+  // timeline as the landing view. The other tabs (flights/lodging/dining/etc)
+  // flatten plan content into category cards. Switching tabs scrolls back to
+  // the top so the new view starts clean.
+  const [tab, setTab] = useState("overview");
+  const handleTabChange = (next) => {
+    setTab(next);
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
   // Apply the pass-three quality layer once before render. This dedupes
   // restaurants, fills verify microcopy, and computes a QC summary.
   const { data, qc } = useMemo(() => applyQualityLayer(rawData, inputs), [rawData, inputs]);
@@ -3130,8 +3518,9 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
         initialReview={initialReview}
       />
 
-      {/* Pre-day high-signal block: do this tonight first, weather/pack second */}
-      {sortedTonight.length > 0 && (
+      {/* Pre-day high-signal block: do this tonight first, weather/pack second. */}
+      {/* These only appear on the Overview tab — section tabs are focused single-topic views. */}
+      {tab === "overview" && sortedTonight.length > 0 && (
         <Section title="Do this tonight">
           <div style={{ borderRadius: "var(--border-radius-md)", overflow: "hidden", border: "0.5px solid var(--color-border-secondary)" }}>
             {sortedTonight.map(({ t, p }, i) => {
@@ -3149,7 +3538,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
         </Section>
       )}
 
-      {(data.weather_window || (Array.isArray(data.pack) && data.pack.length > 0)) && (
+      {tab === "overview" && (data.weather_window || (Array.isArray(data.pack) && data.pack.length > 0)) && (
         <Section title="Weather & pack">
           {data.weather_window && (
             <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 12px", lineHeight: 1.55 }}>☀ {data.weather_window}</p>
@@ -3167,9 +3556,9 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
       )}
 
       {data.days && data.days.length > 0 && (
-        <Section title="Day-by-day">
-          <DayNav days={data.days} />
-          {data.days.map((d, i) => {
+        <Section title={tab === "overview" ? "Day-by-day" : ({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities" }[tab] || "Day-by-day")}>
+          <TripTabs data={data} tab={tab} onTabChange={handleTabChange} onOpenMenu={setMenuRestaurant} />
+          {tab !== "overview" ? null : data.days.map((d, i) => {
             const prevCity = i > 0 ? cityByDay[i - 1] : null;
             const showLegHeader = isMultiCityPlan && d.city && d.city !== prevCity;
             const legIndex = showLegHeader ? (cityByDay.slice(0, i + 1).filter((c, k, arr) => c && c !== arr[k - 1]).length) : null;
@@ -3188,7 +3577,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
         </Section>
       )}
 
-      {data.flags && data.flags.length > 0 && (
+      {tab === "overview" && data.flags && data.flags.length > 0 && (
         <Section title="Heads up">
           {data.flags.map((f, i) => (
             <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "6px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: 1.5 }}>
@@ -3199,7 +3588,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
         </Section>
       )}
 
-      {data.planb && data.planb.length > 0 && (
+      {tab === "overview" && data.planb && data.planb.length > 0 && (
         <Section title="If plans break">
           {data.planb.map((p, i) => (
             <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "7px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: 1.5 }}>
@@ -3210,7 +3599,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
         </Section>
       )}
 
-      {data.snobs && data.snobs.length > 0 && (
+      {tab === "overview" && data.snobs && data.snobs.length > 0 && (
         <Section title="Snob's guide">
           {data.snobs.map((s, i) => (
             <div key={i} style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "8px 12px", borderLeft: `2px solid #D4537E`, marginBottom: "8px", lineHeight: "1.6", borderRadius: 0 }}>{s}</div>
@@ -4462,6 +4851,24 @@ const HOTEL_ITEM_SCHEMA = {
   },
 };
 
+// Unified contact block. Attached to Activity/Transport/Note items so we can
+// render an "About" modal with tap-to-call, directions, hours, and a booking
+// link. Restaurants use the existing RESTAURANT_SCHEMA.reservation block;
+// Hotels use HOTEL_ITEM_SCHEMA.phone/address. This is for everything else.
+const CONTACT_SCHEMA = {
+  type: "object",
+  description: "Contact info for activities, tours, museums, transport providers — anything the traveler may need to call, book, or get directions to. Provide AT LEAST phone or website for every Activity. Phone numbers in the destination's local format with country code if international.",
+  properties: {
+    phone: { type: "string", description: "Main reservation/info line in tappable format, e.g. '+1-505-988-3236' or '+41 44 422 25 20'." },
+    website: { type: "string", description: "Official site URL. Used by 'Website ↗' button." },
+    booking_url: { type: "string", description: "Direct booking/reservation page. Used by 'Book ↗' button. Examples: Viator/GetYourGuide/Tock/Eventbrite URLs." },
+    address: { type: "string", description: "Full street address including city. Used for 'Directions' button (Google Maps link)." },
+    hours: { type: "string", description: "Operating hours relevant to the visit, e.g. 'Tue–Sun 10–5, closed Mondays' or 'Sat 7:30am–6:30pm'." },
+    price: { type: "string", description: "Per-person cost or price range, e.g. '$45/adult', 'CHF 32', 'Free', '$200/person private tour'." },
+    booking_note: { type: "string", description: "Booking nuance: 'Book 7+ days ahead', 'Members-only — bring NMA card', 'Pay at door', 'Cash only', etc." },
+  },
+};
+
 const DAY_ITEM_SCHEMA = {
   type: "object",
   properties: {
@@ -4471,6 +4878,8 @@ const DAY_ITEM_SCHEMA = {
     text: { type: "string", description: "Short headline of the item — what it is and where, no times (times go in the time field)." },
     location: { type: "string", description: "Specific venue or address when applicable." },
     duration: { type: "string", description: "Human-readable duration if useful, e.g. '2 hours', '90 min'." },
+    why: { type: "string", description: "For Activity items: 1–2 sentence insider/opinionated reason this is on the trip. Skip for Flight/Hotel/Note." },
+    contact: CONTACT_SCHEMA,
     flight: FLIGHT_SCHEMA,
     hotel: HOTEL_ITEM_SCHEMA,
     restaurant: { ...RESTAURANT_SCHEMA, properties: { ...RESTAURANT_SCHEMA.properties, backup: BACKUP_SCHEMA } },
@@ -5347,6 +5756,17 @@ TRIP REQUIREMENTS:
 • Use realistic times: breakfast 07:30–09:00, lunch 12:00–13:30, dinner 19:00–20:30. Activities sized to their duration (museum 2h, hike 3–4h, gallery walk 90min). Add end_time when helpful.
 • For Activity items, fill "location" with a specific venue or address.
 • For Transport items between activities, the "text" should include estimated drive/walk time (e.g. 'Drive to Abiquiú — 1h 15min via US-84').
+
+ ACTIVITY CONTACT INFO — REQUIRED, NON-NEGOTIABLE:
+Every Activity item MUST include a "contact" object with AT LEAST one of {phone, website, booking_url}. Activities without any way to call or book are unusable to the traveler — they have no way to confirm hours or reserve. Strongly prefer including ALL of:
+   • contact.phone — in tappable format with country code: '+1-505-988-3236' (US), '+41 44 422 25 20' (CH), '+39 06 6988 1662' (IT).
+   • contact.website — official site for the venue/tour.
+   • contact.booking_url — only when there's a real online-booking page (Viator/GetYourGuide/timed-entry ticket site). Do not invent URLs.
+   • contact.address — full street address.
+   • contact.hours — operating hours for the visit window, with closed-days flagged.
+   • contact.price — per-person cost.
+   • contact.booking_note — e.g. 'Book 7+ days ahead', 'Free — no reservation', 'Members-only, bring NMA card'.
+Also add "why" — a 1–2 sentence opinionated reason this activity is on the trip (mirrors restaurant.why). Phone numbers and websites for major museums, tours, and attractions are well-known public information — use them. Do NOT fabricate. If you genuinely don't know the phone for a specific venue, provide the website only.
 
 VARIETY RULES — STRICT, NON-NEGOTIABLE:
 • Each unique restaurant name MUST appear AT MOST ONCE across ALL days. Before emitting any restaurant, mentally check: have I already used this name on an earlier day? If yes, pick a different one. The same name for breakfast Day 2 AND breakfast Day 4 is a violation. The same name for dinner Day 1 AND lunch Day 2 is a violation.
