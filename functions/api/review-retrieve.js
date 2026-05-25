@@ -45,39 +45,40 @@ const MAX_RESULTS_PER_QUERY = 3;
 // `domains` scopes Sonar to authoritative URLs only (max 20 per Sonar docs).
 // `recency` (optional) restricts to recent results when freshness matters.
 const SOURCE_CONFIG = {
+  // Editorial — broad travel-press net. Sonar's index of cntraveler.com alone
+  // is sparse; pooling 3 peer publications gets us reliable hits.
   cnt: {
     name: "Condé Nast Traveler",
-    domains: ["cntraveler.com"],
-    // Keep queries short — Sonar's recall drops sharply when 4+ proper nouns
-    // are AND-ed together. We ask for the hot/gold list signal generically and
-    // let Sonar rank within the destination + domain scope.
-    q: ({ destination }) => `${destination} hotels`,
+    domains: ["cntraveler.com", "travelandleisure.com", "afar.com"],
+    q: ({ destination }) => `${destination} hotels guide`,
   },
   tl: {
     name: "Travel + Leisure",
-    domains: ["travelandleisure.com"],
+    domains: ["travelandleisure.com", "afar.com"],
     q: ({ destination }) => `${destination} hotels`,
   },
   departures: {
     name: "Departures",
-    domains: ["departures.com"],
-    q: ({ destination }) => `${destination} luxury`,
+    domains: ["departures.com", "robbreport.com"],
+    q: ({ destination }) => `${destination} luxury hotels`,
   },
   forbes: {
     name: "Forbes Travel Guide",
-    domains: ["forbestravelguide.com"],
-    q: ({ destination, hotel_name }) => hotel_name ? `${hotel_name}` : `${destination} hotels`,
+    domains: ["forbestravelguide.com", "forbes.com"],
+    q: ({ destination, hotel_name }) =>
+      hotel_name ? `${hotel_name} hotel rating` : `${destination} luxury hotels`,
   },
   michelinK: {
     name: "Michelin Keys",
     domains: ["guide.michelin.com"],
     q: ({ destination, hotel_name }) =>
-      hotel_name ? `${hotel_name} Keys` : `${destination} Keys hotels`,
+      hotel_name ? `${hotel_name} hotel` : `${destination} hotels keys`,
   },
   lqa: {
     name: "LQA / Leading Hotels",
-    domains: ["lhw.com"],
-    q: ({ destination, hotel_name }) => hotel_name ? `${hotel_name}` : `${destination} hotels`,
+    domains: ["lhw.com", "lqa.com"],
+    q: ({ destination, hotel_name }) =>
+      hotel_name ? `${hotel_name}` : `${destination} leading hotels`,
   },
   michelinG: {
     name: "Michelin Guide",
@@ -90,27 +91,33 @@ const SOURCE_CONFIG = {
   w50b: {
     name: "World's 50 Best",
     domains: ["theworlds50best.com"],
-    q: ({ destination }) => `${destination}`,
+    q: ({ destination }) => `${destination} best restaurants`,
   },
+  // Eater publishes hyper-local; keep scope narrow on this one.
   eater: {
     name: "Eater",
     domains: ["eater.com"],
-    q: ({ destination }) => `${destination} best restaurants`,
+    q: ({ destination }) => `${destination} essential restaurants`,
   },
+  // NYT 36 Hours: nytimes.com is paywalled to Sonar, so widen to travel-press
+  // peer outlets that summarize / reference the column.
   nyt36: {
     name: "NYT 36 Hours",
-    domains: ["nytimes.com"],
-    q: ({ destination }) => `36 hours ${destination}`,
+    domains: ["nytimes.com", "afar.com", "travelandleisure.com"],
+    q: ({ destination }) => `36 hours ${destination} itinerary`,
   },
   ftHTSI: {
     name: "FT How to Spend It",
-    domains: ["ft.com"],
-    q: ({ destination }) => `${destination} travel`,
+    domains: ["ft.com", "howtospendit.ft.com", "robbreport.com"],
+    q: ({ destination }) => `${destination} luxury travel`,
   },
+  // Reddit blocks most AI crawlers, so Sonar's reddit.com index is thin.
+  // Pool reddit + tripadvisor + fodors to recover the "locals + travelers
+  // talking to each other" lens.
   reddit: {
     name: "Reddit + locals",
-    domains: ["reddit.com"],
-    q: ({ destination }) => `${destination} travel`,
+    domains: ["reddit.com", "tripadvisor.com", "fodors.com"],
+    q: ({ destination }) => `${destination} trip report tips`,
   },
 };
 
