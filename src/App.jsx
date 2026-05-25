@@ -7120,10 +7120,19 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           </>
         )}
 
-        <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", textAlign: "center", paddingTop: "1.25rem", borderTop: "0.5px solid var(--color-border-tertiary)", marginTop: "1.75rem", letterSpacing: "0.06em" }}>
-          Powered by <span style={{ color: GOLD, fontWeight: "500" }}>Barrier Island Digital</span>
-          <span style={{ marginLeft: "8px", color: "var(--color-text-tertiary)", fontSize: "10px" }}>
-            · build {(typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "dev"}
+        {/* Footer branding — mirrors the hero: "POWERED BY" caption + wordmark image. */}
+        <div style={{ paddingTop: "1.25rem", borderTop: "0.5px solid var(--color-border-tertiary)", marginTop: "1.75rem", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Powered by</span>
+            <img
+              src="/brand-wordmark.png?v=2"
+              alt="Barrier Island Digital, LLC"
+              style={{ display: "block", height: "22px", width: "auto", opacity: 0.9 }}
+            />
+          </div>
+          <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "4px 0 0" }} />
+          <span style={{ color: "var(--color-text-tertiary)", fontSize: "10px", letterSpacing: "0.06em", marginTop: "2px" }}>
+            build {(typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "dev"}
           </span>
         </div>
 
