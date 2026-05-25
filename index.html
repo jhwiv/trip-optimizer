@@ -132,6 +132,11 @@
         0% { transform: translateX(-100%); }
         100% { transform: translateX(250%); }
       }
+      /* The driver-ride printable block lives in the DOM always so its content
+         is print-ready instantly, but it stays hidden on-screen. Print rules
+         below toggle whether it OR the full itinerary is captured by
+         window.print(), based on whether body has the .printing-rides class. */
+      .rides-print-only { display: none; }
       /* Print: hide controls, show the input summary, force colors. */
       @media print {
         html, body { background: #fff !important; overflow: visible !important; }
@@ -141,6 +146,23 @@
         * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
         .pageBreakAvoid, .day-block, .meal-card, .flight-card, .hotel-card { break-inside: avoid; page-break-inside: avoid; }
         a { color: #000 !important; text-decoration: none !important; }
+        /* RIDE-ONLY MODE: when the Print Rides button toggles body.printing-rides,
+           overlay the driver sheet on top of the entire page. The simplest
+           cross-browser path is fixed-positioning the rides block to cover the
+           print area, then visibility-hiding everything else in #root. */
+        body.printing-rides #root { visibility: hidden !important; }
+        body.printing-rides #rides-print-root,
+        body.printing-rides #rides-print-root * { visibility: visible !important; }
+        body.printing-rides #rides-print-root {
+          display: block !important;
+          position: absolute !important;
+          inset: 0 !important;
+          background: #fff !important;
+          z-index: 99999 !important;
+        }
+        /* Standard print mode hides the rides sheet so it doesn't double-print
+           when the user uses the regular Save as PDF / window.print() path. */
+        body:not(.printing-rides) .rides-print-only { display: none !important; }
       }
     </style>
   </head>

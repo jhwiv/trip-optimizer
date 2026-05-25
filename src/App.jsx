@@ -1,4 +1,24 @@
-import { useState, useEffect, useRef, useMemo, Fragment } from "react";
+import { useState, useEffect, useRef, useMemo, Fragment, createContext, useContext } from "react";
+
+// URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
+// by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
+// it available to ContactBlock / restaurant reservation links so dead links can be
+// swapped for a safe Google "official site" search fallback instead of shipping a
+// broken link to the user.
+const URLVerifyContext = createContext({
+  status: new Map(),
+  // When status for a URL isn't known yet, the renderer should treat it as ok
+  // (link still works) but the renderer can show a subtle "verifying" hint.
+  isReady: false,
+  destination: "",
+});
+function useURLVerify() { return useContext(URLVerifyContext); }
+// Build a Google search URL that lets the traveler find the official site
+// when the model-supplied URL is dead.
+function urlSearchFallback(name, destination) {
+  const q = [name, destination, "official site"].filter(Boolean).join(" ");
+  return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+}
 
 const GOLD = "#C4A862";
 const GOLD_LIGHT = "#F5EDD6";
@@ -1097,10 +1117,22 @@ function reservationLink(r) {
 // the visual treatment of the hotel/restaurant action rows but unified across
 // all venue types so a user can call, open in Maps, or book in two taps.
 function ContactBlock({ contact, name }) {
+  // URL verification context — gives us a Map<url, "ok"|"dead"|"pending">.
+  // When a model-supplied URL is verified dead (HTTP 4xx/5xx or network error
+  // from /api/verify-url), we swap the action button to a safe Google search
+  // fallback so the traveler never lands on a broken page.
+  const { status: urlStatus, isReady: verifyReady, destination } = useURLVerify();
   if (!contact) return null;
   const c = contact;
   const telUrl = c.phone ? `tel:${String(c.phone).replace(/[^0-9+]/g, "")}` : null;
   const mapsUrl = (c.address || name) ? `https://maps.google.com/?q=${encodeURIComponent(`${name || ""} ${c.address || ""}`.trim())}` : null;
+  // Verify each URL. "dead" = swap with search fallback. "pending"/missing = render as-is.
+  const websiteState = c.website ? (urlStatus.get(c.website) || "pending") : null;
+  const bookingState = c.booking_url ? (urlStatus.get(c.booking_url) || "pending") : null;
+  const websiteDead = websiteState === "dead";
+  const bookingDead = bookingState === "dead";
+  const websiteHref = websiteDead ? urlSearchFallback(name, destination) : c.website;
+  const bookingHref = bookingDead ? urlSearchFallback(name ? `${name} book reservation` : "reservation", destination) : c.booking_url;
   const showWebsite = !!c.website;
   const showBooking = !!c.booking_url;
   const hasAnyAction = telUrl || mapsUrl || showWebsite || showBooking;
@@ -1123,15 +1155,20 @@ function ContactBlock({ contact, name }) {
             <a href={telUrl} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>Call</a>
           )}
           {showBooking && (
-            <a href={c.booking_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: GOLD, color: "#0F0F0F", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>Book ↗</a>
+            <a href={bookingHref} target="_blank" rel="noopener noreferrer" title={bookingDead ? "Original booking link could not be verified — search for it on Google" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: `0.5px solid ${bookingDead ? GOLD_DARK : GOLD}`, background: bookingDead ? "transparent" : GOLD, color: bookingDead ? GOLD_DARK : "#0F0F0F", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>{bookingDead ? "Search ↗" : "Book ↗"}</a>
           )}
           {showWebsite && (
-            <a href={c.website} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>Website ↗</a>
+            <a href={websiteHref} target="_blank" rel="noopener noreferrer" title={websiteDead ? "Original site link could not be verified — search for the official site" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: websiteDead ? GOLD_DARK : "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>{websiteDead ? "Find site ↗" : "Website ↗"}</a>
           )}
           {mapsUrl && (
             <a href={mapsUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>Directions</a>
           )}
         </div>
+      )}
+      {verifyReady && (websiteDead || bookingDead) && (
+        <p style={{ fontSize: "10px", color: GOLD_DARK, margin: "6px 0 0", fontStyle: "italic", letterSpacing: "0.02em" }}>
+          ⚠ {websiteDead && bookingDead ? "Both links" : websiteDead ? "Site link" : "Booking link"} could not be verified — using a search instead.
+        </p>
       )}
     </>
   );
@@ -2584,6 +2621,166 @@ function PrintButton({ data }) {
   );
 }
 
+// Print Rides: prints a clean single-page driver sheet listing every Transport
+// item across the trip (airport meet-and-greet, inter-city legs, daily driver
+// pickups). Designed to be shared with the driver / car-service operator. The
+// itinerary's main render stays untouched — we mount a hidden printable block
+// (#rides-print-root) and use a print stylesheet so window.print() captures
+// ONLY that block. No PDF library required — native browser print dialog.
+function collectRides(data) {
+  const days = Array.isArray(data?.days) ? data.days : [];
+  const rides = [];
+  for (let dayIdx = 0; dayIdx < days.length; dayIdx++) {
+    const d = days[dayIdx];
+    const items = Array.isArray(d?.items) ? d.items : [];
+    for (const it of items) {
+      if (it?.type !== "Transport") continue;
+      rides.push({
+        dayIndex: dayIdx,
+        dayDate: d?.date || "",
+        dayLabel: d?.title || `Day ${dayIdx + 1}`,
+        city: d?.city || "",
+        time: it.time || "",
+        end_time: it.end_time || "",
+        text: it.text || "",
+        location: it.location || "",
+        duration: it.duration || "",
+        why: it.why || "",
+        contact: it.contact || null,
+      });
+    }
+  }
+  return rides;
+}
+
+function PrintRidesButton({ data, inputs }) {
+  const rides = useMemo(() => collectRides(data), [data]);
+  if (!rides.length) return null;
+
+  const passengerName = (inputs?.basics?.travelers || "Guest").trim();
+  const tripTitle = (() => {
+    if (Array.isArray(inputs?.basics?.cities) && inputs.basics.cities.length > 1) {
+      return inputs.basics.cities.map(c => c.name).filter(Boolean).join(" → ");
+    }
+    return inputs?.basics?.destination || "Trip";
+  })();
+  const dateRange = (() => {
+    const s = inputs?.basics?.startDate;
+    const e = inputs?.basics?.endDate;
+    if (s && e) return `${s} → ${e}`;
+    if (s) return s;
+    return "";
+  })();
+
+  const handlePrint = () => {
+    // Toggle a body-level class that swaps print stylesheet to rides-only mode.
+    document.body.classList.add("printing-rides");
+    // Defer print() to next tick so the class transition + repaint settles.
+    setTimeout(() => {
+      try { window.print(); } catch (_e) {}
+      // Remove the class on the next idle so the regular itinerary view returns.
+      setTimeout(() => document.body.classList.remove("printing-rides"), 100);
+    }, 50);
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={handlePrint}
+        className="no-print"
+        style={{
+          background: "transparent",
+          border: `0.5px solid ${GOLD}`,
+          borderRadius: "var(--border-radius-md)",
+          padding: "10px 16px",
+          fontSize: "11px",
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          color: GOLD,
+          fontWeight: 600,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "6px",
+        }}
+        aria-label={`Print rides sheet for the driver (${rides.length} ride${rides.length === 1 ? "" : "s"})`}
+        title={`Print a driver-ready sheet with ${rides.length} ride${rides.length === 1 ? "" : "s"}`}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M6 9V2h12v7" />
+          <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+          <rect x="6" y="14" width="12" height="8" />
+        </svg>
+        Print rides ({rides.length})
+      </button>
+
+      {/*
+        Hidden printable block. CSS in index.html / global style swaps which
+        section prints via `body.printing-rides`. We render it always (cheap)
+        and let CSS hide/show it.
+      */}
+      <div id="rides-print-root" className="rides-print-only" aria-hidden="true">
+        <div style={{ padding: "24px 28px", fontFamily: "Georgia, 'Times New Roman', serif", color: "#0F0F0F" }}>
+          <div style={{ borderBottom: `2px solid ${GOLD}`, paddingBottom: "10px", marginBottom: "18px" }}>
+            <div style={{ fontSize: "10px", letterSpacing: "0.18em", textTransform: "uppercase", color: "#666", marginBottom: "4px" }}>Driver itinerary — share with chauffeur</div>
+            <div style={{ fontSize: "22px", fontStyle: "italic", marginBottom: "6px" }}>{tripTitle}</div>
+            <div style={{ fontSize: "12px", color: "#444" }}>
+              Passenger: <strong>{passengerName}</strong>
+              {dateRange ? ` · Dates: ${dateRange}` : ""}
+              {rides.length ? ` · ${rides.length} ride${rides.length === 1 ? "" : "s"}` : ""}
+            </div>
+          </div>
+
+          {rides.map((r, i) => (
+            <div key={i} style={{ borderBottom: "1px solid #ddd", padding: "12px 0", pageBreakInside: "avoid" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "12px", marginBottom: "4px" }}>
+                <div style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", color: "#777", fontWeight: 700 }}>
+                  Ride {i + 1} · {r.dayLabel}{r.city ? ` · ${r.city}` : ""}
+                </div>
+                <div style={{ fontSize: "15px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.02em" }}>
+                  {r.time}{r.end_time ? ` – ${r.end_time}` : ""}
+                </div>
+              </div>
+              <div style={{ fontSize: "14px", fontWeight: 600, marginBottom: "4px" }}>{r.text || "Transport"}</div>
+              {r.location && (
+                <div style={{ fontSize: "12px", color: "#333", marginBottom: "3px" }}>
+                  <strong>Pickup / route:</strong> {r.location}
+                </div>
+              )}
+              {r.contact?.address && (
+                <div style={{ fontSize: "12px", color: "#333", marginBottom: "3px" }}>
+                  <strong>Address:</strong> {r.contact.address}
+                </div>
+              )}
+              {r.duration && (
+                <div style={{ fontSize: "12px", color: "#333", marginBottom: "3px" }}>
+                  <strong>Duration:</strong> {r.duration}
+                </div>
+              )}
+              {r.why && (
+                <div style={{ fontSize: "12px", color: "#555", marginBottom: "3px", fontStyle: "italic" }}>{r.why}</div>
+              )}
+              {(r.contact?.phone || r.contact?.booking_note) && (
+                <div style={{ fontSize: "12px", color: "#333", marginTop: "6px", borderLeft: `3px solid ${GOLD}`, paddingLeft: "8px" }}>
+                  {r.contact?.phone && (<><strong>Operator phone:</strong> {r.contact.phone}<br /></>)}
+                  {r.contact?.booking_note && (<><strong>Notes:</strong> {r.contact.booking_note}</>)}
+                </div>
+              )}
+            </div>
+          ))}
+
+          <div style={{ marginTop: "22px", paddingTop: "12px", borderTop: `1px dashed ${GOLD}`, fontSize: "10.5px", color: "#666", lineHeight: 1.5 }}>
+            <div><strong>Passenger:</strong> {passengerName}</div>
+            <div style={{ marginTop: "3px" }}>Generated by Trip Optimizer — verify each pickup time + address with the driver 24 hours ahead. Times shown are local to the destination.</div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // Input summary — shown ONLY in print output. Recaps the form inputs that
 // produced this plan so the printed PDF is a complete record of inputs+output.
 function InputSummary({ inputs }) {
@@ -3636,7 +3833,20 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
   // Multi-city: track which day starts a new leg so we can render a divider.
   const cityByDay = (data.days || []).map(d => d.city || null);
   const isMultiCityPlan = Array.isArray(data.cities) && data.cities.length > 1;
+
+  // Collect every vendor URL in the plan (activities / transport / etc.) so we
+  // can ask the server to verify they're reachable. Memoized so we only POST
+  // when the underlying plan actually changes.
+  const urlsToVerify = useMemo(() => collectVendorURLs(data), [data]);
+  const urlVerify = useURLVerification(urlsToVerify);
+  const verifyContextValue = useMemo(() => ({
+    status: urlVerify.status,
+    isReady: urlVerify.isReady,
+    destination: inputs?.basics?.destination || (Array.isArray(inputs?.basics?.cities) ? inputs.basics.cities.map(c => c.name).filter(Boolean).join(" ") : ""),
+  }), [urlVerify.status, urlVerify.isReady, inputs]);
+
   return (
+    <URLVerifyContext.Provider value={verifyContextValue}>
     <div id="trip-print-root">
       <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", marginBottom: "0.75rem" }}>
         <button
@@ -3737,9 +3947,85 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
         >← Plan another trip</button>
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
         <PrintButton data={data} />
+        <PrintRidesButton data={data} inputs={inputs} />
       </div>
     </div>
+    </URLVerifyContext.Provider>
   );
+}
+
+// Collects every vendor URL embedded in the plan that we should verify before
+// shipping. Restaurant reservation URLs are skipped because OpenTable/Resy/Tock
+// search-pattern URLs almost never 404 — the bigger win is the long tail of
+// small/local vendor sites that go dead (private drivers, boutique tours,
+// regional ground services). Returns a deduped array of http(s) URLs.
+function collectVendorURLs(data) {
+  const out = new Set();
+  const push = (u) => {
+    if (typeof u !== "string") return;
+    const v = u.trim();
+    if (/^https?:\/\//i.test(v)) out.add(v);
+  };
+  const days = Array.isArray(data?.days) ? data.days : [];
+  for (const day of days) {
+    const items = Array.isArray(day?.items) ? day.items : [];
+    for (const it of items) {
+      const c = it?.contact;
+      if (c) {
+        push(c.website);
+        push(c.booking_url);
+      }
+      if (it?.flight?.booking_url) push(it.flight.booking_url);
+    }
+  }
+  return Array.from(out);
+}
+
+// Verify a list of vendor URLs by POSTing them to /api/verify-url. Returns
+// { status: Map<url, "ok"|"dead">, isReady: boolean }. While the request is
+// in flight, status is empty and isReady is false. The renderer should treat
+// unknown URLs as ok (link still renders) so the user can interact with the
+// itinerary immediately — the swap-to-search only happens once we get a
+// definitive "dead" verdict.
+function useURLVerification(urls) {
+  const [status, setStatus] = useState(() => new Map());
+  const [isReady, setIsReady] = useState(false);
+  // Stable key for memoization — a sorted-and-joined list of urls.
+  const key = useMemo(() => (Array.isArray(urls) ? urls.slice().sort().join("|") : ""), [urls]);
+  useEffect(() => {
+    if (!key) { setStatus(new Map()); setIsReady(true); return; }
+    let cancelled = false;
+    setStatus(new Map());
+    setIsReady(false);
+    (async () => {
+      try {
+        const res = await fetch("/api/verify-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ urls: key.split("|") }),
+        });
+        if (!res.ok) throw new Error(`verify-url ${res.status}`);
+        const json = await res.json();
+        if (cancelled) return;
+        const next = new Map();
+        for (const r of (json?.results || [])) {
+          if (!r || !r.url) continue;
+          next.set(r.url, r.ok ? "ok" : "dead");
+        }
+        setStatus(next);
+        setIsReady(true);
+      } catch (_err) {
+        if (cancelled) return;
+        // If verify endpoint fails, fall back to treating every URL as ok
+        // (no swap). This keeps the existing behavior — we'd rather render a
+        // model-supplied link than nothing.
+        setStatus(new Map());
+        setIsReady(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [key]);
+  return { status, isReady };
 }
 
 function Field({ label, children, hint }) {
@@ -4973,11 +5259,11 @@ const HOTEL_ITEM_SCHEMA = {
 // Hotels use HOTEL_ITEM_SCHEMA.phone/address. This is for everything else.
 const CONTACT_SCHEMA = {
   type: "object",
-  description: "Contact info for activities, tours, museums, transport providers — anything the traveler may need to call, book, or get directions to. Provide AT LEAST phone or website for every Activity. Phone numbers in the destination's local format with country code if international.",
+  description: "Contact info for activities, tours, museums, transport providers — anything the traveler may need to call, book, or get directions to. REQUIRED for every Activity and every Transport item: BOTH phone AND website. The website is verified server-side after generation; if you don't know a real working URL, OMIT the website field entirely — do NOT invent a plausible-looking URL, do NOT guess a domain, do NOT use generic placeholders. A missing URL is far better than a broken one (the user gets a Google search fallback). Phone numbers must be in the destination's local format with country code (+1-NYC, +41 for Switzerland, +39 for Italy, etc.). If you cannot supply a phone number either, write the contact via the hotel concierge instead (set booking_note to 'Booked via hotel concierge — ask front desk').",
   properties: {
-    phone: { type: "string", description: "Main reservation/info line in tappable format, e.g. '+1-505-988-3236' or '+41 44 422 25 20'." },
-    website: { type: "string", description: "Official site URL. Used by 'Website ↗' button." },
-    booking_url: { type: "string", description: "Direct booking/reservation page. Used by 'Book ↗' button. Examples: Viator/GetYourGuide/Tock/Eventbrite URLs." },
+    phone: { type: "string", description: "REQUIRED for Transport and Activity items. Main reservation/info line in tappable format, e.g. '+1-505-988-3236' or '+41 44 422 25 20'. If unknown, use the hotel concierge line instead and note that in booking_note." },
+    website: { type: "string", description: "Official site URL — the operator's actual homepage you would link a luxury traveler to. URLs are HEAD-checked after generation; broken links get auto-swapped to a Google fallback. Therefore: OMIT this field if you are not highly confident the URL is live. Do NOT fabricate URLs." },
+    booking_url: { type: "string", description: "Direct booking/reservation page. Used by 'Book ↗' button. Examples: Viator/GetYourGuide/Tock/Eventbrite URLs. Subject to the same verification — omit if unsure." },
     address: { type: "string", description: "Full street address including city. Used for 'Directions' button (Google Maps link)." },
     hours: { type: "string", description: "Operating hours relevant to the visit, e.g. 'Tue–Sun 10–5, closed Mondays' or 'Sat 7:30am–6:30pm'." },
     price: { type: "string", description: "Per-person cost or price range, e.g. '$45/adult', 'CHF 32', 'Free', '$200/person private tour'." },
@@ -5820,7 +6106,8 @@ The user explicitly asked for a private driver / chauffeur. You MUST surface thi
 • Add ONE logistics chip in the form "Driver · <operator>" so the top-of-page chip strip shows the user their car service at a glance.
 • Add a flags[] entry confirming the driver booking workflow (e.g. "Pre-book <operator> 24–48h ahead; <hotel name> concierge can also arrange") and include cancellation-window detail when known.
 • Add a tonight entry: "⚠︎ Must today: Confirm driver pickup window for Day 1 arrival."
-• Do NOT also push a rental-car narrative on top of this unless the user explicitly selected BOTH "Private driver" AND "Rental car". A user who said private driver wants to be driven — don't add "or grab an Uber" as a fallback in every slot.`;
+• Do NOT also push a rental-car narrative on top of this unless the user explicitly selected BOTH "Private driver" AND "Rental car". A user who said private driver wants to be driven — don't add "or grab an Uber" as a fallback in every slot.
+• EVERY private-driver Transport item MUST have a contact{} block with a real phone number (use the hotel concierge line if you don't know the operator's direct line — then put booking_note: "Booked via <hotel> concierge — ask front desk") AND, only if you are highly confident it is live, a website URL. URLs are HEAD-verified after generation; a missing URL is FAR better than a fabricated one. Do not invent driver-service URLs.`;
     // Private tour / private guide enforcement. Triggered by any of:
     //  • activities list containing "private" + "tour/guide/walking" phrasing
     //  • free-text interests mentioning private tour/guide
