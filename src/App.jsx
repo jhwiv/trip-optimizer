@@ -6270,11 +6270,19 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     const daysSeen = dayMatches.length;
     const restaurantMatches = toolJson.match(/"reservation"\s*:/g) || [];
     const restaurantsDone = restaurantMatches.length;
+    // Detect the end-of-output sections so we can honestly say "Finalizing…"
+    // only when the model is actually emitting the final blocks.
+    const finalizingNow = /"flags"\s*:|"planB"\s*:|"insider"\s*:|"snobs"\s*:|"weather"\s*:/.test(toolJson)
+      && daysSeen >= totalDays;
 
     if (daysSeen === 0) {
       // No real stream signal yet — let loadingMsg (phase cycler) own the
       // header without a competing sub-line.
       setProgressLabel("");
+    } else if (finalizingNow) {
+      // Genuine finalize window: all days emitted, model is on the final
+      // insider/flags/planB blocks. Safe (and honest) to say "Finalizing…".
+      setProgressLabel("Finalizing your plan…");
     } else if (daysSeen <= totalDays) {
       const currentDay = daysSeen;
       const lastLabelIdx = toolJson.lastIndexOf('"label"');
@@ -6328,19 +6336,30 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       setProgress(prev => (prev >= 1 ? prev : Math.max(prev, frac)));
     }, 250);
 
+    // Honest phase cycler. Cycles through the first 5 phases over ~30s (the
+    // brief input/upstream-handoff window), then HOLDS on "Adding insider
+    // notes and Plan B…" rather than lying about "Finalizing". The data-
+    // driven progressLabel ("Day 2 of 4 · activities") takes over when the
+    // stream actually starts emitting day content. "Finalizing your plan…"
+    // is now reserved for the genuine end-of-stream window: progress ≥85%.
+    // Why this matters: under the old timer the user saw "Finalizing…" for
+    // 60–120 seconds before the plan was actually done, which read as a
+    // hang. Now they see the cycler briefly, then either real day-by-day
+    // labels OR the honest "Still building" notice — never a fake finalize.
     const phases = [
       "Researching destination…",
       "Selecting hotels and neighborhoods…",
       "Building day-by-day itinerary…",
       "Picking restaurants and reservations…",
       "Adding insider notes and Plan B…",
-      "Finalizing your plan…",
     ];
     let phaseIdx = 0;
     const phaseTimer = setInterval(() => {
-      phaseIdx = Math.min(phaseIdx + 1, phases.length - 1);
+      // Hold on the last cycled phase; do NOT advance to "Finalizing".
+      if (phaseIdx >= phases.length - 1) return;
+      phaseIdx += 1;
       setLoadingMsg(phases[phaseIdx]);
-    }, 7000);
+    }, 6000);
 
     // The client-side hard timeout has to outlast the server build for any
     // trip size. Single-city ~5 min; multi-city scales up. The server keeps
