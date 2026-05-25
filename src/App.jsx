@@ -3076,38 +3076,13 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, onOpen
   ].filter(Boolean);
   return (
     <>
-      <div className="no-print" style={{ position: "sticky", top: 0, zIndex: 6, background: "var(--color-background-primary)", paddingTop: "6px", paddingBottom: "8px", marginBottom: "12px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-        {/* Row 1 — day filter (Overview only). "All" + one pill per day; click to focus that day. */}
-        {tab === "overview" && days.length >= 2 && (
-          <div style={{ display: "flex", gap: "6px", overflowX: "auto", scrollbarWidth: "none", WebkitOverflowScrolling: "touch", marginBottom: "6px" }}>
-            {[{ idx: -1, label: "All days" }, ...days.map((d, i) => ({ idx: i, label: `${i + 1} · ${dayShort(d, i)}` }))].map(({ idx, label }) => {
-              const active = dayFilter === idx;
-              return (
-                <button
-                  key={idx}
-                  onClick={() => onDayFilterChange(idx)}
-                  style={{
-                    flex: "0 0 auto",
-                    fontSize: "10.5px",
-                    letterSpacing: "0.06em",
-                    textTransform: "uppercase",
-                    fontWeight: 600,
-                    color: active ? "#0F0F0F" : "var(--color-text-secondary)",
-                    padding: "5px 10px",
-                    border: active ? "none" : "0.5px solid var(--color-border-secondary)",
-                    borderRadius: "3px",
-                    whiteSpace: "nowrap",
-                    background: active ? GOLD : "var(--color-background-primary)",
-                    cursor: "pointer",
-                    fontFamily: "inherit",
-                  }}
-                >{label}</button>
-              );
-            })}
-          </div>
-        )}
-        {/* Row 2 — section/reference tabs. Always visible. */}
-        <div style={{ display: "flex", gap: "6px", overflowX: "auto", scrollbarWidth: "none", WebkitOverflowScrolling: "touch" }}>
+      {/* Two-row sticky nav, modeled after zurich-weekend.com / maritimesgrandloop.com.
+         Both rows WRAP so every tab is visible without horizontal scroll. Active tab
+         gets the warm gold pill. Tabs are rendered ABOVE the hero by the parent so
+         the hero itself stays compact. */}
+      <div className="no-print" style={{ position: "sticky", top: 0, zIndex: 6, background: "var(--color-background-primary)", paddingTop: "8px", paddingBottom: "10px", marginBottom: "14px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+        {/* Row 1 — section/reference tabs. Always visible. WRAPS to multiple lines so all are visible at once. */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", justifyContent: "flex-start" }}>
           {TABS.map(t => {
             const active = tab === t.id;
             return (
@@ -3116,32 +3091,69 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, onOpen
                 onClick={() => onTabChange(t.id)}
                 style={{
                   flex: "0 0 auto",
-                  fontSize: "11px",
-                  letterSpacing: "0.08em",
+                  fontSize: "10.5px",
+                  letterSpacing: "0.10em",
                   textTransform: "uppercase",
                   fontWeight: 700,
                   color: active ? "#0F0F0F" : "var(--color-text-secondary)",
-                  padding: "7px 13px",
+                  padding: "6px 12px",
                   border: active ? "none" : "0.5px solid var(--color-border-secondary)",
                   borderRadius: "20px",
                   whiteSpace: "nowrap",
                   background: active ? GOLD : "var(--color-background-primary)",
                   cursor: "pointer",
                   fontFamily: "inherit",
+                  lineHeight: 1.2,
                 }}
               >{t.label}</button>
             );
           })}
         </div>
+        {/* Row 2 — day filter (Overview only). "All" + one pill per day; click to focus that day. WRAPS. */}
+        {tab === "overview" && days.length >= 2 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", marginTop: "8px", paddingTop: "8px", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+            {[{ idx: -1, label: "All days" }, ...days.map((d, i) => ({ idx: i, label: `${i + 1} · ${dayShort(d, i)}` }))].map(({ idx, label }) => {
+              const active = dayFilter === idx;
+              return (
+                <button
+                  key={idx}
+                  onClick={() => onDayFilterChange(idx)}
+                  style={{
+                    flex: "0 0 auto",
+                    fontSize: "10px",
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    fontWeight: 600,
+                    color: active ? "#0F0F0F" : "var(--color-text-secondary)",
+                    padding: "4px 9px",
+                    border: active ? "none" : "0.5px solid var(--color-border-secondary)",
+                    borderRadius: "3px",
+                    whiteSpace: "nowrap",
+                    background: active ? GOLD : "var(--color-background-primary)",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                    lineHeight: 1.2,
+                  }}
+                >{label}</button>
+              );
+            })}
+          </div>
+        )}
       </div>
-      {tab === "flights" && <FlightsView data={data} />}
-      {tab === "lodging" && <LodgingView data={data} />}
-      {tab === "transport" && <TransportView data={data} />}
-      {tab === "dining" && <DiningView data={data} onOpenMenu={onOpenMenu} />}
-      {tab === "activities" && <ActivitiesView data={data} />}
-      {tab === "essentials" && <EssentialsView data={data} />}
     </>
   );
+}
+
+// Section content router for non-overview tabs. Rendered by the parent below the
+// hero/review area so the nav stays at the top of the page.
+function TripSectionView({ tab, data, onOpenMenu }) {
+  if (tab === "flights") return <FlightsView data={data} />;
+  if (tab === "lodging") return <LodgingView data={data} />;
+  if (tab === "transport") return <TransportView data={data} />;
+  if (tab === "dining") return <DiningView data={data} onOpenMenu={onOpenMenu} />;
+  if (tab === "activities") return <ActivitiesView data={data} />;
+  if (tab === "essentials") return <EssentialsView data={data} />;
+  return null;
 }
 
 
@@ -3628,6 +3640,13 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
     <div id="trip-print-root">
       <InputSummary inputs={inputs} />
       <MenuModal restaurant={menuRestaurant} onClose={() => setMenuRestaurant(null)} />
+
+      {/* Sticky two-row tab nav lives ABOVE the hero so the hero stays compact and every
+         tab is reachable at a glance — modeled after zurich-weekend.com / maritimesgrandloop.com. */}
+      {data.days && data.days.length > 0 && (
+        <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} onOpenMenu={setMenuRestaurant} />
+      )}
+
       <TripHero data={data} />
       <QualityBadge qc={qc} />
 
@@ -3640,10 +3659,15 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
         initialReview={initialReview}
       />
 
-      {data.days && data.days.length > 0 && (
-        <Section title={tab === "overview" ? (dayFilter >= 0 && data.days[dayFilter] ? `Day ${dayFilter + 1} · ${dayShort(data.days[dayFilter], dayFilter)}` : "Day-by-day") : ({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities", essentials: "Essentials" }[tab] || "Day-by-day")}>
-          <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} onOpenMenu={setMenuRestaurant} />
-          {tab !== "overview" ? null : data.days.map((d, i) => {
+      {data.days && data.days.length > 0 && tab !== "overview" && (
+        <Section title={({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities", essentials: "Essentials" }[tab] || "")}>
+          <TripSectionView tab={tab} data={data} onOpenMenu={setMenuRestaurant} />
+        </Section>
+      )}
+
+      {data.days && data.days.length > 0 && tab === "overview" && (
+        <Section title={dayFilter >= 0 && data.days[dayFilter] ? `Day ${dayFilter + 1} · ${dayShort(data.days[dayFilter], dayFilter)}` : "Day-by-day"}>
+          {data.days.map((d, i) => {
             // Day filter: if dayFilter >= 0, only render that one day.
             if (dayFilter >= 0 && i !== dayFilter) return null;
             const prevCity = i > 0 ? cityByDay[i - 1] : null;
