@@ -2945,16 +2945,107 @@ function ActivitiesView({ data }) {
   );
 }
 
-// Tabbed shell. Row 1 of the sticky nav is the day-tab strip (unchanged from
-// the old DayNav), Row 2 is the section/reference strip. Default tab is
-// "Overview" which renders the existing day-by-day timeline so nothing the
-// user already loves is lost. Section tabs flatten the plan into category
-// cards. Phone numbers and bookings live on every restaurant + activity.
-function TripTabs({ data, tab, onTabChange, onOpenMenu }) {
+// Essentials view — pulls every non-itinerary block (Tonight, Weather & pack,
+// Heads up, Plan B, Snob's guide) into one focused tab. This frees Overview
+// from being a kitchen-sink view and gives a single "things to know" surface.
+function EssentialsView({ data }) {
+  const sortedTonight = Array.isArray(data.tonight)
+    ? [...data.tonight].map((t, i) => ({ t, i, p: tonightPriority(t) })).sort((a, b) => a.p.rank - b.p.rank || a.i - b.i)
+    : [];
+  const hasWeather = !!data.weather_window || (Array.isArray(data.pack) && data.pack.length > 0);
+  const hasFlags = Array.isArray(data.flags) && data.flags.length > 0;
+  const hasPlanB = Array.isArray(data.planb) && data.planb.length > 0;
+  const hasSnobs = Array.isArray(data.snobs) && data.snobs.length > 0;
+  if (sortedTonight.length === 0 && !hasWeather && !hasFlags && !hasPlanB && !hasSnobs) {
+    return (
+      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "20px 0", textAlign: "center" }}>
+        No essentials yet — rebuild the plan to get weather, Plan B, and insider notes.
+      </p>
+    );
+  }
+  const H = ({ children }) => (
+    <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "18px 0 10px" }}>{children}</p>
+  );
+  return (
+    <div>
+      {sortedTonight.length > 0 && (
+        <>
+          <H>Do this tonight</H>
+          <div style={{ borderRadius: "var(--border-radius-md)", overflow: "hidden", border: "0.5px solid var(--color-border-secondary)" }}>
+            {sortedTonight.map(({ t, p }, i) => {
+              const text = stripTonightPrefix(t);
+              return (
+                <div key={i} style={{ display: "flex", gap: "10px", padding: "10px 12px", borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none", background: p.bg, alignItems: "flex-start" }}>
+                  {p.label && (
+                    <span style={{ flex: "0 0 auto", fontSize: "9.5px", fontWeight: 700, color: p.color, letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: `0.5px solid ${p.color}`, borderRadius: "3px", whiteSpace: "nowrap", marginTop: "1px" }}>{p.label}</span>
+                  )}
+                  <span style={{ fontSize: "12.5px", color: "var(--color-text-primary)", lineHeight: 1.5, flex: 1 }}>{text}</span>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+      {hasWeather && (
+        <>
+          <H>Weather &amp; pack</H>
+          {data.weather_window && (
+            <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 12px", lineHeight: 1.55 }}>☀ {data.weather_window}</p>
+          )}
+          {Array.isArray(data.pack) && data.pack.length > 0 && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "4px" }}>
+              {data.pack.map((p, i) => (
+                <div key={i} style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", display: "flex", gap: "8px", lineHeight: 1.5 }}>
+                  <span style={{ color: GOLD, flex: "0 0 auto" }}>✓</span><span>{p}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+      {hasFlags && (
+        <>
+          <H>Heads up</H>
+          {data.flags.map((f, i) => (
+            <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "6px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: 1.5 }}>
+              <span style={{ flex: "0 0 auto", color: "#B85C00", fontSize: "12px", marginTop: "1px" }}>⚠︎</span>
+              <span>{f}</span>
+            </div>
+          ))}
+        </>
+      )}
+      {hasPlanB && (
+        <>
+          <H>If plans break</H>
+          {data.planb.map((p, i) => (
+            <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "7px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: 1.5 }}>
+              <span style={{ flex: "0 0 auto", fontSize: "9.5px", fontWeight: 700, color: "#5B6E8F", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: "0.5px solid #5B6E8F", borderRadius: "3px", whiteSpace: "nowrap", marginTop: "1px" }}>Plan B</span>
+              <span>{p}</span>
+            </div>
+          ))}
+        </>
+      )}
+      {hasSnobs && (
+        <>
+          <H>Snob's guide</H>
+          {data.snobs.map((s, i) => (
+            <div key={i} style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "8px 12px", borderLeft: `2px solid #D4537E`, marginBottom: "8px", lineHeight: "1.6", borderRadius: 0 }}>{s}</div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Tabbed shell. Row 1 of the sticky nav is the day-tab strip (Overview only,
+// now an interactive filter — click to focus a single day, "All" to see them
+// all). Row 2 is the section/reference strip. Default tab is "Overview".
+function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, onOpenMenu }) {
   const days = data.days || [];
   // Compute counts so we can show e.g. "Dining · 12" inline.
   const counts = useMemo(() => {
     let flights = 0, hotels = 0, transport = 0, dining = 0, activities = 0;
+    let essentials = 0;
     const hotelSeen = new Set();
     days.forEach(d => (d.items || []).forEach(it => {
       if (it.type === "Flight" && it.flight) flights++;
@@ -2966,8 +3057,14 @@ function TripTabs({ data, tab, onTabChange, onOpenMenu }) {
       else if (it.restaurant && /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/.test(it.type)) dining++;
       else if (it.type === "Activity") activities++;
     }));
-    return { flights, hotels, transport, dining, activities };
-  }, [days]);
+    // Essentials count = number of essentials blocks present (Tonight, Weather, Flags, PlanB, Snobs).
+    if (Array.isArray(data.tonight) && data.tonight.length > 0) essentials++;
+    if (data.weather_window || (Array.isArray(data.pack) && data.pack.length > 0)) essentials++;
+    if (Array.isArray(data.flags) && data.flags.length > 0) essentials++;
+    if (Array.isArray(data.planb) && data.planb.length > 0) essentials++;
+    if (Array.isArray(data.snobs) && data.snobs.length > 0) essentials++;
+    return { flights, hotels, transport, dining, activities, essentials };
+  }, [days, data.tonight, data.weather_window, data.pack, data.flags, data.planb, data.snobs]);
   const TABS = [
     { id: "overview", label: "Overview" },
     counts.flights > 0 && { id: "flights", label: `Flights · ${counts.flights}` },
@@ -2975,22 +3072,41 @@ function TripTabs({ data, tab, onTabChange, onOpenMenu }) {
     counts.transport > 0 && { id: "transport", label: `Transport · ${counts.transport}` },
     counts.dining > 0 && { id: "dining", label: `Dining · ${counts.dining}` },
     counts.activities > 0 && { id: "activities", label: `Activities · ${counts.activities}` },
+    counts.essentials > 0 && { id: "essentials", label: `Essentials · ${counts.essentials}` },
   ].filter(Boolean);
   return (
     <>
       <div className="no-print" style={{ position: "sticky", top: 0, zIndex: 6, background: "var(--color-background-primary)", paddingTop: "6px", paddingBottom: "8px", marginBottom: "12px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-        {/* Row 1 — day tabs (only visible when on Overview, since the section tabs are not day-scoped). */}
+        {/* Row 1 — day filter (Overview only). "All" + one pill per day; click to focus that day. */}
         {tab === "overview" && days.length >= 2 && (
           <div style={{ display: "flex", gap: "6px", overflowX: "auto", scrollbarWidth: "none", WebkitOverflowScrolling: "touch", marginBottom: "6px" }}>
-            {days.map((d, i) => {
-              const short = dayShort(d, i);
+            {[{ idx: -1, label: "All days" }, ...days.map((d, i) => ({ idx: i, label: `${i + 1} · ${dayShort(d, i)}` }))].map(({ idx, label }) => {
+              const active = dayFilter === idx;
               return (
-                <a key={i} href={`#day-${i + 1}`} style={{ flex: "0 0 auto", fontSize: "10.5px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600, color: "var(--color-text-secondary)", padding: "5px 9px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", textDecoration: "none", whiteSpace: "nowrap", background: "var(--color-background-primary)" }}>{i + 1} · {short}</a>
+                <button
+                  key={idx}
+                  onClick={() => onDayFilterChange(idx)}
+                  style={{
+                    flex: "0 0 auto",
+                    fontSize: "10.5px",
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    fontWeight: 600,
+                    color: active ? "#0F0F0F" : "var(--color-text-secondary)",
+                    padding: "5px 10px",
+                    border: active ? "none" : "0.5px solid var(--color-border-secondary)",
+                    borderRadius: "3px",
+                    whiteSpace: "nowrap",
+                    background: active ? GOLD : "var(--color-background-primary)",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >{label}</button>
               );
             })}
           </div>
         )}
-        {/* Row 2 — section/reference tabs (the new thing). Always visible. */}
+        {/* Row 2 — section/reference tabs. Always visible. */}
         <div style={{ display: "flex", gap: "6px", overflowX: "auto", scrollbarWidth: "none", WebkitOverflowScrolling: "touch" }}>
           {TABS.map(t => {
             const active = tab === t.id;
@@ -3023,6 +3139,7 @@ function TripTabs({ data, tab, onTabChange, onOpenMenu }) {
       {tab === "transport" && <TransportView data={data} />}
       {tab === "dining" && <DiningView data={data} onOpenMenu={onOpenMenu} />}
       {tab === "activities" && <ActivitiesView data={data} />}
+      {tab === "essentials" && <EssentialsView data={data} />}
     </>
   );
 }
@@ -3487,8 +3604,16 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
   // flatten plan content into category cards. Switching tabs scrolls back to
   // the top so the new view starts clean.
   const [tab, setTab] = useState("overview");
+  // Day filter for Overview tab. -1 = "All days" (default). 0..N = focus that day.
+  const [dayFilter, setDayFilter] = useState(-1);
   const handleTabChange = (next) => {
     setTab(next);
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
+  const handleDayFilterChange = (idx) => {
+    setDayFilter(idx);
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -3496,9 +3621,6 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
   // Apply the pass-three quality layer once before render. This dedupes
   // restaurants, fills verify microcopy, and computes a QC summary.
   const { data, qc } = useMemo(() => applyQualityLayer(rawData, inputs), [rawData, inputs]);
-  const sortedTonight = Array.isArray(data.tonight)
-    ? [...data.tonight].map((t, i) => ({ t, i, p: tonightPriority(t) })).sort((a, b) => a.p.rank - b.p.rank || a.i - b.i)
-    : [];
   // Multi-city: track which day starts a new leg so we can render a divider.
   const cityByDay = (data.days || []).map(d => d.city || null);
   const isMultiCityPlan = Array.isArray(data.cities) && data.cities.length > 1;
@@ -3518,49 +3640,15 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
         initialReview={initialReview}
       />
 
-      {/* Pre-day high-signal block: do this tonight first, weather/pack second. */}
-      {/* These only appear on the Overview tab — section tabs are focused single-topic views. */}
-      {tab === "overview" && sortedTonight.length > 0 && (
-        <Section title="Do this tonight">
-          <div style={{ borderRadius: "var(--border-radius-md)", overflow: "hidden", border: "0.5px solid var(--color-border-secondary)" }}>
-            {sortedTonight.map(({ t, p }, i) => {
-              const text = stripTonightPrefix(t);
-              return (
-                <div key={i} style={{ display: "flex", gap: "10px", padding: "10px 12px", borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none", background: p.bg, alignItems: "flex-start" }}>
-                  {p.label && (
-                    <span style={{ flex: "0 0 auto", fontSize: "9.5px", fontWeight: 700, color: p.color, letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: `0.5px solid ${p.color}`, borderRadius: "3px", whiteSpace: "nowrap", marginTop: "1px" }}>{p.label}</span>
-                  )}
-                  <span style={{ fontSize: "12.5px", color: "var(--color-text-primary)", lineHeight: 1.5, flex: 1 }}>{text}</span>
-                </div>
-              );
-            })}
-          </div>
-        </Section>
-      )}
-
-      {tab === "overview" && (data.weather_window || (Array.isArray(data.pack) && data.pack.length > 0)) && (
-        <Section title="Weather & pack">
-          {data.weather_window && (
-            <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 12px", lineHeight: 1.55 }}>☀ {data.weather_window}</p>
-          )}
-          {Array.isArray(data.pack) && data.pack.length > 0 && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "4px" }}>
-              {data.pack.map((p, i) => (
-                <div key={i} style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", display: "flex", gap: "8px", lineHeight: 1.5 }}>
-                  <span style={{ color: GOLD, flex: "0 0 auto" }}>✓</span><span>{p}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </Section>
-      )}
-
       {data.days && data.days.length > 0 && (
-        <Section title={tab === "overview" ? "Day-by-day" : ({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities" }[tab] || "Day-by-day")}>
-          <TripTabs data={data} tab={tab} onTabChange={handleTabChange} onOpenMenu={setMenuRestaurant} />
+        <Section title={tab === "overview" ? (dayFilter >= 0 && data.days[dayFilter] ? `Day ${dayFilter + 1} · ${dayShort(data.days[dayFilter], dayFilter)}` : "Day-by-day") : ({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities", essentials: "Essentials" }[tab] || "Day-by-day")}>
+          <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} onOpenMenu={setMenuRestaurant} />
           {tab !== "overview" ? null : data.days.map((d, i) => {
+            // Day filter: if dayFilter >= 0, only render that one day.
+            if (dayFilter >= 0 && i !== dayFilter) return null;
             const prevCity = i > 0 ? cityByDay[i - 1] : null;
-            const showLegHeader = isMultiCityPlan && d.city && d.city !== prevCity;
+            // When focused on one day, always show the leg header for that day if multi-city.
+            const showLegHeader = isMultiCityPlan && d.city && (dayFilter >= 0 ? true : d.city !== prevCity);
             const legIndex = showLegHeader ? (cityByDay.slice(0, i + 1).filter((c, k, arr) => c && c !== arr[k - 1]).length) : null;
             return (
               <div key={i}>
@@ -3574,36 +3662,6 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
               </div>
             );
           })}
-        </Section>
-      )}
-
-      {tab === "overview" && data.flags && data.flags.length > 0 && (
-        <Section title="Heads up">
-          {data.flags.map((f, i) => (
-            <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "6px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: 1.5 }}>
-              <span style={{ flex: "0 0 auto", color: "#B85C00", fontSize: "12px", marginTop: "1px" }}>⚠︎</span>
-              <span>{f}</span>
-            </div>
-          ))}
-        </Section>
-      )}
-
-      {tab === "overview" && data.planb && data.planb.length > 0 && (
-        <Section title="If plans break">
-          {data.planb.map((p, i) => (
-            <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "7px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: 1.5 }}>
-              <span style={{ flex: "0 0 auto", fontSize: "9.5px", fontWeight: 700, color: "#5B6E8F", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: "0.5px solid #5B6E8F", borderRadius: "3px", whiteSpace: "nowrap", marginTop: "1px" }}>Plan B</span>
-              <span>{p}</span>
-            </div>
-          ))}
-        </Section>
-      )}
-
-      {tab === "overview" && data.snobs && data.snobs.length > 0 && (
-        <Section title="Snob's guide">
-          {data.snobs.map((s, i) => (
-            <div key={i} style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "8px 12px", borderLeft: `2px solid #D4537E`, marginBottom: "8px", lineHeight: "1.6", borderRadius: 0 }}>{s}</div>
-          ))}
         </Section>
       )}
 
