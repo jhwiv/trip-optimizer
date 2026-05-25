@@ -3434,10 +3434,45 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
     const hardTimeout = setTimeout(() => controller.abort(), 300000);
 
     try {
+      // -----------------------------------------------------------------
+      // STEP 1 — Live retrieval. Hit Perplexity Sonar in parallel for each
+      // selected source and inject real, current URLs + snippets into the
+      // review prompt. Soft-fail on error so the review still runs even if
+      // retrieval is broken (missing key, upstream down, timeout).
+      // -----------------------------------------------------------------
+      const sourceNames = selectedSources.map(s => s.name).slice(0, 3).join(", ");
+      setProgressLabel(`Pulling ${sourceNames}${selectedSources.length > 3 ? "…" : "…"}`);
+      let liveSnippets = [];
+      try {
+        const retrieveResp = await fetch("/api/review-retrieve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            destination: inputs?.basics?.destination || plan?.destination || "",
+            hotel_name: extractPrimaryHotel(plan),
+            restaurants: extractRestaurantNames(plan),
+            activities: extractActivityNames(plan),
+            sources: selectedSources.map(s => s.id),
+          }),
+        });
+        if (retrieveResp.ok) {
+          const data = await retrieveResp.json();
+          liveSnippets = Array.isArray(data?.snippets) ? data.snippets : [];
+          // Bump progress slightly so the bar doesn't feel stuck during retrieval.
+          setProgress(prev => Math.max(prev, 0.15));
+        }
+      } catch (retrieveErr) {
+        // Aborted by user → propagate. Anything else → swallow and fall back.
+        if (retrieveErr?.name === "AbortError") throw retrieveErr;
+        // eslint-disable-next-line no-console
+        console.warn("[review-retrieve] live sources unavailable, falling back", retrieveErr);
+      }
+
       const body = {
         model: "claude-sonnet-4-5",
         max_tokens: 8000,
-        system: buildReviewSystemPrompt(plan, selectedSources, inputs),
+        system: buildReviewSystemPrompt(plan, selectedSources, inputs, liveSnippets),
         messages: [{ role: "user", content: buildReviewUserPrompt() }],
         tools: [REVIEW_TOOL],
         tool_choice: { type: "tool", name: "submit_review" },
@@ -5524,9 +5559,81 @@ const REVISION_TOOL_SURGICAL = {
 const REVISION_TOOL_FULL = TRIP_PLAN_TOOL;
 
 // Build the system prompt that runs the review. We pass in the plan JSON (the
+// Extract the primary hotel name from a plan. The first Hotel-type item we
+// find wins — multi-city plans will use whichever leg comes first, which is
+// fine for retrieval scoping.
+function extractPrimaryHotel(plan) {
+  if (!plan?.days) return null;
+  for (const day of plan.days) {
+    if (!Array.isArray(day?.items)) continue;
+    for (const item of day.items) {
+      if (item?.type === "Hotel" && item.name) return String(item.name);
+    }
+  }
+  return null;
+}
+
+// Top N unique restaurant names across the plan (in order of appearance).
+function extractRestaurantNames(plan, limit = 6) {
+  if (!plan?.days) return [];
+  const out = [];
+  const seen = new Set();
+  const restaurantTypes = new Set(["Restaurant", "Breakfast", "Lunch", "Dinner", "Brunch"]);
+  for (const day of plan.days) {
+    if (!Array.isArray(day?.items)) continue;
+    for (const item of day.items) {
+      if (!restaurantTypes.has(item?.type)) continue;
+      const name = String(item?.name || "").trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      out.push(name);
+      if (out.length >= limit) return out;
+    }
+  }
+  return out;
+}
+
+// Top N unique activity names across the plan.
+function extractActivityNames(plan, limit = 4) {
+  if (!plan?.days) return [];
+  const out = [];
+  const seen = new Set();
+  for (const day of plan.days) {
+    if (!Array.isArray(day?.items)) continue;
+    for (const item of day.items) {
+      if (item?.type !== "Activity") continue;
+      const name = String(item?.name || "").trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      out.push(name);
+      if (out.length >= limit) return out;
+    }
+  }
+  return out;
+}
+
+// Render the live-retrieval snippets into a compact prompt block. Empty input
+// → empty string (the review prompt simply omits the block).
+function renderLiveSourceBlock(snippets) {
+  if (!Array.isArray(snippets) || snippets.length === 0) return "";
+  const lines = [];
+  for (const s of snippets) {
+    if (!Array.isArray(s?.results) || s.results.length === 0) continue;
+    lines.push(`[${s.source_name}]`);
+    for (const r of s.results) {
+      const datePart = r.date ? ` (${r.date})` : "";
+      const snip = (r.snippet || "").replace(/\s+/g, " ").trim().slice(0, 220);
+      lines.push(`  • ${r.title}${datePart} — ${r.url}`);
+      if (snip) lines.push(`    "${snip}"`);
+    }
+  }
+  if (lines.length === 0) return "";
+  return `\nLIVE SOURCE SIGNAL — real published results pulled just now from your reviewer panel. Use these as grounded evidence:\n${lines.join("\n")}\n\nWhen a finding is supported by one of these results, you MAY put the URL in the finding's source field alongside the source name (e.g. "Michelin Guide — https://guide.michelin.com/…"). Prefer findings supported by these live sources over speculative ones.\n`;
+}
+
 // full result object) plus the list of selected reviewer source objects so the
 // model knows which lenses to weight.
-function buildReviewSystemPrompt(plan, sources, inputs) {
+function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
   const lensesActive = Array.from(new Set(sources.map(s => s.lens)));
   const sourceList = sources.map(s => `• ${s.name} (${s.lens}) — ${s.blurb}`).join("\n");
   const lensRules = REVIEWER_LENSES
@@ -5551,7 +5658,7 @@ ACTIVE LENSES (only flag findings that fall under one of these):
 ${lensRules}
 
 TRIP CONTEXT: ${tripContext || "unspecified"}
-
+${renderLiveSourceBlock(liveSnippets)}
 REVIEW DISCIPLINE — STRICT:
 • Findings only. No general praise, no recap, no "overall this is a strong plan" prose.
 • Each finding is a real, actionable issue. If the plan is genuinely strong with no notes, emit verdict 'A — no notes' and findings: [] (empty array allowed).
