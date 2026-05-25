@@ -48,87 +48,69 @@ const SOURCE_CONFIG = {
   cnt: {
     name: "Condé Nast Traveler",
     domains: ["cntraveler.com"],
-    q: ({ destination, hotel_name }) =>
-      hotel_name
-        ? `${destination} ${hotel_name} hot list gold list reader's choice`
-        : `${destination} hot list gold list best hotels`,
-    recency: "year",
+    // Keep queries short — Sonar's recall drops sharply when 4+ proper nouns
+    // are AND-ed together. We ask for the hot/gold list signal generically and
+    // let Sonar rank within the destination + domain scope.
+    q: ({ destination }) => `${destination} hotels`,
   },
   tl: {
     name: "Travel + Leisure",
     domains: ["travelandleisure.com"],
-    q: ({ destination }) => `${destination} world's best hotels A-list`,
-    recency: "year",
+    q: ({ destination }) => `${destination} hotels`,
   },
   departures: {
     name: "Departures",
     domains: ["departures.com"],
-    q: ({ destination, hotel_name }) =>
-      hotel_name ? `${destination} ${hotel_name}` : `${destination} luxury travel`,
+    q: ({ destination }) => `${destination} luxury`,
   },
   forbes: {
     name: "Forbes Travel Guide",
     domains: ["forbestravelguide.com"],
-    q: ({ destination, hotel_name }) =>
-      hotel_name
-        ? `${hotel_name} ${destination} 5 star rating`
-        : `${destination} 5 star hotels star rating`,
+    q: ({ destination, hotel_name }) => hotel_name ? `${hotel_name}` : `${destination} hotels`,
   },
   michelinK: {
     name: "Michelin Keys",
     domains: ["guide.michelin.com"],
     q: ({ destination, hotel_name }) =>
-      hotel_name
-        ? `${hotel_name} ${destination} Michelin Keys hotel`
-        : `${destination} Michelin Keys hotels`,
+      hotel_name ? `${hotel_name} Keys` : `${destination} Keys hotels`,
   },
   lqa: {
     name: "LQA / Leading Hotels",
-    domains: ["lqa.com", "lhw.com"],
-    q: ({ destination, hotel_name }) =>
-      hotel_name ? `${hotel_name} Leading Hotels of the World` : `${destination} Leading Hotels of the World`,
+    domains: ["lhw.com"],
+    q: ({ destination, hotel_name }) => hotel_name ? `${hotel_name}` : `${destination} hotels`,
   },
   michelinG: {
     name: "Michelin Guide",
     domains: ["guide.michelin.com"],
     q: ({ destination, restaurants }) => {
       const r = (restaurants && restaurants[0]) || "";
-      return r
-        ? `${r} ${destination} Michelin star Bib Gourmand`
-        : `${destination} Michelin Guide restaurants stars`;
+      return r ? `${r} ${destination}` : `${destination} restaurants`;
     },
   },
   w50b: {
     name: "World's 50 Best",
     domains: ["theworlds50best.com"],
-    q: ({ destination, restaurants }) => {
-      const r = (restaurants && restaurants[0]) || "";
-      return r ? `${r} ${destination} 50 best` : `${destination} 50 best restaurants`;
-    },
+    q: ({ destination }) => `${destination}`,
   },
   eater: {
     name: "Eater",
     domains: ["eater.com"],
-    q: ({ destination }) => `${destination} eater heatmap essential 38 best restaurants`,
-    recency: "year",
+    q: ({ destination }) => `${destination} best restaurants`,
   },
   nyt36: {
     name: "NYT 36 Hours",
     domains: ["nytimes.com"],
-    q: ({ destination }) => `36 hours in ${destination}`,
-    recency: "year",
+    q: ({ destination }) => `36 hours ${destination}`,
   },
   ftHTSI: {
     name: "FT How to Spend It",
-    domains: ["ft.com", "howtospendit.ft.com"],
-    q: ({ destination }) => `${destination} how to spend it travel`,
+    domains: ["ft.com"],
+    q: ({ destination }) => `${destination} travel`,
   },
   reddit: {
     name: "Reddit + locals",
     domains: ["reddit.com"],
-    q: ({ destination, hotel_name }) =>
-      hotel_name ? `${destination} ${hotel_name} trip report locals` : `${destination} travel tips locals`,
-    recency: "year",
+    q: ({ destination }) => `${destination} travel`,
   },
 };
 
