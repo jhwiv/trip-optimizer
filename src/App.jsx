@@ -3638,6 +3638,40 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
   const isMultiCityPlan = Array.isArray(data.cities) && data.cities.length > 1;
   return (
     <div id="trip-print-root">
+      <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", marginBottom: "0.75rem" }}>
+        <button
+          type="button"
+          onClick={() => {
+            if (window.confirm("Return to the start? This trip plan will be cleared from the view.")) {
+              if (typeof onBack === "function") onBack();
+            }
+          }}
+          aria-label="Return to home"
+          title="Return to home"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "6px",
+            background: "transparent",
+            color: GOLD,
+            border: `0.5px solid ${GOLD}`,
+            borderRadius: "var(--border-radius-md)",
+            padding: "7px 12px",
+            fontSize: "11px",
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            cursor: "pointer",
+            fontFamily: "inherit",
+            fontWeight: 500,
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 10.5 12 3l9 7.5" />
+            <path d="M5 9.5V21h14V9.5" />
+          </svg>
+          <span>Home</span>
+        </button>
+      </div>
       <InputSummary inputs={inputs} />
       <MenuModal restaurant={menuRestaurant} onClose={() => setMenuRestaurant(null)} />
 
@@ -6814,6 +6848,48 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           <div>
             <SavedTripsPanel trips={savedTrips} onOpen={handleOpenSavedTrip} onDelete={handleDeleteSavedTrip} />
             <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={dismissStale} />
+            {(() => {
+              const hasContent = !!(basics.destination || basics.startDate || basics.endDate || basics.baseArea || basics.travelers || (cities && cities.some(c => c.name)) || (restaurants && restaurants.length > 0) || (activities && activities.length > 0) || result);
+              if (!hasContent) return null;
+              return (
+                <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "1rem" }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm("Clear all trip details and start fresh?")) {
+                        resetFormToBlank();
+                        setCurrentSavedTripId(null);
+                        setReviewState(null);
+                      }
+                    }}
+                    aria-label="Reset plan"
+                    title="Clear all trip details and start fresh"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      background: "transparent",
+                      color: GOLD,
+                      border: `0.5px solid ${GOLD}`,
+                      borderRadius: "var(--border-radius-md)",
+                      padding: "7px 12px",
+                      fontSize: "11px",
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                      fontWeight: 500,
+                    }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M3 12a9 9 0 1 0 3-6.7" />
+                      <path d="M3 3v5h5" />
+                    </svg>
+                    <span>Reset plan</span>
+                  </button>
+                </div>
+              );
+            })()}
             <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Four essentials to start. Refine the details after, or build immediately.</p>
 
             <div style={cardStyle}>
@@ -6894,7 +6970,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               {!ready ? `Still needed: ${missing.join(", ")}` : ""}
             </p>
             {ready && (
-              <button onClick={handleBuild} style={{ color: GOLD, fontSize: "12px", cursor: "pointer", background: "none", border: "none", padding: 0, textDecoration: "underline", marginTop: "4px", display: "block", textAlign: "center", fontFamily: "inherit", fontStyle: "italic", width: "100%" }}>
+              <button onClick={() => { setStep(2); handleBuild(); }} style={{ color: GOLD, fontSize: "12px", cursor: "pointer", background: "none", border: "none", padding: 0, textDecoration: "underline", marginTop: "4px", display: "block", textAlign: "center", fontFamily: "inherit", fontStyle: "italic", width: "100%" }}>
                 Build now with essentials only →
               </button>
             )}
