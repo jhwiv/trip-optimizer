@@ -5800,6 +5800,136 @@ Total: ${totalNights} nights = ${totalDays} days.
 • MINIMUM 2 NIGHTS per city when cities.length === 3 — if the user gave 1 night for a leg in a 3-city trip, set a flags[] warning that one night doesn't leave time to enjoy that city and suggest a re-balance.
 • HOTEL ITEMS: One check-in Hotel item per leg (at arrival) and a check-out item on the last morning of each leg EXCEPT the final leg's check-out which is on the very last day before flying home. Each leg's stay must be a DIFFERENT hotel (different city = different hotel).
 • weather and weather_window: if cities are in very different climates (mountain vs coast vs desert), call this out in weather_window AND give per-day weather that reflects the city's actual climate for that day.` : "";
+    // ------------------------------------------------------------------
+    // Destination-aware filtering of the large static reference blocks
+    // (MARQUEE SIGHTS list + ARRIVAL-AIRPORT mappings + ROUTE-TRUTH list).
+    // The full blocks are ~14k chars of mostly-irrelevant reference data —
+    // for a Santa Fe trip from EWR, only ~5 lines of marquee + 2 airport
+    // lines apply. Filtering by destination keywords keeps just the
+    // relevant lines and cuts the system prompt from ~29k to ~15k chars,
+    // which translates to faster Anthropic streaming (less prompt to load
+    // + less context overhead per token) and lower input-token cost.
+    //
+    // Filter is keyword-based and case-insensitive. We use a generous match
+    // (destination name + each city + home/destination airport codes) so
+    // we err on the side of keeping a line. If NO line matches, we keep
+    // the full block — better to be slow than to drop relevant guidance.
+    // ------------------------------------------------------------------
+    const _destText = [basics.destination || "", ...cities.map(c => c.name || "")].join(" ").toLowerCase();
+    const _homeAirportCode = (extractAirportCode(flights.homeAirport) || flights.homeAirport || "").toUpperCase();
+    const _destAirportHints = []; // we can't know the dest airport, but the source text usually mentions the city name
+    const _routeKeywords = new Set([_homeAirportCode, ...(_destText.match(/[a-z]{4,}/g) || [])].filter(Boolean));
+    // Tokenize destination string into useful keywords. Drop short stopwords.
+    const _STOP = new Set(["city","county","area","region","island","valley","state","north","south","east","west","usa","us","new","old","the"]);
+    const _destKeywords = (_destText.match(/[a-z]{3,}/g) || []).filter(w => !_STOP.has(w));
+    // Helper: does a line of static reference contain any destination keyword
+    // OR (for flight lines) any airport code that matters to this trip?
+    const _lineMatchesDestination = (line) => {
+      const lc = line.toLowerCase();
+      for (const k of _destKeywords) {
+        if (lc.includes(k)) return true;
+      }
+      // Match home-airport code or destination airport code references on
+      // route-truth lines. Codes appear as 3-letter all-caps in the lines.
+      if (_homeAirportCode && line.includes(_homeAirportCode)) return true;
+      return false;
+    };
+
+    // ---- MARQUEE SIGHTS list (continent-by-continent bullets) ----
+    // Each bullet starts with "• " + a region tag. Keep the intro paragraph
+    // and the closing General-rule paragraph always; filter the bullets.
+    const _marqueeBullets = [
+      `• Italy — Venice: Doge's Palace + St. Mark's Basilica (book Secret Itineraries tour ahead), gondola ride at golden hour, Rialto market morning, San Giorgio Maggiore campanile for the view. Florence: Uffizi, Accademia (David), Duomo + Brunelleschi dome climb (timed), Boboli Gardens, Ponte Vecchio at sunset. Rome: Vatican Museums + Sistine, Colosseum + Forum, Borghese Gallery (timed-entry mandatory), Trastevere food walk, Pantheon. Milan: Last Supper (book months ahead), Duomo + rooftop, Galleria Vittorio Emanuele.`,
+      `• France — Paris: Louvre, Musée d'Orsay, Eiffel Tower (timed), Sainte-Chapelle, Versailles day trip. Provence: Pont du Gard, Avignon Palais des Papes, Les Baux. Nice/Côte d'Azur: Èze village, Cap Ferrat walk, Old Town market.`,
+      `• Spain — Barcelona: Sagrada Família + Park Güell + Casa Batlló, La Boqueria, Gothic Quarter. Madrid: Prado, Reina Sofía, Retiro Park, tapas crawl in La Latina. Granada: Alhambra (book MONTHS ahead). Seville: Alcázar + Cathedral + Giralda, flamenco in Triana.`,
+      `• UK — London: British Museum, Tate Modern, Westminster Abbey or Tower of London, West End show, afternoon tea. Edinburgh: Castle + Royal Mile + Holyrood + Arthur's Seat.`,
+      `• Netherlands — Amsterdam: Rijksmuseum, Van Gogh, Anne Frank House (book exactly 6 weeks ahead at 10:00 release window), canal cruise.`,
+      `• Czech — Prague: Castle complex, Old Town Square + astronomical clock, Charles Bridge at dawn, Jewish Quarter.`,
+      `• Austria — Vienna: Schloss Schönbrunn, Kunsthistorisches, Stephansdom, coffeehouse ritual (Café Central / Demel). Salzburg: Festung Hohensalzburg, Mirabell, Mozart sites.`,
+      `• Switzerland — Zürich: Altstadt walk, lake cruise, Bahnhofstrasse. Lucerne: Chapel Bridge, Mt Pilatus or Rigi excursion. Interlaken: Jungfraujoch (day trip, book ahead). St. Moritz: Muottas Muragl funicular for the view, Segantini Museum.`,
+      `• Greece — Athens: Acropolis + Acropolis Museum (book pre-dawn slot), Pláka, National Archaeological Museum. Santorini: Oia sunset, Akrotiri ruins, caldera boat tour.`,
+      `• Turkey — Istanbul: Hagia Sophia, Blue Mosque, Topkapı, Grand Bazaar, Bosphorus cruise.`,
+      `• US — NYC: Met, MoMA, Statue of Liberty + Ellis Island, Brooklyn Bridge walk, Broadway show. Santa Fe: Georgia O'Keeffe Museum, Canyon Road galleries, Bandelier or Tent Rocks excursion, Plaza + cathedral. New Orleans: French Quarter, Garden District + Lafayette Cemetery, jazz at Preservation Hall.`,
+      `• US SOUTHEAST — Greenville, SC: Falls Park on the Reedy + Liberty Bridge (the iconic curved suspension bridge over the falls — unmissable, both daytime and golden-hour), Swamp Rabbit Trail (cycle or e-bike Furman → downtown is the signature local experience), Main Street stroll + GVL Today public art, Greenville Zoo or Roper Mountain Science Center if traveling with kids, day trip to Caesar's Head State Park overlook OR Table Rock for a Blue Ridge view. Asheville, NC: Biltmore Estate (half-day minimum, book ahead), Blue Ridge Parkway scenic drive + Craggy Gardens or Graveyard Fields, River Arts District studio crawl, Grove Park Inn (high tea or sunset terrace), downtown food + craft beer walk. Charleston, SC: Battery + Rainbow Row walk, Magnolia or Middleton Place plantation/garden, carriage tour of the historic district, Fort Sumter ferry, King Street shopping + dinner. Savannah, GA: Forsyth Park, Bonaventure Cemetery, Historic District square walk (22 squares!), River Street, Wormsloe Historic Site oak avenue. Nashville, TN: Country Music Hall of Fame, Ryman Auditorium tour, honky-tonk row on Broadway, Belle Meade / Cheekwood, Grand Ole Opry show. Charlotte, NC: NASCAR Hall of Fame, Bechtler / Mint Museum, US National Whitewater Center, NoDa arts district. Memphis, TN: Graceland, Sun Studio, National Civil Rights Museum, Beale Street.`,
+      `• US MOUNTAIN/WEST (non-marquee cities) — Bozeman, MT: Museum of the Rockies + T. rex, Hyalite Canyon hike/snowshoe, Bridger Bowl or Big Sky day trip, downtown Main Street. Jackson, WY: Grand Teton drive (Snake River Overlook, Schwabacher Landing), wildlife safari at dawn, Town Square antler arches, Mangy Moose or Million Dollar Cowboy. Sun Valley, ID: Sun Valley Resort + ice show, Bald Mountain gondola, Ketchum gallery walk, Hemingway's grave. Aspen, CO: Maroon Bells (book shuttle ahead in summer), Aspen Mountain gondola, Aspen Art Museum, downtown stroll + Wheeler Opera House. Vail, CO: Gondola One up Vail Mountain, Betty Ford Alpine Gardens, Vail Village stroll, day trip to Beaver Creek. Telluride, CO: Free gondola to Mountain Village, Bridal Veil Falls hike or drive, historic Main Street.`,
+      `• US OTHER — Key West: Mallory Square sunset, Hemingway Home, Duval Street, Dry Tortugas day trip if 3+ nights. Sedona: Cathedral Rock + Bell Rock hikes, pink-jeep tour, Chapel of the Holy Cross, Palatki ruins. Napa/Sonoma: 2–3 winery visits with appointment, Castello di Amorosa or Sterling, Oxbow Public Market, hot-air balloon at dawn. Outer Banks: Wright Brothers National Memorial, Cape Hatteras Lighthouse, Bodie Island, Roanoke Festival Park. Hilton Head: beach day, Harbour Town Lighthouse, Pinckney Island wildlife refuge, Coastal Discovery Museum.`,
+      `• CARIBBEAN — Anguilla, St. Barth, Turks & Caicos: the beach IS the marquee — still schedule one anchor experience (Shoal Bay snorkel + lunch, Gustavia harbor walk, Chalk Sound + Smith's Reef). Don't pretend a beach destination has no marquee — plan the signature beach and the signature meal.`,
+      `• Japan — Tokyo: Senso-ji, Tsukiji outer market, teamLab, Meiji Shrine, Shibuya crossing + Shinjuku at night. Kyoto: Fushimi Inari at dawn, Kinkaku-ji, Arashiyama bamboo + Iwatayama monkeys, Gion at dusk, kaiseki dinner.`,
+    ];
+    const _marqueeMatched = _marqueeBullets.filter(_lineMatchesDestination);
+    // If we matched any bullets, send only those (typically 1-2 lines). If we
+    // matched none — e.g. an obscure destination — fall back to the general
+    // rule alone (the model still composes a marquee list from its own
+    // knowledge per the General-rule paragraph that follows).
+    const _marqueeBlock = _marqueeMatched.length > 0
+      ? _marqueeMatched.join("\n")
+      : "";
+
+    // ---- ARRIVAL AIRPORT mappings (regional-vs-hub guidance) ----
+    // Each line is a single regional airport mapping bullet. Filter to lines
+    // mentioning the destination, OR keep none and let the GENERAL RULE carry.
+    const _airportLines = [
+      `   - Bar Harbor / Acadia, Maine → BHB (15 min, seasonal Cape Air/JetBlue) or BGR (50 min, year-round mainline). NOT BOS (5 h drive) and NOT PWM (3 h drive).`,
+      `   - Santa Fe → SAF (15 min, limited) or ABQ (1 h, most options). NOT DEN or DFW.`,
+      `   - Taos → TAOS (15 min, limited) or ABQ (2.5 h) or SAF (1.5 h).`,
+      `   - Jackson Hole / Grand Teton → JAC (15 min). NOT SLC unless winter weather closure.`,
+      `   - Aspen → ASE (15 min) or EGE (1 h 15) or GJT (2 h 30). NOT DEN (4 h drive).`,
+      `   - Vail / Beaver Creek → EGE (45 min) or ASE (1 h 30) or DEN (2 h).`,
+      `   - Sun Valley → SUN (15 min) or BOI (2 h 30).`,
+      `   - Big Sky / Yellowstone → BZN (1 h) or WYS (seasonal) or JAC (south entrance).`,
+      `   - Glacier National Park → GPI/FCA (30 min) or MSO (2 h 30).`,
+      `   - Napa / Sonoma → STS (Santa Rosa, 45 min from Napa) or OAK (1 h) or SFO (1 h 30). Avoid SJC.`,
+      `   - Martha's Vineyard → MVY (10 min) or HYA (ferry + drive) or BOS (3 h+ferry).`,
+      `   - Nantucket → ACK (10 min) or HYA (ferry) or BOS (3 h+ferry).`,
+      `   - Hamptons / Montauk → HTO (East Hampton, seasonal) or ISP (Long Island MacArthur, 1 h 30) or JFK (2 h 30).`,
+      `   - Cape Cod → HYA (Hyannis) or PVC (Provincetown) or BOS (1 h 30–3 h).`,
+      `   - Newport, Rhode Island → PVD (45 min) or BOS (1 h 30).`,
+      `   - Hilton Head → HHH (15 min) or SAV (45 min). NOT CHS.`,
+      `   - Savannah → SAV (15 min). NOT JAX or CHS.`,
+      `   - Asheville → AVL (20 min). NOT CLT (2 h 15) and NOT GSP (1 h).`,
+      `   - Charleston SC → CHS (20 min).`,
+      `   - Key West → EYW (10 min) or MIA (3 h 30).`,
+      `   - Park City / Deer Valley → SLC (45 min).`,
+      `   - Telluride → TEX (10 min) or MTJ (1 h 15) or GJT (2 h 30) or DEN (6 h+).`,
+      `   - Steamboat Springs → HDN (30 min) or DEN (3 h).`,
+      `   - Hallstatt → SZG (Salzburg, 1 h 15) or VIE (3 h).`,
+      `   - Interlaken → BRN (1 h) or ZRH (2 h) or GVA (2 h 30).`,
+      `   - St. Moritz → ZRH (3 h) or MXP (3 h 30) or LUG (2 h).`,
+      `   - Zermatt → ZRH (3 h 30 + train) or GVA (3 h 30 + train).`,
+      `   - Chamonix → GVA (1 h 15) or LYS (2 h 30).`,
+      `   - Reykjavik → KEF (45 min).`,
+      `   - Cinque Terre → PSA (1 h) or GOA (1 h 30) or MXP (3 h 30).`,
+      `   - Tuscany / Florence → FLR (20 min) or PSA (1 h 30) or BLQ (1 h 30).`,
+      `   - Amalfi / Positano → NAP (1 h 15).`,
+      `   - Capri → NAP (1 h 30 + ferry).`,
+      `   - Sicily → CTA (Catania) or PMO (Palermo).`,
+      `   - Mallorca → PMI. Ibiza → IBZ. Mykonos → JMK. Santorini → JTR.`,
+    ];
+    const _airportMatched = _airportLines.filter(_lineMatchesDestination);
+    const _airportBlock = _airportMatched.length > 0 ? _airportMatched.join("\n") + "\n" : "";
+
+    // ---- ROUTE TRUTH (transatlantic / long-haul nonstop guidance) ----
+    // Only relevant when flying internationally; for a domestic-US trip,
+    // none of these lines match and the block is empty. Otherwise keep
+    // lines that mention either the home airport code or any of the
+    // destination's airports/regions.
+    const _routeLines = [
+      `   - EWR ↔ CPH: SAS operates the daily nonstop. United sells the route only as codeshare/connecting (via FRA, MUC, ZRH). Do NOT emit "United nonstop EWR-CPH".`,
+      `   - JFK ↔ CPH: SAS and Norse Atlantic. Delta connects.`,
+      `   - EWR ↔ ZRH: United and Swiss both operate nonstop daily.`,
+      `   - JFK ↔ ZRH: Swiss and Delta operate nonstop.`,
+      `   - EWR/JFK ↔ LHR: BA, United (EWR), Virgin Atlantic, American (JFK), Delta (JFK) all run nonstops.`,
+      `   - JFK ↔ CDG: Air France, Delta, American operate nonstop.`,
+      `   - EWR ↔ CDG: United and Air France nonstop.`,
+      `   - EWR/JFK ↔ FRA: Lufthansa, United (EWR), Singapore (JFK via FRA).`,
+      `   - JFK ↔ NRT/HND: ANA, JAL, Delta (HND), American (HND).`,
+      `   - LAX ↔ NRT/HND: ANA, JAL, Delta, American, United.`,
+    ];
+    const _routeMatched = _routeLines.filter(_lineMatchesDestination);
+    const _routeTruthBlock = _routeMatched.length > 0
+      ? `• ROUTE TRUTH — common transatlantic / long-haul nonstops you MUST get right:\n${_routeMatched.join("\n")}\n  If the user's route is NOT in this list and you're unsure, list 2–3 candidate carriers in flags[] and DO NOT invent a single specific carrier.\n`
+      : "";
+
     return `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}
 
 FIELD EMISSION ORDER — CRITICAL:
@@ -5834,22 +5964,7 @@ VARIETY RULES — STRICT, NON-NEGOTIABLE:
 
 MARQUEE SIGHTS — NEVER ASSUME, ALWAYS SCHEDULE:
 Every destination has 2–6 marquee sights that any luxury traveler will expect to see. You MUST explicitly schedule each one as a dedicated Activity item with a specific day, time slot, and (when ticketed) booking detail. Do NOT mention them only in passing in a headline or snobs entry. If a marquee sight is intentionally skipped (e.g. the user already saw it on a previous trip, or the dates exclude it), say so explicitly in flags[].
-• Italy — Venice: Doge's Palace + St. Mark's Basilica (book Secret Itineraries tour ahead), gondola ride at golden hour, Rialto market morning, San Giorgio Maggiore campanile for the view. Florence: Uffizi, Accademia (David), Duomo + Brunelleschi dome climb (timed), Boboli Gardens, Ponte Vecchio at sunset. Rome: Vatican Museums + Sistine, Colosseum + Forum, Borghese Gallery (timed-entry mandatory), Trastevere food walk, Pantheon. Milan: Last Supper (book months ahead), Duomo + rooftop, Galleria Vittorio Emanuele.
-• France — Paris: Louvre, Musée d'Orsay, Eiffel Tower (timed), Sainte-Chapelle, Versailles day trip. Provence: Pont du Gard, Avignon Palais des Papes, Les Baux. Nice/Côte d'Azur: Èze village, Cap Ferrat walk, Old Town market.
-• Spain — Barcelona: Sagrada Família + Park Güell + Casa Batlló, La Boqueria, Gothic Quarter. Madrid: Prado, Reina Sofía, Retiro Park, tapas crawl in La Latina. Granada: Alhambra (book MONTHS ahead). Seville: Alcázar + Cathedral + Giralda, flamenco in Triana.
-• UK — London: British Museum, Tate Modern, Westminster Abbey or Tower of London, West End show, afternoon tea. Edinburgh: Castle + Royal Mile + Holyrood + Arthur's Seat.
-• Netherlands — Amsterdam: Rijksmuseum, Van Gogh, Anne Frank House (book exactly 6 weeks ahead at 10:00 release window), canal cruise.
-• Czech — Prague: Castle complex, Old Town Square + astronomical clock, Charles Bridge at dawn, Jewish Quarter.
-• Austria — Vienna: Schloss Schönbrunn, Kunsthistorisches, Stephansdom, coffeehouse ritual (Café Central / Demel). Salzburg: Festung Hohensalzburg, Mirabell, Mozart sites.
-• Switzerland — Zürich: Altstadt walk, lake cruise, Bahnhofstrasse. Lucerne: Chapel Bridge, Mt Pilatus or Rigi excursion. Interlaken: Jungfraujoch (day trip, book ahead). St. Moritz: Muottas Muragl funicular for the view, Segantini Museum.
-• Greece — Athens: Acropolis + Acropolis Museum (book pre-dawn slot), Pláka, National Archaeological Museum. Santorini: Oia sunset, Akrotiri ruins, caldera boat tour.
-• Turkey — Istanbul: Hagia Sophia, Blue Mosque, Topkapı, Grand Bazaar, Bosphorus cruise.
-• US — NYC: Met, MoMA, Statue of Liberty + Ellis Island, Brooklyn Bridge walk, Broadway show. Santa Fe: Georgia O'Keeffe Museum, Canyon Road galleries, Bandelier or Tent Rocks excursion, Plaza + cathedral. New Orleans: French Quarter, Garden District + Lafayette Cemetery, jazz at Preservation Hall.
-• US SOUTHEAST — Greenville, SC: Falls Park on the Reedy + Liberty Bridge (the iconic curved suspension bridge over the falls — unmissable, both daytime and golden-hour), Swamp Rabbit Trail (cycle or e-bike Furman → downtown is the signature local experience), Main Street stroll + GVL Today public art, Greenville Zoo or Roper Mountain Science Center if traveling with kids, day trip to Caesar's Head State Park overlook OR Table Rock for a Blue Ridge view. Asheville, NC: Biltmore Estate (half-day minimum, book ahead), Blue Ridge Parkway scenic drive + Craggy Gardens or Graveyard Fields, River Arts District studio crawl, Grove Park Inn (high tea or sunset terrace), downtown food + craft beer walk. Charleston, SC: Battery + Rainbow Row walk, Magnolia or Middleton Place plantation/garden, carriage tour of the historic district, Fort Sumter ferry, King Street shopping + dinner. Savannah, GA: Forsyth Park, Bonaventure Cemetery, Historic District square walk (22 squares!), River Street, Wormsloe Historic Site oak avenue. Nashville, TN: Country Music Hall of Fame, Ryman Auditorium tour, honky-tonk row on Broadway, Belle Meade / Cheekwood, Grand Ole Opry show. Charlotte, NC: NASCAR Hall of Fame, Bechtler / Mint Museum, US National Whitewater Center, NoDa arts district. Memphis, TN: Graceland, Sun Studio, National Civil Rights Museum, Beale Street.
-• US MOUNTAIN/WEST (non-marquee cities) — Bozeman, MT: Museum of the Rockies + T. rex, Hyalite Canyon hike/snowshoe, Bridger Bowl or Big Sky day trip, downtown Main Street. Jackson, WY: Grand Teton drive (Snake River Overlook, Schwabacher Landing), wildlife safari at dawn, Town Square antler arches, Mangy Moose or Million Dollar Cowboy. Sun Valley, ID: Sun Valley Resort + ice show, Bald Mountain gondola, Ketchum gallery walk, Hemingway's grave. Aspen, CO: Maroon Bells (book shuttle ahead in summer), Aspen Mountain gondola, Aspen Art Museum, downtown stroll + Wheeler Opera House. Vail, CO: Gondola One up Vail Mountain, Betty Ford Alpine Gardens, Vail Village stroll, day trip to Beaver Creek. Telluride, CO: Free gondola to Mountain Village, Bridal Veil Falls hike or drive, historic Main Street.
-• US OTHER — Key West: Mallory Square sunset, Hemingway Home, Duval Street, Dry Tortugas day trip if 3+ nights. Sedona: Cathedral Rock + Bell Rock hikes, pink-jeep tour, Chapel of the Holy Cross, Palatki ruins. Napa/Sonoma: 2–3 winery visits with appointment, Castello di Amorosa or Sterling, Oxbow Public Market, hot-air balloon at dawn. Outer Banks: Wright Brothers National Memorial, Cape Hatteras Lighthouse, Bodie Island, Roanoke Festival Park. Hilton Head: beach day, Harbour Town Lighthouse, Pinckney Island wildlife refuge, Coastal Discovery Museum.
-• CARIBBEAN — Anguilla, St. Barth, Turks & Caicos: the beach IS the marquee — still schedule one anchor experience (Shoal Bay snorkel + lunch, Gustavia harbor walk, Chalk Sound + Smith's Reef). Don't pretend a beach destination has no marquee — plan the signature beach and the signature meal.
-• Japan — Tokyo: Senso-ji, Tsukiji outer market, teamLab, Meiji Shrine, Shibuya crossing + Shinjuku at night. Kyoto: Fushimi Inari at dawn, Kinkaku-ji, Arashiyama bamboo + Iwatayama monkeys, Gion at dusk, kaiseki dinner.
+${_marqueeBlock}
 
 General rule: if your destination is not in the list above, generate the equivalent "top 4–6 marquee experiences any first-time visitor would expect" list mentally and schedule each one. If the user gave fewer nights than needed to cover all marquees, surface the gap in flags[].
 
@@ -5892,59 +6007,12 @@ FLIGHTS — ACCURACY OVER SPECIFICITY, PREFER NONSTOP, ALWAYS STRUCTURED:
 • Every Flight item MUST include a "flight" object with: carrier, from_airport (IATA), to_airport (IATA), depart_time (rough window OK), arrive_time (rough window OK), duration, nonstop (boolean), cabin, aircraft, confirmation_note. Do NOT include flight_number — the app handles flight-number lookup for the user.
 • CARRIER SELECTION — DO THIS FIRST: name a carrier you are HIGHLY CONFIDENT actually operates a nonstop on this exact city pair. If you cannot name one with confidence, leave carrier as a comma-separated short list of candidates (e.g. "SAS or Delta") and add a flags[] entry like "Verify which carrier operates nonstop — candidates: SAS, Delta". Do NOT invent a carrier that doesn't fly the route.
 • FLIGHT NUMBERS — DO NOT EMIT. The app strips any flight_number you send and renders a "Look up actual flight" link instead. Set "flight_number": null. The user looks up the real flight on Google Flights, not from your output. Do NOT make up numbers like "UA 1234" — they will be removed but they waste tokens and erode trust if anyone sees the raw JSON.
-• ROUTE TRUTH — common transatlantic / long-haul nonstops you MUST get right:
-   - EWR ↔ CPH: SAS operates the daily nonstop. United sells the route only as codeshare/connecting (via FRA, MUC, ZRH). Do NOT emit "United nonstop EWR-CPH".
-   - JFK ↔ CPH: SAS and Norse Atlantic. Delta connects.
-   - EWR ↔ ZRH: United and Swiss both operate nonstop daily.
-   - JFK ↔ ZRH: Swiss and Delta operate nonstop.
-   - EWR/JFK ↔ LHR: BA, United (EWR), Virgin Atlantic, American (JFK), Delta (JFK) all run nonstops.
-   - JFK ↔ CDG: Air France, Delta, American operate nonstop.
-   - EWR ↔ CDG: United and Air France nonstop.
-   - EWR/JFK ↔ FRA: Lufthansa, United (EWR), Singapore (JFK via FRA).
-   - JFK ↔ NRT/HND: ANA, JAL, Delta (HND), American (HND).
-   - LAX ↔ NRT/HND: ANA, JAL, Delta, American, United.
-  If the user's route is NOT in this list and you're unsure, list 2–3 candidate carriers in flags[] and DO NOT invent a single specific carrier.
-• Every confirmation_note MUST literally end with this exact sentence: "Verify flight number, times and equipment at booking — schedules change." Copy it verbatim; do not paraphrase.
+${_routeTruthBlock}• Every confirmation_note MUST literally end with this exact sentence: "Verify flight number, times and equipment at booking — schedules change." Copy it verbatim; do not paraphrase.
 • WRONG confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C"
 • RIGHT confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C. Verify flight number, times and equipment at booking — schedules change."
 • Search for nonstop service from the home airport to the destination's primary airport first.
 • ARRIVAL AIRPORT — PICK THE CLOSEST VIABLE ONE, NOT THE NEAREST MAJOR HUB. For destinations with smaller regional airports, the right answer is the regional, not the metro hub the model knows best. Specifically:
-   - Bar Harbor / Acadia, Maine → BHB (15 min, seasonal Cape Air/JetBlue) or BGR (50 min, year-round mainline). NOT BOS (5 h drive) and NOT PWM (3 h drive).
-   - Santa Fe → SAF (15 min, limited) or ABQ (1 h, most options). NOT DEN or DFW.
-   - Taos → TAOS (15 min, limited) or ABQ (2.5 h) or SAF (1.5 h).
-   - Jackson Hole / Grand Teton → JAC (15 min). NOT SLC unless winter weather closure.
-   - Aspen → ASE (15 min) or EGE (1 h 15) or GJT (2 h 30). NOT DEN (4 h drive).
-   - Vail / Beaver Creek → EGE (45 min) or ASE (1 h 30) or DEN (2 h).
-   - Sun Valley → SUN (15 min) or BOI (2 h 30).
-   - Big Sky / Yellowstone → BZN (1 h) or WYS (seasonal) or JAC (south entrance).
-   - Glacier National Park → GPI/FCA (30 min) or MSO (2 h 30).
-   - Napa / Sonoma → STS (Santa Rosa, 45 min from Napa) or OAK (1 h) or SFO (1 h 30). Avoid SJC.
-   - Martha's Vineyard → MVY (10 min) or HYA (ferry + drive) or BOS (3 h+ferry).
-   - Nantucket → ACK (10 min) or HYA (ferry) or BOS (3 h+ferry).
-   - Hamptons / Montauk → HTO (East Hampton, seasonal) or ISP (Long Island MacArthur, 1 h 30) or JFK (2 h 30).
-   - Cape Cod → HYA (Hyannis) or PVC (Provincetown) or BOS (1 h 30–3 h).
-   - Newport, Rhode Island → PVD (45 min) or BOS (1 h 30).
-   - Hilton Head → HHH (15 min) or SAV (45 min). NOT CHS.
-   - Savannah → SAV (15 min). NOT JAX or CHS.
-   - Asheville → AVL (20 min). NOT CLT (2 h 15) and NOT GSP (1 h).
-   - Charleston SC → CHS (20 min).
-   - Key West → EYW (10 min) or MIA (3 h 30).
-   - Park City / Deer Valley → SLC (45 min).
-   - Telluride → TEX (10 min) or MTJ (1 h 15) or GJT (2 h 30) or DEN (6 h+).
-   - Steamboat Springs → HDN (30 min) or DEN (3 h).
-   - Hallstatt → SZG (Salzburg, 1 h 15) or VIE (3 h).
-   - Interlaken → BRN (1 h) or ZRH (2 h) or GVA (2 h 30).
-   - St. Moritz → ZRH (3 h) or MXP (3 h 30) or LUG (2 h).
-   - Zermatt → ZRH (3 h 30 + train) or GVA (3 h 30 + train).
-   - Chamonix → GVA (1 h 15) or LYS (2 h 30).
-   - Reykjavik → KEF (45 min).
-   - Cinque Terre → PSA (1 h) or GOA (1 h 30) or MXP (3 h 30).
-   - Tuscany / Florence → FLR (20 min) or PSA (1 h 30) or BLQ (1 h 30).
-   - Amalfi / Positano → NAP (1 h 15).
-   - Capri → NAP (1 h 30 + ferry).
-   - Sicily → CTA (Catania) or PMO (Palermo).
-   - Mallorca → PMI. Ibiza → IBZ. Mykonos → JMK. Santorini → JTR.
-  GENERAL RULE: when a regional airport with scheduled passenger service exists within ~1 h of the destination, prefer it over a metro hub 2–5 h away even if the hub has more flight options. Long drives erode trip time; users prefer one short drive over a savings of a couple connecting flights.
+${_airportBlock}  GENERAL RULE: when a regional airport with scheduled passenger service exists within ~1 h of the destination, prefer it over a metro hub 2–5 h away even if the hub has more flight options. Long drives erode trip time; users prefer one short drive over a savings of a couple connecting flights.
 • If no nonstop exists to the requested airport but one exists to a nearby airport in the same metro (e.g., ABQ ~60min from Santa Fe instead of SAF), RECOMMEND THE NONSTOP and add a flags[] note mentioning the drive time.
 • Only return a connecting itinerary if no nonstop exists to any reasonable nearby airport. Set nonstop=false and fill "connection" with the connecting airport IATA.
 • In each Flight item's text, explicitly state "nonstop" or "connecting via X".
