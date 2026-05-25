@@ -3765,6 +3765,15 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             <p style={{ marginTop: "10px", fontSize: "12px", color: GOLD, textAlign: "center", fontWeight: 600 }}>✓ Changes applied to your plan.</p>
           )}
           {error && <p style={{ fontSize: "11.5px", color: "#c0392b", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
+
+          {/* User-authored change request — lets the traveler ask for a
+              specific swap on top of (or instead of) the panel findings. */}
+          <ChangeRequestCard
+            plan={plan}
+            inputs={inputs}
+            onPlanRevised={onPlanRevised}
+            variant="review"
+          />
         </div>
       )}
     </div>
@@ -3815,6 +3824,323 @@ function ReviewPickerModal({ selectedIds, onToggle, onClose }) {
 }
 
 // Findings card — severity dot, target chip, source chip, summary, action, apply toggle.
+// ============================================================================
+// ChangeRequestCard — user-authored itinerary change requests.
+//
+// Lets the traveler type a specific change they want ("swap the hotel",
+// "replace dinner Day 2", "slow Day 3 down") and feeds it into the same
+// surgical / full-replan pipeline the Review panel uses. We synthesize a
+// finding-shaped object so the existing Anthropic prompts and tool-calls
+// work unchanged — no new server endpoint needed.
+//
+// Props:
+//   plan         — current trip plan (for day/item counts, hotel/restaurant lookups)
+//   inputs       — trip basics (destination, nights, budget) for prompt context
+//   onPlanRevised— callback to lift the revised plan up to the parent
+//   variant      — "toplevel" (always-visible above day-by-day) | "review" (inside ReviewPanel)
+// ============================================================================
+function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }) {
+  const TARGETS = [
+    { id: "hotel",      label: "Swap hotel",      mode_hint: "swap_hotel",      mode: "surgical", needsDay: true,  placeholder: "e.g. 'Move to a property with better ski-in/ski-out access' or 'Try the St. Regis instead'" },
+    { id: "restaurant", label: "Swap restaurant", mode_hint: "swap_restaurant", mode: "surgical", needsDay: true,  placeholder: "e.g. 'Replace Day 2 dinner with something more casual' or 'Book Element 47 instead'" },
+    { id: "activity",   label: "Swap activity",   mode_hint: "swap_activity",   mode: "surgical", needsDay: true,  placeholder: "e.g. 'Replace the museum visit with something outdoorsy' or 'Add a wine tasting'" },
+    { id: "other",      label: "Other change",    mode_hint: "adjust_pacing",   mode: "full",     needsDay: false, placeholder: "e.g. 'Slow Day 3 down', 'Move base to a different neighborhood', 'Shift to a more family-friendly vibe'" },
+  ];
+
+  const [open, setOpen] = useState(false);
+  const [targetId, setTargetId] = useState("hotel");
+  const [dayIdx, setDayIdx] = useState(0);
+  const [text, setText] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | running | done | error
+  const [progress, setProgress] = useState(0);
+  const [progressLabel, setProgressLabel] = useState("");
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [error, setError] = useState("");
+  const abortRef = useRef(null);
+
+  const target = TARGETS.find(t => t.id === targetId) || TARGETS[0];
+  const dayCount = Array.isArray(plan?.days) ? plan.days.length : 0;
+
+  const handleSubmit = async () => {
+    const trimmed = text.trim();
+    if (!trimmed) { setError("Tell us what to change."); return; }
+    setError("");
+    setStatus("running");
+    setProgress(0);
+    setElapsedSec(0);
+    const startedAt = Date.now();
+    const targetSec = target.mode === "surgical" ? 35 : 160;
+    setProgressLabel(target.mode === "surgical" ? "Applying your change…" : "Re-planning the trip…");
+    let lastTokFrac = 0;
+    const elapsedTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - startedAt) / 1000);
+      setElapsedSec(sec);
+      const timeFrac = Math.min(0.95, sec / targetSec);
+      setProgress(prev => Math.max(prev, Math.max(lastTokFrac, timeFrac)));
+    }, 250);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const hardTimeout = setTimeout(() => controller.abort(), 300000);
+
+    try {
+      // Synthesize a finding-shaped object so we can reuse the existing
+      // revision prompts/tool-calls verbatim. The day-targeted hint uses
+      // {day: <1-indexed>} so the surgical patcher can find the right item.
+      const fakeFinding = {
+        id: `user_${Date.now().toString(36)}`,
+        severity: "suggested",
+        lens: "user",
+        source: "Traveler request",
+        target: target.needsDay && dayCount > 0
+          ? { day: dayIdx + 1, label: target.label }
+          : (target.label || "plan-wide"),
+        summary: `Traveler-requested change: ${trimmed}`,
+        action: trimmed,
+        mode_hint: target.mode_hint,
+        default_apply: true,
+      };
+
+      const body = target.mode === "surgical"
+        ? {
+            model: "claude-sonnet-4-5",
+            max_tokens: 8000,
+            system: buildRevisionSystemPromptSurgical(plan, [fakeFinding], inputs),
+            messages: [{ role: "user", content: buildRevisionUserPromptSurgical() }],
+            tools: [REVISION_TOOL_SURGICAL],
+            tool_choice: { type: "tool", name: "submit_revision_patches" },
+          }
+        : {
+            model: "claude-sonnet-4-5",
+            max_tokens: 32000,
+            system: buildRevisionSystemPromptFull(plan, [fakeFinding], inputs),
+            messages: [{ role: "user", content: buildRevisionUserPromptFull() }],
+            tools: [REVISION_TOOL_FULL],
+            tool_choice: { type: "tool", name: "submit_trip_plan" },
+          };
+
+      let toolJson = "";
+      const { toolJson: finalJson } = await streamBuildJob(body, {
+        signal: controller.signal,
+        onDelta: (delta, totalLen) => {
+          toolJson += delta;
+          const estTokens = totalLen / 3.5;
+          const tokFrac = Math.min(0.95, estTokens / (target.mode === "surgical" ? 1500 : 7000));
+          lastTokFrac = tokFrac;
+          setProgress(prev => Math.max(prev, tokFrac));
+          if (target.mode === "surgical") {
+            const pm = toolJson.match(/"op"\s*:/g) || [];
+            setProgressLabel(pm.length ? `Applying patch ${pm.length}…` : "Reading plan…");
+          } else {
+            const dm = toolJson.match(/"label"\s*:\s*"/g) || [];
+            setProgressLabel(dm.length ? `Day ${dm.length} of plan…` : "Re-planning…");
+          }
+        },
+      });
+      toolJson = finalJson;
+      setProgress(1);
+      setProgressLabel("Finalizing…");
+      const { parsed } = parseToolJson(toolJson);
+      let newPlan;
+      if (target.mode === "surgical") {
+        if (!parsed || !Array.isArray(parsed.patches)) throw new Error("Change returned no patches.");
+        newPlan = applyPatchesToPlan(plan, parsed.patches);
+      } else {
+        if (!parsed || !Array.isArray(parsed.days) || parsed.days.length === 0) throw new Error("Change returned no plan.");
+        newPlan = parsed;
+      }
+      if (typeof onPlanRevised === "function") onPlanRevised(newPlan);
+      setStatus("done");
+      setText("");
+      setTimeout(() => { setStatus("idle"); setOpen(false); }, 2500);
+    } catch (err) {
+      if (err?.name === "AbortError") setError("Change cancelled.");
+      else setError(cleanErrorMessage(err?.message, "Change failed."));
+      setStatus("error");
+    } finally {
+      clearInterval(elapsedTimer);
+      clearTimeout(hardTimeout);
+      abortRef.current = null;
+    }
+  };
+
+  const handleCancel = () => {
+    if (abortRef.current) abortRef.current.abort();
+  };
+
+  // Don't render until there's a plan to act on.
+  if (!plan?.days || plan.days.length === 0) return null;
+
+  const cardStyle = {
+    border: `0.5px dashed ${GOLD}`,
+    borderRadius: "var(--border-radius-md)",
+    padding: "14px 16px",
+    marginBottom: variant === "toplevel" ? "1.25rem" : "0",
+    marginTop: variant === "review" ? "14px" : "0",
+    background: "var(--color-background-primary)",
+  };
+  const labelStyle = { fontSize: "10.5px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" };
+
+  // Collapsed teaser
+  if (!open && status === "idle") {
+    return (
+      <div style={cardStyle}>
+        <button onClick={() => setOpen(true)} style={{ width: "100%", border: "none", background: "transparent", padding: "4px 0", cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
+          <span>
+            <span style={labelStyle}>Suggest a change</span>
+            <span style={{ display: "block", fontSize: "12.5px", color: "var(--color-text-secondary)", marginTop: "2px" }}>
+              Want a different hotel, restaurant, activity, or pacing? Tell us what to change.
+            </span>
+          </span>
+          <span style={{ flex: "0 0 auto", fontSize: "18px", color: GOLD, fontWeight: 300 }}>+</span>
+        </button>
+      </div>
+    );
+  }
+
+  // Running
+  if (status === "running") {
+    return (
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "8px", gap: "10px" }}>
+          <p style={{ ...labelStyle, margin: 0 }}>{target.mode === "surgical" ? "Applying your change" : "Re-planning your trip"}</p>
+          <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums" }}>
+            {progress > 0 ? `${Math.round(progress * 100)}%` : ""}{elapsedSec > 0 ? `  ·  ${Math.floor(elapsedSec/60)}:${String(elapsedSec%60).padStart(2,'0')}` : ""}
+          </p>
+        </div>
+        <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 8px" }}>{progressLabel || "Working…"}</p>
+        <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
+          {progress > 0 ? (
+            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: GOLD, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
+          ) : (
+            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
+          )}
+        </div>
+        <button onClick={handleCancel} style={{ marginTop: "10px", width: "100%", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "9px 16px", fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "transparent", color: "var(--color-text-primary)" }}>
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  // Success flash
+  if (status === "done") {
+    return (
+      <div style={cardStyle}>
+        <p style={{ margin: 0, fontSize: "13px", color: GOLD, textAlign: "center", fontWeight: 600 }}>✓ Change applied to your plan.</p>
+      </div>
+    );
+  }
+
+  // Open composer (idle or error)
+  return (
+    <div style={cardStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "8px", gap: "10px" }}>
+        <p style={{ ...labelStyle, margin: 0 }}>Suggest a change</p>
+        <button onClick={() => { setOpen(false); setStatus("idle"); setError(""); }} style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
+          Close
+        </button>
+      </div>
+
+      {/* Target type chips */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
+        {TARGETS.map(t => {
+          const active = t.id === targetId;
+          return (
+            <button
+              key={t.id}
+              onClick={() => setTargetId(t.id)}
+              style={{
+                fontSize: "11px",
+                fontWeight: 600,
+                letterSpacing: "0.04em",
+                padding: "5px 11px",
+                borderRadius: "999px",
+                border: `0.5px solid ${active ? GOLD_DARK : "var(--color-border-secondary)"}`,
+                background: active ? GOLD_LIGHT : "transparent",
+                color: active ? GOLD_DARK : "var(--color-text-primary)",
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Day picker (only when the target is day-scoped) */}
+      {target.needsDay && dayCount > 1 && (
+        <div style={{ marginBottom: "10px" }}>
+          <label style={{ display: "block", fontSize: "10.5px", color: "var(--color-text-secondary)", marginBottom: "4px", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+            Which day?
+          </label>
+          <select
+            value={dayIdx}
+            onChange={(e) => setDayIdx(parseInt(e.target.value, 10))}
+            style={{ width: "100%", padding: "7px 9px", fontSize: "12.5px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-sm, 4px)", background: "var(--color-background-primary)", color: "var(--color-text-primary)", fontFamily: "inherit" }}
+          >
+            {plan.days.map((d, i) => {
+              const labelTxt = (d?.label && String(d.label).trim()) || (d?.date && String(d.date).trim()) || `Day ${i + 1}`;
+              return <option key={i} value={i}>{`Day ${i + 1} — ${labelTxt}`}</option>;
+            })}
+          </select>
+        </div>
+      )}
+
+      {/* Free-form description */}
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={target.placeholder}
+        rows={3}
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          padding: "9px 11px",
+          fontSize: "13px",
+          border: "0.5px solid var(--color-border-secondary)",
+          borderRadius: "var(--border-radius-sm, 4px)",
+          background: "var(--color-background-primary)",
+          color: "var(--color-text-primary)",
+          fontFamily: "inherit",
+          resize: "vertical",
+          minHeight: "60px",
+          marginBottom: "10px",
+        }}
+      />
+
+      <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "0 0 10px", fontStyle: "italic" }}>
+        {target.mode === "surgical" ? "Quick card-level edit — ~30 sec." : "Triggers a full re-plan — ~2 min."}
+      </p>
+
+      <button
+        onClick={handleSubmit}
+        disabled={!text.trim()}
+        style={{
+          width: "100%",
+          border: "none",
+          borderRadius: "var(--border-radius-md)",
+          padding: "12px 18px",
+          fontSize: "11px",
+          fontWeight: 600,
+          letterSpacing: "0.1em",
+          textTransform: "uppercase",
+          cursor: text.trim() ? "pointer" : "not-allowed",
+          fontFamily: "inherit",
+          background: text.trim() ? "#0F0F0F" : "var(--color-border-tertiary, #eee)",
+          color: text.trim() ? GOLD : "var(--color-text-tertiary)",
+          opacity: text.trim() ? 1 : 0.7,
+        }}
+      >
+        {target.mode === "surgical" ? "Apply change" : "Re-plan with this change"}
+      </button>
+
+      {error && <p style={{ fontSize: "11.5px", color: "#c0392b", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
+    </div>
+  );
+}
+
 function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
   const sev = finding.severity || "suggested";
   const sevColor = sev === "critical" ? "#c0392b" : sev === "suggested" ? GOLD : "#7a7a7a";
@@ -3936,6 +4262,15 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
         onPlanRevised={onPlanRevised}
         onReviewChange={onReviewChange}
         initialReview={initialReview}
+      />
+
+      {/* Always-visible traveler change request — same revision pipeline as
+          the review panel, but doesn't require running a review first. */}
+      <ChangeRequestCard
+        plan={rawData}
+        inputs={inputs}
+        onPlanRevised={onPlanRevised}
+        variant="toplevel"
       />
 
       {data.days && data.days.length > 0 && tab !== "overview" && (
