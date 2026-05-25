@@ -5699,6 +5699,31 @@ export default function TripOptimizer() {
     }
     setB({ ...basics, endDate: newEnd });
   };
+  // Unified range setter used by the single-popover DateRangeInput. Sets both
+  // start + end (and synced Nights / cities[0].nights) in ONE state write so we
+  // never trip the stale-state bug that two back-to-back setB() calls cause.
+  const handleDateRangeChange = ({ startDate: newStart, endDate: newEnd }) => {
+    const next = { ...basics, startDate: newStart || "", endDate: newEnd || "" };
+    if (newStart && newEnd) {
+      const nights = diffDaysISO(newStart, newEnd);
+      if (nights !== null && nights > 0) {
+        const v = String(nights);
+        next.nights = v;
+        next.cities = (basics.cities && basics.cities.length > 0)
+          ? basics.cities.map((c, i) => i === 0 ? { ...c, nights: v } : c)
+          : [{ name: basics.destination || "", nights: v, focus: "" }];
+      }
+    } else if (newStart && !newEnd) {
+      // Start picked but end cleared (in-progress). Honor existing Nights if set
+      // by computing the end from start+nights so the form stays internally
+      // consistent until the user clicks the end day.
+      const currentNights = parseInt(basics.nights, 10) || 0;
+      if (currentNights > 0) {
+        next.endDate = addDaysISO(newStart, currentNights);
+      }
+    }
+    setB(next);
+  };
   // When the user types Nights directly, keep the end date in sync.
   const handleNightsChange = (newNightsStr) => {
     const n = parseInt(newNightsStr, 10);
@@ -6836,12 +6861,18 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                   </label>
                 </Field>
               </div>
-              <div style={g2}>
-                <Field label="Start date"><DateInput value={basics.startDate} onChange={e => handleStartDateChange(e.target.value)} /></Field>
-                <Field label="Return date" hint={endDateError || (basics.endDate && basics.startDate && diffDaysISO(basics.startDate, basics.endDate) > 0 ? `${diffDaysISO(basics.startDate, basics.endDate)} nights` : "Or set Nights below")}>
-                  <DateInput value={basics.endDate || ""} onChange={e => handleEndDateChange(e.target.value)} />
-                </Field>
-              </div>
+              <Field
+                label="Trip dates"
+                hint={endDateError || (basics.endDate && basics.startDate && diffDaysISO(basics.startDate, basics.endDate) > 0
+                  ? `${diffDaysISO(basics.startDate, basics.endDate)} nights \u00b7 tap a day for start, then tap again for return`
+                  : "Tap a day for start, then tap again for return")}
+              >
+                <DateRangeInput
+                  startDate={basics.startDate}
+                  endDate={basics.endDate || ""}
+                  onRangeChange={handleDateRangeChange}
+                />
+              </Field>
               <div style={g2}>
                 <Field label={isMultiCity ? "Total nights" : "Nights"} hint={isMultiCity ? "Auto-summed from cities" : (basics.startDate && basics.endDate ? "Synced with dates" : null)}>
                   <Inp value={isMultiCity ? String(totalNightsFromCities) : basics.nights} onChange={e => { if (isMultiCity) return; handleNightsChange(e.target.value); }} placeholder="7" />
