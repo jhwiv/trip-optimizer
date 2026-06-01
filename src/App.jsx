@@ -3053,9 +3053,220 @@ function TransportView({ data }) {
   );
 }
 
+// Parse a travelers string (e.g. "2 adults", "4", "2 adults + 1 kid") into
+// a covers/seats integer for OpenTable / Resy deep links. Falls back to 2.
+function extractPartySize(travelers) {
+  if (typeof travelers === "number" && Number.isFinite(travelers) && travelers > 0) return Math.min(travelers, 20);
+  const s = String(travelers || "");
+  const nums = s.match(/\d+/g);
+  if (!nums || !nums.length) return 2;
+  // Sum all numbers (handles "2 adults + 1 kid"); cap so we don't send weird values.
+  const total = nums.reduce((a, n) => a + parseInt(n, 10), 0);
+  return Math.max(1, Math.min(total || 2, 20));
+}
+
+// Derive a YYYY-MM-DD anchor date for deep-link prefill. Prefer the first
+// day's explicit ISO date; fall back to inputs.basics.startDate; else "".
+function tripAnchorDate(data, inputs) {
+  const fromDay = (data?.days || []).map(d => d?.date).find(d => typeof d === "string" && /^\d{4}-\d{2}-\d{2}/.test(d));
+  if (fromDay) return fromDay.slice(0, 10);
+  const sd = inputs?.basics?.startDate;
+  if (typeof sd === "string" && /^\d{4}-\d{2}-\d{2}/.test(sd)) return sd.slice(0, 10);
+  return "";
+}
+
+// DiningBrowseChips — three search/booking platform shortcuts that prefill the
+// destination, date, and party size. Lets the traveler shop their own
+// restaurants when the AI picks don't land. Modeled on santafejune.com's
+// top-of-Dining browse chips.
+function DiningBrowseChips({ data, inputs }) {
+  // For multi-city plans, the cities array is the source of truth and a
+  // *single* search URL can only meaningfully target one city at a time —
+  // OpenTable / Resy / Yelp don't accept "Lisbon → Porto" as a query.
+  // Pick the first city for the URL params and let the header show all of
+  // them. Future: render one chip-set per city section.
+  const citiesArr = Array.isArray(inputs?.basics?.cities)
+    ? inputs.basics.cities.map(c => (c?.name || "").trim()).filter(Boolean)
+    : [];
+  const isMultiCity = citiesArr.length > 1;
+
+  // Display label: prefer the trip's display destination, falling back to a
+  // joined city list. Used only for the card header and prefill note text.
+  const displayLabelRaw =
+    (data?.destination && String(data.destination).trim()) ||
+    (inputs?.basics?.destination && String(inputs.basics.destination).trim()) ||
+    citiesArr.join(" → ") ||
+    "";
+  // Strip trailing " — fall 2026" style suffixes from the display label too.
+  const displayLabel = displayLabelRaw.split(/[—–|(]/)[0].trim();
+  if (!displayLabel) return null;
+
+  // URL-param city: the single city we'll send to OpenTable / Resy / Yelp.
+  // Order of preference:
+  //   1. First entry of inputs.basics.cities (multi-city authoritative)
+  //   2. Trip destination, with all separators stripped so "Lisbon → Porto"
+  //      becomes "Lisbon". Strips: em/en-dash, arrows →←→, pipe, comma-list, slash, " to ", " and ".
+  let urlCity = citiesArr[0] || displayLabel;
+  urlCity = urlCity
+    .split(/[—–→←↔⇒|\/]| to | and |,/i)[0]
+    .replace(/[—–→←↔⇒]/g, "")
+    .trim();
+  if (!urlCity) urlCity = displayLabel;
+
+  const party = extractPartySize(inputs?.basics?.travelers);
+  const date = tripAnchorDate(data, inputs); // "" if unknown
+  // Default dinner time. OpenTable accepts a full ISO local datetime.
+  const dinnerTime = "19:00";
+  const otDateTime = date ? `${date}T${dinnerTime}` : "";
+
+  // Slugify the single URL city for Resy's /cities/{slug} path (best-effort).
+  // Resy doesn't expose a public city list endpoint and silently geo-redirects
+  // unknown slugs to the user's local Resy city. Fall back to the city index.
+  const resySlug = urlCity
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  const otQs = [
+    `term=${encodeURIComponent(urlCity)}`,
+    otDateTime ? `dateTime=${encodeURIComponent(otDateTime)}` : "",
+    `covers=${party}`,
+  ].filter(Boolean).join("&");
+  const opentableUrl = `https://www.opentable.com/s?${otQs}`;
+
+  // Resy: link to the city page when we can slug it; the wider /cities index otherwise.
+  const resyUrl = resySlug ? `https://resy.com/cities/${resySlug}` : `https://resy.com/cities`;
+
+  const yelpUrl = `https://www.yelp.com/search?find_desc=Restaurants&find_loc=${encodeURIComponent(urlCity)}`;
+
+  const chips = [
+    { key: "opentable", label: "OpenTable", mark: "OT", href: opentableUrl, markBg: "#DA3743" },
+    { key: "resy",      label: "Resy",      mark: "R",  href: resyUrl,      markBg: "#111111" },
+    { key: "yelp",      label: "Yelp",      mark: "Y",  href: yelpUrl,      markBg: "#C41200" },
+  ];
+
+  // Footnote describing exactly what we prefilled — same idea as the
+  // "Trip settings" disclosure in trip-restaurants, but condensed. For
+  // multi-city plans we name the single city we actually sent in the URL so
+  // the user isn't surprised that clicking Yelp only shows Lisbon results.
+  const prefillBits = [];
+  if (date) prefillBits.push(`${date} · 7:00 PM`);
+  prefillBits.push(`${party} ${party === 1 ? "guest" : "guests"}`);
+  const prefillLabel = isMultiCity
+    ? `Searching ${urlCity} only (multi-city trip)`
+    : `Prefilled: ${urlCity}`;
+  const prefillNote = `${prefillLabel} · ${prefillBits.join(" · ")}`;
+
+  return (
+    <div
+      data-testid="dining-browse-chips"
+      className="no-print dining-browse-chips"
+      style={{
+        margin: "4px 0 16px",
+        padding: "12px 14px",
+        background: "rgba(196, 168, 98, 0.07)",
+        border: "0.5px solid rgba(196, 168, 98, 0.32)",
+        borderRadius: "var(--border-radius-md)",
+      }}
+    >
+      <p
+        style={{
+          margin: "0 0 8px",
+          fontSize: "10px",
+          fontWeight: 700,
+          letterSpacing: "0.14em",
+          textTransform: "uppercase",
+          color: GOLD_DARK,
+        }}
+      >
+        Find your own · {displayLabel}
+      </p>
+      <style>{`
+        .dining-browse-chips .dbc-chip { transition: transform 0.12s ease, box-shadow 0.15s ease, border-color 0.15s ease; }
+        .dining-browse-chips .dbc-chip:hover, .dining-browse-chips .dbc-chip:focus-visible {
+          transform: translateY(-1px);
+          box-shadow: 0 4px 10px -6px rgba(0,0,0,0.25);
+          outline: none;
+        }
+        /* !important needed because the chip uses an inline border style,
+           which would otherwise win on specificity. */
+        .dining-browse-chips .dbc-chip-opentable:hover, .dining-browse-chips .dbc-chip-opentable:focus-visible { border-color: #DA3743 !important; }
+        .dining-browse-chips .dbc-chip-resy:hover,      .dining-browse-chips .dbc-chip-resy:focus-visible      { border-color: #111 !important; }
+        .dining-browse-chips .dbc-chip-yelp:hover,      .dining-browse-chips .dbc-chip-yelp:focus-visible      { border-color: #C41200 !important; }
+      `}</style>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+        {chips.map(c => (
+          <a
+            key={c.key}
+            className={`dbc-chip dbc-chip-${c.key}`}
+            data-testid={`dining-chip-${c.key}`}
+            href={c.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`Search ${c.label} for restaurants in ${urlCity} (opens in new tab)`}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "8px",
+              padding: "7px 13px 7px 7px",
+              borderRadius: "999px",
+              background: "var(--color-background-primary, #fff)",
+              border: "0.5px solid var(--color-border-secondary)",
+              textDecoration: "none",
+              fontSize: "12.5px",
+              fontWeight: 600,
+              color: "var(--color-text-primary)",
+              letterSpacing: "0.01em",
+              lineHeight: 1,
+              whiteSpace: "nowrap",
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "20px",
+                height: "20px",
+                borderRadius: "50%",
+                background: c.markBg,
+                color: "#fff",
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                fontSize: "9.5px",
+                fontWeight: 700,
+                letterSpacing: "0.02em",
+                flexShrink: 0,
+              }}
+            >
+              {c.mark}
+            </span>
+            <span>{c.label}</span>
+            <span aria-hidden="true" style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginLeft: "2px" }}>↗</span>
+          </a>
+        ))}
+      </div>
+      <p
+        style={{
+          margin: "8px 0 0",
+          fontSize: "10.5px",
+          color: "var(--color-text-tertiary)",
+          fontStyle: "italic",
+          lineHeight: 1.4,
+        }}
+      >
+        {prefillNote}
+      </p>
+    </div>
+  );
+}
+
 // Dining view — every restaurant (primary + backup) flattened, with date
 // grouping and full RestaurantCard. Matches the santafejune.com Dining tab.
-function DiningView({ data, onOpenMenu }) {
+function DiningView({ data, inputs, onOpenMenu }) {
   const meals = [];
   (data.days || []).forEach((d, di) => {
     (d.items || []).forEach((item) => {
@@ -3081,6 +3292,7 @@ function DiningView({ data, onOpenMenu }) {
   return (
     <div>
       <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Dining · {meals.length} reservations</p>
+      <DiningBrowseChips data={data} inputs={inputs} />
       {Array.from(byDay.values()).map(({ day, dayIndex, items }, di) => (
         <div key={di} style={{ marginBottom: "14px" }}>
           <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.1em", textTransform: "uppercase", margin: "0 0 8px", fontWeight: 600, paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{dayShort(day, dayIndex)}</p>
@@ -3343,11 +3555,11 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, onOpen
 
 // Section content router for non-overview tabs. Rendered by the parent below the
 // hero/review area so the nav stays at the top of the page.
-function TripSectionView({ tab, data, onOpenMenu }) {
+function TripSectionView({ tab, data, inputs, onOpenMenu }) {
   if (tab === "flights") return <FlightsView data={data} />;
   if (tab === "lodging") return <LodgingView data={data} />;
   if (tab === "transport") return <TransportView data={data} />;
-  if (tab === "dining") return <DiningView data={data} onOpenMenu={onOpenMenu} />;
+  if (tab === "dining") return <DiningView data={data} inputs={inputs} onOpenMenu={onOpenMenu} />;
   if (tab === "activities") return <ActivitiesView data={data} />;
   if (tab === "essentials") return <EssentialsView data={data} />;
   return null;
@@ -4173,7 +4385,17 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
   // timeline as the landing view. The other tabs (flights/lodging/dining/etc)
   // flatten plan content into category cards. Switching tabs scrolls back to
   // the top so the new view starts clean.
-  const [tab, setTab] = useState("overview");
+  // QA harness: if URL has ?qa=... or hash=#dining, land on the dining tab
+  // directly. No-op in normal use. Removed before merge if needed.
+  const initialTab = (() => {
+    if (typeof window === "undefined") return "overview";
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.has("qa") || window.location.hash === "#dining") return "dining";
+    } catch {}
+    return "overview";
+  })();
+  const [tab, setTab] = useState(initialTab);
   // Day filter for Overview tab. -1 = "All days" (default). 0..N = focus that day.
   const [dayFilter, setDayFilter] = useState(-1);
   const handleTabChange = (next) => {
@@ -4275,7 +4497,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
 
       {data.days && data.days.length > 0 && tab !== "overview" && (
         <Section title={({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities", essentials: "Essentials" }[tab] || "")}>
-          <TripSectionView tab={tab} data={data} onOpenMenu={setMenuRestaurant} />
+          <TripSectionView tab={tab} data={data} inputs={inputs} onOpenMenu={setMenuRestaurant} />
         </Section>
       )}
 
