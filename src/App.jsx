@@ -2785,7 +2785,7 @@ function PrintRidesButton({ data, inputs }) {
 // produced this plan so the printed PDF is a complete record of inputs+output.
 function InputSummary({ inputs }) {
   if (!inputs) return null;
-  const { basics, flights, hotel, transport, dining, restaurants, activities, interests, outputs } = inputs;
+  const { basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative, outputs } = inputs;
   const citiesText = Array.isArray(basics?.cities) && basics.cities.length > 1
     ? basics.cities.map((c, i) => `${i + 1}) ${c.name} — ${c.nights} ${Number(c.nights) === 1 ? "night" : "nights"}${c.focus ? ` (${c.focus})` : ""}`).join("   ")
     : null;
@@ -2814,6 +2814,8 @@ function InputSummary({ inputs }) {
     ["Requested activities", (activities && activities.length) ? activities.join(", ") : "—"],
     ["Interest level", interests?.level || "—"],
     ["Interest detail", interests?.text || "—"],
+    ["Trip guidelines", guidelines ? guidelines : "—"],
+    ["Trip narrative", narrative ? narrative : "—"],
     ["Sections requested", outputs ? Object.entries(outputs).filter(([, v]) => v).map(([k]) => k).join(", ") : "—"],
   ].filter(([, v]) => v !== undefined && v !== null && v !== "");
 
@@ -4088,27 +4090,19 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
         </div>
       )}
 
-      {/* Free-form description */}
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder={target.placeholder}
-        rows={3}
-        style={{
-          width: "100%",
-          boxSizing: "border-box",
-          padding: "9px 11px",
-          fontSize: "13px",
-          border: "0.5px solid var(--color-border-secondary)",
-          borderRadius: "var(--border-radius-sm, 4px)",
-          background: "var(--color-background-primary)",
-          color: "var(--color-text-primary)",
-          fontFamily: "inherit",
-          resize: "vertical",
-          minHeight: "60px",
-          marginBottom: "10px",
-        }}
-      />
+      {/* Free-form description — NarrativeBox in compact mode gives us
+          the same dictation affordance as the step-1 narrative box, sized
+          for inline use. The mic auto-hides on browsers without Web Speech
+          (e.g. Firefox), so typers see exactly the same textarea as before. */}
+      <div style={{ marginBottom: "10px" }}>
+        <NarrativeBox
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={target.placeholder}
+          size="compact"
+          hint="Type or dictate. Be specific — name hotels, restaurants, times, neighborhoods, anything."
+        />
+      </div>
 
       <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "0 0 10px", fontStyle: "italic" }}>
         {target.mode === "surgical" ? "Quick card-level edit — ~30 sec." : "Triggers a full re-plan — ~2 min."}
@@ -4410,6 +4404,186 @@ function Field({ label, children, hint }) {
 
 function Inp({ value, onChange, placeholder, type = "text" }) {
   return <input type={type} value={value} onChange={onChange} placeholder={placeholder} style={{ fontSize: "14px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", lineHeight: "1.4" }} />;
+}
+
+// Free-form "tell me about the trip" narrative box with built-in dictation.
+//
+// Why a dedicated component:
+//   1. It's a textarea, not an input — the rest of the form uses single-line
+//      Inp / Sel, so this is a layout outlier worth isolating.
+//   2. The mic button uses the Web Speech API, which is browser-specific
+//      (webkitSpeechRecognition on Chrome/Safari, no Firefox support). The
+//      detection + lifecycle (start/stop/error/onresult/onend) is fiddly
+//      enough that keeping it inside one component is much cleaner.
+//   3. Append-on-dictate semantics: each speech burst appends to whatever
+//      the user has already typed/dictated, separated by a space. This is
+//      what makes "dictate → read it back → dictate more" feel natural.
+// Props:
+//   value, onChange   controlled string state (parent supplies setNarrative)
+//   placeholder       textarea placeholder text
+//   hint              optional helper text below the box
+//   size              "large" (default — 8 rows, 4000 chars, counter visible)
+//                     | "compact" (3 rows, 2000 chars, no counter — used in
+//                     inline change-request flows where space is tight)
+//   minHeight         optional CSS override for the textarea floor
+//   maxChars          optional cap override
+function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minHeight, maxChars }) {
+  const [listening, setListening] = useState(false);
+  const [permissionError, setPermissionError] = useState("");
+  const recRef = useRef(null);
+  const baseRef = useRef(""); // value at the moment we started this speech burst
+
+  // Browser-feature detection — derived at render, not via useEffect. The Web
+  // Speech API is read-only and synchronous to test, so there's no reason to
+  // burn an effect cycle (which also triggered the cascading-render lint).
+  const supported = useMemo(
+    () => typeof window !== "undefined"
+      && Boolean(window.SpeechRecognition || window.webkitSpeechRecognition),
+    [],
+  );
+
+  const start = () => {
+    setPermissionError("");
+    const SR =
+      (typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition)) ||
+      null;
+    if (!SR) {
+      setPermissionError("Dictation isn't supported in this browser. Try Chrome or Safari.");
+      return;
+    }
+    try {
+      const rec = new SR();
+      rec.lang = (typeof navigator !== "undefined" && navigator.language) || "en-US";
+      rec.continuous = true;       // keep listening through pauses
+      rec.interimResults = true;   // show partial text as it comes
+
+      baseRef.current = value || "";
+      let lastInterim = "";
+
+      rec.onresult = (e) => {
+        // Concatenate every result in this session. results[i] may be final
+        // or interim; we treat the whole session as one append-to-base buffer
+        // so the textarea updates smoothly as the user speaks.
+        let finalChunk = "";
+        let interimChunk = "";
+        for (let i = 0; i < e.results.length; i++) {
+          const r = e.results[i];
+          const txt = r[0]?.transcript || "";
+          if (r.isFinal) finalChunk += txt;
+          else interimChunk += txt;
+        }
+        lastInterim = interimChunk;
+        const base = baseRef.current ? baseRef.current.replace(/\s+$/, "") + " " : "";
+        const composed = (base + finalChunk + (interimChunk ? " " + interimChunk : "")).trim();
+        // Synthesize a synthetic onChange-like event the parent already knows.
+        onChange({ target: { value: composed } });
+      };
+      rec.onerror = (e) => {
+        // "no-speech" / "aborted" are normal end-states; only surface the rest.
+        if (e?.error && !/no-speech|aborted|audio-capture/.test(String(e.error))) {
+          setPermissionError(`Mic error: ${e.error}. Check microphone permissions.`);
+        }
+      };
+      rec.onend = () => {
+        // If we ended mid-sentence, lock in the last interim chunk so the user
+        // doesn't lose what they were saying when the API auto-times-out.
+        if (lastInterim) {
+          const base = baseRef.current ? baseRef.current.replace(/\s+$/, "") + " " : "";
+          onChange({ target: { value: (base + lastInterim).trim() } });
+        }
+        setListening(false);
+      };
+
+      rec.start();
+      recRef.current = rec;
+      setListening(true);
+    } catch (err) {
+      setPermissionError(`Dictation failed to start: ${err?.message || err}`);
+      setListening(false);
+    }
+  };
+
+  const stop = () => {
+    try { recRef.current?.stop(); } catch {}
+    setListening(false);
+  };
+
+  const isCompact = size === "compact";
+  const charCount = (value || "").length;
+  // 4000 chars is plenty for a long trip narrative; 2000 is plenty for an
+  // inline change request. Both still leave headroom in the prompt budget.
+  const MAX = maxChars || (isCompact ? 2000 : 4000);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+      <div style={{ position: "relative" }}>
+        <textarea
+          value={value}
+          onChange={(e) => onChange({ target: { value: e.target.value.slice(0, MAX) } })}
+          placeholder={placeholder}
+          rows={isCompact ? 3 : 8}
+          style={{
+            fontSize: isCompact ? "13px" : "14px",
+            padding: isCompact ? "9px 38px 9px 11px" : "12px 44px 12px 12px",
+            border: isCompact ? "0.5px solid var(--color-border-secondary)" : "0.5px solid var(--color-border-primary)",
+            borderRadius: isCompact ? "var(--border-radius-sm, 4px)" : "8px",
+            background: isCompact ? "var(--color-background-primary)" : "transparent",
+            color: "var(--color-text-primary)",
+            width: "100%",
+            boxSizing: "border-box",
+            outline: "none",
+            fontFamily: "inherit",
+            lineHeight: "1.55",
+            resize: "vertical",
+            minHeight: minHeight || (isCompact ? "60px" : "140px"),
+          }}
+        />
+        {supported && (
+          <button
+            type="button"
+            onClick={listening ? stop : start}
+            aria-label={listening ? "Stop dictation" : "Start dictation"}
+            title={listening ? "Stop dictation" : "Dictate — click and speak"}
+            style={{
+              position: "absolute",
+              top: isCompact ? "6px" : "8px",
+              right: isCompact ? "6px" : "8px",
+              width: isCompact ? "26px" : "32px",
+              height: isCompact ? "26px" : "32px",
+              border: "none",
+              borderRadius: "50%",
+              background: listening ? "#d11" : "var(--color-border-primary)",
+              color: listening ? "#fff" : "var(--color-text-primary)",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: isCompact ? "12px" : "15px",
+              lineHeight: 1,
+              transition: "background 0.15s",
+              boxShadow: listening ? "0 0 0 4px rgba(221,17,17,0.18)" : "none",
+            }}
+          >
+            {listening ? "■" : "🎙"}
+          </button>
+        )}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+        <p style={{ fontSize: isCompact ? "10.5px" : "11px", color: "var(--color-text-tertiary)", margin: 0, fontStyle: "italic", lineHeight: "1.5", flex: 1 }}>
+          {permissionError
+            ? permissionError
+            : listening
+              ? "Listening… speak naturally. Click ■ when done."
+              : (hint || "")}
+        </p>
+        {!isCompact && (
+          <span style={{ fontSize: "11px", color: charCount > MAX - 200 ? "#d11" : "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
+            {charCount} / {MAX}
+          </span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function DateInput({ value, onChange }) {
@@ -6169,6 +6343,19 @@ export default function TripOptimizer() {
     restaurants: [],
     activities: [],
     interests: { level: "", text: "" },
+    // Hero-level overarching planning guidelines. Sits at the very top of
+    // step 1, BEFORE destination/dates. These are the meta-rules — the
+    // traveler's high-level direction (anniversary trip, pacing rules,
+    // mobility constraints, budget posture, must-have anchors). The build
+    // prompt treats this as the highest priority — even above the narrative
+    // — because guidelines shape every decision the planner makes.
+    guidelines: "",
+    // Freeform "tell me everything" box. Anything the dropdowns can't capture
+    // — specific hotels with confirmation numbers, flight legs, dates, kids’
+    // ages, anniversary surprises, named guides, no-museum-Tuesdays, upgrade
+    // status. The build prompt treats this as the highest-priority directive,
+    // overriding/augmenting any structured field that conflicts.
+    narrative: "",
   };
   // DEFAULTS preserved only as fallback when a saved trip is missing a field on Open.
   const DEFAULTS = BLANK;
@@ -6232,6 +6419,12 @@ export default function TripOptimizer() {
   const [restaurants, setRest] = useState(_ri?.restaurants || BLANK.restaurants);
   const [activities, setActs] = useState(_ri?.activities || BLANK.activities);
   const [interests, setInt] = useState(_ri?.interests || BLANK.interests);
+  // narrative is intentionally a top-level string — not nested under interests —
+  // so the prompt can address it as its own "trip directive" block. Persists
+  // through localStorage + saved-trip serialization like every other field.
+  const [narrative, setNarrative] = useState(_ri?.narrative || BLANK.narrative);
+  // Hero-level trip guidelines — meta-rules above all other inputs.
+  const [guidelines, setGuidelines] = useState(_ri?.guidelines || BLANK.guidelines);
 
   // Reset every form bucket to BLANK. Used for "Plan another trip".
   const resetFormToBlank = () => {
@@ -6243,6 +6436,8 @@ export default function TripOptimizer() {
     setRest(BLANK.restaurants);
     setActs(BLANK.activities);
     setInt(BLANK.interests);
+    setNarrative(BLANK.narrative);
+    setGuidelines(BLANK.guidelines);
     setResult(null);
     setError("");
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
@@ -6270,6 +6465,8 @@ export default function TripOptimizer() {
     setRest(Array.isArray(i.restaurants) ? i.restaurants : []);
     setActs(Array.isArray(i.activities) ? i.activities : []);
     setInt(i.interests || DEFAULTS.interests);
+    setNarrative(typeof i.narrative === "string" ? i.narrative : DEFAULTS.narrative);
+    setGuidelines(typeof i.guidelines === "string" ? i.guidelines : DEFAULTS.guidelines);
     setOut(i.outputs || { itinerary: true, weather: true, navigation: true, logistics: true, tonight: true, menus: true, flags: true, planb: true, snobs: true, practical: false, badges: false, pronunciation: false });
     // Cancel any in-flight generation and clear transient UI state.
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
@@ -6339,9 +6536,9 @@ export default function TripOptimizer() {
   // Auto-save form on every change.
   useEffect(() => {
     try {
-      localStorage.setItem(LS_KEY, JSON.stringify({ basics, flights, hotel, transport, dining, restaurants, activities, interests }));
+      localStorage.setItem(LS_KEY, JSON.stringify({ basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative }));
     } catch {}
-  }, [basics, flights, hotel, transport, dining, restaurants, activities, interests]);
+  }, [basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative]);
 
   // Persist a session snapshot whenever the built `result` or step changes.
   // This is the safety net against unexpected reloads losing an unsaved trip.
@@ -6359,11 +6556,11 @@ export default function TripOptimizer() {
         result,
         currentSavedTripId,
         reviewState,
-        inputs: { basics, flights, hotel, transport, dining, restaurants, activities, interests },
+        inputs: { basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative },
       };
       localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot));
     } catch {}
-  }, [result, step, currentSavedTripId, reviewState, basics, flights, hotel, transport, dining, restaurants, activities, interests]);
+  }, [result, step, currentSavedTripId, reviewState, basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative]);
   const [outputs, setOut] = useState({ itinerary: true, weather: true, navigation: true, logistics: true, tonight: true, menus: true, flags: true, planb: true, snobs: true, practical: false, badges: false, pronunciation: false });
 
   const togOut = k => setOut(o => ({ ...o, [k]: !o[k] }));
@@ -6536,7 +6733,9 @@ export default function TripOptimizer() {
     const wantsPrivateDriver =
       (Array.isArray(transport.type) && transport.type.some(t => /private\s*driver|chauffeur/i.test(t))) ||
       (Array.isArray(activities) && activities.some(a => /private driver/i.test(a))) ||
-      /\b(private driver|chauffeur|car service|black car)\b/i.test(interests?.text || "");
+      /\b(private driver|chauffeur|car service|black car)\b/i.test(interests?.text || "") ||
+      /\b(private driver|chauffeur|car service|black car)\b/i.test(narrative || "") ||
+      /\b(private driver|chauffeur|car service|black car)\b/i.test(guidelines || "");
     const privateDriverBlock = !wantsPrivateDriver ? "" : `
 
 PRIVATE DRIVER — HARD RULE (USER REQUESTED THIS):
@@ -6563,13 +6762,16 @@ The user explicitly asked for a private driver / chauffeur. You MUST surface thi
     const wantsPrivateTour =
       (Array.isArray(activities) && activities.some(a => _tourRe.test(a) && !/private driver/i.test(a))) ||
       _tourRe.test(interests?.text || "") ||
+      _tourRe.test(narrative || "") ||
+      _tourRe.test(guidelines || "") ||
       (Array.isArray(basics.style) && basics.style.some(s => /\bVIP\b|\bprivate\b/i.test(s)));
     // Skip-the-line / timed-entry enforcement. Separate from private-guide
     // because the user might just want pre-booked tickets, not a guide.
     const _stlRe = /skip[- ]the[- ]line|timed[- ]entry|fast[- ]track|priority entry/i;
     const wantsSkipTheLine =
       (Array.isArray(activities) && activities.some(a => _stlRe.test(a))) ||
-      _stlRe.test(interests?.text || "");
+      _stlRe.test(interests?.text || "") ||
+      _stlRe.test(narrative || "");
     const privateTourBlock = !wantsPrivateTour ? "" : `
 
 PRIVATE TOURS / PRIVATE GUIDES — HARD RULE (USER REQUESTED THIS):
@@ -6905,16 +7107,22 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
     const userWantsPrivateDriver =
       (Array.isArray(transport.type) && transport.type.some(t => /private\s*driver|chauffeur/i.test(t))) ||
       (Array.isArray(activities) && activities.some(a => /private driver/i.test(a))) ||
-      /\b(private driver|chauffeur|car service|black car)\b/i.test(interests?.text || "");
+      /\b(private driver|chauffeur|car service|black car)\b/i.test(interests?.text || "") ||
+      /\b(private driver|chauffeur|car service|black car)\b/i.test(narrative || "") ||
+      /\b(private driver|chauffeur|car service|black car)\b/i.test(guidelines || "");
     const _userTourRe = /\bprivate\b.*\b(tour|guide|walking)\b|\bVIP\b/i;
     const userWantsPrivateTour =
       (Array.isArray(activities) && activities.some(a => _userTourRe.test(a) && !/private driver/i.test(a))) ||
       _userTourRe.test(interests?.text || "") ||
+      _userTourRe.test(narrative || "") ||
+      _userTourRe.test(guidelines || "") ||
       (Array.isArray(basics.style) && basics.style.some(s => /\bVIP\b|\bprivate\b/i.test(s)));
     const _userStlRe = /skip[- ]the[- ]line|timed[- ]entry|fast[- ]track|priority entry/i;
     const userWantsSkipTheLine =
       (Array.isArray(activities) && activities.some(a => _userStlRe.test(a))) ||
-      _userStlRe.test(interests?.text || "");
+      _userStlRe.test(interests?.text || "") ||
+      _userStlRe.test(narrative || "") ||
+      _userStlRe.test(guidelines || "");
     const groundModeText = trainAllowed
       ? "driving or train (user opted into rail)"
       : "driving only — NO trains, NO rail, NO Amtrak under any circumstances";
@@ -6934,6 +7142,19 @@ Restaurants requested: ${restaurants.length ? restaurants.join(", ") : "suggest"
 Activities requested: ${activities.length ? activities.join(", ") : "suggest based on style"}
 Interests: ${interests.text || "not specified"} · Level: ${interests.level || "No preference"}
 Include sections: ${active}
+${guidelines && guidelines.trim() ? `
+TRIP GUIDELINES (META-LEVEL DIRECTION — read this FIRST, it shapes every other decision below):
+"""
+${guidelines.trim()}
+"""
+These are the traveler's overarching planning guidelines. Apply them to every choice the planner makes — hotel selection, daily pacing, restaurant tier, transport mode, activity intensity, day shape. Treat them as a constant filter on the structured fields below. If a guideline conflicts with a default assumption (e.g. "no early mornings", "home by 9pm", "one anchor per day with downtime", "my partner has a knee injury", "this is our anniversary"), the guideline wins.
+` : ""}${narrative && narrative.trim() ? `
+TRAVELER NARRATIVE (HIGHEST PRIORITY — read this carefully, it overrides any conflict with the structured fields above):
+"""
+${narrative.trim()}
+"""
+Treat the narrative as the source of truth when it conflicts with a dropdown field. If the narrative names a specific hotel, flight, time, restaurant, guide, driver, confirmation number, or anchor activity, USE IT EXACTLY — don't invent alternates. If the narrative implies a constraint the dropdowns missed (kids, anniversary, mobility, allergies, no-museum-day, late arrivals, jet-lag day, work calls, religious holidays, anniversaries, mourning, surprise stops), respect it on every day it touches. Surface any narrative-specified booking that isn't yet confirmed in flags[] with the exact text the traveler used.
+` : ""}
 
 ${flights.noFlight ? `IMPORTANT: NO FLIGHTS. The user is ${trainAllowed ? "driving or taking the train" : "driving"}. Day 1 must be a Transport item describing the surface-travel arrival; do not invent flights, do not include any Flight items in days[].items.` : `IMPORTANT: Prefer NONSTOP flights. If ${extractAirportCode(flights.homeAirport) || flights.homeAirport} has no nonstop to the primary airport for ${isMultiCity ? cities[0]?.name : basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.`}
 ${trainAllowed ? "" : "IMPORTANT — NO TRAINS: The user did NOT request train or rail transportation. Do NOT suggest Amtrak, regional rail, commuter rail, or any train segment anywhere in the plan — not as primary transport, not as an alternative in flags[], not in planb[], not in plan-B fallbacks, not in transport_in for any leg, not in any item.text. Every transport segment must be by car, flight (if applicable), or walking. If the destination is rail-friendly (e.g. Saratoga, the Hudson Valley, Hudson NY, Westchester, Connecticut shore, DC corridor, anywhere on the Northeast Corridor) you still must NOT suggest a train. Pretend rail does not exist for this trip."}
@@ -7619,6 +7840,26 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 </div>
               );
             })()}
+            {/* HERO GUIDELINES — the very first thing the user sees on step 1.
+                High-level direction the planner should apply to every decision
+                below. Conceptually a level above the destination/dates form
+                and a level above the per-trip narrative. Distinct from the
+                step-2 "Tell me about the trip" narrative: guidelines are the
+                META-rules (pacing posture, mobility, anniversary framing,
+                budget posture, anchor rhythm), narrative is the SPECIFICS
+                (confirmation numbers, named guides, exact hotels). Both flow
+                into the prompt; guidelines render first. */}
+            <div style={{ ...cardStyle, borderLeft: `2px solid ${GOLD}`, marginBottom: "1.25rem" }}>
+              <p style={ctStyle}>Trip guidelines</p>
+              <Field label="Tell the planner how to think about this trip" hint="Type or dictate. The high-level posture — anniversary framing, pacing rhythm, mobility constraints, budget posture, must-have anchors, things to avoid. Specific hotels and confirmations go in 'Tell me about the trip' on the next step.">
+                <NarrativeBox
+                  value={guidelines}
+                  onChange={e => setGuidelines(e.target.value)}
+                  placeholder={"e.g. This is our 30th anniversary trip. We've done all the major museums in Europe — skip the standard tourist circuit. Prefer one anchor experience per day with downtime in between. My wife has a knee injury so no long walks or stairs-heavy days. We want to be back at the hotel by 8pm each night for dinner. Budget is open for the right experiences but we don't need to maximize every slot."}
+                />
+              </Field>
+            </div>
+
             <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Four essentials to start. Refine the details after, or build immediately.</p>
 
             <div style={cardStyle}>
@@ -7774,6 +8015,22 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               </div>
             </div>
 
+            {/* Free-form narrative box — the escape hatch for anything the
+                structured dropdowns can't capture. Read by the build prompt
+                as the highest-priority directive. Sits high in the form
+                (right after basics) so it's the first thing users see when
+                they have specifics in mind. */}
+            <div style={cardStyle}>
+              <p style={ctStyle}>Tell me about the trip</p>
+              <Field label="Anything else" hint="Type or dictate. Mention specific hotels with confirmation numbers, flight legs, named guides or drivers, kids’ ages, anniversaries, dietary needs, days you want quiet, anchor reservations — anything the form above didn’t capture. The planner treats this as the source of truth.">
+                <NarrativeBox
+                  value={narrative}
+                  onChange={e => setNarrative(e.target.value)}
+                  placeholder={"e.g. Anniversary trip. Already booked: Four Seasons George V Sept 12–15, conf #ABC123. United Polaris IAD→CDG outbound, return open. Want a private driver from Tour d’Argent dinner on the 13th — Tuesday is our anniversary, please make it special. Skip the Louvre, we’ve done it. Kids are not coming, but my mother (78, walks with a cane) is joining us for two days mid-trip. Need to be back at hotel by 9pm each night."}
+                />
+              </Field>
+            </div>
+
             {!flights.noFlight && (
               <div style={cardStyle}>
                 <p style={ctStyle}>Flights</p>
@@ -7883,7 +8140,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         {step === 3 && result && (
           <ItineraryView
             data={result}
-            inputs={{ basics, flights, hotel, transport, dining, restaurants, activities, interests, outputs }}
+            inputs={{ basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative, outputs }}
             onBack={() => { resetFormToBlank(); setCurrentSavedTripId(null); setReviewState(null); setStep(1); }}
             onEditTrip={() => {
               // Go back to the input form without wiping anything. The user's
