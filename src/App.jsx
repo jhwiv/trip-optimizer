@@ -4261,6 +4261,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
     { id: "restaurant", label: "Swap restaurant", mode_hint: "swap_restaurant", mode: "surgical", needsDay: true,  placeholder: "e.g. 'Replace Day 2 dinner with something more casual' or 'Book Element 47 instead'" },
     { id: "activity",   label: "Swap activity",   mode_hint: "swap_activity",   mode: "surgical", needsDay: true,  placeholder: "e.g. 'Replace the museum visit with something outdoorsy' or 'Add a wine tasting'" },
     { id: "other",      label: "Other change",    mode_hint: "adjust_pacing",   mode: "full",     needsDay: false, placeholder: "e.g. 'Slow Day 3 down', 'Move base to a different neighborhood', 'Shift to a more family-friendly vibe'" },
+    { id: "external_review", label: "Paste external review", mode_hint: "apply_external_review", mode: "full", needsDay: false, placeholder: "Paste a full evaluation from another LLM (Claude, GPT, Gemini…). Include verdict, every finding, every suggested swap. The planner will apply ALL changes in one pass." },
   ];
 
   const [open, setOpen] = useState(false);
@@ -4303,18 +4304,24 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
       // Synthesize a finding-shaped object so we can reuse the existing
       // revision prompts/tool-calls verbatim. The day-targeted hint uses
       // {day: <1-indexed>} so the surgical patcher can find the right item.
+      const isExternalReview = target.id === "external_review";
       const fakeFinding = {
         id: `user_${Date.now().toString(36)}`,
-        severity: "suggested",
-        lens: "user",
-        source: "Traveler request",
+        severity: isExternalReview ? "critical" : "suggested",
+        lens: isExternalReview ? "external_llm" : "user",
+        source: isExternalReview ? "External LLM review" : "Traveler request",
         target: target.needsDay && dayCount > 0
           ? { day: dayIdx + 1, label: target.label }
           : (target.label || "plan-wide"),
-        summary: `Traveler-requested change: ${trimmed}`,
+        summary: isExternalReview
+          ? "Apply the full external LLM review pasted below to this plan."
+          : `Traveler-requested change: ${trimmed}`,
         action: trimmed,
         mode_hint: target.mode_hint,
         default_apply: true,
+        // Stash the raw pasted text so the system prompt can include it
+        // verbatim as an external-review block.
+        external_review_text: isExternalReview ? trimmed : undefined,
       };
 
       const body = target.mode === "surgical"
@@ -4513,13 +4520,19 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder={target.placeholder}
-          size="compact"
-          hint="Type or dictate. Be specific — name hotels, restaurants, times, neighborhoods, anything."
+          size={target.id === "external_review" ? "large" : "compact"}
+          minHeight={target.id === "external_review" ? "220px" : undefined}
+          maxChars={target.id === "external_review" ? 8000 : undefined}
+          hint={target.id === "external_review"
+            ? "Paste the full evaluation — verdict, findings, suggested swaps. Up to ~8000 characters."
+            : "Type or dictate. Be specific — name hotels, restaurants, times, neighborhoods, anything."}
         />
       </div>
 
       <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "0 0 10px", fontStyle: "italic" }}>
-        {target.mode === "surgical" ? "Quick card-level edit — ~30 sec." : "Triggers a full re-plan — ~2 min."}
+        {target.id === "external_review"
+          ? "Pastes the full external evaluation into the planner and re-plans the trip end-to-end — ~2 min."
+          : target.mode === "surgical" ? "Quick card-level edit — ~30 sec." : "Triggers a full re-plan — ~2 min."}
       </p>
 
       <button
@@ -4541,7 +4554,9 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
           opacity: text.trim() ? 1 : 0.7,
         }}
       >
-        {target.mode === "surgical" ? "Apply change" : "Re-plan with this change"}
+        {target.id === "external_review"
+          ? "Apply external review"
+          : target.mode === "surgical" ? "Apply change" : "Re-plan with this change"}
       </button>
 
       {error && <p style={{ fontSize: "11.5px", color: "#c0392b", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
@@ -6711,6 +6726,14 @@ function buildRevisionSystemPromptFull(plan, findings, inputs) {
   const findingsBlock = findings.map(f =>
     `• [${f.severity}/${f.mode_hint}] ${formatFindingTarget(f.target)} — ${f.summary} → ${f.action}`
   ).join("\n");
+  // External-LLM-review pass-through. If the user pasted an evaluation from
+  // another model into the change-request box, surface the full text as a
+  // separate, prominent block so the planner treats every issue in it as a
+  // critical finding to address — not just the one-line summary above.
+  const externalReviewSource = findings.find(f => f.external_review_text && String(f.external_review_text).trim());
+  const externalReviewBlock = externalReviewSource
+    ? `\nEXTERNAL LLM REVIEW — TREAT EVERY ISSUE BELOW AS A CRITICAL FINDING TO ADDRESS IN THIS REVISION:\nThe traveler had another AI (Claude, GPT, Gemini, etc.) evaluate the current plan. The full evaluation is pasted below. You MUST work through it issue-by-issue and fix every concrete problem it raises — swapped hotels, replaced restaurants, retimed days, pacing fixes, missing reservations, factual corrections. Do not cherry-pick. If the external review and the user's existing guidelines conflict, the user's guidelines win.\n\n---BEGIN EXTERNAL REVIEW---\n${String(externalReviewSource.external_review_text).slice(0, 8000)}\n---END EXTERNAL REVIEW---\n`
+    : "";
   const tripContext = [
     inputs?.basics?.destination && `Destination: ${inputs.basics.destination}`,
     inputs?.basics?.nights && `${inputs.basics.nights} nights`,
@@ -6732,6 +6755,7 @@ Target: ${totalDays} days (${nightsNum} nights).
 ${userGuidelinesBlock}
 REVIEWER FINDINGS TO ADDRESS:
 ${findingsBlock}
+${externalReviewBlock}
 
 REVISION RULES:
 • Re-emit the COMPLETE plan with every field (destination, meta, days, logistics, weather_window, pack, flags, planb, snobs, tonight). Do not return a partial plan.
