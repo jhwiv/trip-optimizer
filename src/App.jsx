@@ -867,6 +867,143 @@ function buildGoogleFlightsUrl(fromIata, toIata, isoDate) {
   return `https://www.google.com/travel/flights?q=${q}`;
 }
 
+// Live flight status via the shared FlightAware-backed Worker that powers
+// santafejune.com. Worker contract:
+//   GET https://flight-status.jhwiv-online.workers.dev/?ident=AA3006&date=YYYY-MM-DD
+//   → { ok, ident, status, statusLevel, scheduledOut, estimatedOut, actualOut,
+//        scheduledIn, estimatedIn, actualIn, delayMinutes, gateOrigin,
+//        gateDestination, terminalOrigin, terminalDestination, cancelled,
+//        diverted, fetchedAt }
+// We render this strip only when (a) the carrier + a flight number are
+// parseable from the plan and (b) the day has a usable ISO date. AeroAPI's
+// free tier is capped at 500 calls/month; the user pays per call beyond that,
+// so we only fetch once per (ident,date) per page-load (in-component memo)
+// and never block the rest of the card.
+const FLIGHT_STATUS_WORKER = "https://flight-status.jhwiv-online.workers.dev/";
+
+// Parse "UA 57" / "AA3006" / "Delta 215" → "UA57" / "AA3006" / null.
+// We need ICAO/IATA carrier code + number, no spaces. We look at the
+// carrier text first (carrier="United" → "UA"), and the confirmation_note
+// for an explicit flight number like "UA 57" or "#1234".
+function parseFlightIdent(f) {
+  if (!f) return null;
+  // 1. Direct: f.flight_number sometimes survives (e.g. "UA 57").
+  // 2. Otherwise scan confirmation_note for an airline-code+digits pattern.
+  const sources = [f.flight_number, f.confirmation_note, f.text].filter(Boolean).map(String);
+  for (const s of sources) {
+    // Common shapes: "UA 57", "UA57", "AA 3006", "AA3006", "Flight UA 57".
+    const m = s.match(/\b([A-Z]{2})\s*0*(\d{1,4})\b/);
+    if (m) return `${m[1]}${m[2]}`;
+  }
+  // 3. Compose from carrier name + any standalone number.
+  const carrierToIata = {
+    united: "UA", delta: "DL", american: "AA", jetblue: "B6", southwest: "WN",
+    alaska: "AS", "air france": "AF", klm: "KL", lufthansa: "LH", swiss: "LX",
+    "british airways": "BA", virgin: "VS", iberia: "IB", ana: "NH",
+    "japan airlines": "JL", jal: "JL", cathay: "CX", korean: "KE",
+    "aer lingus": "EI", ita: "AZ", sas: "SK", scandinavian: "SK", norse: "N0",
+  };
+  const carrier = String(f.carrier || "").toLowerCase();
+  const iata = Object.entries(carrierToIata).find(([k]) => carrier.includes(k))?.[1];
+  if (iata) {
+    for (const s of sources) {
+      const m = String(s).match(/\b0*(\d{1,4})\b/);
+      if (m) return `${iata}${m[1]}`;
+    }
+  }
+  return null;
+}
+
+// In-memory cache so repeat renders / multiple FlightCards for the same flight
+// (return leg) don't double-fetch within one page session.
+const _flightStatusCache = new Map();
+async function fetchFlightStatus(ident, isoDate) {
+  const key = `${ident}|${isoDate}`;
+  if (_flightStatusCache.has(key)) return _flightStatusCache.get(key);
+  const url = `${FLIGHT_STATUS_WORKER}?ident=${encodeURIComponent(ident)}&date=${encodeURIComponent(isoDate)}`;
+  const p = fetch(url, { method: "GET" })
+    .then((r) => r.json())
+    .then((j) => (j && j.ok ? j : null))
+    .catch(() => null);
+  _flightStatusCache.set(key, p);
+  return p;
+}
+
+// Format an ISO timestamp as a local short time ("7:00 AM"). UTC → local
+// per the user's device timezone, which is exactly what travelers expect.
+function formatLiveTime(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  } catch { return ""; }
+}
+
+function LiveFlightStatus({ ident, isoDate }) {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let stale = false;
+    fetchFlightStatus(ident, isoDate).then((s) => {
+      if (stale) return;
+      setStatus(s);
+      setLoading(false);
+    });
+    return () => { stale = true; };
+  }, [ident, isoDate]);
+  if (loading) {
+    return (
+      <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "8px 0 0", letterSpacing: "0.06em", textTransform: "uppercase", fontStyle: "italic" }}>
+        Live status · checking…
+      </p>
+    );
+  }
+  if (!status) return null; // worker errored or flight not in AeroAPI window
+  // Color the status pill by severity.
+  const level = status.statusLevel || "";
+  const pillBg = status.cancelled ? "#B85C00"
+    : level === "done" ? "#7A7A7A"
+    : level === "delayed" || (status.delayMinutes && status.delayMinutes > 15) ? "#B85C00"
+    : level === "inair" ? GOLD
+    : "#2A7A4A";
+  const pillLabel = status.cancelled ? "CANCELLED" : (status.status || "").toUpperCase();
+  // Pick the freshest out/in times available (actual > estimated > scheduled).
+  const outNew = status.actualOut || status.estimatedOut || status.scheduledOut;
+  const outOrig = status.scheduledOut;
+  const inNew = status.actualIn || status.estimatedIn || status.scheduledIn;
+  const inOrig = status.scheduledIn;
+  const outShifted = outNew && outOrig && outNew !== outOrig;
+  const inShifted = inNew && inOrig && inNew !== inOrig;
+  return (
+    <div style={{ marginTop: "10px", paddingTop: "8px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px", flexWrap: "wrap" }}>
+        <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase" }}>Live status</span>
+        <span style={{ fontSize: "10px", fontWeight: 700, color: "#fff", background: pillBg, padding: "2px 7px", borderRadius: "3px", letterSpacing: "0.08em" }}>{pillLabel}</span>
+        {typeof status.delayMinutes === "number" && status.delayMinutes > 0 && !status.cancelled && (
+          <span style={{ fontSize: "11px", color: "#B85C00", fontWeight: 600 }}>
+            +{Math.floor(status.delayMinutes / 60) > 0 ? `${Math.floor(status.delayMinutes / 60)}h ` : ""}{status.delayMinutes % 60}m
+          </span>
+        )}
+      </div>
+      <p style={{ fontSize: "11.5px", color: "var(--color-text-primary)", margin: "2px 0", lineHeight: 1.5 }}>
+        Depart {outShifted && <span style={{ textDecoration: "line-through", color: "var(--color-text-tertiary)", marginRight: "4px" }}>{formatLiveTime(outOrig)}</span>}
+        <span style={{ fontWeight: outShifted ? 600 : 400 }}>{formatLiveTime(outNew)}</span>
+        {status.gateOrigin && <span style={{ color: "var(--color-text-secondary)" }}> · Gate {status.gateOrigin}</span>}
+        {status.terminalOrigin && <span style={{ color: "var(--color-text-secondary)" }}> · T{status.terminalOrigin}</span>}
+      </p>
+      <p style={{ fontSize: "11.5px", color: "var(--color-text-primary)", margin: "2px 0", lineHeight: 1.5 }}>
+        Arrive {inShifted && <span style={{ textDecoration: "line-through", color: "var(--color-text-tertiary)", marginRight: "4px" }}>{formatLiveTime(inOrig)}</span>}
+        <span style={{ fontWeight: inShifted ? 600 : 400 }}>{formatLiveTime(inNew)}</span>
+        {status.gateDestination && <span style={{ color: "var(--color-text-secondary)" }}> · Gate {status.gateDestination}</span>}
+        {status.terminalDestination && <span style={{ color: "var(--color-text-secondary)" }}> · T{status.terminalDestination}</span>}
+      </p>
+      <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", margin: "4px 0 0", fontStyle: "italic" }}>
+        FlightAware · checked {formatLiveTime(status.fetchedAt)}
+      </p>
+    </div>
+  );
+}
+
 function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) {
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
@@ -956,6 +1093,10 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
       <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "6px 0 0", lineHeight: 1.4, letterSpacing: "0.02em", fontStyle: "italic" }}>
         Times and carrier shown are planning estimates. Always confirm the actual flight number on the live lookup before booking.
       </p>
+      {(() => {
+        const ident = parseFlightIdent(f);
+        return ident && isoDate ? <LiveFlightStatus ident={ident} isoDate={isoDate} /> : null;
+      })()}
       {text && !f.carrier && (
         <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "4px 0 0" }}>{text}</p>
       )}
@@ -6456,6 +6597,12 @@ export default function TripOptimizer() {
   // closure that's about to be replaced.
   const [extractingFromGuidelines, setExtractingFromGuidelines] = useState(false);
   const [pendingBuildFromGuidelines, setPendingBuildFromGuidelines] = useState(false);
+  // Uncertain-name confirmation. When extraction returns name_checks[],
+  // pause before arming the build and show the user a small panel asking
+  // them to resolve each one (use original / pick a candidate / type a fix).
+  // pendingNameChecks holds { checks: [...], resolutions: { idx: { choice, value } } }.
+  // resolutions are keyed by the check's index in checks[].
+  const [pendingNameChecks, setPendingNameChecks] = useState(null);
 
   // "Build from this →" shortcut. POSTs the guidelines text to the extraction
   // endpoint, merges whatever structured fields come back into the form state,
@@ -6549,9 +6696,30 @@ export default function TripOptimizer() {
       if (exRestaurants.length) setRest((prev) => Array.from(new Set([...(prev || []), ...exRestaurants])));
       if (exActivities.length) setActs((prev) => Array.from(new Set([...(prev || []), ...exActivities])));
 
-      // Arm the deferred build. The effect below will fire handleBuild on the
-      // next render — by which point the setters above have flushed and the
-      // prompt builders will see the new values.
+      // Uncertain-name gate. If the extractor flagged any names it wasn't
+      // confident about, pause the build and show a confirm panel. The user
+      // resolves each check (use original / pick a candidate / custom), then
+      // clicks Continue — only then do we arm the deferred build. This
+      // prevents the silent-substitution-of-a-misspelled-hotel-name failure.
+      const checks = Array.isArray(ex.name_checks)
+        ? ex.name_checks.filter((c) => c && c.original && c.kind)
+        : [];
+      if (checks.length > 0) {
+        setPendingNameChecks({
+          checks,
+          resolutions: Object.fromEntries(
+            checks.map((_, i) => [i, { choice: "original", value: "" }]),
+          ),
+        });
+        setLoadingMsg("");
+        // Stay on step 2 — the panel renders below the (now hidden) loading
+        // panel and asks the user to confirm before we arm the build.
+        return;
+      }
+
+      // No uncertain names — arm the deferred build. The effect below will
+      // fire handleBuild on the next render, by which point the setters above
+      // have flushed and the prompt builders will see the new values.
       setPendingBuildFromGuidelines(true);
     } catch (err) {
       setError(`Couldn't process guidelines: ${String(err?.message || err)}. Try filling the form manually.`);
@@ -6576,12 +6744,85 @@ export default function TripOptimizer() {
     setGuidelines(BLANK.guidelines);
     setExtractingFromGuidelines(false);
     setPendingBuildFromGuidelines(false);
+    setPendingNameChecks(null);
     setResult(null);
     setError("");
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
     setLoading(false); setLoadingMsg(""); setProgress(0); setProgressLabel(""); setElapsedSec(0);
     try { localStorage.removeItem(LS_KEY); } catch {}
     try { localStorage.removeItem(SESSION_KEY); } catch {}
+  };
+
+  // Apply the user's name-check resolutions to form state and arm the build.
+  // For each check, the chosen value either keeps the original text or
+  // substitutes a candidate / custom text. We rewrite the relevant slot:
+  //   hotel       → hotel.mustHave (string replace of original → chosen)
+  //   restaurant  → restaurants[] (replace matching entry)
+  //   activity    → activities[] (replace matching entry)
+  //   airline     → flights.airline (string replace)
+  //   other       → only updates the guidelines text
+  // The guidelines text itself also gets the original → chosen rewrite so
+  // the build prompt's "SOURCE OF TRUTH" block doesn't still contain the
+  // unresolved name.
+  const confirmNameChecks = () => {
+    if (!pendingNameChecks) return;
+    const { checks, resolutions } = pendingNameChecks;
+    // Case-insensitive first-occurrence replace; falls back to literal if no
+    // match (so we always apply *something* even when the model's original
+    // text doesn't appear verbatim in the narrative).
+    const replaceFirst = (haystack, needle, replacement) => {
+      if (!haystack || !needle) return haystack;
+      const i = haystack.toLowerCase().indexOf(String(needle).toLowerCase());
+      if (i < 0) return haystack;
+      return haystack.slice(0, i) + replacement + haystack.slice(i + needle.length);
+    };
+    const pickValue = (i) => {
+      const r = resolutions[i] || { choice: "original", value: "" };
+      if (r.choice === "original") return checks[i].original;
+      if (r.choice === "custom") return (r.value || "").trim() || checks[i].original;
+      // Candidate index encoded as "candidate:0", "candidate:1", ...
+      if (r.choice && r.choice.startsWith("candidate:")) {
+        const idx = parseInt(r.choice.slice("candidate:".length), 10);
+        return checks[i].candidates?.[idx] || checks[i].original;
+      }
+      return checks[i].original;
+    };
+    // Build a list of (kind, original, chosen) rewrites for non-noop changes.
+    const rewrites = checks.map((c, i) => ({ kind: c.kind, original: c.original, chosen: pickValue(i) }));
+    const changed = rewrites.filter((r) => r.chosen && r.chosen !== r.original);
+
+    if (changed.length > 0) {
+      // Apply slot-specific rewrites.
+      changed.forEach((r) => {
+        if (r.kind === "hotel") {
+          setH((prev) => ({ ...prev, mustHave: replaceFirst(prev.mustHave || "", r.original, r.chosen) }));
+        } else if (r.kind === "restaurant") {
+          setRest((prev) => (prev || []).map((s) => (s === r.original ? r.chosen : s)));
+        } else if (r.kind === "activity") {
+          setActs((prev) => (prev || []).map((s) => (s === r.original ? r.chosen : s)));
+        } else if (r.kind === "airline") {
+          setF((prev) => ({ ...prev, airline: replaceFirst(prev.airline || "", r.original, r.chosen) }));
+        }
+      });
+      // Rewrite guidelines so the build prompt's verbatim block matches.
+      setGuidelines((prev) => {
+        let next = prev || "";
+        changed.forEach((r) => { next = replaceFirst(next, r.original, r.chosen); });
+        return next;
+      });
+    }
+
+    setPendingNameChecks(null);
+    setLoadingMsg("Reading your narrative…");
+    setPendingBuildFromGuidelines(true);
+  };
+
+  // Cancel the name-check panel — go back to step 1 so the user can edit
+  // their narrative.
+  const cancelNameChecks = () => {
+    setPendingNameChecks(null);
+    setLoadingMsg("");
+    setStep(1);
   };
 
   // Saved trips list — hydrated from localStorage. Refreshed on save/delete/open.
@@ -8339,6 +8580,68 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 </button>
               )}
             </div>
+            {/* Uncertain-name confirmation. Renders between extraction and
+                build when the extractor flagged ambiguous names. Each check
+                lets the user pick: original / a candidate / custom text.
+                Continue rewrites form state and arms the build; Edit narrative
+                bounces back to step 1 unchanged. */}
+            {pendingNameChecks && pendingNameChecks.checks.length > 0 && (
+              <div style={{ marginTop: "14px", padding: "14px 16px", border: `1px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", background: "#FFFCF4" }}>
+                <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Please confirm</p>
+                <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 12px", lineHeight: 1.5 }}>
+                  A couple of names in your narrative aren't a clean match. Pick the right one so we don't silently substitute the wrong property.
+                </p>
+                {pendingNameChecks.checks.map((c, i) => {
+                  const resolution = pendingNameChecks.resolutions[i] || { choice: "original", value: "" };
+                  const setRes = (patch) => setPendingNameChecks((prev) => prev ? {
+                    ...prev,
+                    resolutions: { ...prev.resolutions, [i]: { ...resolution, ...patch } },
+                  } : prev);
+                  return (
+                    <div key={i} style={{ marginBottom: "14px", paddingBottom: "12px", borderBottom: i < pendingNameChecks.checks.length - 1 ? "1px solid #F0E8D2" : "none" }}>
+                      <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 4px", textTransform: "uppercase", letterSpacing: "0.08em" }}>{c.kind}</p>
+                      <p style={{ fontSize: "14px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>
+                        You wrote: <span style={{ fontStyle: "italic" }}>“{c.original}”</span>
+                      </p>
+                      {c.reason && (
+                        <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{c.reason}</p>
+                      )}
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
+                          <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === "original"} onChange={() => setRes({ choice: "original" })} style={{ accentColor: GOLD, margin: 0 }} />
+                          <span>Use exactly as written: <span style={{ fontStyle: "italic" }}>“{c.original}”</span></span>
+                        </label>
+                        {Array.isArray(c.candidates) && c.candidates.map((cand, ci) => (
+                          <label key={ci} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
+                            <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === `candidate:${ci}`} onChange={() => setRes({ choice: `candidate:${ci}` })} style={{ accentColor: GOLD, margin: 0 }} />
+                            <span>{cand}</span>
+                          </label>
+                        ))}
+                        <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
+                          <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === "custom"} onChange={() => setRes({ choice: "custom" })} style={{ accentColor: GOLD, margin: 0 }} />
+                          <span>Something else:</span>
+                          <input
+                            type="text"
+                            value={resolution.value || ""}
+                            placeholder="Type the correct name"
+                            onChange={(e) => setRes({ choice: "custom", value: e.target.value })}
+                            onFocus={() => setRes({ choice: "custom" })}
+                            style={{ flex: 1, fontSize: "13px", padding: "6px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "#fff", fontFamily: "inherit", color: "var(--color-text-primary)", outline: "none" }}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div style={{ display: "flex", gap: "10px", marginTop: "8px" }}>
+                  <button onClick={cancelNameChecks} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>← Edit narrative
+                  </button>
+                  <button onClick={confirmNameChecks} style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: GOLD, color: "#1a1a1a" }}>
+                    Continue →
+                  </button>
+                </div>
+              </div>
+            )}
             {(loading || extractingFromGuidelines) && (
               <div style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px", gap: "10px" }}>

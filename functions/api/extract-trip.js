@@ -132,6 +132,37 @@ const EXTRACT_TOOL = {
         description:
           "Named activities, tours, day trips, or experiences the traveler mentioned (e.g. 'Vatican private tour', 'Versailles day trip', 'wine tasting in Chianti'). Empty array if none mentioned.",
       },
+      name_checks: {
+        type: "array",
+        description:
+          "Names from the narrative whose spelling, brand, or property identity you are NOT confident about. Use this whenever the traveler writes a hotel/restaurant/airline/activity name that might be misspelled, ambiguous between multiple real properties, or doesn't match any property you know. NEVER silently correct \u2014 always echo the original text verbatim in the relevant field AND list it here with candidate alternatives so the traveler can confirm. Empty array if every named entity is clearly identified.",
+        items: {
+          type: "object",
+          properties: {
+            kind: {
+              type: "string",
+              enum: ["hotel", "restaurant", "airline", "activity", "other"],
+              description: "What kind of named entity this is.",
+            },
+            original: {
+              type: "string",
+              description: "The exact text the traveler wrote, verbatim.",
+            },
+            reason: {
+              type: "string",
+              description:
+                "One short sentence on why you're uncertain. Examples: 'Marriott has multiple properties in Park City \u2014 unclear which one', 'No restaurant by this exact name in Santa Fe \u2014 possible misspelling of Sazon', 'Hotel brand named but specific property not stated'.",
+            },
+            candidates: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Up to 4 likely real-world names the traveler might have meant. Order by likelihood. Examples: ['Marriott's MountainSide Resort, Park City', 'Marriott Vacation Club at Park City'].",
+            },
+          },
+          required: ["kind", "original", "reason"],
+        },
+      },
     },
     required: ["basics"],
   },
@@ -174,6 +205,7 @@ EXTRACTION RULES — STRICT:
 • Budget: infer from named hotels using the hotel→tier mapping in the schema. Do not invent a budget if no hotel is named.
 • Style: only include items from the exact enum list. Don't invent new styles.
 • If the narrative names multiple hotels in different cities, treat it as multi-city: put the FIRST city in basics.destination and put all hotels in hotel.mustHave separated by ' / '.
+• UNCERTAIN NAMES — CRITICAL: If a hotel/restaurant/airline/activity name in the narrative looks misspelled, ambiguous between multiple real properties, or doesn't match a property you can clearly identify, you MUST: (1) keep the exact original text in the relevant field (mustHave / restaurants[] / activities[] / airline), AND (2) add an entry to name_checks with the original text, the reason, and up to 4 candidate real-world names. NEVER silently substitute a 'corrected' name. A wrong silent correction is worse than asking the traveler to confirm. Example: traveler writes 'Marriot Mountainside' → keep 'Marriot Mountainside' in hotel.mustHave, add name_checks entry: { kind:'hotel', original:'Marriot Mountainside', reason:'Multiple Marriott properties could match', candidates:['Marriott\'s MountainSide at Park City','Park City Marriott'] }.
 
 DO NOT emit any prose. Only call the tool.`;
 
