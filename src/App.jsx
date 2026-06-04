@@ -6468,6 +6468,16 @@ export default function TripOptimizer() {
     if (!text || extractingFromGuidelines || loading) return;
     setExtractingFromGuidelines(true);
     setError("");
+    // Advance to step 2 immediately so the user sees the progress panel
+    // throughout extraction + build. Without this, the user stayed on step 1
+    // with only the button changing labels, which looked like a no-op click.
+    // The step-2 loading panel watches `extractingFromGuidelines || loading`
+    // so it shows the spinner + "Reading your narrative…" right away.
+    setLoadingMsg("Reading your narrative…");
+    setProgress(0);
+    setProgressLabel("");
+    setStep(2);
+    try { window.scrollTo({ top: 0, behavior: "instant" }); } catch {}
     try {
       const resp = await fetch("/api/extract-trip", {
         method: "POST",
@@ -6480,6 +6490,10 @@ export default function TripOptimizer() {
         const msg = data?.error?.message || `Extraction failed (${resp.status}). Try filling the form manually.`;
         setError(msg);
         setExtractingFromGuidelines(false);
+        setLoadingMsg("");
+        // Bounce back to step 1 so the inline error under the 'Build from
+        // this' button is the thing the user sees.
+        setStep(1);
         return;
       }
       const ex = data?.extracted || {};
@@ -6541,6 +6555,8 @@ export default function TripOptimizer() {
       setPendingBuildFromGuidelines(true);
     } catch (err) {
       setError(`Couldn't process guidelines: ${String(err?.message || err)}. Try filling the form manually.`);
+      setLoadingMsg("");
+      setStep(1);
     } finally {
       setExtractingFromGuidelines(false);
     }
@@ -7830,7 +7846,9 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         // — prior behavior was "button dims for a moment then comes back, no
         // other activity", which was indistinguishable from a no-op click.
         setPendingBuildFromGuidelines(false);
+        setLoadingMsg("");
         setError("Couldn't pick a destination out of your narrative. Add a city or region name and try again, or fill the form below.");
+        setStep(1);
         return;
       }
       setPendingBuildFromGuidelines(false);
@@ -8306,6 +8324,14 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                   style={{ flex: 1, border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}>
                   Cancel
                 </button>
+              ) : extractingFromGuidelines ? (
+                // Extraction is fast (~2s) and not cancellable. Show a disabled
+                // "reading…" state so the user knows the build is in motion;
+                // the loading panel below renders the actual spinner + label.
+                <button disabled aria-busy="true"
+                  style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "not-allowed", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", opacity: 0.7 }}>
+                  Reading your narrative…
+                </button>
               ) : (
                 <button onClick={handleBuild} disabled={loading}
                   style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
@@ -8313,7 +8339,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 </button>
               )}
             </div>
-            {loading && (
+            {(loading || extractingFromGuidelines) && (
               <div style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px", gap: "10px" }}>
                   <p style={{ fontSize: "12px", color: "var(--color-text-primary)", margin: 0, fontWeight: 500, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
