@@ -7825,7 +7825,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // see the extracted values that just flushed.
     setTimeout(() => {
       if (!basics?.destination) {
+        // Extraction succeeded server-side but didn't yield a destination on
+        // this render. Surface a clear message instead of silently disarming
+        // — prior behavior was "button dims for a moment then comes back, no
+        // other activity", which was indistinguishable from a no-op click.
         setPendingBuildFromGuidelines(false);
+        setError("Couldn't pick a destination out of your narrative. Add a city or region name and try again, or fill the form below.");
         return;
       }
       setPendingBuildFromGuidelines(false);
@@ -8057,6 +8062,13 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                   >
                     {extractingFromGuidelines ? "Reading your narrative…" : "Build from this →"}
                   </button>
+                  {/* Inline error surface for the shortcut. Step 1 has no
+                      global error banner, so a 422 from /api/extract-trip
+                      (or a network blip) used to dim the button and vanish
+                      with no feedback. Render error here so the user sees it. */}
+                  {error && (
+                    <p role="alert" style={{ fontSize: "12px", color: "var(--color-text-danger, #c0392b)", margin: 0, textAlign: "center", lineHeight: 1.5 }}>{error}</p>
+                  )}
                   <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, textAlign: "center", fontStyle: "italic", lineHeight: 1.5 }}>
                     Skip the form — we'll extract destination, dates, and details and build straight from your narrative.
                   </p>
