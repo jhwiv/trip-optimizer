@@ -3912,6 +3912,48 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
               No notes — the panel signed off as-is.
             </p>
           )}
+          {findings.length > 0 && (() => {
+            const applicable = findings.filter(f => !appliedIds.includes(f.id));
+            const allChecked = applicable.length > 0 && applicable.every(f => applyState[f.id]);
+            const noneChecked = applicable.every(f => !applyState[f.id]);
+            return (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", margin: "4px 0 6px", padding: "8px 10px", background: "var(--color-background-secondary, #fafafa)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)" }}>
+                <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.4 }}>
+                  Pick which changes to apply — each finding has its own toggle below.
+                </p>
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setApplyState(prev => {
+                        const next = { ...prev };
+                        for (const f of applicable) next[f.id] = true;
+                        return next;
+                      });
+                    }}
+                    disabled={allChecked}
+                    style={{ fontSize: "10.5px", color: allChecked ? "var(--color-text-tertiary)" : GOLD, background: "transparent", border: `0.5px solid ${allChecked ? "var(--color-border-tertiary)" : GOLD}`, padding: "4px 10px", borderRadius: "3px", cursor: allChecked ? "default" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setApplyState(prev => {
+                        const next = { ...prev };
+                        for (const f of applicable) next[f.id] = false;
+                        return next;
+                      });
+                    }}
+                    disabled={noneChecked}
+                    style={{ fontSize: "10.5px", color: noneChecked ? "var(--color-text-tertiary)" : "var(--color-text-secondary)", background: "transparent", border: `0.5px solid ${noneChecked ? "var(--color-border-tertiary)" : "var(--color-border-secondary)"}`, padding: "4px 10px", borderRadius: "3px", cursor: noneChecked ? "default" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
+                  >
+                    Select none
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
           {findings.map(f => (
             <FindingCard
               key={f.id}
@@ -4324,10 +4366,35 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
           </div>
           <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.5 }}>{finding.summary}</p>
           {finding.action && <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.5 }}><span style={{ color: GOLD, fontWeight: 600, marginRight: "4px" }}>→</span>{finding.action}</p>}
-          <label style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "8px", fontSize: "11px", color: "var(--color-text-secondary)", cursor: alreadyApplied ? "default" : "pointer", fontFamily: "inherit" }}>
-            <input type="checkbox" checked={checked} onChange={onToggle} disabled={alreadyApplied} style={{ accentColor: GOLD, margin: 0, cursor: alreadyApplied ? "default" : "pointer" }} />
-            <span>{alreadyApplied ? "Already applied" : "Apply this change"}</span>
-          </label>
+          {alreadyApplied ? (
+            <p style={{ marginTop: "8px", fontSize: "11px", color: GOLD, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", margin: "8px 0 0" }}>✓ Already applied</p>
+          ) : (
+            <button
+              type="button"
+              onClick={onToggle}
+              aria-pressed={checked}
+              style={{
+                marginTop: "8px",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                fontSize: "11px",
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                padding: "6px 12px",
+                borderRadius: "4px",
+                border: `0.5px solid ${checked ? GOLD : "var(--color-border-secondary)"}`,
+                background: checked ? GOLD : "transparent",
+                color: checked ? "#0F0F0F" : "var(--color-text-secondary)",
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              <span style={{ fontSize: "12px", lineHeight: 1 }}>{checked ? "✓" : "+"}</span>
+              <span>{checked ? "Apply this change" : "Skip"}</span>
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -6329,25 +6396,40 @@ function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
     inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
 
-  return `You are a panel of luxury-travel experts conducting a professional review of a finalized trip plan. You will call the submit_review tool exactly once. Do NOT emit any prose — only the tool call.
+  // Surface the user's free-form guidelines + narrative so the reviewer
+  // doesn't push more luxury than the user asked for. "Moderate excursions",
+  // "family-friendly", "avoid Michelin", etc. live in these fields and they
+  // are the user's explicit constraints, not the sources' defaults.
+  const userGuidelinesBlock = ((inputs?.guidelines || "").trim() || (inputs?.narrative || "").trim())
+    ? `\nUSER'S EXPLICIT GUIDELINES (these override the sources' default taste):\n${(inputs?.guidelines || inputs?.narrative || "").trim().slice(0, 3000)}\n`
+    : "";
 
-REVIEWER PANEL — speak with the combined voice and standards of these sources:
+  return `You are a panel of travel experts conducting a professional review of a finalized trip plan. Your job is to evaluate the plan AGAINST THE USER'S STATED BUDGET, STYLE, AND GUIDELINES — not against your sources' default tier. You will call the submit_review tool exactly once. Do NOT emit any prose — only the tool call.
+
+REVIEWER PANEL — you have access to the taste and editorial voice of these sources, but you adapt their standards to fit the user's stated trip tier:
 ${sourceList}
 
 ACTIVE LENSES (only flag findings that fall under one of these):
 ${lensRules}
 
 TRIP CONTEXT: ${tripContext || "unspecified"}
-${renderLiveSourceBlock(liveSnippets)}
+${userGuidelinesBlock}${renderLiveSourceBlock(liveSnippets)}
 REVIEW DISCIPLINE — STRICT:
 • Findings only. No general praise, no recap, no "overall this is a strong plan" prose.
 • Each finding is a real, actionable issue. If the plan is genuinely strong with no notes, emit verdict 'A — no notes' and findings: [] (empty array allowed).
-• Critical = the trip is materially worse if this is not fixed (closed restaurant, impossible drive time, wrong hotel tier for stated budget, marquee booking that needs 2-month lead time, dangerous pacing on transit days, etc.).
-• Suggested = clear upgrade (better-fitting hotel within stated brand family, more interesting restaurant, more locally-authentic activity).
+• Critical = the trip is materially worse if this is not fixed (closed restaurant, impossible drive time, dangerous pacing on transit days, marquee booking that needs 2-month lead time, factual errors, etc.).
+• Suggested = clear upgrade WITHIN the stated tier (better-fitting hotel at the SAME price level, more interesting restaurant at the SAME price level, more locally-authentic activity at the SAME intensity/budget).
 • Nice-to-have = polish (timing nudge, micro-substitution, small flag worth adding).
 • Cap critical at 3. Cap total at 8. Pick the highest-impact issues only — quality over quantity.
 • Set default_apply = true for ALL critical findings, false for ALL nice findings, and use your judgment for suggested.
-• Use the user's exact budget / style / pace as the ceiling and floor for your standards. A $$ trip should be reviewed against $$ expectations, not Michelin-Key expectations.
+
+BUDGET DISCIPLINE — CRITICAL:
+• The user's stated budget, style, pace, AND guidelines are HARD CONSTRAINTS. You do NOT push the trip up-market.
+• If the budget says "$$", evaluate against $$ expectations — NOT Michelin-Key, NOT Forbes 5-Star, NOT Relais & Châteaux defaults.
+• If the guidelines say "moderate-price excursions" or "family-friendly hotel" or "casual dining", DO NOT flag a hotel/restaurant/activity for being "not luxe enough." That is the point.
+• NEVER emit a finding whose substance is "upgrade to a more expensive option" unless the existing pick is actually broken (closed, double-booked, geographically wrong) AND the upgrade stays within the user's stated price tier.
+• A correctly-tiered moderate hotel is a CORRECT pick, not a finding. A 4-star instead of 5-star when the user said $$$ is NOT a critical issue.
+• You CAN flag overpriced picks that exceed the user's stated tier ("this Michelin restaurant blows the $$ budget for one dinner"). Going DOWN-market when the user asked for it is never a finding.
 • Each source name in the source field must come from the panel list above, exactly as written.
 • Pick the right mode_hint per finding — this drives whether the apply is a quick patch or a full re-plan.
 
@@ -6380,12 +6462,17 @@ function buildRevisionSystemPromptSurgical(plan, findings, inputs) {
     inputs?.basics?.destination && `Destination: ${inputs.basics.destination}`,
     inputs?.basics?.nights && `${inputs.basics.nights} nights`,
     inputs?.basics?.budget && `Budget: ${inputs.basics.budget}`,
+    inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
+    inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
+  const userGuidelinesBlock = ((inputs?.guidelines || "").trim() || (inputs?.narrative || "").trim())
+    ? `\nUSER'S EXPLICIT GUIDELINES (hard constraints — do not violate):\n${(inputs?.guidelines || inputs?.narrative || "").trim().slice(0, 2000)}\n`
+    : "";
 
-  return `You are applying surgical card-level patches to an existing luxury trip plan. Call submit_revision_patches exactly once with a small patches[] array — one patch per finding. No prose.
+  return `You are applying surgical card-level patches to an existing trip plan. Call submit_revision_patches exactly once with a small patches[] array — one patch per finding. No prose.
 
 TRIP CONTEXT: ${tripContext}
-
+${userGuidelinesBlock}
 FINDINGS TO ADDRESS:
 ${findingsBlock}
 
@@ -6396,7 +6483,7 @@ PATCH RULES:
 • For replace_hotel: same as replace_item but the new_item.type must be 'Hotel'.
 • For replace_planb_entry: provide planb_index (0-based) and new_text.
 • For add_flag / add_tonight: provide new_text only.
-• Keep replacement choices consistent with the original budget and style. Don't upgrade or downgrade tier without cause.
+• Keep replacement choices consistent with the original budget, style, and the user's guidelines above. The user's stated price tier and guidelines are hard constraints — do not push the trip up-market beyond what they asked for. If the user said "moderate" excursions or "family-friendly" or any other tier-specific instruction, the replacement must respect that.
 • Rationale: one short sentence per patch, plain language.
 
 PLAN TO PATCH (JSON):
@@ -6419,14 +6506,17 @@ function buildRevisionSystemPromptFull(plan, findings, inputs) {
     inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
     inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
+  const userGuidelinesBlock = ((inputs?.guidelines || "").trim() || (inputs?.narrative || "").trim())
+    ? `\nUSER'S EXPLICIT GUIDELINES (hard constraints — do not violate):\n${(inputs?.guidelines || inputs?.narrative || "").trim().slice(0, 3000)}\n`
+    : "";
   const nightsNum = parseInt(inputs?.basics?.nights, 10) || (Array.isArray(plan?.days) ? Math.max(1, plan.days.length - 1) : 3);
   const totalDays = nightsNum + 1;
 
-  return `You are revising a luxury trip plan based on a professional review. Call the submit_trip_plan tool exactly once with the FULL revised plan — same schema as the original. Do not emit any prose.
+  return `You are revising a trip plan based on a professional review. Call the submit_trip_plan tool exactly once with the FULL revised plan — same schema as the original. Do not emit any prose.
 
 TRIP CONTEXT: ${tripContext}
 Target: ${totalDays} days (${nightsNum} nights).
-
+${userGuidelinesBlock}
 REVIEWER FINDINGS TO ADDRESS:
 ${findingsBlock}
 
@@ -6434,6 +6524,7 @@ REVISION RULES:
 • Re-emit the COMPLETE plan with every field (destination, meta, days, logistics, weather_window, pack, flags, planb, snobs, tonight). Do not return a partial plan.
 • Address every finding above. Where a finding calls for pacing or neighborhood changes, restructure the affected days fully — don't just relabel.
 • Preserve what was working: keep restaurants, hotels, and activities that the review did NOT flag, unless adjusting them is necessary to fix a flagged issue.
+• Respect the user's stated budget, style, pace, AND guidelines above as hard constraints. If the user asked for moderate-tier excursions or a family-friendly tone, the revised plan must keep that. Do not push the trip up-market past what the user requested.
 • Same field emission order rule applies: destination, meta, ${Array.isArray(plan?.cities) && plan.cities.length > 1 ? "cities, " : ""}days, then logistics/flags/planb/snobs/tonight last.
 • days[] must contain exactly ${totalDays} entries.
 • VARIETY: no restaurant repeats across days. Each unique name appears at most once across the whole plan.
