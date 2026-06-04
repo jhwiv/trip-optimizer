@@ -935,7 +935,9 @@ function formatLiveTime(iso) {
   if (!iso) return "";
   try {
     const d = new Date(iso);
-    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    // Force 12h AM/PM regardless of locale so the live status row matches the
+    // formatTime() helper used everywhere else in the UI.
+    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true });
   } catch { return ""; }
 }
 
@@ -1078,6 +1080,27 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
         <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: "0 0 4px" }}>
           {[f.cabin, f.aircraft].filter(Boolean).join("  ·  ")}
         </p>
+      )}
+      {f.airport_arrival_buffer && (
+        <div style={{ margin: "6px 0 4px", padding: "6px 9px", background: "#FFF8EC", border: "0.5px solid #E8C063", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "10.5px", fontWeight: 700, color: "#8A6500", letterSpacing: "0.06em", textTransform: "uppercase" }}>Arrive {f.airport_arrival_buffer} early</span>
+          <span style={{ fontSize: "11.5px", color: "#5A4A1F" }}>
+            {/^A?UA$|^AUA$/.test(f.from_airport || "") ? "AUA pre-clears US Customs in Aruba — plan for the extra time before boarding." : "Lead time at the airport before scheduled departure."}
+          </span>
+        </div>
+      )}
+      {Array.isArray(f.lounge_access) && f.lounge_access.length > 0 && (
+        <div style={{ margin: "6px 0 4px", padding: "7px 9px", background: "rgba(196,168,98,0.08)", border: `0.5px solid ${GOLD}`, borderRadius: "4px" }}>
+          <p style={{ fontSize: "10.5px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px" }}>Lounge access</p>
+          {f.lounge_access.map((lg, i) => (
+            <div key={i} style={{ margin: "3px 0", fontSize: "11.5px", color: "var(--color-text-primary)", lineHeight: 1.4 }}>
+              <span style={{ fontWeight: 600 }}>{lg.name}</span>
+              {lg.terminal ? <span style={{ color: "var(--color-text-secondary)" }}>  ·  {lg.terminal}</span> : null}
+              {lg.access ? <span style={{ display: "block", color: "var(--color-text-secondary)", fontSize: "11px" }}>Access: {lg.access}</span> : null}
+              {lg.notes ? <span style={{ display: "block", color: "var(--color-text-tertiary)", fontSize: "10.5px", fontStyle: "italic" }}>{lg.notes}</span> : null}
+            </div>
+          ))}
+        </div>
       )}
       {note && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", lineHeight: 1.5, fontStyle: "italic" }}>{note}</p>
@@ -3112,7 +3135,7 @@ function PrintRidesButton({ data, inputs }) {
                   Ride {i + 1} · {r.dayLabel}{r.city ? ` · ${r.city}` : ""}
                 </div>
                 <div style={{ fontSize: "15px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.02em" }}>
-                  {r.time}{r.end_time ? ` – ${r.end_time}` : ""}
+                  {formatTime(r.time)}{r.end_time ? ` – ${formatTime(r.end_time)}` : ""}
                 </div>
               </div>
               <div style={{ fontSize: "14px", fontWeight: 600, marginBottom: "4px" }}>{r.text || "Transport"}</div>
@@ -6229,6 +6252,41 @@ const RESTAURANT_SCHEMA = {
 // Backup is the same shape but allowed to be slimmer.
 const BACKUP_SCHEMA = { ...RESTAURANT_SCHEMA, description: "Same-tier fallback in the same neighborhood / cuisine family." };
 
+// ============================================================================
+// DESTINATION FACTS — hard-corrected facts injected into the planner prompt.
+// Each entry: triggers (lowercase substrings tested against the destination)
+// + facts (an array of bullet strings). The planner sees these as authoritative
+// corrections to its training data — things it has gotten wrong before.
+//
+// Append to this list whenever the user catches a factual error the model
+// keeps re-emitting (wrong neighborhood, closed venue, mis-located restaurant).
+// Keep facts SHORT, SPECIFIC, and only worth promoting if the model has
+// gotten it wrong at least once — the goal is correction, not exhaustive
+// reference data.
+// ============================================================================
+const DESTINATION_FACTS = [
+  {
+    triggers: ["aruba", "oranjestad", "palm beach", "eagle beach"],
+    facts: [
+      "Atardi (the open-air sunset dining venue at Aruba Marriott Resort & Stellaris Casino, L.G. Smith Blvd 101) is on PALM BEACH, not Eagle Beach. Eagle Beach is south of Palm Beach and is the lower-rise resort strip (Bucuti & Tara, Manchebo, Amsterdam Manor). Do not write 'Atardi over Eagle Beach' — it is 'Atardi on Palm Beach'.",
+      "AUA (Queen Beatrix International, Aruba) has US Customs and Border Protection PRE-CLEARANCE for all US-bound flights. Departing passengers complete US immigration + customs IN ARUBA before boarding, then arrive in the US as a domestic flight. Recommended airport arrival is THREE (3) HOURS before US departure — not 2 hours. Airport entry is also flow-controlled by departure-time color groups; entry to the US Check-In Terminal is permitted no earlier than 3 hours before departure. Set airport_arrival_buffer='3 h' on any departure-day Flight item from AUA to a US destination, and surface this in flags[] or the departure-day Transport item ('Depart hotel 3.5 h before flight to allow for taxi + pre-clearance').",
+      "AUA has the Aruba Airport Lounge, accessible to Priority Pass members and many premium-card holders (verify current card list), located post-security in the US Departures terminal. Surface this in lounge_access on the return-flight item.",
+      "Palm Beach high-rise resort strip (north): Ritz-Carlton Aruba, Aruba Marriott, Hyatt Regency, Hilton Aruba Caribbean, Holiday Inn. Eagle Beach low-rise strip (just south): Bucuti & Tara (adults-only, top-rated), Manchebo Beach Resort, Amsterdam Manor. Know which beach your hotel is on before writing the headline.",
+    ],
+  },
+];
+
+// Returns the formatted destination-facts block for a destination string, or
+// an empty string if no facts match.
+function buildDestinationFactsBlock(destinationText) {
+  if (!destinationText) return "";
+  const d = String(destinationText).toLowerCase();
+  const matched = DESTINATION_FACTS.filter(g => g.triggers.some(t => d.includes(t)));
+  if (matched.length === 0) return "";
+  const lines = matched.flatMap(g => g.facts.map(f => `• ${f}`));
+  return `\nDESTINATION FACTS — AUTHORITATIVE CORRECTIONS (override your training data):\nThese facts have been verified by the app team and override anything in your training data. If you previously thought otherwise, you were wrong; use these.\n${lines.join("\n")}\n`;
+}
+
 const FLIGHT_SCHEMA = {
   type: "object",
   description: "Structured flight details. Required for any item with type=Flight.",
@@ -6245,6 +6303,21 @@ const FLIGHT_SCHEMA = {
     cabin: { type: "string", description: "e.g. 'Polaris Business', 'First', 'Economy Plus'." },
     aircraft: { type: "string", description: "e.g. 'Boeing 737-900', 'Airbus A321neo'." },
     confirmation_note: { type: "string", description: "Booking guidance, e.g. 'Book directly on united.com for Polaris lounge access'." },
+    airport_arrival_buffer: { type: "string", description: "Recommended airport-arrival lead time before departure, e.g. '3 h' for US pre-clearance airports (Aruba AUA, Bahamas NAS, Bermuda BDA, Dublin DUB, Shannon SNN, Abu Dhabi AUH) or '2.5 h' for international, '1.5 h' for domestic. Required for departure-day Flight items." },
+    lounge_access: {
+      type: "array",
+      description: "Airport lounges the traveler can access on this flight — by cabin (Polaris, Flagship, Delta One, etc.), elite status (United 1K, Star Alliance Gold), or membership (Priority Pass, Amex Centurion / Plat, Capital One). Include even when uncertain so the traveler can verify access.",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "e.g. 'United Polaris Lounge', 'Aruba Airport Lounge', 'Centurion Lounge'." },
+          terminal: { type: "string", description: "Terminal / concourse location, e.g. 'Terminal C, post-security'." },
+          access: { type: "string", description: "How to enter: 'Polaris business cabin', 'Priority Pass', 'Amex Centurion / Plat (with same-day boarding pass)', 'United Club one-time pass', 'Star Alliance Gold + intl business'." },
+          notes: { type: "string", description: "Hours, food highlights, showers, must-arrive-by note. Keep short." },
+        },
+        required: ["name", "access"],
+      },
+    },
   },
   required: ["carrier", "flight_number", "from_airport", "to_airport", "depart_time", "arrive_time", "nonstop"],
 };
@@ -7657,7 +7730,10 @@ Total: ${totalNights} nights = ${totalDays} days.
       ? `• ROUTE TRUTH — common transatlantic / long-haul nonstops you MUST get right:\n${_routeMatched.join("\n")}\n  If the user's route is NOT in this list and you're unsure, list 2–3 candidate carriers in flags[] and DO NOT invent a single specific carrier.\n`
       : "";
 
+    const _destinationFactsBlock = buildDestinationFactsBlock(basics.destination || (cities[0] && cities[0].name) || "");
+
     return `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}
+${_destinationFactsBlock}
 
 FIELD EMISSION ORDER — CRITICAL:
 Write the tool input in this exact order: destination, meta, ${isMultiCity ? "cities, " : ""}days, logistics, flags, planb, snobs, tonight.
@@ -7749,7 +7825,9 @@ For any Flight item whose duration exceeds 6 hours OR whose cabin is Economy on 
 Add a flags[] entry: "Long-haul upgrade: <carrier> <route> typically opens upgrade space 14 days out. Check at booking and again 5 days before departure."
 
 FLIGHTS — ACCURACY OVER SPECIFICITY, PREFER NONSTOP, ALWAYS STRUCTURED:
-• Every Flight item MUST include a "flight" object with: carrier, from_airport (IATA), to_airport (IATA), depart_time (rough window OK), arrive_time (rough window OK), duration, nonstop (boolean), cabin, aircraft, confirmation_note. Do NOT include flight_number — the app handles flight-number lookup for the user.
+• Every Flight item MUST include a "flight" object with: carrier, from_airport (IATA), to_airport (IATA), depart_time (rough window OK), arrive_time (rough window OK), duration, nonstop (boolean), cabin, aircraft, confirmation_note, airport_arrival_buffer, lounge_access. Do NOT include flight_number — the app handles flight-number lookup for the user.
+• AIRPORT ARRIVAL BUFFER — REQUIRED on every departure-day Flight item (the flight that takes the traveler HOME or to a connecting onward city). Standard buffers: domestic US '1.5 h', international '2.5 h', and THREE HOURS '3 h' for any flight DEPARTING from a US PRE-CLEARANCE airport — these are AUA (Aruba), NAS (Bahamas/Nassau), FPO (Bahamas/Freeport), BDA (Bermuda), DUB and SNN (Ireland), YUL/YVR/YYZ/YOW/YHZ/YWG/YYC and other major Canadian airports, AUH (Abu Dhabi). Pre-clearance means the traveler clears US Customs IN THE DEPARTURE COUNTRY before boarding — the process takes time. When you set a 3-h buffer, also add a flags[] entry naming the pre-clearance reason and add a departure-day Transport item that picks the traveler up from the hotel EARLY enough to clear it (typically 3.5 h before scheduled departure to allow for taxi/drive time).
+• LOUNGE ACCESS — surface available lounges on EVERY Flight item via the lounge_access[] array. Include lounges accessible via the traveler's cabin (Polaris/Flagship Business/First/Delta One), via elite status (United 1K/Star Alliance Gold/oneworld Sapphire/SkyTeam Elite Plus), and via membership cards (Priority Pass, Amex Centurion / Plat with same-day boarding pass, Capital One Lounge, Chase Sapphire Reserve). If a lounge's access list is ambiguous, include it with an honest 'access' string ('Priority Pass; verify current card partner list') rather than omitting it. For US domestic flights from major hubs, name the carrier-club + any Centurion/Capital One/Sapphire/Priority Pass options at that terminal. For international departures, prioritize the carrier's premium lounge and any Priority Pass partner. Common high-value lounges to know: EWR Polaris (Term C, post-security — Polaris business + Star Alliance int'l business), JFK Centurion (Term 4, post-security — Amex Plat/Cent), LAX Amex Centurion + United Polaris + Korean SKYPASS, ORD Polaris + United Club + Amex Centurion, ATL Delta Sky Club + Centurion, MIA Amex Centurion + Centurion Studio. International: LHR Concorde Room (BA First), CDG Air France La Première + business lounges, FCO Casa Alitalia/ITA, ZRH Swiss First/Senator, AUA Aruba Airport Lounge (Priority Pass, post-US-preclearance).
 • CARRIER SELECTION — DO THIS FIRST: name a carrier you are HIGHLY CONFIDENT actually operates a nonstop on this exact city pair. If you cannot name one with confidence, leave carrier as a comma-separated short list of candidates (e.g. "SAS or Delta") and add a flags[] entry like "Verify which carrier operates nonstop — candidates: SAS, Delta". Do NOT invent a carrier that doesn't fly the route.
 • FLIGHT NUMBERS — DO NOT EMIT. The app strips any flight_number you send and renders a "Look up actual flight" link instead. Set "flight_number": null. The user looks up the real flight on Google Flights, not from your output. Do NOT make up numbers like "UA 1234" — they will be removed but they waste tokens and erode trust if anyone sees the raw JSON.
 ${_routeTruthBlock}• Every confirmation_note MUST literally end with this exact sentence: "Verify flight number, times and equipment at booking — schedules change." Copy it verbatim; do not paraphrase.

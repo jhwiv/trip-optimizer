@@ -293,4 +293,710 @@ function makeCursor(pdf) {
     const valueLines = wrap(String(value), valueWidth);
 
     const lineH = (size * 1.3) / 2.83465;
-    const blockH = Math.max(keyLines.length, valueLines.length) *
+    const blockH = Math.max(keyLines.length, valueLines.length) * lineH + rowGap;
+    ensureSpace(blockH + 1);
+
+    // KEY (small caps look — uppercase + tracked)
+    pdf.setFont(FONT.sans, "bold");
+    pdf.setFontSize(size - 1.5);
+    pdf.setCharSpace(0.3);
+    setColor(COLOR.inkFaint);
+    keyLines.forEach((ln, i) => {
+      pdf.text(asciiSafe(ln), PAGE.marginX, state.y + lineH * 0.78 + i * lineH);
+    });
+    pdf.setCharSpace(0);
+
+    // VALUE
+    pdf.setFont(FONT.sans, "normal");
+    pdf.setFontSize(size);
+    setColor(COLOR.ink);
+    valueLines.forEach((ln, i) => {
+      pdf.text(asciiSafe(ln), PAGE.marginX + keyWidth + gap, state.y + lineH * 0.78 + i * lineH);
+    });
+
+    state.y += blockH;
+    // Thin row separator
+    setDraw(COLOR.ruleSoft);
+    pdf.setLineWidth(0.1);
+    pdf.line(PAGE.marginX, state.y, PAGE.width - PAGE.marginX, state.y);
+    state.y += rowGap;
+  }
+
+  // Bullet item: gold dot + wrapped text.
+  function bullet(label, opts = {}) {
+    const {
+      size = 10,
+      indent = 6,
+      space: pre = 0,
+    } = opts;
+    if (!label) return;
+    const valueWidth = (PAGE.width - PAGE.marginX * 2) - indent;
+    pdf.setFont(FONT.sans, "normal");
+    pdf.setFontSize(size);
+    const lines = wrap(String(label), valueWidth);
+    if (lines.length === 0) return;
+    const lineH = (size * 1.3) / 2.83465;
+    ensureSpace(lines.length * lineH + pre);
+    state.y += pre;
+
+    // Bullet dot
+    setFill(COLOR.gold);
+    pdf.circle(PAGE.marginX + 1.2, state.y + lineH * 0.5, 0.7, "F");
+
+    setColor(COLOR.ink);
+    lines.forEach((ln, i) => {
+      pdf.text(asciiSafe(ln), PAGE.marginX + indent, state.y + lineH * 0.78 + i * lineH);
+    });
+    state.y += lines.length * lineH;
+  }
+
+  // Chip (rounded rect with text) — used for logistics. Lays out flowing.
+  function chips(items, opts = {}) {
+    const { size = 9, padX = 3, padY = 1.6, gap = 3, lineGap = 2.5 } = opts;
+    if (!items || items.length === 0) return;
+    pdf.setFont(FONT.sans, "normal");
+    pdf.setFontSize(size);
+    const lineH = (size * 1.25) / 2.83465 + padY * 2;
+    let x = PAGE.marginX;
+    const xMax = PAGE.width - PAGE.marginX;
+    ensureSpace(lineH);
+    items.forEach(it => {
+      const label = asciiSafe(it);
+      const w = pdf.getTextWidth(label) + padX * 2;
+      if (x + w > xMax) {
+        state.y += lineH + lineGap;
+        ensureSpace(lineH);
+        x = PAGE.marginX;
+      }
+      setFill(COLOR.bgChip);
+      setDraw(COLOR.gold);
+      pdf.setLineWidth(0.2);
+      pdf.roundedRect(x, state.y, w, lineH - 0.5, 1.2, 1.2, "FD");
+      setColor(COLOR.ink);
+      pdf.text(label, x + padX, state.y + lineH * 0.62);
+      x += w + gap;
+    });
+    state.y += lineH + 1;
+  }
+
+  return {
+    pdf,
+    state,
+    text,
+    link,
+    rule,
+    accentRule,
+    space,
+    newPage,
+    kvRow,
+    bullet,
+    chips,
+    ensureSpace,
+    wrap,
+    setColor,
+    setDraw,
+    setFill,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Helpers — URL builders, label formatters, safe getters.
+// -----------------------------------------------------------------------------
+function mapsUrl(address) {
+  if (!address) return null;
+  return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(address);
+}
+function telUrl(phone) {
+  if (!phone) return null;
+  const cleaned = String(phone).replace(/[^\d+]/g, "");
+  if (!cleaned) return null;
+  return "tel:" + cleaned;
+}
+function safe(s) { return s == null ? "" : String(s); }
+function titleCase(s) {
+  if (!s) return s;
+  return String(s).replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// -----------------------------------------------------------------------------
+// COVER PAGE
+// -----------------------------------------------------------------------------
+function renderCover(cur, data, inputs, opts) {
+  const { pdf } = cur;
+  const dest = safe(data?.destination || (Array.isArray(data?.cities) && data.cities[0]?.name) || "Your trip");
+  const meta = safe(data?.meta || "");
+
+  // Compact top — tightened from 14mm to 8mm so the cover packs more onto
+  // page 1 (user feedback: too much white space).
+  cur.space(8);
+
+  // Eyebrow
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(8.5);
+  pdf.setCharSpace(1.2);
+  cur.setColor(COLOR.gold);
+  pdf.text("ITINERARY", PAGE.marginX, cur.state.y);
+  pdf.setCharSpace(0);
+  cur.space(5);
+
+  // Title (serif italic for editorial feel)
+  cur.text(dest, {
+    font: FONT.serif,
+    style: "italic",
+    size: 26,
+    color: COLOR.ink,
+    leading: 1.05,
+  });
+  cur.space(2);
+
+  // Gold accent rule
+  cur.accentRule(48);
+  cur.space(2);
+
+  // Meta line
+  if (meta) {
+    cur.text(meta, { font: FONT.sans, style: "normal", size: 11, color: COLOR.inkSoft, leading: 1.3 });
+  }
+
+  // Cities preview (multi-city)
+  if (Array.isArray(data?.cities) && data.cities.length > 1) {
+    cur.space(2);
+    const cityLine = data.cities.map((c, i) => `${i + 1}. ${c.name}${c.nights ? ` · ${c.nights}n` : ""}${c.focus ? ` — ${c.focus}` : ""}`).join("    ");
+    cur.text(cityLine, { font: FONT.sans, style: "italic", size: 10, color: COLOR.inkSoft });
+  }
+
+  cur.space(3);
+  cur.rule({ color: COLOR.rule, space: 0.5 });
+
+  // "What you told us" — compact input summary, omit empties.
+  if (inputs) {
+    cur.space(1);
+    pdf.setFont(FONT.sans, "bold");
+    pdf.setFontSize(9);
+    pdf.setCharSpace(1.0);
+    cur.setColor(COLOR.gold);
+    pdf.text("WHAT YOU TOLD US", PAGE.marginX, cur.state.y);
+    pdf.setCharSpace(0);
+    cur.space(4);
+
+    const b = inputs.basics || {};
+    const f = inputs.flights || {};
+    const h = inputs.hotel || {};
+    const t = inputs.transport || {};
+    const dn = inputs.dining || {};
+    const it = inputs.interests || {};
+
+    const citiesLine = Array.isArray(b.cities) && b.cities.length > 1
+      ? b.cities.map((c, i) => `${i + 1}) ${c.name} — ${c.nights}n${c.focus ? ` (${c.focus})` : ""}`).join("  ")
+      : null;
+
+    const rows = [
+      ["Destination", b.destination],
+      citiesLine ? ["Route", citiesLine] : null,
+      ["Base area", b.baseArea],
+      ["Start date", b.startDate],
+      ["Nights", b.nights],
+      ["Travelers", b.travelers],
+      ["Style", b.style],
+      ["Pace", b.pace],
+      ["Budget", b.budget],
+      ["Home airport", f.homeAirport],
+      ["Airline", f.airline],
+      ["Cabin", f.cabin],
+      ["Hotel brand", h.brand],
+      ["Hotel tier", h.tier],
+      ["Hotel must-have", h.mustHave],
+      ["Transport", [t.type, t.company].filter(Boolean).join(" · ")],
+      ["Vehicle", t.vehicle],
+      ["Cuisine focus", dn.cuisine],
+      ["Dining budget", Array.isArray(dn.budget) ? dn.budget.join(", ") : dn.budget],
+      ["Requested restaurants", Array.isArray(inputs.restaurants) ? inputs.restaurants.join(", ") : null],
+      ["Requested activities", Array.isArray(inputs.activities) ? inputs.activities.join(", ") : null],
+      ["Interest level", it.level],
+      ["Interest detail", it.text],
+      ["Trip guidelines", inputs.guidelines],
+      ["Trip narrative", inputs.narrative],
+    ].filter(r => r && r[1] !== undefined && r[1] !== null && r[1] !== "" && r[1] !== "—");
+
+    rows.forEach(r => cur.kvRow(r[0], r[1]));
+  }
+
+  // Generated stamp — bottom of LAST cover page (could be page 1 or page 2
+  // if the input summary wrapped). pdf.getCurrentPageInfo provides the current
+  // page; we draw the stamp on whatever page the cursor ended on.
+  const stampY = PAGE.height - PAGE.marginBottom - 4;
+  pdf.setFont(FONT.sans, "italic");
+  pdf.setFontSize(8.5);
+  cur.setColor(COLOR.inkFaint);
+  const stamp = asciiSafe(`Generated ${new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}${opts.buildId ? ` · build ${opts.buildId}` : ""}`);
+  pdf.text(stamp, PAGE.marginX, stampY);
+}
+
+// -----------------------------------------------------------------------------
+// DAY PAGES
+// -----------------------------------------------------------------------------
+function renderDay(cur, day, index) {
+  const { pdf } = cur;
+
+  cur.ensureSpace(32); // need real room before starting a day
+
+  // Day label
+  cur.space(1);
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(8.5);
+  pdf.setCharSpace(1.2);
+  cur.setColor(COLOR.gold);
+  const labelText = (day.label || `DAY ${index + 1}`).toString();
+  pdf.text(asciiSafe(labelText.toUpperCase()), PAGE.marginX, cur.state.y);
+  pdf.setCharSpace(0);
+  cur.space(3.5);
+
+  // Headline (editorial serif italic)
+  if (day.headline) {
+    cur.text(day.headline, {
+      font: FONT.serif,
+      style: "italic",
+      size: 16,
+      color: COLOR.ink,
+      leading: 1.1,
+    });
+  }
+
+  // Weather + pace
+  const metaBits = [];
+  if (day.weather) metaBits.push(day.weather);
+  if (day.pace_note) metaBits.push(day.pace_note);
+  if (day.city && !labelText.toLowerCase().includes(String(day.city).toLowerCase())) metaBits.push(day.city);
+  if (metaBits.length) {
+    cur.space(0.5);
+    cur.text(metaBits.join("  ·  "), { font: FONT.sans, style: "italic", size: 10, color: COLOR.inkSoft });
+  }
+  cur.space(0.5);
+  cur.rule({ color: COLOR.rule, space: 0.8 });
+  cur.space(0.5);
+
+  // Items
+  const items = Array.isArray(day.items) ? day.items : [];
+  // Sort chronologically by time string ("HH:MM")
+  items.sort((a, b) => String(a.time || "").localeCompare(String(b.time || "")));
+
+  items.forEach((item, i) => renderItem(cur, item, i === items.length - 1));
+}
+
+function renderItem(cur, item, isLast) {
+  const { pdf } = cur;
+  if (!item) return;
+
+  // Always render times in 12h AM/PM (UI parity).
+  const time = to12h(safe(item.time));
+  const endTime = to12h(safe(item.end_time));
+  const timeLabel = endTime ? `${time}–${endTime}` : time;
+  const type = safe(item.type);
+
+  // Time column width
+  const timeColW = 24;
+  const headX = PAGE.marginX + timeColW;
+  const bodyMaxW = PAGE.width - PAGE.marginX - headX;
+
+  cur.ensureSpace(14);
+  cur.space(0.4);
+  const itemTop = cur.state.y;
+
+  // Time block (left column)
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(10.5);
+  cur.setColor(COLOR.ink);
+  pdf.text(asciiSafe(timeLabel || "—"), PAGE.marginX, cur.state.y + 3.8);
+  if (type) {
+    pdf.setFont(FONT.sans, "bold");
+    pdf.setFontSize(7.5);
+    pdf.setCharSpace(0.6);
+    cur.setColor(COLOR.gold);
+    pdf.text(asciiSafe(type.toUpperCase()), PAGE.marginX, cur.state.y + 8.5);
+    pdf.setCharSpace(0);
+  }
+
+  // Body — type-specific
+  const startY = cur.state.y;
+  // Headline text
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(11);
+  cur.setColor(COLOR.ink);
+  const headlineLines = cur.wrap(safe(item.text), bodyMaxW);
+  const lineHHead = (11 * 1.3) / 2.83465;
+  headlineLines.forEach((ln, i) => {
+    pdf.text(asciiSafe(ln), headX, startY + 3.5 + i * lineHHead);
+  });
+  cur.state.y = startY + Math.max(9, headlineLines.length * lineHHead + 2);
+
+  // Optional secondary line — duration / location
+  const secBits = [];
+  if (item.duration) secBits.push(item.duration);
+  if (item.location && !headlineLines.join(" ").toLowerCase().includes(String(item.location).toLowerCase())) {
+    secBits.push(item.location);
+  }
+  if (secBits.length) {
+    pdf.setFont(FONT.sans, "italic");
+    pdf.setFontSize(9.5);
+    cur.setColor(COLOR.inkSoft);
+    const secLines = cur.wrap(secBits.join("  ·  "), bodyMaxW);
+    const lineHSec = (9.5 * 1.3) / 2.83465;
+    secLines.forEach((ln, i) => {
+      pdf.text(asciiSafe(ln), headX, cur.state.y + 3 + i * lineHSec);
+    });
+    cur.state.y += secLines.length * lineHSec + 1;
+  }
+
+  // "Why" — soft serif italic for editorial reasoning
+  if (item.why) {
+    pdf.setFont(FONT.serif, "italic");
+    pdf.setFontSize(10);
+    cur.setColor(COLOR.inkSoft);
+    const whyLines = cur.wrap(safe(item.why), bodyMaxW);
+    const lineHWhy = (10 * 1.35) / 2.83465;
+    whyLines.forEach((ln, i) => {
+      pdf.text(asciiSafe(ln), headX, cur.state.y + 3 + i * lineHWhy);
+    });
+    cur.state.y += whyLines.length * lineHWhy + 1;
+  }
+
+  // Type-specific extras
+  if (item.flight) renderFlightBlock(cur, item.flight, headX, bodyMaxW);
+  if (item.hotel) renderHotelBlock(cur, item.hotel, headX, bodyMaxW);
+  if (item.restaurant) renderRestaurantBlock(cur, item.restaurant, headX, bodyMaxW);
+  if (item.contact) renderContactBlock(cur, item.contact, headX, bodyMaxW);
+
+  // Bottom spacer + divider line between items
+  cur.space(0.8);
+  if (!isLast) {
+    cur.setDraw(COLOR.ruleSoft);
+    pdf.setLineWidth(0.1);
+    pdf.line(headX, cur.state.y, PAGE.width - PAGE.marginX, cur.state.y);
+    cur.space(0.8);
+  } else {
+    cur.space(0.8);
+  }
+  // Make sure item top reference exists (keeps the column visually aligned even if body shorter than label).
+  if (cur.state.y < itemTop + 10) cur.state.y = itemTop + 10;
+}
+
+// Fixed label column for detail rows — ensures consistent value start X
+// regardless of label length, so we never get "REQUESTED RESTAURANTSGeronimo".
+// Labels that overflow the column get a soft right-side truncation.
+const DETAIL_LABEL_W = 23; // mm — wide enough for "RESTAURANT"
+
+function _drawDetailLabel(cur, label, x) {
+  const { pdf } = cur;
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(7.5);
+  pdf.setCharSpace(0.4);
+  cur.setColor(COLOR.inkFaint);
+  let labelStr = asciiSafe(String(label).toUpperCase());
+  // Truncate to fit DETAIL_LABEL_W minus the gap.
+  const maxLabelW = DETAIL_LABEL_W - 2.5;
+  while (labelStr.length > 1 && pdf.getTextWidth(labelStr) > maxLabelW) {
+    labelStr = labelStr.slice(0, -1);
+  }
+  pdf.text(labelStr, x, cur.state.y + 3.2);
+  pdf.setCharSpace(0);
+}
+
+// Render a labeled key/value line within an item body block.
+function renderDetailLine(cur, label, value, x, maxW) {
+  const { pdf } = cur;
+  if (!value) return;
+  cur.ensureSpace(5);
+  _drawDetailLabel(cur, label, x);
+
+  pdf.setFont(FONT.sans, "normal");
+  pdf.setFontSize(10);
+  cur.setColor(COLOR.ink);
+  const valueX = x + DETAIL_LABEL_W;
+  const lines = cur.wrap(String(value), maxW - DETAIL_LABEL_W);
+  const lineH = (10 * 1.3) / 2.83465;
+  lines.forEach((ln, i) => {
+    pdf.text(asciiSafe(ln), valueX, cur.state.y + 3.2 + i * lineH);
+  });
+  cur.state.y += Math.max(5, lines.length * lineH + 0.5);
+}
+
+// Render a labeled linked value (phone / website / address).
+function renderLinkLine(cur, label, value, url, x, maxW) {
+  const { pdf } = cur;
+  if (!value) return;
+  cur.ensureSpace(5);
+  _drawDetailLabel(cur, label, x);
+
+  pdf.setFont(FONT.sans, "normal");
+  pdf.setFontSize(10);
+  const valueX = x + DETAIL_LABEL_W;
+  const lines = cur.wrap(String(value), maxW - DETAIL_LABEL_W);
+  const lineH = (10 * 1.3) / 2.83465;
+  if (url) {
+    cur.setColor(COLOR.gold);
+    cur.setDraw(COLOR.gold);
+    pdf.setLineWidth(0.15);
+    lines.forEach((ln, i) => {
+      const baselineY = cur.state.y + 3.2 + i * lineH;
+      const safeLn = asciiSafe(ln);
+      pdf.textWithLink(safeLn, valueX, baselineY, { url });
+      const w = pdf.getTextWidth(safeLn);
+      pdf.line(valueX, baselineY + 0.6, valueX + w, baselineY + 0.6);
+    });
+  } else {
+    cur.setColor(COLOR.ink);
+    lines.forEach((ln, i) => {
+      pdf.text(asciiSafe(ln), valueX, cur.state.y + 3.2 + i * lineH);
+    });
+  }
+  cur.state.y += Math.max(5, lines.length * lineH + 0.5);
+}
+
+function renderFlightBlock(cur, fl, x, maxW) {
+  // Single combined headline line: "United UA 1234 · EWR 8:45 AM → ABQ 11:20 AM · 4h 35m"
+  const headline = [
+    [fl.carrier, fl.flight_number].filter(Boolean).join(" "),
+    [fl.from_airport, to12h(fl.depart_time)].filter(Boolean).join(" "),
+    "→",
+    [fl.to_airport, to12h(fl.arrive_time)].filter(Boolean).join(" "),
+    fl.duration ? `· ${fl.duration}` : "",
+    fl.nonstop ? "· nonstop" : (fl.connection ? `· via ${fl.connection}` : ""),
+  ].filter(s => s && s !== "→ ").join(" ").replace(/\s+/g, " ").trim();
+  if (headline) renderDetailLine(cur, "Flight", headline, x, maxW);
+  if (fl.cabin) renderDetailLine(cur, "Cabin", fl.cabin, x, maxW);
+  if (fl.aircraft) renderDetailLine(cur, "Aircraft", fl.aircraft, x, maxW);
+  if (fl.confirmation_note) renderDetailLine(cur, "Note", fl.confirmation_note, x, maxW);
+}
+
+function renderHotelBlock(cur, h, x, maxW) {
+  if (h.name) renderDetailLine(cur, "Hotel", h.name, x, maxW);
+  if (h.address) renderLinkLine(cur, "Address", h.address, mapsUrl(h.address), x, maxW);
+  if (h.phone) renderLinkLine(cur, "Phone", h.phone, telUrl(h.phone), x, maxW);
+  const ci = [h.check_in_time ? `In ${to12h(h.check_in_time)}` : "", h.check_out_time ? `Out ${to12h(h.check_out_time)}` : ""].filter(Boolean).join("  ·  ");
+  if (ci) renderDetailLine(cur, "Times", ci, x, maxW);
+  if (h.room_type) renderDetailLine(cur, "Room", h.room_type, x, maxW);
+  if (h.confirmation_note) renderDetailLine(cur, "Note", h.confirmation_note, x, maxW);
+}
+
+function renderRestaurantBlock(cur, r, x, maxW) {
+  if (r.name) renderDetailLine(cur, "Restaurant", r.name, x, maxW);
+  const cuisineBits = [r.cuisine, r.price_range, r.neighborhood].filter(Boolean).join("  ·  ");
+  if (cuisineBits) renderDetailLine(cur, "Style", cuisineBits, x, maxW);
+  const res = r.reservation || {};
+  if (res.platform || res.url || res.phone) {
+    const platLabel = res.platform ? titleCase(res.platform) : "Reserve";
+    if (res.url) {
+      renderLinkLine(cur, "Reserve", `${platLabel} — ${res.url}`, res.url, x, maxW);
+    } else if (res.phone) {
+      renderLinkLine(cur, "Reserve", `${platLabel} — ${res.phone}`, telUrl(res.phone), x, maxW);
+    } else {
+      renderDetailLine(cur, "Reserve", platLabel, x, maxW);
+    }
+  }
+  if (r.closure_note) renderDetailLine(cur, "Closures", r.closure_note, x, maxW);
+  if (r.backup && r.backup.name) {
+    renderDetailLine(cur, "Backup", `${r.backup.name}${r.backup.cuisine ? ` · ${r.backup.cuisine}` : ""}`, x, maxW);
+  }
+}
+
+function renderContactBlock(cur, c, x, maxW) {
+  if (c.phone) renderLinkLine(cur, "Phone", c.phone, telUrl(c.phone), x, maxW);
+  if (c.website) renderLinkLine(cur, "Website", c.website, c.website, x, maxW);
+  if (c.booking_url && c.booking_url !== c.website) renderLinkLine(cur, "Book", c.booking_url, c.booking_url, x, maxW);
+  if (c.address) renderLinkLine(cur, "Address", c.address, mapsUrl(c.address), x, maxW);
+  if (c.hours) renderDetailLine(cur, "Hours", c.hours, x, maxW);
+  if (c.price) renderDetailLine(cur, "Price", c.price, x, maxW);
+  if (c.booking_note) renderDetailLine(cur, "Note", c.booking_note, x, maxW);
+}
+
+// -----------------------------------------------------------------------------
+// REFERENCE SECTIONS — logistics, weather, pack, planb, flags, snobs, tonight.
+// -----------------------------------------------------------------------------
+function sectionHeader(cur, title) {
+  const { pdf } = cur;
+  cur.ensureSpace(18);
+  cur.space(3.5);
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(8.5);
+  pdf.setCharSpace(1.4);
+  cur.setColor(COLOR.gold);
+  pdf.text(asciiSafe(String(title).toUpperCase()), PAGE.marginX, cur.state.y);
+  pdf.setCharSpace(0);
+  cur.space(1);
+  cur.accentRule(28);
+  cur.space(1.5);
+}
+
+function renderReferences(cur, data) {
+  const ref = {
+    logistics: Array.isArray(data?.logistics) ? data.logistics.filter(Boolean) : [],
+    weather: safe(data?.weather_window),
+    pack: Array.isArray(data?.pack) ? data.pack.filter(Boolean) : [],
+    flags: Array.isArray(data?.flags) ? data.flags.filter(Boolean) : [],
+    planb: Array.isArray(data?.planb) ? data.planb.filter(Boolean) : [],
+    snobs: Array.isArray(data?.snobs) ? data.snobs.filter(Boolean) : [],
+    tonight: Array.isArray(data?.tonight) ? data.tonight.filter(Boolean) : [],
+  };
+
+  const hasAny = ref.logistics.length || ref.weather || ref.pack.length || ref.flags.length || ref.planb.length || ref.snobs.length || ref.tonight.length;
+  if (!hasAny) return;
+
+  // Always start references on a fresh page so they read like a back-of-book reference.
+  cur.newPage();
+
+  // Section title — "Trip Reference"
+  cur.space(2);
+  cur.text("Trip Reference", { font: FONT.serif, style: "italic", size: 22, color: COLOR.ink });
+  cur.space(2);
+  cur.accentRule(48);
+
+  if (ref.tonight.length) {
+    sectionHeader(cur, "Tonight");
+    // Sort by priority prefix: must-do / urgent first, then this-week, then anytime.
+    const sorted = [...ref.tonight].sort((a, b) => prioRank(a) - prioRank(b));
+    sorted.forEach(t => {
+      const raw = String(t);
+      const isUrgent = /^[⚠!]/u.test(raw) || /must/i.test(raw.slice(0, 12));
+      const cleaned = raw.replace(/^[·•⚠︎!]+\s*/u, "").trim();
+      // Render with explicit prefix tag so the priority survives ASCII coercion.
+      const prefix = isUrgent ? "MUST: " : (/^anytime/i.test(cleaned) ? "" : "");
+      cur.bullet((prefix + cleaned).replace(/^MUST: must today:?\s*/i, "MUST: "), { size: 10.5 });
+    });
+  }
+
+  if (ref.logistics.length) {
+    sectionHeader(cur, "Logistics");
+    cur.chips(ref.logistics);
+  }
+
+  if (ref.weather) {
+    sectionHeader(cur, "Weather window");
+    cur.text(ref.weather, { size: 10.5, color: COLOR.ink, leading: 1.4 });
+  }
+
+  if (ref.pack.length) {
+    sectionHeader(cur, "Pack");
+    ref.pack.forEach(p => cur.bullet(p));
+  }
+
+  if (ref.flags.length) {
+    sectionHeader(cur, "Flags");
+    ref.flags.forEach(f => cur.bullet(f));
+  }
+
+  if (ref.planb.length) {
+    sectionHeader(cur, "Plan B");
+    ref.planb.forEach((p, i) => {
+      const { pdf } = cur;
+      const indent = 8;
+      const maxW = PAGE.width - PAGE.marginX * 2 - indent;
+      pdf.setFont(FONT.sans, "normal");
+      pdf.setFontSize(10);
+      const lines = cur.wrap(String(p), maxW);
+      const lineH = (10 * 1.35) / 2.83465;
+      cur.ensureSpace(lines.length * lineH + 2);
+      // Number
+      pdf.setFont(FONT.sans, "bold");
+      pdf.setFontSize(10);
+      cur.setColor(COLOR.gold);
+      pdf.text(`${i + 1}.`, PAGE.marginX, cur.state.y + lineH * 0.78);
+      // Text
+      pdf.setFont(FONT.sans, "normal");
+      cur.setColor(COLOR.ink);
+      lines.forEach((ln, j) => {
+        pdf.text(asciiSafe(ln), PAGE.marginX + indent, cur.state.y + lineH * 0.78 + j * lineH);
+      });
+      cur.state.y += lines.length * lineH + 1.5;
+    });
+  }
+
+  if (ref.snobs.length) {
+    sectionHeader(cur, "Insider notes");
+    ref.snobs.forEach(s => {
+      cur.text(`“${String(s).replace(/^["“”]+|["“”]+$/g, "")}”`, {
+        font: FONT.serif, style: "italic", size: 10.5, color: COLOR.inkSoft, leading: 1.4, space: 1,
+      });
+    });
+  }
+}
+
+function prioRank(t) {
+  const s = String(t || "");
+  if (/^[⚠]/u.test(s)) return 0;
+  if (/^Anytime/i.test(s)) return 2;
+  return 1;
+}
+
+// -----------------------------------------------------------------------------
+// FOOTER — drawn LAST, after all content, so we know total page count.
+// -----------------------------------------------------------------------------
+function renderFooters(pdf, opts) {
+  const total = pdf.getNumberOfPages();
+  for (let i = 1; i <= total; i++) {
+    pdf.setPage(i);
+    pdf.setFont(FONT.sans, "normal");
+    pdf.setFontSize(8);
+    pdf.setTextColor(COLOR.inkFaint[0], COLOR.inkFaint[1], COLOR.inkFaint[2]);
+    // Hairline divider above footer
+    pdf.setDrawColor(COLOR.ruleSoft[0], COLOR.ruleSoft[1], COLOR.ruleSoft[2]);
+    pdf.setLineWidth(0.15);
+    const footerY = PAGE.height - PAGE.marginBottom + 6;
+    pdf.line(PAGE.marginX, footerY - 4, PAGE.width - PAGE.marginX, footerY - 4);
+
+    const left = `Trip Optimizer${opts.buildId ? ` · ${opts.buildId}` : ""}`;
+    pdf.text(left, PAGE.marginX, footerY);
+
+    const right = `${i} / ${total}`;
+    const rw = pdf.getTextWidth(right);
+    pdf.text(right, PAGE.width - PAGE.marginX - rw, footerY);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// PUBLIC ENTRYPOINT
+// -----------------------------------------------------------------------------
+export async function buildItineraryPdf(data, inputs, options = {}) {
+  const { setStatus, buildId } = options;
+  if (setStatus) setStatus("Loading PDF engine…");
+
+  const jsPDFModule = await import("jspdf");
+  const { jsPDF } = jsPDFModule;
+
+  if (setStatus) setStatus("Composing pages…");
+  const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter", compress: true });
+
+  // Document metadata
+  try {
+    pdf.setProperties({
+      title: `${safe(data?.destination) || "Trip"} itinerary`,
+      author: "Trip Optimizer",
+      subject: safe(data?.meta) || "Travel itinerary",
+      creator: "Trip Optimizer",
+    });
+  } catch (_) { /* setProperties not critical */ }
+
+  const cur = makeCursor(pdf);
+
+  // 1. Cover
+  renderCover(cur, data, inputs, { buildId });
+
+  // 2. Days — fresh page for the day-by-day section
+  const days = Array.isArray(data?.days) ? data.days : [];
+  if (days.length > 0) {
+    cur.newPage();
+    cur.space(2);
+    cur.text("Day by Day", { font: FONT.serif, style: "italic", size: 22, color: COLOR.ink });
+    cur.space(2);
+    cur.accentRule(48);
+    cur.space(4);
+    days.forEach((d, i) => renderDay(cur, d, i));
+  }
+
+  // 3. References
+  renderReferences(cur, data);
+
+  // 4. Footers (after everything else so page count is final)
+  renderFooters(pdf, { buildId });
+
+  return pdf;
+}
