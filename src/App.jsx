@@ -1933,6 +1933,28 @@ function applyQualityLayer(input, inputs) {
   const fixes = [];
   const warnings = [];
 
+  // Build a set of flight numbers the USER explicitly stated in their narrative
+  // or guidelines. These are facts, not LLM guesses, and we must NOT strip them.
+  // Matches: "flight 1039", "UA 1039", "UA1039", "United 1039", "#1039", and bare
+  // numbers near the word "flight" / a known carrier word.
+  const userFlightNumbers = new Set();
+  {
+    const blob = `${inputs?.narrative || ""}\n${inputs?.guidelines || ""}`;
+    // Pattern A: explicit airline code + number (UA1039 / UA 1039 / B6 47).
+    for (const m of blob.matchAll(/\b([A-Z]{2})\s*0*(\d{1,4})\b/g)) {
+      userFlightNumbers.add(`${m[1]}${m[2]}`);
+      userFlightNumbers.add(m[2]); // bare digits too, for cross-checking
+    }
+    // Pattern B: "flight 1039", "flight #1039", "on 1039" near "flight".
+    for (const m of blob.matchAll(/\bflight\s*#?\s*0*(\d{1,4})\b/gi)) {
+      userFlightNumbers.add(m[1]);
+    }
+    // Pattern C: airline name followed by a number (United 1039, Delta 47).
+    for (const m of blob.matchAll(/\b(united|delta|american|jetblue|southwest|alaska|air\s*france|klm|lufthansa|swiss|british\s*airways|virgin|iberia|ana|japan\s*airlines|jal|cathay|korean|aer\s*lingus|ita|sas|scandinavian)\s+#?\s*0*(\d{1,4})\b/gi)) {
+      userFlightNumbers.add(m[2]);
+    }
+  }
+
   // Deep-clone the bits we'll touch so renderer mutation is safe.
   const days = Array.isArray(input.days)
     ? input.days.map(d => ({ ...d, items: Array.isArray(d.items) ? d.items.map(it => ({ ...it, restaurant: it.restaurant ? { ...it.restaurant } : it.restaurant, flight: it.flight ? { ...it.flight } : it.flight })) : d.items }))
@@ -1994,16 +2016,54 @@ function applyQualityLayer(input, inputs) {
   // unconditionally and force the renderer to surface a "Look up actual
   // flight" CTA. This is route-agnostic and applies to every flight, every
   // trip, no allowlist required.
+  //
+  // EXCEPTION: if the user literally told us the flight number in their
+  // narrative or guidelines ("depart on flight 1039", "return on UA1040"),
+  // that's a USER FACT, not an LLM guess. We KEEP it, normalize the format,
+  // and let the live-status panel show real AeroAPI data for it.
   if (Array.isArray(days)) {
     days.forEach((day, dayIdx) => {
       (day.items || []).forEach(item => {
         if (item.type !== "Flight" || !item.flight) return;
         const f = item.flight;
         if (f.flight_number != null && String(f.flight_number).trim() !== "") {
-          f._originalFlightNumber = f.flight_number;
-          f.flight_number = null;
-          f._flightNumberStripped = true;
-          fixes.push(`Day ${dayIdx + 1} flight: removed model-supplied flight number — look up live schedule`);
+          // Pull out just the digits to see if the user stated this number.
+          const digitsMatch = String(f.flight_number).match(/(\d{1,4})/);
+          const digits = digitsMatch ? String(parseInt(digitsMatch[1], 10)) : null;
+          const matchesUser = digits && (
+            userFlightNumbers.has(digits) ||
+            (f.carrier && userFlightNumbers.has(
+              `${(f.carrier.match(/\b([A-Z]{2})\b/) || [])[1] || ""}${digits}`
+            ))
+          );
+          if (matchesUser) {
+            // User-confirmed flight number — keep it. Normalize to plain digits
+            // for now; parseFlightIdent will compose carrier + digits at render.
+            f.flight_number = digits;
+            f._userSuppliedFlightNumber = true;
+            fixes.push(`Day ${dayIdx + 1} flight: kept user-supplied flight number ${f.carrier || ""}${digits}`);
+          } else {
+            f._originalFlightNumber = f.flight_number;
+            f.flight_number = null;
+            f._flightNumberStripped = true;
+            fixes.push(`Day ${dayIdx + 1} flight: removed model-supplied flight number — look up live schedule`);
+          }
+        } else if (userFlightNumbers.size > 0 && f.carrier) {
+          // Model didn't emit a number but the user named some. Try to attach
+          // one based on direction: outbound day = first user number, return
+          // = last user number. This is heuristic and only fires when we have
+          // exactly one or two user-stated numbers (the common case).
+          const userNums = Array.from(userFlightNumbers).filter(n => /^\d+$/.test(n));
+          if (userNums.length >= 1 && userNums.length <= 2) {
+            // Outbound on day 0, return on last day.
+            const isReturnDay = dayIdx === (days.length - 1);
+            const chosen = isReturnDay && userNums.length > 1
+              ? userNums[userNums.length - 1]
+              : userNums[0];
+            f.flight_number = chosen;
+            f._userSuppliedFlightNumber = true;
+            fixes.push(`Day ${dayIdx + 1} flight: filled in user-supplied flight number ${f.carrier}${chosen}`);
+          }
         }
       });
     });
