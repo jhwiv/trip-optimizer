@@ -1381,6 +1381,9 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
         <Badge type={type} />
         <p style={{ fontSize: "14px", fontWeight: 600, color: isClosed ? "#8C1F1F" : "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1, textDecoration: isClosed ? "line-through" : "none" }}>{r.name}</p>
+        {r._weekdayMismatch && !isClosed && (
+          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "#92500A", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "#FEF3E2", border: "0.5px solid #E8C063", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r._weekdayMismatch] || r._weekdayMismatch}s — verify</span>
+        )}
         {r._isReturnVisit && !isClosed && (
           <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: `0.5px solid ${GOLD}`, borderRadius: "3px", whiteSpace: "nowrap" }}>Return visit</span>
         )}
@@ -1437,7 +1440,12 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
       {r.backup && (
         <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
           <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", margin: "0 0 4px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Backup if no table</p>
-          <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>{r.backup.name}</p>
+          <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>
+            {r.backup.name}
+            {r.backup._weekdayMismatch && (
+              <span style={{ marginLeft: "6px", fontSize: "9.5px", fontWeight: 700, color: "#92500A", letterSpacing: "0.06em", textTransform: "uppercase", padding: "2px 6px", background: "#FEF3E2", border: "0.5px solid #E8C063", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r.backup._weekdayMismatch] || r.backup._weekdayMismatch}s</span>
+            )}
+          </p>
           {(r.backup.neighborhood || r.backup.cuisine) && (
             <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 6px" }}>{[r.backup.neighborhood, r.backup.cuisine].filter(Boolean).join("  ·  ")}</p>
           )}
@@ -1928,6 +1936,42 @@ function findClosedRestaurantMatch(restaurantName, cityHaystack) {
 // "Return to X for [meal]" annotation, and surface a QC summary of any
 // fixes/warnings the renderer applied so the user knows the app is on it.
 // Pure: never mutates input — returns { data, qc }.
+// Day-of-week helpers — ported from santafejune.com's restaurants.js. The
+// Santa Fe app keeps a curated JSON of restaurants with hand-verified
+// open_days; we instead ask the planner LLM to populate open_days per
+// restaurant. The check itself is identical: turn the visit date into a
+// 3-letter weekday code and look it up in the restaurant's open_days[].
+// Missing open_days is treated as 'assume open' (matches Santa Fe behavior).
+const DAY_KEYS_3 = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+const DAY_LABELS_3 = { sun: "Sun", mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat" };
+function weekdayOfISO(dateStr) {
+  if (!dateStr || typeof dateStr !== "string") return null;
+  const m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  // Local-date parse, not UTC — same as Santa Fe.
+  const wd = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)).getDay();
+  return DAY_KEYS_3[wd];
+}
+function isOpenOnWeekday(restaurant, weekday) {
+  const open = restaurant?.open_days;
+  if (!Array.isArray(open) || open.length === 0) return true; // unknown → assume open
+  return open.includes(weekday);
+}
+// Compute the ISO date (YYYY-MM-DD) for a given day index given the trip's
+// start date string. Returns null if startDate isn't parseable. Day 0 is
+// the start date itself.
+function dayIndexToISO(startDateStr, dayIdx) {
+  if (!startDateStr) return null;
+  const m = String(startDateStr).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const d = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+  d.setDate(d.getDate() + dayIdx);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 function applyQualityLayer(input, inputs) {
   if (!input || typeof input !== "object") return { data: input, qc: { fixes: [], warnings: [] } };
   const fixes = [];
@@ -1982,6 +2026,38 @@ function applyQualityLayer(input, inputs) {
           fixes.push(`Annotated repeat: ${r.name} (Day ${dayIdx + 1} ${mealLabel}) — first on Day ${prior.dayIndex + 1}`);
         } else {
           seen.set(key, { dayIndex: dayIdx, mealType: item.type || "meal" });
+        }
+      });
+    });
+  }
+
+  // 1b. Restaurant open-day verification. The planner is instructed to emit
+  //     open_days per restaurant; we cross-check against the weekday it was
+  //     actually placed on and FLAG (not swap) the mismatch so the traveler
+  //     sees an amber "closed [Day]s — verify hours" chip. Missing open_days
+  //     is treated as 'assume open' to avoid false alarms.
+  //     Mirrors Santa Fe June's isOpenOn/weekdayOf pattern.
+  if (Array.isArray(days) && inputs?.basics?.startDate) {
+    days.forEach((day, dayIdx) => {
+      (day.items || []).forEach(item => {
+        const r = item.restaurant;
+        const isMeal = /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/i.test(item.type || "");
+        if (!r || !isMeal) return;
+        const dayIso = dayIndexToISO(inputs.basics.startDate, dayIdx);
+        if (!dayIso) return;
+        const weekday = weekdayOfISO(dayIso);
+        if (!weekday) return;
+        const mealLabel = (item.type || "meal").toLowerCase();
+        // Primary restaurant
+        if (Array.isArray(r.open_days) && r.open_days.length > 0 && !isOpenOnWeekday(r, weekday)) {
+          r._weekdayMismatch = weekday;
+          warnings.push(`Day ${dayIdx + 1} ${mealLabel}: ${r.name || "restaurant"} may be closed ${DAY_LABELS_3[weekday]}s — verify hours`);
+        }
+        // Backup restaurant — same shape, same check
+        if (r.backup && typeof r.backup === "object" && Array.isArray(r.backup.open_days) && r.backup.open_days.length > 0 && !isOpenOnWeekday(r.backup, weekday)) {
+          // Deep-clone the backup before mutating so we don't poison shared refs
+          r.backup = { ...r.backup, _weekdayMismatch: weekday };
+          warnings.push(`Day ${dayIdx + 1} ${mealLabel}: backup ${r.backup.name || "restaurant"} may also be closed ${DAY_LABELS_3[weekday]}s`);
         }
       });
     });
@@ -6044,6 +6120,20 @@ const RESTAURANT_SCHEMA = {
     price_range: { type: "string", description: "$, $$, $$$, or $$$$" },
     why: { type: "string", description: "Insider, opinionated 1–2 sentence reason." },
     closure_note: { type: "string", description: "Confirm closure-day awareness given the weekday of the meal." },
+    // Day-of-week open days. Mirrors the Santa Fe June dataset format. When
+    // present, the renderer cross-checks the assigned meal day and surfaces
+    // a red 'Closed [Day]' chip if the restaurant is not open that weekday.
+    // Omit entirely when truly unknown — downstream code treats missing as
+    // 'assume open' rather than 'closed every day'.
+    open_days: {
+      type: "array",
+      description: "Lowercase 3-letter weekday codes the restaurant serves DINNER (or the relevant meal). Use only what you genuinely know. Omit if uncertain. Examples: ['mon','tue','wed','thu','fri','sat'] for a typical 'closed Sundays' spot; ['tue','wed','thu','fri','sat','sun'] for 'closed Mondays'.",
+      items: { type: "string", enum: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
+    },
+    hours_note: {
+      type: "string",
+      description: "Short human-readable hours summary if known. Examples: 'Mon–Sat 5–9pm', 'Daily 5–9:30pm, last seating 8pm', 'Closed Sun-Mon'. Omit if uncertain.",
+    },
     reservation: {
       type: "object",
       properties: {
@@ -7489,9 +7579,17 @@ days[] is the main deliverable. Write the entire days[] array BEFORE writing log
 TRIP REQUIREMENTS:
 • days[] must contain exactly ${totalDays} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). Compute the correct weekday for each day starting from the start date.
 • Each day MUST include: label, headline (the one-line "if you only do one thing" call), weather (seasonal expectation, NOT a live forecast), and items[].
-• Each day's items[] needs at least 3 items — a typical full day is: morning Activity or Breakfast, midday Lunch, evening Dinner. Arrival/departure days also include Flight + Hotel.
+• Each day's items[] needs at least 3 items — a typical full day is: morning Activity, midday Activity, evening Dinner. Arrival/departure days also include Flight + Hotel.
 • EVERY item in items[] MUST have a "time" field (24h local time, e.g. '08:30', '14:00', '19:30'). Items should appear in chronological order within each day. This is what turns the day into a real time-based itinerary instead of a vague list.
-• Use realistic times: breakfast 07:30–09:00, lunch 12:00–13:30, dinner 19:00–20:30. Activities sized to their duration (museum 2h, hike 3–4h, gallery walk 90min). Add end_time when helpful.
+• Use realistic times: dinner 19:00–20:30, breakfast 07:30–09:00, lunch 12:00–13:30 (only when explicitly asked — see MEAL POLICY below). Activities sized to their duration (museum 2h, hike 3–4h, gallery walk 90min). Add end_time when helpful.
+
+MEAL POLICY — STRICT, OPT-IN ONLY FOR BREAKFAST & LUNCH:
+• DINNER: Plan a Dinner item for every night the traveler is at the destination (including arrival night). This is the default and required.
+• BREAKFAST & LUNCH: DO NOT emit Breakfast / Brunch / Lunch items unless the user EXPLICITLY asked for them. Most travelers handle these themselves (hotel breakfast included with the room, beach club, casual on-the-fly, dietary preferences) and pre-planned mid-day reservations cut into activity time.
+• An explicit ask means: a specific named meal/place in narrative or guidelines (e.g. "breakfast at X", "lunch at Y", "brunch on Sunday"), a hard time block ("book a lunch reservation Day 3"), or the dining preferences explicitly named breakfast/lunch focus. "Casual lunches" / "light breakfasts" as a general note is NOT an explicit ask.
+• If the user named a SPECIFIC restaurant for breakfast or lunch, include it exactly as stated. If not, omit those slots entirely — the day flows Activity → Activity → Dinner.
+• Hotel breakfast (included with room rate) does NOT count as a planned meal. Do not emit a Breakfast item for it.
+• Activity items can still span breakfast/lunch windows (e.g. a 09:00–12:30 excursion). That's the traveler's signal to grab food on their own.
 • For Activity items, fill "location" with a specific venue or address.
 • For Transport items between activities, the "text" should include estimated drive/walk time (e.g. 'Drive to Abiquiú — 1h 15min via US-84').
 
@@ -7582,9 +7680,12 @@ HOTEL ITEMS:
 • The phone field is critical — it becomes a tappable "Call hotel" CTA in the app.
 
 RESTAURANTS:
-• Every Dinner/Lunch/Breakfast/Brunch item should include the full restaurant object: name, neighborhood, cuisine, price_range, why, closure_note, reservation, menu, backup, verify_status, verify_url. The last two are MANDATORY — do not omit them. verify_url should be the canonical Google Maps search URL (https://www.google.com/maps/search/?api=1&query=<URL-encoded restaurant name + city>) when no better source exists, or the restaurant's own website / OpenTable / Resy listing when you know it.
+• Every Dinner/Lunch/Breakfast/Brunch item should include the full restaurant object: name, neighborhood, cuisine, price_range, why, closure_note, open_days, hours_note, reservation, menu, backup, verify_status, verify_url. verify_status and verify_url are MANDATORY — do not omit them. verify_url should be the canonical Google Maps search URL (https://www.google.com/maps/search/?api=1&query=<URL-encoded restaurant name + city>) when no better source exists, or the restaurant's own website / OpenTable / Resy listing when you know it.
+• OPEN_DAYS — CRITICAL: For every restaurant you genuinely know the operating-day pattern for, populate open_days with the lowercase 3-letter weekday codes the restaurant SERVES THE MEAL YOU'RE ASSIGNING IT TO. Examples: a 'Closed Sundays' dinner spot gets ['mon','tue','wed','thu','fri','sat']; a 'Closed Mon–Tue' fine-dining spot gets ['wed','thu','fri','sat','sun']. Then check the weekday of the day you're placing this restaurant on — if the day is NOT in open_days, you have just scheduled the traveler at a dark storefront. PICK A DIFFERENT RESTAURANT instead. This is a hard rule.
+• hours_note: short human-readable summary like 'Mon–Sat 5–9pm' when you know it. Omit if not sure.
+• If you genuinely do NOT know a restaurant's open_days, omit the field entirely (do not guess). The renderer treats missing open_days as 'assume open' rather than 'closed every day', but you should set closure_note to 'Confirm hours — closure day uncertain' as a safety hint to the traveler.
 • Be aware of the weekday for each meal. Many fine-dining spots close Mon or Tue — don't recommend a restaurant on its closure day. If unsure, put "Confirm hours — closure day uncertain" in closure_note.
-• Always include a same-tier backup in the same neighborhood / cuisine family.
+• Always include a same-tier backup in the same neighborhood / cuisine family. The backup must ALSO have open_days populated when known, and its open_days MUST include the meal's weekday — a backup that's also closed that day is useless.
 • reservation.platform: opentable for most US/UK/EU fine dining; resy for trendy NYC/LA/Miami; tock for tasting menus; phone with a phone number for hole-in-the-walls; walkin if no reservations. Include the canonical url when you know it.
 • menu schema: { style_note, signature_dishes, appetizers, mains, desserts, wine_and_drinks, source_note }. Real dishes the restaurant is actually known for. Always include the source_note acknowledging menus change.
 
