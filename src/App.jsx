@@ -2379,13 +2379,37 @@ function pdfFilename(data) {
   return `trip-${date}-${slug}${n}.pdf`;
 }
 
-// Render the itinerary DOM to a multi-page PDF using html2canvas-pro + jsPDF.
-// This works on iOS Chrome where window.print() is unreliable.
-async function saveItineraryAsPDF(filename, setStatus) {
+// Build a polished, vector itinerary PDF from the trip plan data.
+// This is a purpose-built print template (NOT an html2canvas screenshot) —
+// sharp typography, hyperlinks (phones, addresses, booking URLs), proper
+// page breaks, and a clean editorial layout. The legacy DOM-screenshot path
+// is preserved below as a fallback for the unlikely case the new builder
+// throws on malformed data.
+async function saveItineraryAsPDF(filename, setStatus, { data, inputs } = {}) {
+  setStatus("Preparing…");
+  // Prefer the rich template when we have structured plan data.
+  if (data && Array.isArray(data.days) && data.days.length > 0) {
+    try {
+      const { buildItineraryPdf } = await import("./pdf/itineraryPdf.js");
+      const buildId = (typeof __BUILD_ID__ !== "undefined" && __BUILD_ID__) ? String(__BUILD_ID__) : "";
+      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId });
+      setStatus("Saving…");
+      pdf.save(filename);
+      return;
+    } catch (err) {
+      // Fall through to the DOM-screenshot fallback so the user still gets
+      // *something* if the template hits an unexpected data shape.
+      console.warn("Vector PDF builder failed, falling back to DOM capture", err);
+    }
+  }
+  await saveItineraryAsPDF_LegacyDom(filename, setStatus);
+}
+
+// Legacy DOM-screenshot fallback. Used only when the vector template fails.
+async function saveItineraryAsPDF_LegacyDom(filename, setStatus) {
   const root = document.getElementById("trip-print-root");
   if (!root) throw new Error("Itinerary container not found");
 
-  setStatus("Preparing…");
   // Reveal the print-only input summary, hide no-print controls during capture.
   const printOnly = Array.from(root.querySelectorAll(".print-only"));
   const noPrint = Array.from(root.querySelectorAll(".no-print"));
@@ -2497,7 +2521,7 @@ function hardReloadNow() {
   window.location.replace(url.toString());
 }
 
-function PrintButton({ data }) {
+function PrintButton({ data, inputs }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -2509,7 +2533,7 @@ function PrintButton({ data }) {
     if (busy) return;
     setBusy(true); setError(""); setStatus("Starting…");
     try {
-      await saveItineraryAsPDF(pdfFilename(data), setStatus);
+      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs });
     } catch (err) {
       console.error("PDF save failed", err);
       if (isStaleChunkError(err)) {
@@ -4310,7 +4334,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
           style={{ background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", color: "var(--color-text-secondary)" }}
         >← Plan another trip</button>
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
-        <PrintButton data={data} />
+        <PrintButton data={data} inputs={inputs} />
         <PrintRidesButton data={data} inputs={inputs} />
       </div>
     </div>
