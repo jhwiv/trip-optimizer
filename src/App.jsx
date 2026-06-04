@@ -4372,12 +4372,10 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
         <button
           type="button"
           onClick={() => {
-            if (window.confirm("Return to the start? This trip plan will be cleared from the view.")) {
-              if (typeof onBack === "function") onBack();
-            }
+            if (typeof onBack === "function") onBack();
           }}
           aria-label="Return to home"
-          title="Return to home"
+          title="Return to home (your trip plan stays saved)"
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -8686,7 +8684,13 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           <ItineraryView
             data={result}
             inputs={{ basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative, outputs }}
-            onBack={() => { resetFormToBlank(); setCurrentSavedTripId(null); setReviewState(null); setStep(1); }}
+            onBack={() => {
+              // Navigate to step 1 without clearing the built itinerary or
+              // form inputs. The user can come back to the plan via the
+              // step nav, or rebuild from scratch by editing the inputs.
+              setStep(1);
+              try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+            }}
             onEditTrip={() => {
               // Go back to the input form without wiping anything. The user's
               // basics/flights/hotel/transport/dining/restaurants/activities/
