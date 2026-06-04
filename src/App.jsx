@@ -1384,6 +1384,9 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
         {r._weekdayMismatch && !isClosed && (
           <span style={{ fontSize: "9.5px", fontWeight: 700, color: "#92500A", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "#FEF3E2", border: "0.5px solid #E8C063", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r._weekdayMismatch] || r._weekdayMismatch}s — verify</span>
         )}
+        {r._missingBackup && !isClosed && (
+          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "#92500A", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "#FEF3E2", border: "0.5px solid #E8C063", borderRadius: "3px", whiteSpace: "nowrap" }}>No backup</span>
+        )}
         {r._isReturnVisit && !isClosed && (
           <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: `0.5px solid ${GOLD}`, borderRadius: "3px", whiteSpace: "nowrap" }}>Return visit</span>
         )}
@@ -2058,6 +2061,66 @@ function applyQualityLayer(input, inputs) {
           // Deep-clone the backup before mutating so we don't poison shared refs
           r.backup = { ...r.backup, _weekdayMismatch: weekday };
           warnings.push(`Day ${dayIdx + 1} ${mealLabel}: backup ${r.backup.name || "restaurant"} may also be closed ${DAY_LABELS_3[weekday]}s`);
+        }
+      });
+    });
+  }
+
+  // 1c. MEAL POLICY enforcement (structural, post-LLM).
+  //     The planner is told (see MEAL POLICY in the prompt) that Breakfast,
+  //     Brunch, and Lunch are opt-in only. The model still sometimes ignores
+  //     this. Strip those meal items here UNLESS the user explicitly named
+  //     the meal ("breakfast at X", "lunch on Day 3", "brunch Sunday") or a
+  //     known breakfast/lunch venue. Hotel breakfast included with the room
+  //     does NOT count.
+  if (Array.isArray(days)) {
+    const blob = `${inputs?.narrative || ""}\n${inputs?.guidelines || ""}\n${inputs?.dining || ""}`.toLowerCase();
+    // Detect explicit asks. "casual lunches" / "light breakfasts" as a vibe
+    // note does NOT count — we look for verbs of intent (book, reserve, want,
+    // schedule, plan) OR a specific named venue paired with the meal word.
+    const explicitBreakfast =
+      /\b(book|reserve|plan|schedule|want|need|include|add)\b[^.]{0,40}\b(breakfast|brunch)\b/.test(blob) ||
+      /\b(breakfast|brunch)\b[^.]{0,40}\b(at|in|reservation|book|reserve)\b/.test(blob) ||
+      /\bbreakfast at \w/.test(blob) ||
+      /\bbrunch at \w/.test(blob) ||
+      /\bbrunch on (sun|mon|tue|wed|thu|fri|sat)/.test(blob);
+    const explicitLunch =
+      /\b(book|reserve|plan|schedule|want|need|include|add)\b[^.]{0,40}\blunch\b/.test(blob) ||
+      /\blunch\b[^.]{0,40}\b(at|in|reservation|book|reserve)\b/.test(blob) ||
+      /\blunch at \w/.test(blob) ||
+      /\blunch on (day\s*\d|sun|mon|tue|wed|thu|fri|sat)/.test(blob);
+    days.forEach((day, dayIdx) => {
+      if (!Array.isArray(day.items)) return;
+      day.items = day.items.filter(item => {
+        const t = (item.type || "").toLowerCase();
+        if ((t === "breakfast" || t === "brunch") && !explicitBreakfast) {
+          fixes.push(`Day ${dayIdx + 1}: removed unrequested ${t} (${item.restaurant?.name || item.title || "meal"}) per meal policy`);
+          return false;
+        }
+        if (t === "lunch" && !explicitLunch) {
+          fixes.push(`Day ${dayIdx + 1}: removed unrequested lunch (${item.restaurant?.name || item.title || "meal"}) per meal policy`);
+          return false;
+        }
+        return true;
+      });
+    });
+  }
+
+  // 1d. Dinner backup enforcement. Every Dinner item must carry a backup
+  //     restaurant (same shape) so the traveler has a fallback if the
+  //     reservation falls through. The planner is instructed to populate
+  //     it, but enforce it here — flag any dinner missing a backup with a
+  //     visible warning chip so the user knows to ask for one.
+  if (Array.isArray(days)) {
+    days.forEach((day, dayIdx) => {
+      (day.items || []).forEach(item => {
+        if (!/^Dinner$/i.test(item.type || "")) return;
+        const r = item.restaurant;
+        if (!r) return;
+        const hasBackup = r.backup && typeof r.backup === "object" && r.backup.name && String(r.backup.name).trim();
+        if (!hasBackup) {
+          r._missingBackup = true;
+          warnings.push(`Day ${dayIdx + 1} dinner: ${r.name || "restaurant"} has no backup — add a same-tier fallback in the same neighborhood`);
         }
       });
     });
@@ -7583,8 +7646,9 @@ TRIP REQUIREMENTS:
 • EVERY item in items[] MUST have a "time" field (24h local time, e.g. '08:30', '14:00', '19:30'). Items should appear in chronological order within each day. This is what turns the day into a real time-based itinerary instead of a vague list.
 • Use realistic times: dinner 19:00–20:30, breakfast 07:30–09:00, lunch 12:00–13:30 (only when explicitly asked — see MEAL POLICY below). Activities sized to their duration (museum 2h, hike 3–4h, gallery walk 90min). Add end_time when helpful.
 
-MEAL POLICY — STRICT, OPT-IN ONLY FOR BREAKFAST & LUNCH:
-• DINNER: Plan a Dinner item for every night the traveler is at the destination (including arrival night). This is the default and required.
+MEAL POLICY — STRICT, OPT-IN ONLY FOR BREAKFAST & LUNCH (POST-PROCESSED):
+• NOTE: The renderer runs a structural strip after you respond. Any Breakfast / Brunch / Lunch item you emit without the user explicitly asking for it WILL BE DELETED from the final output. Emitting them anyway just wastes tokens and produces a worse-looking review log. Don't.
+• DINNER: Plan a Dinner item for every night the traveler is at the destination (including arrival night). This is the default and required. EVERY Dinner MUST include a same-tier backup restaurant in the same neighborhood/cuisine family — no exceptions. A Dinner without restaurant.backup will be flagged as a defect.
 • BREAKFAST & LUNCH: DO NOT emit Breakfast / Brunch / Lunch items unless the user EXPLICITLY asked for them. Most travelers handle these themselves (hotel breakfast included with the room, beach club, casual on-the-fly, dietary preferences) and pre-planned mid-day reservations cut into activity time.
 • An explicit ask means: a specific named meal/place in narrative or guidelines (e.g. "breakfast at X", "lunch at Y", "brunch on Sunday"), a hard time block ("book a lunch reservation Day 3"), or the dining preferences explicitly named breakfast/lunch focus. "Casual lunches" / "light breakfasts" as a general note is NOT an explicit ask.
 • If the user named a SPECIFIC restaurant for breakfast or lunch, include it exactly as stated. If not, omit those slots entirely — the day flows Activity → Activity → Dinner.
