@@ -2785,7 +2785,7 @@ function PrintRidesButton({ data, inputs }) {
 // produced this plan so the printed PDF is a complete record of inputs+output.
 function InputSummary({ inputs }) {
   if (!inputs) return null;
-  const { basics, flights, hotel, transport, dining, restaurants, activities, interests, narrative, outputs } = inputs;
+  const { basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative, outputs } = inputs;
   const citiesText = Array.isArray(basics?.cities) && basics.cities.length > 1
     ? basics.cities.map((c, i) => `${i + 1}) ${c.name} — ${c.nights} ${Number(c.nights) === 1 ? "night" : "nights"}${c.focus ? ` (${c.focus})` : ""}`).join("   ")
     : null;
@@ -2814,6 +2814,7 @@ function InputSummary({ inputs }) {
     ["Requested activities", (activities && activities.length) ? activities.join(", ") : "—"],
     ["Interest level", interests?.level || "—"],
     ["Interest detail", interests?.text || "—"],
+    ["Trip guidelines", guidelines ? guidelines : "—"],
     ["Trip narrative", narrative ? narrative : "—"],
     ["Sections requested", outputs ? Object.entries(outputs).filter(([, v]) => v).map(([k]) => k).join(", ") : "—"],
   ].filter(([, v]) => v !== undefined && v !== null && v !== "");
@@ -6342,6 +6343,13 @@ export default function TripOptimizer() {
     restaurants: [],
     activities: [],
     interests: { level: "", text: "" },
+    // Hero-level overarching planning guidelines. Sits at the very top of
+    // step 1, BEFORE destination/dates. These are the meta-rules — the
+    // traveler's high-level direction (anniversary trip, pacing rules,
+    // mobility constraints, budget posture, must-have anchors). The build
+    // prompt treats this as the highest priority — even above the narrative
+    // — because guidelines shape every decision the planner makes.
+    guidelines: "",
     // Freeform "tell me everything" box. Anything the dropdowns can't capture
     // — specific hotels with confirmation numbers, flight legs, dates, kids’
     // ages, anniversary surprises, named guides, no-museum-Tuesdays, upgrade
@@ -6415,6 +6423,8 @@ export default function TripOptimizer() {
   // so the prompt can address it as its own "trip directive" block. Persists
   // through localStorage + saved-trip serialization like every other field.
   const [narrative, setNarrative] = useState(_ri?.narrative || BLANK.narrative);
+  // Hero-level trip guidelines — meta-rules above all other inputs.
+  const [guidelines, setGuidelines] = useState(_ri?.guidelines || BLANK.guidelines);
 
   // Reset every form bucket to BLANK. Used for "Plan another trip".
   const resetFormToBlank = () => {
@@ -6427,6 +6437,7 @@ export default function TripOptimizer() {
     setActs(BLANK.activities);
     setInt(BLANK.interests);
     setNarrative(BLANK.narrative);
+    setGuidelines(BLANK.guidelines);
     setResult(null);
     setError("");
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
@@ -6455,6 +6466,7 @@ export default function TripOptimizer() {
     setActs(Array.isArray(i.activities) ? i.activities : []);
     setInt(i.interests || DEFAULTS.interests);
     setNarrative(typeof i.narrative === "string" ? i.narrative : DEFAULTS.narrative);
+    setGuidelines(typeof i.guidelines === "string" ? i.guidelines : DEFAULTS.guidelines);
     setOut(i.outputs || { itinerary: true, weather: true, navigation: true, logistics: true, tonight: true, menus: true, flags: true, planb: true, snobs: true, practical: false, badges: false, pronunciation: false });
     // Cancel any in-flight generation and clear transient UI state.
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
@@ -6524,9 +6536,9 @@ export default function TripOptimizer() {
   // Auto-save form on every change.
   useEffect(() => {
     try {
-      localStorage.setItem(LS_KEY, JSON.stringify({ basics, flights, hotel, transport, dining, restaurants, activities, interests, narrative }));
+      localStorage.setItem(LS_KEY, JSON.stringify({ basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative }));
     } catch {}
-  }, [basics, flights, hotel, transport, dining, restaurants, activities, interests, narrative]);
+  }, [basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative]);
 
   // Persist a session snapshot whenever the built `result` or step changes.
   // This is the safety net against unexpected reloads losing an unsaved trip.
@@ -6544,11 +6556,11 @@ export default function TripOptimizer() {
         result,
         currentSavedTripId,
         reviewState,
-        inputs: { basics, flights, hotel, transport, dining, restaurants, activities, interests, narrative },
+        inputs: { basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative },
       };
       localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot));
     } catch {}
-  }, [result, step, currentSavedTripId, reviewState, basics, flights, hotel, transport, dining, restaurants, activities, interests, narrative]);
+  }, [result, step, currentSavedTripId, reviewState, basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative]);
   const [outputs, setOut] = useState({ itinerary: true, weather: true, navigation: true, logistics: true, tonight: true, menus: true, flags: true, planb: true, snobs: true, practical: false, badges: false, pronunciation: false });
 
   const togOut = k => setOut(o => ({ ...o, [k]: !o[k] }));
@@ -6722,7 +6734,8 @@ export default function TripOptimizer() {
       (Array.isArray(transport.type) && transport.type.some(t => /private\s*driver|chauffeur/i.test(t))) ||
       (Array.isArray(activities) && activities.some(a => /private driver/i.test(a))) ||
       /\b(private driver|chauffeur|car service|black car)\b/i.test(interests?.text || "") ||
-      /\b(private driver|chauffeur|car service|black car)\b/i.test(narrative || "");
+      /\b(private driver|chauffeur|car service|black car)\b/i.test(narrative || "") ||
+      /\b(private driver|chauffeur|car service|black car)\b/i.test(guidelines || "");
     const privateDriverBlock = !wantsPrivateDriver ? "" : `
 
 PRIVATE DRIVER — HARD RULE (USER REQUESTED THIS):
@@ -6750,6 +6763,7 @@ The user explicitly asked for a private driver / chauffeur. You MUST surface thi
       (Array.isArray(activities) && activities.some(a => _tourRe.test(a) && !/private driver/i.test(a))) ||
       _tourRe.test(interests?.text || "") ||
       _tourRe.test(narrative || "") ||
+      _tourRe.test(guidelines || "") ||
       (Array.isArray(basics.style) && basics.style.some(s => /\bVIP\b|\bprivate\b/i.test(s)));
     // Skip-the-line / timed-entry enforcement. Separate from private-guide
     // because the user might just want pre-booked tickets, not a guide.
@@ -7094,18 +7108,21 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
       (Array.isArray(transport.type) && transport.type.some(t => /private\s*driver|chauffeur/i.test(t))) ||
       (Array.isArray(activities) && activities.some(a => /private driver/i.test(a))) ||
       /\b(private driver|chauffeur|car service|black car)\b/i.test(interests?.text || "") ||
-      /\b(private driver|chauffeur|car service|black car)\b/i.test(narrative || "");
+      /\b(private driver|chauffeur|car service|black car)\b/i.test(narrative || "") ||
+      /\b(private driver|chauffeur|car service|black car)\b/i.test(guidelines || "");
     const _userTourRe = /\bprivate\b.*\b(tour|guide|walking)\b|\bVIP\b/i;
     const userWantsPrivateTour =
       (Array.isArray(activities) && activities.some(a => _userTourRe.test(a) && !/private driver/i.test(a))) ||
       _userTourRe.test(interests?.text || "") ||
       _userTourRe.test(narrative || "") ||
+      _userTourRe.test(guidelines || "") ||
       (Array.isArray(basics.style) && basics.style.some(s => /\bVIP\b|\bprivate\b/i.test(s)));
     const _userStlRe = /skip[- ]the[- ]line|timed[- ]entry|fast[- ]track|priority entry/i;
     const userWantsSkipTheLine =
       (Array.isArray(activities) && activities.some(a => _userStlRe.test(a))) ||
       _userStlRe.test(interests?.text || "") ||
-      _userStlRe.test(narrative || "");
+      _userStlRe.test(narrative || "") ||
+      _userStlRe.test(guidelines || "");
     const groundModeText = trainAllowed
       ? "driving or train (user opted into rail)"
       : "driving only — NO trains, NO rail, NO Amtrak under any circumstances";
@@ -7125,7 +7142,13 @@ Restaurants requested: ${restaurants.length ? restaurants.join(", ") : "suggest"
 Activities requested: ${activities.length ? activities.join(", ") : "suggest based on style"}
 Interests: ${interests.text || "not specified"} · Level: ${interests.level || "No preference"}
 Include sections: ${active}
-${narrative && narrative.trim() ? `
+${guidelines && guidelines.trim() ? `
+TRIP GUIDELINES (META-LEVEL DIRECTION — read this FIRST, it shapes every other decision below):
+"""
+${guidelines.trim()}
+"""
+These are the traveler's overarching planning guidelines. Apply them to every choice the planner makes — hotel selection, daily pacing, restaurant tier, transport mode, activity intensity, day shape. Treat them as a constant filter on the structured fields below. If a guideline conflicts with a default assumption (e.g. "no early mornings", "home by 9pm", "one anchor per day with downtime", "my partner has a knee injury", "this is our anniversary"), the guideline wins.
+` : ""}${narrative && narrative.trim() ? `
 TRAVELER NARRATIVE (HIGHEST PRIORITY — read this carefully, it overrides any conflict with the structured fields above):
 """
 ${narrative.trim()}
@@ -7817,6 +7840,26 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 </div>
               );
             })()}
+            {/* HERO GUIDELINES — the very first thing the user sees on step 1.
+                High-level direction the planner should apply to every decision
+                below. Conceptually a level above the destination/dates form
+                and a level above the per-trip narrative. Distinct from the
+                step-2 "Tell me about the trip" narrative: guidelines are the
+                META-rules (pacing posture, mobility, anniversary framing,
+                budget posture, anchor rhythm), narrative is the SPECIFICS
+                (confirmation numbers, named guides, exact hotels). Both flow
+                into the prompt; guidelines render first. */}
+            <div style={{ ...cardStyle, borderLeft: `2px solid ${GOLD}`, marginBottom: "1.25rem" }}>
+              <p style={ctStyle}>Trip guidelines</p>
+              <Field label="Tell the planner how to think about this trip" hint="Type or dictate. The high-level posture — anniversary framing, pacing rhythm, mobility constraints, budget posture, must-have anchors, things to avoid. Specific hotels and confirmations go in 'Tell me about the trip' on the next step.">
+                <NarrativeBox
+                  value={guidelines}
+                  onChange={e => setGuidelines(e.target.value)}
+                  placeholder={"e.g. This is our 30th anniversary trip. We've done all the major museums in Europe — skip the standard tourist circuit. Prefer one anchor experience per day with downtime in between. My wife has a knee injury so no long walks or stairs-heavy days. We want to be back at the hotel by 8pm each night for dinner. Budget is open for the right experiences but we don't need to maximize every slot."}
+                />
+              </Field>
+            </div>
+
             <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Four essentials to start. Refine the details after, or build immediately.</p>
 
             <div style={cardStyle}>
@@ -8097,7 +8140,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         {step === 3 && result && (
           <ItineraryView
             data={result}
-            inputs={{ basics, flights, hotel, transport, dining, restaurants, activities, interests, narrative, outputs }}
+            inputs={{ basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative, outputs }}
             onBack={() => { resetFormToBlank(); setCurrentSavedTripId(null); setReviewState(null); setStep(1); }}
             onEditTrip={() => {
               // Go back to the input form without wiping anything. The user's
