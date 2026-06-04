@@ -7143,11 +7143,11 @@ Activities requested: ${activities.length ? activities.join(", ") : "suggest bas
 Interests: ${interests.text || "not specified"} · Level: ${interests.level || "No preference"}
 Include sections: ${active}
 ${guidelines && guidelines.trim() ? `
-TRIP GUIDELINES (META-LEVEL DIRECTION — read this FIRST, it shapes every other decision below):
+TRIP GUIDELINES (SOURCE OF TRUTH — READ THIS FIRST):
 """
 ${guidelines.trim()}
 """
-These are the traveler's overarching planning guidelines. Apply them to every choice the planner makes — hotel selection, daily pacing, restaurant tier, transport mode, activity intensity, day shape. Treat them as a constant filter on the structured fields below. If a guideline conflicts with a default assumption (e.g. "no early mornings", "home by 9pm", "one anchor per day with downtime", "my partner has a knee injury", "this is our anniversary"), the guideline wins.
+This is the traveler's own description of the trip. Treat every concrete fact here as NON-NEGOTIABLE ground truth. If they name a flight number, airline, time, airport, or routing — use it EXACTLY in the Flight item, do not invent alternates. If they name a hotel — that is THE hotel; emit it as the Hotel item with the name as written, do not substitute a 'better fit' property. If they name a restaurant — put it on the day they implied (or your best read of the trip shape) as the named meal, do not swap it for something else. If they name a driver, guide, tour, or operator — use that exact name. If they cite confirmation numbers, conf codes, ticket numbers, PNRs, or reservation IDs, echo them VERBATIM in the relevant item's reservation/notes field. If anything here conflicts with a structured dropdown field below, THIS WINS. After honoring every named fact, also apply any posture / pacing / mobility / budget / anniversary framing implied here to every other choice in the plan.
 ` : ""}${narrative && narrative.trim() ? `
 TRAVELER NARRATIVE (HIGHEST PRIORITY — read this carefully, it overrides any conflict with the structured fields above):
 """
@@ -7587,14 +7587,33 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       32000,
       Math.max(8000, 4000 + (nightsNum + 1) * 2200 + Math.max(0, citiesCount - 1) * 1500),
     );
+    const userPromptForBuild = buildUserPrompt();
     const body = {
       model: "claude-sonnet-4-5",
       max_tokens: maxTokensForTrip,
       system: buildSystemPrompt(),
-      messages: [{ role: "user", content: buildUserPrompt() }],
+      messages: [{ role: "user", content: userPromptForBuild }],
       tools: [TRIP_PLAN_TOOL],
       tool_choice: { type: "tool", name: "submit_trip_plan" },
     };
+    // Diagnostic — confirm the freeform boxes are actually reaching the model.
+    // Open DevTools → Console before clicking Build. If the GUIDELINES / NARRATIVE
+    // line shows '(empty)' but you typed in the box, we have a state-capture bug.
+    // If it shows your text, but the resulting plan ignores it, the prompt itself
+    // needs to be louder.
+    try {
+      console.info(
+        "[trip-optimizer] build prompt freeform inputs:",
+        {
+          guidelinesChars: (guidelines || "").length,
+          guidelinesPreview: (guidelines || "").slice(0, 240) || "(empty)",
+          narrativeChars: (narrative || "").length,
+          narrativePreview: (narrative || "").slice(0, 240) || "(empty)",
+          userPromptIncludesGuidelinesBlock: userPromptForBuild.includes("TRIP GUIDELINES"),
+          userPromptIncludesNarrativeBlock: userPromptForBuild.includes("TRAVELER NARRATIVE"),
+        },
+      );
+    } catch {}
 
     setLoading(true);
     setError("");
@@ -7851,11 +7870,11 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 into the prompt; guidelines render first. */}
             <div style={{ ...cardStyle, borderLeft: `2px solid ${GOLD}`, marginBottom: "1.25rem" }}>
               <p style={ctStyle}>Trip guidelines</p>
-              <Field label="Tell the planner how to think about this trip" hint="Type or dictate. The high-level posture — anniversary framing, pacing rhythm, mobility constraints, budget posture, must-have anchors, things to avoid. Specific hotels and confirmations go in 'Tell me about the trip' on the next step.">
+              <Field label="Tell the planner everything you already know about this trip" hint="Type or dictate. Dump anything that matters: booked flights with numbers and times, hotel names, restaurants with reservation times, named drivers or guides, anniversary or kids' ages, mobility notes, pacing preferences, things to avoid. The planner reads this as the source of truth — every named flight, hotel, and restaurant is used EXACTLY, not substituted.">
                 <NarrativeBox
                   value={guidelines}
                   onChange={e => setGuidelines(e.target.value)}
-                  placeholder={"e.g. This is our 30th anniversary trip. We've done all the major museums in Europe — skip the standard tourist circuit. Prefer one anchor experience per day with downtime in between. My wife has a knee injury so no long walks or stairs-heavy days. We want to be back at the hotel by 8pm each night for dinner. Budget is open for the right experiences but we don't need to maximize every slot."}
+                  placeholder={"e.g. United UA 57 EWR→CDG Sept 12 dep 18:55, return UA 58 Sept 19. Staying at Le Bristol Paris Sept 12–19, conf #BRST44A21. Dinners: Le Comptoir du Relais night 1, Le Cinq for anniversary on the 14th (already booked, 8pm), Frenchie night 3. Want a private driver from arrival through departure. Wife has a knee injury — no long walks or stairs-heavy days. Home by 9pm. Skip the Louvre, we've done it."}
                 />
               </Field>
             </div>
