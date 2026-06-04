@@ -1047,8 +1047,13 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
   const airportBanner = (f._airportSuspect && f._airportSuggestion)
     ? `Closer airport: ${f._airportSuggestion.iata} (${f._airportSuggestion.name}) is ${f._airportSuggestion.drive} away — ${f._airportSuggestion.note}. Consider flying into ${f._airportSuggestion.iata} instead of ${f.to_airport}.`
     : null;
-  // Always-on look-up CTA: build a Google Flights URL for the exact route + date.
+  // Route-specific Google Flights lookup CTA. Only shown when we don't
+  // already have a concrete flight number to track live — if parseFlightIdent
+  // returns a real ident (e.g. "UA57"), the LiveFlightStatus panel below
+  // gives the user authoritative AeroAPI data and the lookup button is
+  // redundant + misleading.
   const isoDate = parseDayLabelToISODate(dayLabel);
+  const knownIdent = parseFlightIdent(f);
   const lookupUrl = buildGoogleFlightsUrl(f.from_airport, f.to_airport, isoDate);
   const lookupLabel = `LOOK UP ACTUAL FLIGHT${f.from_airport && f.to_airport ? ` · ${f.from_airport}→${f.to_airport}` : ""}`;
   return (
@@ -1077,26 +1082,29 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
       {note && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", lineHeight: 1.5, fontStyle: "italic" }}>{note}</p>
       )}
-      {/* Primary action: route-specific Google Flights lookup. Always shown. */}
-      <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
-        <a href={lookupUrl} target="_blank" rel="noopener noreferrer"
-           style={{ fontSize: "11px", padding: "8px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: GOLD, color: "#0F0F0F", textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 700, display: "inline-block" }}>
-          {lookupLabel}
-        </a>
-        {bookUrl && (
-          <a href={bookUrl} target="_blank" rel="noopener noreferrer"
-             style={{ fontSize: "11px", padding: "7px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>
-            Or book · {bookHost}
+      {/* Route-specific Google Flights lookup + book link. Suppressed when
+         we already have a confirmed flight number — the LiveFlightStatus
+         panel below gives the user real AeroAPI data instead. */}
+      {!knownIdent && (
+        <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+          <a href={lookupUrl} target="_blank" rel="noopener noreferrer"
+             style={{ fontSize: "11px", padding: "8px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: GOLD, color: "#0F0F0F", textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 700, display: "inline-block" }}>
+            {lookupLabel}
           </a>
-        )}
-      </div>
-      <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "6px 0 0", lineHeight: 1.4, letterSpacing: "0.02em", fontStyle: "italic" }}>
-        Times and carrier shown are planning estimates. Always confirm the actual flight number on the live lookup before booking.
-      </p>
-      {(() => {
-        const ident = parseFlightIdent(f);
-        return ident && isoDate ? <LiveFlightStatus ident={ident} isoDate={isoDate} /> : null;
-      })()}
+          {bookUrl && (
+            <a href={bookUrl} target="_blank" rel="noopener noreferrer"
+               style={{ fontSize: "11px", padding: "7px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>
+              Or book · {bookHost}
+            </a>
+          )}
+        </div>
+      )}
+      {!knownIdent && (
+        <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "6px 0 0", lineHeight: 1.4, letterSpacing: "0.02em", fontStyle: "italic" }}>
+          Times and carrier shown are planning estimates. Always confirm the actual flight number on the live lookup before booking.
+        </p>
+      )}
+      {knownIdent && isoDate ? <LiveFlightStatus ident={knownIdent} isoDate={isoDate} /> : null}
       {text && !f.carrier && (
         <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "4px 0 0" }}>{text}</p>
       )}
