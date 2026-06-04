@@ -4089,27 +4089,19 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
         </div>
       )}
 
-      {/* Free-form description */}
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder={target.placeholder}
-        rows={3}
-        style={{
-          width: "100%",
-          boxSizing: "border-box",
-          padding: "9px 11px",
-          fontSize: "13px",
-          border: "0.5px solid var(--color-border-secondary)",
-          borderRadius: "var(--border-radius-sm, 4px)",
-          background: "var(--color-background-primary)",
-          color: "var(--color-text-primary)",
-          fontFamily: "inherit",
-          resize: "vertical",
-          minHeight: "60px",
-          marginBottom: "10px",
-        }}
-      />
+      {/* Free-form description — NarrativeBox in compact mode gives us
+          the same dictation affordance as the step-1 narrative box, sized
+          for inline use. The mic auto-hides on browsers without Web Speech
+          (e.g. Firefox), so typers see exactly the same textarea as before. */}
+      <div style={{ marginBottom: "10px" }}>
+        <NarrativeBox
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={target.placeholder}
+          size="compact"
+          hint="Type or dictate. Be specific — name hotels, restaurants, times, neighborhoods, anything."
+        />
+      </div>
 
       <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "0 0 10px", fontStyle: "italic" }}>
         {target.mode === "surgical" ? "Quick card-level edit — ~30 sec." : "Triggers a full re-plan — ~2 min."}
@@ -4425,7 +4417,16 @@ function Inp({ value, onChange, placeholder, type = "text" }) {
 //   3. Append-on-dictate semantics: each speech burst appends to whatever
 //      the user has already typed/dictated, separated by a space. This is
 //      what makes "dictate → read it back → dictate more" feel natural.
-function NarrativeBox({ value, onChange, placeholder, hint }) {
+// Props:
+//   value, onChange   controlled string state (parent supplies setNarrative)
+//   placeholder       textarea placeholder text
+//   hint              optional helper text below the box
+//   size              "large" (default — 8 rows, 4000 chars, counter visible)
+//                     | "compact" (3 rows, 2000 chars, no counter — used in
+//                     inline change-request flows where space is tight)
+//   minHeight         optional CSS override for the textarea floor
+//   maxChars          optional cap override
+function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minHeight, maxChars }) {
   const [listening, setListening] = useState(false);
   const [permissionError, setPermissionError] = useState("");
   const recRef = useRef(null);
@@ -4506,8 +4507,11 @@ function NarrativeBox({ value, onChange, placeholder, hint }) {
     setListening(false);
   };
 
+  const isCompact = size === "compact";
   const charCount = (value || "").length;
-  const MAX = 4000; // hard ceiling so a runaway dictation can't blow up the prompt
+  // 4000 chars is plenty for a long trip narrative; 2000 is plenty for an
+  // inline change request. Both still leave headroom in the prompt budget.
+  const MAX = maxChars || (isCompact ? 2000 : 4000);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -4516,13 +4520,13 @@ function NarrativeBox({ value, onChange, placeholder, hint }) {
           value={value}
           onChange={(e) => onChange({ target: { value: e.target.value.slice(0, MAX) } })}
           placeholder={placeholder}
-          rows={8}
+          rows={isCompact ? 3 : 8}
           style={{
-            fontSize: "14px",
-            padding: "12px 44px 12px 12px",
-            border: "0.5px solid var(--color-border-primary)",
-            borderRadius: "8px",
-            background: "transparent",
+            fontSize: isCompact ? "13px" : "14px",
+            padding: isCompact ? "9px 38px 9px 11px" : "12px 44px 12px 12px",
+            border: isCompact ? "0.5px solid var(--color-border-secondary)" : "0.5px solid var(--color-border-primary)",
+            borderRadius: isCompact ? "var(--border-radius-sm, 4px)" : "8px",
+            background: isCompact ? "var(--color-background-primary)" : "transparent",
             color: "var(--color-text-primary)",
             width: "100%",
             boxSizing: "border-box",
@@ -4530,7 +4534,7 @@ function NarrativeBox({ value, onChange, placeholder, hint }) {
             fontFamily: "inherit",
             lineHeight: "1.55",
             resize: "vertical",
-            minHeight: "140px",
+            minHeight: minHeight || (isCompact ? "60px" : "140px"),
           }}
         />
         {supported && (
@@ -4541,10 +4545,10 @@ function NarrativeBox({ value, onChange, placeholder, hint }) {
             title={listening ? "Stop dictation" : "Dictate — click and speak"}
             style={{
               position: "absolute",
-              top: "8px",
-              right: "8px",
-              width: "32px",
-              height: "32px",
+              top: isCompact ? "6px" : "8px",
+              right: isCompact ? "6px" : "8px",
+              width: isCompact ? "26px" : "32px",
+              height: isCompact ? "26px" : "32px",
               border: "none",
               borderRadius: "50%",
               background: listening ? "#d11" : "var(--color-border-primary)",
@@ -4553,7 +4557,7 @@ function NarrativeBox({ value, onChange, placeholder, hint }) {
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontSize: "15px",
+              fontSize: isCompact ? "12px" : "15px",
               lineHeight: 1,
               transition: "background 0.15s",
               boxShadow: listening ? "0 0 0 4px rgba(221,17,17,0.18)" : "none",
@@ -4564,16 +4568,18 @@ function NarrativeBox({ value, onChange, placeholder, hint }) {
         )}
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
-        <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: 0, fontStyle: "italic", lineHeight: "1.5", flex: 1 }}>
+        <p style={{ fontSize: isCompact ? "10.5px" : "11px", color: "var(--color-text-tertiary)", margin: 0, fontStyle: "italic", lineHeight: "1.5", flex: 1 }}>
           {permissionError
             ? permissionError
             : listening
               ? "Listening… speak naturally. Click ■ when done."
               : (hint || "")}
         </p>
-        <span style={{ fontSize: "11px", color: charCount > MAX - 200 ? "#d11" : "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
-          {charCount} / {MAX}
-        </span>
+        {!isCompact && (
+          <span style={{ fontSize: "11px", color: charCount > MAX - 200 ? "#d11" : "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
+            {charCount} / {MAX}
+          </span>
+        )}
       </div>
     </div>
   );
