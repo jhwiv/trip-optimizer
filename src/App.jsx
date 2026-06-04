@@ -6425,6 +6425,102 @@ export default function TripOptimizer() {
   const [narrative, setNarrative] = useState(_ri?.narrative || BLANK.narrative);
   // Hero-level trip guidelines — meta-rules above all other inputs.
   const [guidelines, setGuidelines] = useState(_ri?.guidelines || BLANK.guidelines);
+  // Pending state for the "Build from this" shortcut. extractingFromGuidelines
+  // shows the spinner on the shortcut button; pendingBuildFromGuidelines fires
+  // handleBuild on the NEXT render after setState flushes — we cannot call
+  // handleBuild() inline because the prompt builders read state from the
+  // closure that's about to be replaced.
+  const [extractingFromGuidelines, setExtractingFromGuidelines] = useState(false);
+  const [pendingBuildFromGuidelines, setPendingBuildFromGuidelines] = useState(false);
+
+  // "Build from this →" shortcut. POSTs the guidelines text to the extraction
+  // endpoint, merges whatever structured fields come back into the form state,
+  // and arms a flag that handleBuild fires off on the next render. The
+  // guidelines text itself still flows through to the build prompt as SOURCE
+  // OF TRUTH — extraction is only here to satisfy the form's structural needs
+  // (destination is required to resolve weather / geography).
+  const buildFromGuidelines = async () => {
+    const text = (guidelines || "").trim();
+    if (!text || extractingFromGuidelines || loading) return;
+    setExtractingFromGuidelines(true);
+    setError("");
+    try {
+      const resp = await fetch("/api/extract-trip", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      let data = null;
+      try { data = await resp.json(); } catch {}
+      if (!resp.ok) {
+        const msg = data?.error?.message || `Extraction failed (${resp.status}). Try filling the form manually.`;
+        setError(msg);
+        setExtractingFromGuidelines(false);
+        return;
+      }
+      const ex = data?.extracted || {};
+      // Merge extracted basics into existing state — do NOT wholesale replace,
+      // because the user might have already typed something into a form field
+      // before clicking the shortcut.
+      const exBasics = ex.basics || {};
+      const exFlights = ex.flights || {};
+      const exHotel = ex.hotel || {};
+      const exRestaurants = Array.isArray(ex.restaurants) ? ex.restaurants : [];
+      const exActivities = Array.isArray(ex.activities) ? ex.activities : [];
+
+      // Compute nights from dates if extraction didn't provide one.
+      let inferredNights = exBasics.nights || "";
+      if (!inferredNights && exBasics.startDate && exBasics.endDate) {
+        try {
+          const d1 = new Date(exBasics.startDate + "T00:00:00");
+          const d2 = new Date(exBasics.endDate + "T00:00:00");
+          const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
+          if (diff > 0 && diff < 60) inferredNights = String(diff);
+        } catch {}
+      }
+
+      setB((prev) => normalizeBasics({
+        ...prev,
+        destination: exBasics.destination || prev.destination,
+        startDate: exBasics.startDate || prev.startDate,
+        endDate: exBasics.endDate || prev.endDate,
+        nights: inferredNights || prev.nights,
+        travelers: exBasics.travelers || prev.travelers,
+        baseArea: exBasics.baseArea || prev.baseArea,
+        budget: exBasics.budget || prev.budget,
+        style: (Array.isArray(exBasics.style) && exBasics.style.length) ? exBasics.style : prev.style,
+        pace: exBasics.pace || prev.pace,
+        // Mirror destination into cities[0].name so multi-city machinery
+        // and the city autocomplete stay consistent.
+        cities: (prev.cities && prev.cities.length)
+          ? prev.cities.map((c, i) => i === 0 ? { ...c, name: exBasics.destination || c.name } : c)
+          : [{ name: exBasics.destination || "", nights: inferredNights || "", focus: "" }],
+      }));
+      setF((prev) => ({
+        ...prev,
+        homeAirport: exFlights.homeAirport || prev.homeAirport,
+        airline: exFlights.airline || prev.airline,
+        cabin: exFlights.cabin || prev.cabin,
+        noFlight: typeof exFlights.noFlight === "boolean" ? exFlights.noFlight : prev.noFlight,
+      }));
+      setH((prev) => ({
+        ...prev,
+        mustHave: exHotel.mustHave || prev.mustHave,
+        tier: exHotel.tier || prev.tier,
+      }));
+      if (exRestaurants.length) setRest((prev) => Array.from(new Set([...(prev || []), ...exRestaurants])));
+      if (exActivities.length) setActs((prev) => Array.from(new Set([...(prev || []), ...exActivities])));
+
+      // Arm the deferred build. The effect below will fire handleBuild on the
+      // next render — by which point the setters above have flushed and the
+      // prompt builders will see the new values.
+      setPendingBuildFromGuidelines(true);
+    } catch (err) {
+      setError(`Couldn't process guidelines: ${String(err?.message || err)}. Try filling the form manually.`);
+    } finally {
+      setExtractingFromGuidelines(false);
+    }
+  };
 
   // Reset every form bucket to BLANK. Used for "Plan another trip".
   const resetFormToBlank = () => {
@@ -6438,6 +6534,8 @@ export default function TripOptimizer() {
     setInt(BLANK.interests);
     setNarrative(BLANK.narrative);
     setGuidelines(BLANK.guidelines);
+    setExtractingFromGuidelines(false);
+    setPendingBuildFromGuidelines(false);
     setResult(null);
     setError("");
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
@@ -7687,6 +7785,34 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     });
   };
 
+  // Deferred build trigger for the "Build from this" shortcut.
+  // buildFromGuidelines extracts fields from the narrative, calls all the
+  // setters, and sets pendingBuildFromGuidelines=true. On the NEXT render
+  // (after React flushes those setters), this effect fires handleBuild() with
+  // the fresh closure, so the prompt builders see the extracted values. We
+  // also gate on basics.destination because the build can't resolve geography
+  // without one — if extraction couldn't find a destination, the effect
+  // disarms itself and the API's 422 path has already surfaced a clear error.
+  useEffect(() => {
+    if (!pendingBuildFromGuidelines) return;
+    // All state changes happen on the next tick so the eslint react-compiler
+    // doesn't flag synchronous-setState-in-effect. We still run on the very
+    // next event-loop turn, which is what we want — prompt builders need to
+    // see the extracted values that just flushed.
+    setTimeout(() => {
+      if (!basics?.destination) {
+        setPendingBuildFromGuidelines(false);
+        return;
+      }
+      setPendingBuildFromGuidelines(false);
+      setStep(2);
+      handleBuild();
+    }, 0);
+    // We intentionally only depend on the trigger flag + destination — every
+    // other state piece is read fresh inside handleBuild.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingBuildFromGuidelines, basics?.destination]);
+
   // Resume an in-flight build if the user reopens the page during one. We
   // store the jobId + a few stats in localStorage when a build starts; if we
   // find a fresh one here on mount, re-attach to its server-side stream. The
@@ -7877,6 +8003,41 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                   placeholder={"e.g. United UA 57 EWR→CDG Sept 12 dep 18:55, return UA 58 Sept 19. Staying at Le Bristol Paris Sept 12–19, conf #BRST44A21. Dinners: Le Comptoir du Relais night 1, Le Cinq for anniversary on the 14th (already booked, 8pm), Frenchie night 3. Want a private driver from arrival through departure. Wife has a knee injury — no long walks or stairs-heavy days. Home by 9pm. Skip the Louvre, we've done it."}
                 />
               </Field>
+              {/* "Build from this →" shortcut. Appears when the box has enough
+                  text to be worth extracting from (~80 chars). Click → extract
+                  fields from narrative → jump straight to build. The full
+                  guidelines text still flows through to the build prompt as
+                  SOURCE OF TRUTH, so nothing is lost in translation. */}
+              {(guidelines || "").trim().length >= 80 && (
+                <div style={{ marginTop: "14px", display: "flex", flexDirection: "column", alignItems: "stretch", gap: "6px" }}>
+                  <button
+                    type="button"
+                    onClick={buildFromGuidelines}
+                    disabled={extractingFromGuidelines || loading}
+                    style={{
+                      border: "none",
+                      borderRadius: "var(--border-radius-md)",
+                      padding: "13px 20px",
+                      fontSize: "11px",
+                      fontWeight: 500,
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                      cursor: (extractingFromGuidelines || loading) ? "not-allowed" : "pointer",
+                      width: "100%",
+                      fontFamily: "inherit",
+                      background: GOLD,
+                      color: "#1a1a1a",
+                      opacity: (extractingFromGuidelines || loading) ? 0.6 : 1,
+                    }}
+                    aria-label="Build the trip directly from this narrative"
+                  >
+                    {extractingFromGuidelines ? "Reading your narrative…" : "Build from this →"}
+                  </button>
+                  <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, textAlign: "center", fontStyle: "italic", lineHeight: 1.5 }}>
+                    Skip the form — we'll extract destination, dates, and details and build straight from your narrative.
+                  </p>
+                </div>
+              )}
             </div>
 
             <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Four essentials to start. Refine the details after, or build immediately.</p>
