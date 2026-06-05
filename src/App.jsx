@@ -5711,6 +5711,9 @@ async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
         } else if (evt.type === "delta" && evt.text) {
           toolJson += evt.text;
           if (typeof onDelta === "function") onDelta(evt.text, toolJson.length);
+        } else if (evt.type === "ping") {
+          // Server heartbeat — keeps NDJSON alive through long model pauses.
+          continue;
         } else if (evt.type === "done") {
           doneSeen = true;
           return { jobId, toolJson };
@@ -5734,7 +5737,12 @@ async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
     let cursor = toolJson.length;
     const POLL_MS = 1500;
     const MAX_POLL_MS = 10 * 60 * 1000;
-    const MAX_STALL_MS = 90 * 1000;
+    // Stall threshold. The model can legitimately spend 90–150s emitting a
+    // single large structure (a full menu object with appetizers + mains +
+    // desserts + wine notes is one such block). 90s was tripping on healthy
+    // builds; 180s gives real model pauses room while still catching truly
+    // dead jobs.
+    const MAX_STALL_MS = 180 * 1000;
     const pollStart = Date.now();
     let lastProgressAt = Date.now();
     while (true) {
@@ -5747,7 +5755,7 @@ async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
         throw new Error("Build is taking longer than expected. Tap Build again to retry.");
       }
       if (Date.now() - lastProgressAt > MAX_STALL_MS) {
-        throw new Error("Build stalled — no new content for 90 seconds. Tap Build again to retry.");
+        throw new Error("Build stalled — no new content for 3 minutes. The live stream likely dropped and KV mirroring is unavailable. Tap Build again to retry.");
       }
       let r;
       try {
@@ -8034,6 +8042,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           } else if (evt.type === "delta" && evt.text) {
             totalLen += evt.text.length;
             onDelta(evt.text, totalLen);
+          } else if (evt.type === "ping") {
+            // Server heartbeat — silently keeps the NDJSON stream alive
+            // through long model thinking pauses (big menu objects, large
+            // prefill). No UI change; just prevents idle disconnects and
+            // keeps the stall detector happy if it later kicks in.
+            continue;
           } else if (evt.type === "done") {
             return { len: evt.len ?? totalLen };
           } else if (evt.type === "error") {
@@ -8063,7 +8077,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // up but generation has frozen" case where 5xx polls succeed but
     // no new bytes arrive.
     const MAX_POLL_MS = 10 * 60 * 1000;
-    const MAX_STALL_MS = 90 * 1000;
+    // Stall threshold. The model can legitimately spend 90–150s emitting a
+    // single large structure (a full menu object with appetizers + mains +
+    // desserts + wine notes is one such block). 90s was tripping on healthy
+    // builds; 180s gives real model pauses room while still catching truly
+    // dead jobs.
+    const MAX_STALL_MS = 180 * 1000;
     const pollStart = Date.now();
     let lastProgressAt = Date.now();
     while (true) {
@@ -8076,7 +8095,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         throw new Error("Build is taking longer than expected. Tap Build again to retry.");
       }
       if (Date.now() - lastProgressAt > MAX_STALL_MS) {
-        throw new Error("Build stalled — no new content for 90 seconds. Tap Build again to retry.");
+        throw new Error("Build stalled — no new content for 3 minutes. The live stream likely dropped and KV mirroring is unavailable. Tap Build again to retry.");
       }
       let resp;
       try {

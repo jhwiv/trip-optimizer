@@ -35,6 +35,15 @@ const JOB_TTL_SECONDS = 24 * 60 * 60;
 // 90-second build does ~20 puts, leaving headroom for many builds/day.
 const FLUSH_INTERVAL_MS = 5000;
 const FLUSH_CHARS = 5000;
+// Heartbeat cadence. If Anthropic is mid-generation but hasn't emitted a
+// content_block_delta for a while (large prefill, slow tool-arg generation,
+// big menu object), we still need to keep the NDJSON stream alive so:
+//   1. The client's poll-fallback stall detector (~90s without bytes) stays
+//      quiet — there ARE bytes flowing, just heartbeat ones.
+//   2. Any intermediate proxy/CDN that idle-kills connections sees activity.
+// Heartbeats are {"type":"ping"} lines the client silently ignores. 15s is
+// well under any commonly-observed idle limit.
+const HEARTBEAT_INTERVAL_MS = 15000;
 
 // Safely write to KV. If the namespace is over quota or otherwise unhappy,
 // log it and continue — the client is still receiving the live NDJSON stream,
@@ -150,6 +159,17 @@ async function runBuild({ env, jobId, body, startedAt, writeEvent, kvState }) {
   let accumulated = "";
   let lastFlush = 0;
   let lastFlushedLen = 0;
+  let lastClientWriteAt = Date.now();
+
+  // Heartbeat timer — fires {type:"ping"} to the client every
+  // HEARTBEAT_INTERVAL_MS if no real delta has been written. Stops when the
+  // build ends (writer.close() will fail silently inside writeEvent).
+  const heartbeatTimer = setInterval(() => {
+    if (Date.now() - lastClientWriteAt >= HEARTBEAT_INTERVAL_MS) {
+      writeEvent({ type: "ping", t: Date.now() });
+      lastClientWriteAt = Date.now();
+    }
+  }, Math.floor(HEARTBEAT_INTERVAL_MS / 2));
 
   async function flushKV(final = false, extra = {}) {
     const now = Date.now();
@@ -239,6 +259,7 @@ async function runBuild({ env, jobId, body, startedAt, writeEvent, kvState }) {
       // the low-latency path — KV is a secondary mirror.
       if (pendingDelta) {
         writeEvent({ type: "delta", text: pendingDelta });
+        lastClientWriteAt = Date.now();
       }
 
       const now = Date.now();
@@ -255,6 +276,8 @@ async function runBuild({ env, jobId, body, startedAt, writeEvent, kvState }) {
     const msg = `Stream read failed: ${err?.message || err}`;
     await flushKV(true, { error: msg });
     writeEvent({ type: "error", error: msg });
+  } finally {
+    try { clearInterval(heartbeatTimer); } catch {}
   }
 }
 
