@@ -2210,21 +2210,35 @@ function applyQualityLayer(input, inputs) {
             f._flightNumberStripped = true;
             fixes.push(`Day ${dayIdx + 1} flight: removed model-supplied flight number — look up live schedule`);
           }
-        } else if (userFlightNumbers.size > 0 && f.carrier) {
-          // Model didn't emit a number but the user named some. Try to attach
-          // one based on direction: outbound day = first user number, return
-          // = last user number. This is heuristic and only fires when we have
-          // exactly one or two user-stated numbers (the common case).
+        } else if (userFlightNumbers.size > 0) {
+          // Model didn't emit a number but the user named some. Attach one
+          // based on direction. We previously gated on `f.carrier` being
+          // present, but the model sometimes omits both number AND carrier
+          // when it follows the "don't emit flight_number" instruction too
+          // aggressively — we should still back-fill the user-stated number
+          // because that's a USER FACT, and the live-status panel can still
+          // resolve carrier from the number prefix.
           const userNums = Array.from(userFlightNumbers).filter(n => /^\d+$/.test(n));
           if (userNums.length >= 1 && userNums.length <= 2) {
-            // Outbound on day 0, return on last day.
-            const isReturnDay = dayIdx === (days.length - 1);
-            const chosen = isReturnDay && userNums.length > 1
+            // Detect outbound vs return by ROUTE direction first (more
+            // reliable than day index, since the return might fall on the
+            // second-to-last day if the flight is in the morning). Falls
+            // back to day-index heuristic when route info is missing.
+            const homeCode = (inputs?.flights?.homeAirport || "").toUpperCase().match(/\b([A-Z]{3})\b/)?.[1];
+            let isReturnLeg;
+            if (homeCode && f.to_airport) {
+              isReturnLeg = String(f.to_airport).toUpperCase() === homeCode;
+            } else if (homeCode && f.from_airport) {
+              isReturnLeg = String(f.from_airport).toUpperCase() !== homeCode;
+            } else {
+              isReturnLeg = dayIdx === (days.length - 1);
+            }
+            const chosen = isReturnLeg && userNums.length > 1
               ? userNums[userNums.length - 1]
               : userNums[0];
             f.flight_number = chosen;
             f._userSuppliedFlightNumber = true;
-            fixes.push(`Day ${dayIdx + 1} flight: filled in user-supplied flight number ${f.carrier}${chosen}`);
+            fixes.push(`Day ${dayIdx + 1} flight: filled in user-supplied flight number ${f.carrier || ""}${chosen}`);
           }
         }
       });
@@ -7825,11 +7839,11 @@ For any Flight item whose duration exceeds 6 hours OR whose cabin is Economy on 
 Add a flags[] entry: "Long-haul upgrade: <carrier> <route> typically opens upgrade space 14 days out. Check at booking and again 5 days before departure."
 
 FLIGHTS — ACCURACY OVER SPECIFICITY, PREFER NONSTOP, ALWAYS STRUCTURED:
-• Every Flight item MUST include a "flight" object with: carrier, from_airport (IATA), to_airport (IATA), depart_time (rough window OK), arrive_time (rough window OK), duration, nonstop (boolean), cabin, aircraft, confirmation_note, airport_arrival_buffer, lounge_access. Do NOT include flight_number — the app handles flight-number lookup for the user.
+• Every Flight item MUST include a "flight" object with: carrier, from_airport (IATA), to_airport (IATA), depart_time (rough window OK), arrive_time (rough window OK), duration, nonstop (boolean), cabin, aircraft, confirmation_note, airport_arrival_buffer, lounge_access. Include flight_number only when the user explicitly named one in their narrative or guidelines (see the FLIGHT NUMBERS rule below).
 • AIRPORT ARRIVAL BUFFER — REQUIRED on every departure-day Flight item (the flight that takes the traveler HOME or to a connecting onward city). Standard buffers: domestic US '1.5 h', international '2.5 h', and THREE HOURS '3 h' for any flight DEPARTING from a US PRE-CLEARANCE airport — these are AUA (Aruba), NAS (Bahamas/Nassau), FPO (Bahamas/Freeport), BDA (Bermuda), DUB and SNN (Ireland), YUL/YVR/YYZ/YOW/YHZ/YWG/YYC and other major Canadian airports, AUH (Abu Dhabi). Pre-clearance means the traveler clears US Customs IN THE DEPARTURE COUNTRY before boarding — the process takes time. When you set a 3-h buffer, also add a flags[] entry naming the pre-clearance reason and add a departure-day Transport item that picks the traveler up from the hotel EARLY enough to clear it (typically 3.5 h before scheduled departure to allow for taxi/drive time).
 • LOUNGE ACCESS — surface available lounges on EVERY Flight item via the lounge_access[] array. Include lounges accessible via the traveler's cabin (Polaris/Flagship Business/First/Delta One), via elite status (United 1K/Star Alliance Gold/oneworld Sapphire/SkyTeam Elite Plus), and via membership cards (Priority Pass, Amex Centurion / Plat with same-day boarding pass, Capital One Lounge, Chase Sapphire Reserve). If a lounge's access list is ambiguous, include it with an honest 'access' string ('Priority Pass; verify current card partner list') rather than omitting it. For US domestic flights from major hubs, name the carrier-club + any Centurion/Capital One/Sapphire/Priority Pass options at that terminal. For international departures, prioritize the carrier's premium lounge and any Priority Pass partner. Common high-value lounges to know: EWR Polaris (Term C, post-security — Polaris business + Star Alliance int'l business), JFK Centurion (Term 4, post-security — Amex Plat/Cent), LAX Amex Centurion + United Polaris + Korean SKYPASS, ORD Polaris + United Club + Amex Centurion, ATL Delta Sky Club + Centurion, MIA Amex Centurion + Centurion Studio. International: LHR Concorde Room (BA First), CDG Air France La Première + business lounges, FCO Casa Alitalia/ITA, ZRH Swiss First/Senator, AUA Aruba Airport Lounge (Priority Pass, post-US-preclearance).
 • CARRIER SELECTION — DO THIS FIRST: name a carrier you are HIGHLY CONFIDENT actually operates a nonstop on this exact city pair. If you cannot name one with confidence, leave carrier as a comma-separated short list of candidates (e.g. "SAS or Delta") and add a flags[] entry like "Verify which carrier operates nonstop — candidates: SAS, Delta". Do NOT invent a carrier that doesn't fly the route.
-• FLIGHT NUMBERS — DO NOT EMIT. The app strips any flight_number you send and renders a "Look up actual flight" link instead. Set "flight_number": null. The user looks up the real flight on Google Flights, not from your output. Do NOT make up numbers like "UA 1234" — they will be removed but they waste tokens and erode trust if anyone sees the raw JSON.
+• FLIGHT NUMBERS — ONLY EMIT WHEN THE USER GAVE YOU ONE. If the user's narrative or guidelines literally name a flight number ("flight 1040", "UA1039", "on United 47"), set flight_number to the exact digits the user stated (e.g. "1040"). That is a USER FACT and must be preserved. Otherwise, when the user did NOT state a number, set "flight_number": null. Do NOT invent numbers like "UA 1234" — they will be stripped and waste tokens. The app handles look-up for the unstated case.
 ${_routeTruthBlock}• Every confirmation_note MUST literally end with this exact sentence: "Verify flight number, times and equipment at booking — schedules change." Copy it verbatim; do not paraphrase.
 • WRONG confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C"
 • RIGHT confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C. Verify flight number, times and equipment at booking — schedules change."
