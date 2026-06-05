@@ -911,6 +911,16 @@ function parseFlightIdent(f) {
       if (m) return `${iata}${m[1]}`;
     }
   }
+  // 4. LAST RESORT for user-supplied flight numbers: when the user gave us
+  // a number but no carrier (and the model also failed to infer one), pass
+  // the bare digits to AeroAPI. The worker will resolve the carrier from
+  // the prefix on its end. This is gated on _userSuppliedFlightNumber so we
+  // never do speculative lookups for model-emitted numbers — those should
+  // have been stripped by the quality layer already.
+  if (f._userSuppliedFlightNumber && f.flight_number) {
+    const m = String(f.flight_number).match(/\b0*(\d{1,4})\b/);
+    if (m) return m[1]; // bare digits; AeroAPI worker will hydrate carrier
+  }
   return null;
 }
 
@@ -941,7 +951,7 @@ function formatLiveTime(iso) {
   } catch { return ""; }
 }
 
-function LiveFlightStatus({ ident, isoDate }) {
+function LiveFlightStatus({ ident, isoDate, userSupplied }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -960,7 +970,26 @@ function LiveFlightStatus({ ident, isoDate }) {
       </p>
     );
   }
-  if (!status) return null; // worker errored or flight not in AeroAPI window
+  if (!status) {
+    // Worker returned no data. For a user-supplied flight number this matters
+    // — the user is asking us to verify their flight is real, and a null
+    // means AeroAPI either doesn't recognize this ident or the flight is
+    // outside the active schedule window (more than 2 days out, or older
+    // than ~10 days). Surface this explicitly so the user knows to confirm.
+    if (userSupplied) {
+      return (
+        <div style={{ marginTop: "10px", paddingTop: "8px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
+          <p style={{ fontSize: "10.5px", margin: "0 0 4px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700, color: "#8A6500" }}>
+            Flight not verified
+          </p>
+          <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.5 }}>
+            FlightAware did not return data for {ident} on this date. The flight may be outside the active schedule window or the number may need confirmation. Verify with the airline before relying on these times.
+          </p>
+        </div>
+      );
+    }
+    return null; // model-guess number, silent
+  }
   // Color the status pill by severity.
   const level = status.statusLevel || "";
   const pillBg = status.cancelled ? "#B85C00"
@@ -1040,8 +1069,17 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
     : carrierLower.includes("norse") ? "flynorse.com"
     : null;
   const bookUrl = bookHost ? `https://www.${bookHost}` : null;
-  // Universal: flight_number is always null after the quality layer. Title shows carrier · route.
-  const titleLine = `${f.carrier || "Carrier TBD"} · ${route}`;
+  // Title: when the user supplied an explicit flight number (preserved by
+  // the quality layer via _userSuppliedFlightNumber), show it in the title so
+  // the traveler immediately sees the right number on the card. Otherwise the
+  // number was stripped (model guess) and the title shows carrier · route only.
+  const userFn = f._userSuppliedFlightNumber && f.flight_number ? String(f.flight_number).trim() : null;
+  // Compose a carrier-prefixed flight ident when we have both pieces, e.g.
+  // "United 1040" → title fragment "UA 1040" or "United 1040". We use the
+  // full carrier string the model produced so the user sees what they typed.
+  const titleLine = userFn
+    ? `${f.carrier || ""} ${userFn}`.trim() + ` · ${route}`
+    : `${f.carrier || "Carrier TBD"} · ${route}`;
   // Banner copy: priority is carrier-correction → airport suggestion → generic look-up.
   const overrideBanner = f._carrierOverride
     ? `App corrected carrier: ${f._originalCarrier || "the model's pick"} does not operate this nonstop. Use ${f.carrier} — confirm with the live lookup below.`
@@ -1129,7 +1167,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
           Times and carrier shown are planning estimates. Always confirm the actual flight number on the live lookup before booking.
         </p>
       )}
-      {knownIdent && isoDate ? <LiveFlightStatus ident={knownIdent} isoDate={isoDate} /> : null}
+      {knownIdent && isoDate ? <LiveFlightStatus ident={knownIdent} isoDate={isoDate} userSupplied={!!f._userSuppliedFlightNumber} /> : null}
       {text && !f.carrier && (
         <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "4px 0 0" }}>{text}</p>
       )}
@@ -7772,6 +7810,16 @@ TRIP REQUIREMENTS:
 • Use realistic times: dinner 19:00–20:30, breakfast 07:30–09:00, lunch 12:00–13:30 (only when explicitly asked — see MEAL POLICY below). Activities sized to their duration (museum 2h, hike 3–4h, gallery walk 90min). Add end_time when helpful.
 
 MEAL POLICY — STRICT, OPT-IN ONLY FOR BREAKFAST & LUNCH (POST-PROCESSED):
+*** CRITICAL: LUNCH IS A HARD EXCLUSION BY DEFAULT. Same severity as breakfast.
+*** The traveler has explicitly added LUNCH to the meal-exclusion list. Treat
+*** "don't plan lunch" with the same weight as "don't plan breakfast" — they
+*** are co-equal exclusions. Any Lunch item in your output without an explicit
+*** named ask ("lunch at Atardi", "book lunch Day 3") will be removed by the
+*** post-processor and counted as a defect. DO NOT EMIT LUNCH ITEMS.
+*** Activities that span the noon window (e.g. 09:00–14:00 catamaran with food
+*** included, or a wine tasting that includes a small plate) are fine as
+*** Activity items — but DO NOT add a separate Lunch item alongside them.
+
 • NOTE: The renderer runs a structural strip after you respond. Any Breakfast / Brunch / Lunch item you emit without the user explicitly asking for it WILL BE DELETED from the final output. Emitting them anyway just wastes tokens and produces a worse-looking review log. Don't.
 • DINNER: Plan a Dinner item for every night the traveler is at the destination (including arrival night). This is the default and required. EVERY Dinner MUST include a same-tier backup restaurant in the same neighborhood/cuisine family — no exceptions. A Dinner without restaurant.backup will be flagged as a defect.
 • BREAKFAST & LUNCH: DO NOT emit Breakfast / Brunch / Lunch items unless the user EXPLICITLY asked for them. Most travelers handle these themselves (hotel breakfast included with the room, beach club, casual on-the-fly, dietary preferences) and pre-planned mid-day reservations cut into activity time.
@@ -7857,7 +7905,11 @@ FLIGHTS — ACCURACY OVER SPECIFICITY, PREFER NONSTOP, ALWAYS STRUCTURED:
 • If you DON'T know the carrier's specific gate range at this airport, set gate_proximity to a HONEST string like 'Same terminal as the gate' or 'Different terminal — only worth a visit with 2+ hours to kill' rather than inventing precise gate numbers. The terminal field should always be set when known.
 • Common high-value lounges to know with terminal locations: EWR Polaris (Terminal C, post-security, near gates C70-C90), EWR Amex Centurion (Terminal C, near gate C102 — farther from most UA intl gates), JFK Centurion (Terminal 4, Concourse B mezzanine near gate B30), JFK Delta Sky Club T4 (post-security, multiple locations), LAX Amex Centurion (Tom Bradley intl T-B, post-security level 3) + LAX United Polaris (Terminal 7, near gates 70-79) + Korean Air SKYPASS (Terminal B / TBIT), ORD United Polaris (Terminal 1 C-concourse, near gate C18) + United Club + Amex Centurion (Terminal 3 H/K, near gate K17), ATL Delta Sky Club + Amex Centurion (Concourse F intl terminal), MIA Amex Centurion (Concourse D, near gate D12) + Centurion Studio (Concourse E). International: LHR Concorde Room (Terminal 5 A-gates, post-security — BA First only), CDG Air France La Première (Terminal 2E, satellite K), FCO Casa ITA (Terminal 3 intl), ZRH Swiss First (Terminal A, post-security), AUA Aruba Airport Lounge (Priority Pass, US Departures terminal, post-pre-clearance — the only lounge once you're past US Customs).
 • CARRIER SELECTION — DO THIS FIRST: name a carrier you are HIGHLY CONFIDENT actually operates a nonstop on this exact city pair. If you cannot name one with confidence, leave carrier as a comma-separated short list of candidates (e.g. "SAS or Delta") and add a flags[] entry like "Verify which carrier operates nonstop — candidates: SAS, Delta". Do NOT invent a carrier that doesn't fly the route.
-• FLIGHT NUMBERS — ONLY EMIT WHEN THE USER GAVE YOU ONE. If the user's narrative or guidelines literally name a flight number ("flight 1040", "UA1039", "on United 47"), set flight_number to the exact digits the user stated (e.g. "1040"). That is a USER FACT and must be preserved. Otherwise, when the user did NOT state a number, set "flight_number": null. Do NOT invent numbers like "UA 1234" — they will be stripped and waste tokens. The app handles look-up for the unstated case.
+• FLIGHT NUMBERS — ONLY EMIT WHEN THE USER GAVE YOU ONE, AND WHEN THEY DID, EMIT IT ALWAYS. If the user's narrative or guidelines literally name a flight number ("flight 1040", "UA1039", "on United 47", "depart on 1040", "return on 1039"), you MUST:
+  1. Set flight_number to the exact digits the user stated (e.g. "1040"). That is a USER FACT and must be preserved on every Flight item that matches the direction (outbound number on outbound leg, return number on return leg).
+  2. Still emit depart_time and arrive_time as realistic windows for that route. The app verifies these against a live flight-status service at render time, so a reasonable estimate is fine — it will be replaced with canonical data.
+  3. Still emit carrier. If the user gave "flight 1040" without an airline, infer the most likely carrier for that route + number combination (e.g. for EWR—AUA, 1040 likely = United UA1040; for JFK—AUA, 1040 likely = JetBlue B61040).
+Otherwise, when the user did NOT state a number, set "flight_number": null. Do NOT invent numbers — they will be stripped. The app handles look-up for the unstated case.
 ${_routeTruthBlock}• Every confirmation_note MUST literally end with this exact sentence: "Verify flight number, times and equipment at booking — schedules change." Copy it verbatim; do not paraphrase.
 • WRONG confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C"
 • RIGHT confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C. Verify flight number, times and equipment at booking — schedules change."
