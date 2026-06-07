@@ -4995,7 +4995,7 @@ function Inp({ value, onChange, placeholder, type = "text" }) {
 //   value, onChange   controlled string state (parent supplies setNarrative)
 //   placeholder       textarea placeholder text
 //   hint              optional helper text below the box
-//   size              "large" (default — 8 rows, 4000 chars, counter visible)
+//   size              "large" (default — 8 rows, 40000 chars, counter visible)
 //                     | "compact" (3 rows, 2000 chars, no counter — used in
 //                     inline change-request flows where space is tight)
 //   minHeight         optional CSS override for the textarea floor
@@ -5044,7 +5044,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
         : extracted;
       // Respect MAX cap on the textarea — onChange below will clip anyway,
       // but we trim here too so the user sees the right char count immediately.
-      onChange({ target: { value: next.slice(0, maxChars || 4000) } });
+      onChange({ target: { value: next.slice(0, maxChars || 40000) } });
       if (Array.isArray(payload?.warnings) && payload.warnings.length > 0) {
         setUploadWarnings(payload.warnings);
       }
@@ -5149,9 +5149,10 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
 
   const isCompact = size === "compact";
   const charCount = (value || "").length;
-  // 4000 chars is plenty for a long trip narrative; 2000 is plenty for an
-  // inline change request. Both still leave headroom in the prompt budget.
-  const MAX = maxChars || (isCompact ? 2000 : 4000);
+  // 40,000 chars covers even very long pasted itineraries / Word docs;
+  // 2000 is plenty for an inline change request. Both still leave headroom
+  // in the prompt budget.
+  const MAX = maxChars || (isCompact ? 2000 : 40000);
 
   // Padding-right needs an extra slot when both the mic and the paperclip
   // buttons are present. Compact mode keeps one button height of clearance;
