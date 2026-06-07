@@ -5006,6 +5006,72 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
   const recRef = useRef(null);
   const baseRef = useRef(""); // value at the moment we started this speech burst
 
+  // File-upload state. The traveler can drop a PDF / image / text file
+  // into the box (or click the paperclip) and the server extracts trip
+  // facts as a clean condensed paragraph that gets APPENDED to whatever
+  // they've already typed. Never replaces — the user owns the text.
+  const fileInputRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const [uploadWarnings, setUploadWarnings] = useState([]);
+  const [isDragging, setIsDragging] = useState(false);
+
+  // Build the request, ship the file, and append the result.
+  const ingestFile = async (file) => {
+    if (!file) return;
+    setUploadError("");
+    setUploadWarnings([]);
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file, file.name || "upload");
+      const resp = await fetch("/api/extract-from-file", { method: "POST", body: form });
+      const payload = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = payload?.error?.message || `Upload failed (HTTP ${resp.status}).`;
+        setUploadError(msg);
+        return;
+      }
+      const extracted = String(payload?.extracted_text || "").trim();
+      if (!extracted) {
+        setUploadError("The file didn't return any extracted text. Try a clearer image.");
+        return;
+      }
+      // Append with a separating blank line if the box already has content.
+      const prior = (value || "").trim();
+      const next = prior
+        ? `${prior}\n\n${extracted}`
+        : extracted;
+      // Respect MAX cap on the textarea — onChange below will clip anyway,
+      // but we trim here too so the user sees the right char count immediately.
+      onChange({ target: { value: next.slice(0, maxChars || 4000) } });
+      if (Array.isArray(payload?.warnings) && payload.warnings.length > 0) {
+        setUploadWarnings(payload.warnings);
+      }
+    } catch (err) {
+      setUploadError(`Upload failed: ${String(err?.message || err)}`);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const onFilePicked = (e) => {
+    const f = e?.target?.files?.[0];
+    // Reset the input value so picking the SAME file twice in a row still fires onChange.
+    if (e?.target) e.target.value = "";
+    if (f) ingestFile(f);
+  };
+
+  // Drag-and-drop handlers for the textarea wrapper.
+  const onDragOver = (e) => { e.preventDefault(); e.stopPropagation(); if (!isDragging) setIsDragging(true); };
+  const onDragLeave = (e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(false); };
+  const onDrop = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    setIsDragging(false);
+    const f = e?.dataTransfer?.files?.[0];
+    if (f) ingestFile(f);
+  };
+
   // Browser-feature detection — derived at render, not via useEffect. The Web
   // Speech API is read-only and synchronous to test, so there's no reason to
   // burn an effect cycle (which also triggered the cascading-render lint).
@@ -5087,9 +5153,27 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
   // inline change request. Both still leave headroom in the prompt budget.
   const MAX = maxChars || (isCompact ? 2000 : 4000);
 
+  // Padding-right needs an extra slot when both the mic and the paperclip
+  // buttons are present. Compact mode keeps one button height of clearance;
+  // large mode reserves enough room for two stacked icons on the right edge.
+  const rightPadding = isCompact ? "38px" : "44px";
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-      <div style={{ position: "relative" }}>
+      <div
+        style={{
+          position: "relative",
+          // Visible drop-target outline only when the browser reports a
+          // drag actually entered. Avoids the box jumping when the user
+          // is just hovering with the mouse without a payload.
+          outline: isDragging ? `2px dashed ${GOLD}` : "none",
+          outlineOffset: "2px",
+          borderRadius: isCompact ? "4px" : "8px",
+        }}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
         <textarea
           value={value}
           onChange={(e) => onChange({ target: { value: e.target.value.slice(0, MAX) } })}
@@ -5097,7 +5181,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
           rows={isCompact ? 3 : 8}
           style={{
             fontSize: isCompact ? "13px" : "14px",
-            padding: isCompact ? "9px 38px 9px 11px" : "12px 44px 12px 12px",
+            padding: isCompact ? `9px ${rightPadding} 9px 11px` : `12px ${rightPadding} 12px 12px`,
             border: isCompact ? "0.5px solid var(--color-border-secondary)" : "0.5px solid var(--color-border-primary)",
             borderRadius: isCompact ? "var(--border-radius-sm, 4px)" : "8px",
             background: isCompact ? "var(--color-background-primary)" : "transparent",
@@ -5111,6 +5195,53 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
             minHeight: minHeight || (isCompact ? "60px" : "140px"),
           }}
         />
+        {/* Hidden native file input — triggered by the paperclip button. */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf,.png,.jpg,.jpeg,.webp,.heic,.heif,.txt,.eml,.ics,application/pdf,image/*,text/plain,message/rfc822,text/calendar"
+          onChange={onFilePicked}
+          style={{ display: "none" }}
+          aria-hidden="true"
+        />
+        {/* Paperclip / upload button. Sits ABOVE the mic when both exist.
+            Uses a unicode paperclip glyph to avoid pulling in an icon lib.
+            Disabled while a previous upload is in flight. */}
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          aria-label={uploading ? "Reading file…" : "Upload a flight confirmation, hotel booking, or itinerary file"}
+          title={uploading ? "Reading file…" : "Upload PDF, image, or text — we'll extract the trip facts"}
+          style={{
+            position: "absolute",
+            // Stack above the mic when supported, else align with where the
+            // mic would have been so the column doesn't look off-balance.
+            top: supported
+              ? (isCompact ? "6px" : "8px")
+              : (isCompact ? "6px" : "8px"),
+            right: isCompact ? "6px" : "8px",
+            // When mic is also present, shift the paperclip DOWN below it so
+            // they stack vertically. When mic isn't supported, paperclip takes
+            // the top slot.
+            transform: supported ? `translateY(${isCompact ? "30px" : "38px"})` : "none",
+            width: isCompact ? "26px" : "32px",
+            height: isCompact ? "26px" : "32px",
+            border: "none",
+            borderRadius: "50%",
+            background: uploading ? GOLD : "var(--color-border-primary)",
+            color: uploading ? "#0F0F0F" : "var(--color-text-primary)",
+            cursor: uploading ? "wait" : "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: isCompact ? "13px" : "16px",
+            lineHeight: 1,
+            opacity: uploading ? 0.85 : 1,
+          }}
+        >
+          {uploading ? "…" : "📎"}
+        </button>
         {supported && (
           <button
             type="button"
@@ -5143,11 +5274,15 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
         <p style={{ fontSize: isCompact ? "10.5px" : "11px", color: "var(--color-text-tertiary)", margin: 0, fontStyle: "italic", lineHeight: "1.5", flex: 1 }}>
-          {permissionError
-            ? permissionError
-            : listening
-              ? "Listening… speak naturally. Click ■ when done."
-              : (hint || "")}
+          {uploading
+            ? "Reading your file… extracting trip facts."
+            : uploadError
+              ? ""
+              : permissionError
+                ? permissionError
+                : listening
+                  ? "Listening… speak naturally. Click ■ when done."
+                  : (hint || "")}
         </p>
         {!isCompact && (
           <span style={{ fontSize: "11px", color: charCount > MAX - 200 ? "#d11" : "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
@@ -5155,6 +5290,21 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
           </span>
         )}
       </div>
+      {/* Upload error — separate row so it doesn't get squeezed by the char
+          count. Red border to distinguish from the italic gray hint. */}
+      {uploadError && (
+        <p role="alert" style={{ fontSize: "11.5px", color: "#c0392b", margin: 0, padding: "6px 10px", border: "0.5px solid #f0c4be", borderRadius: "4px", background: "#fdf3f1", lineHeight: 1.5 }}>
+          {uploadError}
+        </p>
+      )}
+      {/* Upload warnings — "Could not read: X" lines from the model. These
+          are not blockers; the rest of the text was extracted fine. Show as
+          a soft amber note so the user knows to verify those bits. */}
+      {!uploadError && uploadWarnings.length > 0 && (
+        <p style={{ fontSize: "11.5px", color: "#8A6500", margin: 0, padding: "6px 10px", border: "0.5px solid #efd9a4", borderRadius: "4px", background: "#fdf8ee", lineHeight: 1.5 }}>
+          Heads up: {uploadWarnings.join(" · ")}
+        </p>
+      )}
     </div>
   );
 }

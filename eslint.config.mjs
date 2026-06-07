@@ -13,7 +13,8 @@ export default [
                  setInterval: "readonly", clearInterval: "readonly", localStorage: "readonly",
                  console: "readonly", AbortController: "readonly", TextDecoder: "readonly",
                  Promise: "readonly", JSON: "readonly", __BUILD_ID__: "readonly",
-                 __API_BASE__: "readonly", encodeURIComponent: "readonly" },
+                 __API_BASE__: "readonly", encodeURIComponent: "readonly",
+                 FormData: "readonly" },
     },
     plugins: { "react-hooks": reactHooks },
     rules: {
