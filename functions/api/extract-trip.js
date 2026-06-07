@@ -190,9 +190,12 @@ export async function onRequestPost(context) {
   if (!text) {
     return json({ error: { message: "Missing 'text' in request body" } }, 400);
   }
-  // Soft cap — the guidelines NarrativeBox client-side max is 4000.
-  if (text.length > 8000) {
-    return json({ error: { message: "Narrative too long (max 8000 chars)" } }, 400);
+  // Soft cap — the guidelines NarrativeBox client-side max is 40,000.
+  // We accept up to 40,000 here too so a full pasted itinerary / Word doc
+  // can flow straight into extraction without being rejected. Claude is
+  // comfortable with that input length for a single tool-use turn.
+  if (text.length > 40000) {
+    return json({ error: { message: "Narrative too long (max 40,000 chars)" } }, 400);
   }
 
   const system = `You extract structured trip-planning fields from a traveler's freeform narrative. Today's date is ${todayISO()}. Call submit_trip_extract exactly ONCE with whatever you can extract.
