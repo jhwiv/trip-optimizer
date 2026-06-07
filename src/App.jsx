@@ -6007,6 +6007,22 @@ async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
         throw err;
       }
       if (!r.ok) {
+        // Surface a missing-JOBS-KV-binding error immediately rather than
+        // burning 3 minutes of silent retries. See pollJob for context.
+        try {
+          const errBody = await r.json();
+          const errMsg = errBody?.error?.message || "";
+          if (/JOBS\s*KV/i.test(errMsg) || /missing\s+JOBS/i.test(errMsg)) {
+            throw new Error(
+              "Server is missing the JOBS KV binding on Cloudflare Pages. " +
+              "Cloudflare dashboard \u2192 Pages \u2192 trip-optimizer \u2192 " +
+              "Settings \u2192 Functions \u2192 KV namespace bindings: add " +
+              "variable name JOBS pointing to a KV namespace. Then redeploy."
+            );
+          }
+        } catch (jsonErr) {
+          if (jsonErr instanceof Error && /JOBS\s+KV/i.test(jsonErr.message)) throw jsonErr;
+        }
         await new Promise(r => setTimeout(r, POLL_MS));
         continue;
       }
@@ -8371,7 +8387,25 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         throw err;
       }
       if (!resp.ok) {
-        // 5xx — surface once but keep trying a couple times before giving up.
+        // 5xx — inspect the body. If the server is reporting a missing JOBS
+        // KV binding, NO amount of polling will recover; surface a precise
+        // actionable error instead of stalling for 3 minutes. Otherwise wait
+        // and retry (transient 5xx).
+        try {
+          const errBody = await resp.json();
+          const errMsg = errBody?.error?.message || "";
+          if (/JOBS\s*KV/i.test(errMsg) || /missing\s+JOBS/i.test(errMsg)) {
+            throw new Error(
+              "Server is missing the JOBS KV binding on Cloudflare Pages. " +
+              "In the Cloudflare dashboard, open Pages \u2192 trip-optimizer \u2192 " +
+              "Settings \u2192 Functions \u2192 KV namespace bindings, and add " +
+              "variable name JOBS pointing to a KV namespace. Then redeploy."
+            );
+          }
+        } catch (jsonErr) {
+          if (jsonErr instanceof Error && /JOBS\s+KV/i.test(jsonErr.message)) throw jsonErr;
+          // Body wasn't JSON — treat as transient and retry.
+        }
         await new Promise(r => setTimeout(r, POLL_MS));
         continue;
       }
