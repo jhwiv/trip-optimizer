@@ -421,7 +421,7 @@ function titleCase(s) {
 // -----------------------------------------------------------------------------
 // COVER PAGE
 // -----------------------------------------------------------------------------
-function renderCover(cur, data, inputs, opts) {
+function renderCover(cur, data, inputs, _opts) {
   const { pdf } = cur;
   const dest = safe(data?.destination || (Array.isArray(data?.cities) && data.cities[0]?.name) || "Your trip");
   const meta = safe(data?.meta || "");
@@ -521,15 +521,10 @@ function renderCover(cur, data, inputs, opts) {
     rows.forEach(r => cur.kvRow(r[0], r[1]));
   }
 
-  // Generated stamp — bottom of LAST cover page (could be page 1 or page 2
-  // if the input summary wrapped). pdf.getCurrentPageInfo provides the current
-  // page; we draw the stamp on whatever page the cursor ended on.
-  const stampY = PAGE.height - PAGE.marginBottom - 4;
-  pdf.setFont(FONT.sans, "italic");
-  pdf.setFontSize(8.5);
-  cur.setColor(COLOR.inkFaint);
-  const stamp = asciiSafe(`Generated ${new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}${opts.buildId ? ` · build ${opts.buildId}` : ""}`);
-  pdf.text(stamp, PAGE.marginX, stampY);
+  // Generated stamp removed from the cover body. Now that day-by-day content
+  // can flow onto the cover page (whitespace fix), a bottom-of-page stamp
+  // risked overlapping with that content. The footer pass at the end of the
+  // build writes a Generated stamp on page 1 instead (see renderFooters).
 }
 
 // -----------------------------------------------------------------------------
@@ -593,12 +588,23 @@ function renderItem(cur, item, isLast) {
   const timeLabel = endTime ? `${time}–${endTime}` : time;
   const type = safe(item.type);
 
-  // Time column width
-  const timeColW = 24;
+  // Time column width. Must fit the widest time label at 10.5pt bold sans.
+  // Real-world worst cases include "12:30 PM–2:00 PM" and "4:00 PM–5:30 PM"
+  // — both around 30mm at this font/size. 24mm overflowed and the time text
+  // crashed into the item title ("4:00 PM–5:30 PStroll"). 32mm gives the
+  // longest realistic time range a 2mm buffer before the title column.
+  const timeColW = 32;
   const headX = PAGE.marginX + timeColW;
   const bodyMaxW = PAGE.width - PAGE.marginX - headX;
 
-  cur.ensureSpace(14);
+  // Reserve enough vertical space for the WHOLE item including its type-
+  // specific block (flight / hotel / restaurant / contact). Previous 14mm
+  // only fit the headline; the trailing Backup / Note / Hours lines then
+  // got orphaned to the next page (user reported an orphan BACKUP line on
+  // an otherwise-blank page 3). 32mm comfortably fits a headline + 4–6
+  // detail lines and forces the entire item onto the same page when there
+  // isn't room to fit it intact at the bottom of the current page.
+  cur.ensureSpace(32);
   cur.space(0.4);
   const itemTop = cur.state.y;
 
@@ -943,8 +949,12 @@ function renderFooters(pdf, opts) {
     const footerY = PAGE.height - PAGE.marginBottom + 6;
     pdf.line(PAGE.marginX, footerY - 4, PAGE.width - PAGE.marginX, footerY - 4);
 
-    const left = `Trip Optimizer${opts.buildId ? ` · ${opts.buildId}` : ""}`;
-    pdf.text(left, PAGE.marginX, footerY);
+    // Page 1 carries the Generated stamp; subsequent pages carry the brand
+    // mark. Both fit on a single footer line so we never overlap content.
+    const left = i === 1
+      ? `Trip Optimizer${opts.buildId ? ` · ${opts.buildId}` : ""} · Generated ${new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}`
+      : `Trip Optimizer${opts.buildId ? ` · ${opts.buildId}` : ""}`;
+    pdf.text(asciiSafe(left), PAGE.marginX, footerY);
 
     const right = `${i} / ${total}`;
     const rw = pdf.getTextWidth(right);
@@ -980,11 +990,16 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
   // 1. Cover
   renderCover(cur, data, inputs, { buildId });
 
-  // 2. Days — fresh page for the day-by-day section
+  // 2. Days — flow onto the current page if there's room, otherwise let
+  // ensureSpace push to a new page. Previously this hard-coded a newPage()
+  // which left a huge blank gap at the bottom of the cover page whenever
+  // "What you told us" was short. Reserving ~60mm forces a break only when
+  // the day-by-day header + first day's worth of content genuinely won't
+  // fit on what's left of the cover page.
   const days = Array.isArray(data?.days) ? data.days : [];
   if (days.length > 0) {
-    cur.newPage();
-    cur.space(2);
+    cur.space(8);
+    cur.ensureSpace(60);
     cur.text("Day by Day", { font: FONT.serif, style: "italic", size: 22, color: COLOR.ink });
     cur.space(2);
     cur.accentRule(48);
