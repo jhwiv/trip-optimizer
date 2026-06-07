@@ -4240,18 +4240,31 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             />
           ))}
 
-          {/* Bottom Apply button — only when something is checked */}
-          {selectedForApply.length > 0 && (
-            <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
-              <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 8px" }}>
-                {selectedForApply.length} change{selectedForApply.length === 1 ? "" : "s"} selected ·&nbsp;
-                <span style={{ color: GOLD, fontWeight: 600 }}>
+          {/* Bottom Apply CTA. The per-finding buttons above only TOGGLE a
+              finding into the apply-queue; this button is what actually
+              runs the revision against the plan. When nothing is queued we
+              still show a disabled-looking hint so the user knows where the
+              actual trigger lives. */}
+          {selectedForApply.length > 0 ? (
+            <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: `1px solid ${GOLD}` }}>
+              <p style={{ fontSize: "11.5px", color: "var(--color-text-primary)", margin: "0 0 8px", fontWeight: 600 }}>
+                {selectedForApply.length} change{selectedForApply.length === 1 ? "" : "s"} queued ·&nbsp;
+                <span style={{ color: GOLD, fontWeight: 700 }}>
                   {revisionMode === "surgical" ? "Quick edit — ~30 sec" : "Full re-plan — ~2 min"}
                 </span>
               </p>
-              <button onClick={handleApply} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}>
-                {revisionMode === "surgical" ? "Apply quick edits" : "Apply — full re-plan"}
+              <button onClick={handleApply} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "14px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}>
+                {revisionMode === "surgical" ? `→ Apply ${selectedForApply.length} quick edit${selectedForApply.length === 1 ? "" : "s"}` : `→ Apply ${selectedForApply.length} change${selectedForApply.length === 1 ? "" : "s"} — full re-plan`}
               </button>
+            </div>
+          ) : findings.length > 0 && (
+            // Nothing queued yet — show an inert hint so the user knows the
+            // per-finding 'Apply this change' buttons above just QUEUE, and
+            // this footer is where the actual revision will fire from.
+            <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
+              <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: 0, textAlign: "center", fontStyle: "italic" }}>
+                Pick one or more changes above, then the apply button will appear here.
+              </p>
             </div>
           )}
           {status === "applied" && (
@@ -4660,10 +4673,18 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
           {alreadyApplied ? (
             <p style={{ marginTop: "8px", fontSize: "11px", color: GOLD, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", margin: "8px 0 0" }}>✓ Already applied</p>
           ) : (
+            // Toggle button. Labels describe the CURRENT STATE so the user can
+            // tell at a glance which findings are queued. When checked = the
+            // finding is in the apply-queue (filled gold pill, '✓ Will apply').
+            // When unchecked = not queued (outlined, '+ Apply this change'
+            // — the verb is the action a click takes). After picking one or
+            // more, the bottom 'Apply quick edits' / 'Apply — full re-plan'
+            // button below the findings list actually runs the revision.
             <button
               type="button"
               onClick={onToggle}
               aria-pressed={checked}
+              title={checked ? "Click to remove this from the apply queue" : "Click to queue this change for apply"}
               style={{
                 marginTop: "8px",
                 display: "inline-flex",
@@ -4683,7 +4704,7 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
               }}
             >
               <span style={{ fontSize: "12px", lineHeight: 1 }}>{checked ? "✓" : "+"}</span>
-              <span>{checked ? "Apply this change" : "Skip"}</span>
+              <span>{checked ? "Will apply" : "Apply this change"}</span>
             </button>
           )}
         </div>
