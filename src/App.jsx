@@ -8298,7 +8298,15 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           } else if (evt.type === "done") {
             return { len: evt.len ?? totalLen };
           } else if (evt.type === "error") {
-            throw new Error(evt.error || "Build failed on server.");
+            // If we've already streamed real output, salvage the partial.
+            // Anthropic occasionally drops the SSE connection 7–9 min into
+            // very long generations; the partial JSON we collected is often
+            // complete enough for salvageTruncatedJSON to recover.
+            const upstreamMsg = evt.error || "Build failed on server.";
+            const err = new Error(upstreamMsg);
+            err.partialLen = totalLen;
+            err.upstreamError = true;
+            throw err;
           }
         }
       }
@@ -8558,8 +8566,32 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           if (out.softEnd) needPollFallback = true;
         } catch (streamErr) {
           if (streamErr?.name === "AbortError") throw streamErr;
-          // Network drop during stream — keep what we have and resume via KV.
-          needPollFallback = true;
+          // Anthropic SSE drop with partial content already in toolJson — try
+          // to salvage what we have BEFORE falling back to KV polling. For
+          // very long generations the KV mirror may be stale and the partial
+          // we received over the live stream is the freshest copy.
+          if (streamErr?.upstreamError && toolJson && toolJson.length > 2000) {
+            const salvaged = salvageTruncatedJSON(toolJson);
+            if (salvaged) {
+              try {
+                const trial = JSON.parse(salvaged);
+                if (Array.isArray(trial?.days) && trial.days.length >= 2) {
+                  // Good enough — use the salvaged partial and skip polling.
+                  toolJson = salvaged;
+                  needPollFallback = false;
+                } else {
+                  needPollFallback = true;
+                }
+              } catch {
+                needPollFallback = true;
+              }
+            } else {
+              needPollFallback = true;
+            }
+          } else {
+            // Network drop during stream — keep what we have and resume via KV.
+            needPollFallback = true;
+          }
         }
       }
       if (needPollFallback) {
@@ -8666,15 +8698,16 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // Anthropic stream in the background using waitUntil so the build
     // survives a window close, tab close, screen sleep, or network drop.
     //
-    // max_tokens scales with trip size. A 3-night plan only needs ~7–9k
-    // tokens; capping at 32000 means the model keeps generating long after
-    // the plan is complete (more days, more restaurants, more insider notes
-    // than asked for), which is why short trips were taking 3–4 minutes.
-    // 2200 tokens/day + 4000 base + 1500/extra-city gives generous headroom
-    // without letting the model wander.
+    // max_tokens scales with trip size, but the practical ceiling is set by
+    // how long Claude can stream before the connection gets unhappy. At
+    // ~60 output tokens/sec, 24k tokens ≈ 6.5 minutes — inside the window
+    // where SSE stays stable. 32k previously pushed 9+ minute generations
+    // which were timing out 7-8 minutes in for big multi-city trips. The
+    // 24k cap forces the model to emit a finished plan without padding,
+    // and is still plenty for an 11-night 9-city itinerary (~14–18k typical).
     const maxTokensForTrip = Math.min(
-      32000,
-      Math.max(8000, 4000 + (nightsNum + 1) * 2200 + Math.max(0, citiesCount - 1) * 1500),
+      24000,
+      Math.max(8000, 4000 + (nightsNum + 1) * 2000 + Math.max(0, citiesCount - 1) * 1200),
     );
     const userPromptForBuild = buildUserPrompt();
     const body = {
