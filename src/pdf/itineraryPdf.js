@@ -146,7 +146,13 @@ function asciiSafe(s) {
     // Warning / priority markers used by tonight[].
     .replace(/\u26A0\uFE0E?/g, "!")
     .replace(/[\u2705\u2713\u2714]/g, "*")
-    .replace(/\u2728/g, "*")
+    // Decorative emoji the planner sometimes emits before titles
+    // (star, sparkles, sun, wine, building, etc.). Strip silently — we
+    // do NOT want a stray "?" appearing in front of restaurant names.
+    .replace(/[\u2605\u2606\u2728\u2600-\u2604\u2607-\u2691\u26A0-\u27BF]/g, "")
+    // Common pictographic emoji ranges in the SMP — strip silently.
+    .replace(/[\u{1F300}-\u{1F9FF}]/gu, "")
+    .replace(/[\u{1FA70}-\u{1FAFF}]/gu, "")
     // Whitespace cleanup.
     .replace(/[\u2009\u200A\u202F\u00A0]/g, " ")
     .replace(/[\u200B-\u200D\uFEFF]/g, "")
@@ -170,7 +176,14 @@ function asciiSafe(s) {
     .replace(/ {2,}/g, " ")
     // Strip anything OTHER than ASCII, Latin-1 Supplement, and the CP1252
     // "extras" (smart quotes, dashes, bullet, ellipsis, trademark, euro).
-    .replace(/[^\x00-\xFF\u2013\u2014\u2018-\u201D\u2022\u2026\u20AC\u2122]/g, "?");
+    // Silent strip (was "?") so leftover emoji don't pollute headlines like
+    // "? Cocktails at Bar Mavar" / "? Sea Organ".
+    .replace(/[^\x00-\xFF\u2013\u2014\u2018-\u201D\u2022\u2026\u20AC\u2122]/g, "")
+    // Trim leading whitespace left behind by stripped emoji.
+    // (Do NOT strip bullet chars here — markdownToProse emits leading
+    // "• " for list items and we want to preserve that.)
+    .replace(/^\s+/, "")
+    .replace(/\s{2,}/g, " ");
 }
 
 // Strip the markdown the planner pours into the Trip Guidelines narrative
@@ -629,21 +642,24 @@ function renderCover(cur, data, inputs, _opts) {
       ["Vehicle", t.vehicle],
       ["Cuisine focus", dn.cuisine],
       ["Dining budget", Array.isArray(dn.budget) ? dn.budget.join(", ") : dn.budget],
-      ["Requested restaurants", Array.isArray(inputs.restaurants) ? inputs.restaurants.join(", ") : null],
-      ["Requested activities", Array.isArray(inputs.activities) ? inputs.activities.join(", ") : null],
+      // Counts only — the full lists used to dump 27 restaurant names and 28
+      // activities onto the cover, eating half the page. The actual items
+      // are already woven into the day-by-day plan that follows.
+      ["Requested restaurants", Array.isArray(inputs.restaurants) && inputs.restaurants.length
+        ? `${inputs.restaurants.length} requested — see day plan`
+        : null],
+      ["Requested activities", Array.isArray(inputs.activities) && inputs.activities.length
+        ? `${inputs.activities.length} requested — see day plan`
+        : null],
       ["Interest level", it.level],
-      ["Interest detail", it.text],
     ].filter(r => r && r[1] !== undefined && r[1] !== null && r[1] !== "" && r[1] !== "—");
 
     rows.forEach(r => cur.kvRow(r[0], r[1]));
 
-    // Trip Guidelines / Narrative — rendered as a real prose section, NOT a
-    // kvRow value. Earlier these were jammed into a key/value row which
-    // dumped raw markdown (##, **bold**, [link](url), -----) into a wall
-    // of unformatted text. Now we strip the markup and lay it out as a
-    // proper paragraph with a section heading.
-    renderProseSection(cur, "Trip Guidelines", inputs.guidelines);
-    renderProseSection(cur, "Trip Narrative", inputs.narrative);
+    // Trip Guidelines and Trip Narrative are NOT re-printed on the cover.
+    // They're the user's raw input; the trip plan that follows already
+    // reflects them. Re-printing them earlier added 4–6 pages of dense prose
+    // that the user explicitly called out as too much.
   }
 
   // Generated stamp removed from the cover body. Now that day-by-day content
@@ -658,18 +674,25 @@ function renderCover(cur, data, inputs, _opts) {
 function renderDay(cur, day, index) {
   const { pdf } = cur;
 
-  cur.ensureSpace(32); // need real room before starting a day
+  // Reserve real room before starting a day. If less than ~110mm remains on
+  // the current page, push the day to a fresh page so it has room to start
+  // with proper hierarchy (day label, headline, accent rule, first item).
+  // 110mm reliably fits a day label + headline + 3 items without orphaning.
+  cur.ensureSpace(110);
 
-  // Day label
-  cur.space(1);
+  // Day label — bigger, more tracked, and with a generous gold accent rule
+  // so the start of each day reads like a proper section, not another bullet.
+  cur.space(2);
   pdf.setFont(FONT.sans, "bold");
-  pdf.setFontSize(8.5);
-  pdf.setCharSpace(1.2);
+  pdf.setFontSize(10);
+  pdf.setCharSpace(1.6);
   cur.setColor(COLOR.gold);
   const labelText = (day.label || `DAY ${index + 1}`).toString();
   pdf.text(asciiSafe(labelText.toUpperCase()), PAGE.marginX, cur.state.y);
   pdf.setCharSpace(0);
-  cur.space(3.5);
+  cur.space(2);
+  cur.accentRule(36);
+  cur.space(3);
 
   // Headline (editorial serif italic)
   if (day.headline) {
@@ -779,12 +802,18 @@ function renderItem(cur, item, isLast) {
     cur.state.y += secLines.length * lineHSec + 1;
   }
 
-  // "Why" — soft serif italic for editorial reasoning
+  // "Why" — soft serif italic for editorial reasoning. Capped to one sentence
+  // (or ~140 chars) so a paragraph-length blurb can't bloat the item.
   if (item.why) {
+    let whyText = safe(item.why).trim();
+    // Take the first sentence; fall back to a 140-char hard cap.
+    const firstSentence = whyText.match(/^[^.!?\n]{8,}[.!?]/);
+    if (firstSentence) whyText = firstSentence[0];
+    if (whyText.length > 140) whyText = whyText.slice(0, 137).replace(/\s+\S*$/, "") + "…";
     pdf.setFont(FONT.serif, "italic");
     pdf.setFontSize(10);
     cur.setColor(COLOR.inkSoft);
-    const whyLines = cur.wrap(safe(item.why), bodyMaxW);
+    const whyLines = cur.wrap(whyText, bodyMaxW);
     const lineHWhy = (10 * 1.35) / 2.83465;
     whyLines.forEach((ln, i) => {
       pdf.text(asciiSafe(ln), headX, cur.state.y + 3 + i * lineHWhy);
@@ -967,14 +996,18 @@ function sectionHeader(cur, title) {
 }
 
 function renderReferences(cur, data) {
+  // Cap each list so the reference section stays a tight back-of-book rather
+  // than a sprawling extra 10 pages. The day plan is the primary deliverable;
+  // reference is meant to be a quick scan.
+  const take = (arr, n) => (Array.isArray(arr) ? arr.filter(Boolean).slice(0, n) : []);
   const ref = {
-    logistics: Array.isArray(data?.logistics) ? data.logistics.filter(Boolean) : [],
+    logistics: take(data?.logistics, 12),
     weather: safe(data?.weather_window),
-    pack: Array.isArray(data?.pack) ? data.pack.filter(Boolean) : [],
-    flags: Array.isArray(data?.flags) ? data.flags.filter(Boolean) : [],
-    planb: Array.isArray(data?.planb) ? data.planb.filter(Boolean) : [],
-    snobs: Array.isArray(data?.snobs) ? data.snobs.filter(Boolean) : [],
-    tonight: Array.isArray(data?.tonight) ? data.tonight.filter(Boolean) : [],
+    pack: take(data?.pack, 10),
+    flags: take(data?.flags, 6),
+    planb: take(data?.planb, 5),
+    snobs: take(data?.snobs, 5),
+    tonight: take(data?.tonight, 6),
   };
 
   const hasAny = ref.logistics.length || ref.weather || ref.pack.length || ref.flags.length || ref.planb.length || ref.snobs.length || ref.tonight.length;
