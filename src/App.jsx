@@ -5006,8 +5006,8 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
   const recRef = useRef(null);
   const baseRef = useRef(""); // value at the moment we started this speech burst
 
-  // File-upload state. The traveler can drop a PDF / image / text file
-  // into the box (or click the paperclip) and the server extracts trip
+  // File-upload state. The traveler can drop a PDF / Word / image / text
+  // file into the box (or click the paperclip) and the server extracts trip
   // facts as a clean condensed paragraph that gets APPENDED to whatever
   // they've already typed. Never replaces — the user owns the text.
   const fileInputRef = useRef(null);
@@ -5199,7 +5199,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
         <input
           ref={fileInputRef}
           type="file"
-          accept=".pdf,.png,.jpg,.jpeg,.webp,.heic,.heif,.txt,.eml,.ics,application/pdf,image/*,text/plain,message/rfc822,text/calendar"
+          accept=".pdf,.docx,.png,.jpg,.jpeg,.webp,.heic,.heif,.txt,.eml,.ics,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*,text/plain,message/rfc822,text/calendar"
           onChange={onFilePicked}
           style={{ display: "none" }}
           aria-hidden="true"
@@ -5212,7 +5212,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
           onClick={() => fileInputRef.current?.click()}
           disabled={uploading}
           aria-label={uploading ? "Reading file…" : "Upload a flight confirmation, hotel booking, or itinerary file"}
-          title={uploading ? "Reading file…" : "Upload PDF, image, or text — we'll extract the trip facts"}
+          title={uploading ? "Reading file…" : "Upload PDF, Word, image, or text — we'll extract the trip facts"}
           style={{
             position: "absolute",
             // Stack above the mic when supported, else align with where the

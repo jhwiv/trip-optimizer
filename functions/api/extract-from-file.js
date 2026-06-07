@@ -1,8 +1,8 @@
 // POST /api/extract-from-file
 // ------------------------------------------------------------------
-// Takes a file uploaded by the traveler (PDF, image, or plain text) and
-// returns a clean, condensed plain-text summary of trip-relevant facts
-// suitable for pasting into the "Trip Guidelines" narrative box.
+// Takes a file uploaded by the traveler (PDF, Word doc, image, or plain
+// text) and returns a clean, condensed plain-text summary of trip-relevant
+// facts suitable for pasting into the "Trip Guidelines" narrative box.
 //
 // Powers the paperclip / upload button next to the dictate mic in the
 // NarrativeBox on the Essentials step. The traveler uploads a flight
@@ -12,7 +12,10 @@
 //
 // Request: multipart/form-data with a single "file" field.
 //   Accepted types: application/pdf, image/jpeg, image/png, image/webp,
-//                   image/heic, text/plain, message/rfc822 (.eml), .ics
+//                   image/heic, text/plain, message/rfc822 (.eml), .ics,
+//                   .docx (Word). Legacy .doc is rejected with a hint to
+//                   re-save as .docx (binary OLE format is non-trivial to
+//                   parse inside a Worker).
 //   Size limit: 20 MB (Cloudflare Pages Function body limit is 100MB
 //   but Anthropic caps documents at 32MB; we soft-cap further to keep
 //   latency reasonable).
@@ -37,7 +40,11 @@ const ALLOWED_TYPES = new Set([
   "text/plain",
   "message/rfc822",
   "text/calendar",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
 ]);
+
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const LEGACY_DOC_MIME = "application/msword"; // .doc — rejected with a friendly hint
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -73,7 +80,144 @@ function normalizeContentType(name, declared) {
   if (n.endsWith(".txt")) return "text/plain";
   if (n.endsWith(".eml")) return "message/rfc822";
   if (n.endsWith(".ics")) return "text/calendar";
+  if (n.endsWith(".docx")) return DOCX_MIME;
+  if (n.endsWith(".doc")) return LEGACY_DOC_MIME;
   return declared || "";
+}
+
+// --- DOCX text extraction --------------------------------------------------
+// A .docx file is a ZIP archive. The visible text lives in word/document.xml
+// inside <w:t> elements. We don't need a full ZIP parser — just enough to
+// find that one entry, inflate it with DecompressionStream, and strip tags.
+//
+// ZIP local file header layout:
+//   offset  size  field
+//   0       4     signature 0x04034b50 ("PK\x03\x04")
+//   4       2     version
+//   6       2     flags
+//   8       2     compression method (0 = stored, 8 = deflate)
+//   10      2     mod time
+//   12      2     mod date
+//   14      4     crc-32
+//   18      4     compressed size
+//   22      4     uncompressed size
+//   26      2     file name length (n)
+//   28      2     extra field length (m)
+//   30      n     file name
+//   30+n    m     extra field
+//   30+n+m  …     compressed data
+//
+// When flag bit 0x08 is set, the sizes in the local header are 0 and the
+// real sizes appear in a data descriptor after the compressed payload —
+// in that case we fall back to the central directory.
+
+const ZIP_LOCAL_SIG = 0x04034b50;
+const ZIP_CENTRAL_SIG = 0x02014b50;
+const ZIP_EOCD_SIG = 0x06054b50;
+
+function readU16(view, off) { return view.getUint16(off, true); }
+function readU32(view, off) { return view.getUint32(off, true); }
+
+async function inflateRaw(bytes) {
+  // Cloudflare Workers expose DecompressionStream with "deflate-raw".
+  const stream = new Response(bytes).body.pipeThrough(
+    new DecompressionStream("deflate-raw"),
+  );
+  const buf = await new Response(stream).arrayBuffer();
+  return new Uint8Array(buf);
+}
+
+async function extractDocxText(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+
+  // 1) Locate the End-of-Central-Directory record (scan backwards over the
+  //    trailing comment, which is at most 65535 bytes long).
+  let eocdOff = -1;
+  const minEocd = Math.max(0, bytes.length - 65557);
+  for (let i = bytes.length - 22; i >= minEocd; i--) {
+    if (readU32(view, i) === ZIP_EOCD_SIG) { eocdOff = i; break; }
+  }
+  if (eocdOff < 0) throw new Error("Not a valid .docx (no ZIP end-of-directory)");
+
+  const centralEntries = readU16(view, eocdOff + 10);
+  const centralSize = readU32(view, eocdOff + 12);
+  const centralOff = readU32(view, eocdOff + 16);
+
+  // 2) Walk the central directory looking for "word/document.xml".
+  let target = null;
+  let p = centralOff;
+  const decoder = new TextDecoder("utf-8");
+  for (let i = 0; i < centralEntries && p < centralOff + centralSize; i++) {
+    if (readU32(view, p) !== ZIP_CENTRAL_SIG) break;
+    const compMethod = readU16(view, p + 10);
+    const compSize = readU32(view, p + 20);
+    const nameLen = readU16(view, p + 28);
+    const extraLen = readU16(view, p + 30);
+    const commentLen = readU16(view, p + 32);
+    const localHdrOff = readU32(view, p + 42);
+    const name = decoder.decode(bytes.subarray(p + 46, p + 46 + nameLen));
+    if (name === "word/document.xml") {
+      target = { compMethod, compSize, localHdrOff };
+      break;
+    }
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  if (!target) throw new Error("This .docx is missing word/document.xml — the file may be corrupted.");
+
+  // 3) Jump to the local header, skip its name + extra fields, and read the
+  //    compressed payload of exactly compSize bytes.
+  const lOff = target.localHdrOff;
+  if (readU32(view, lOff) !== ZIP_LOCAL_SIG) {
+    throw new Error("Invalid local header in .docx");
+  }
+  const lNameLen = readU16(view, lOff + 26);
+  const lExtraLen = readU16(view, lOff + 28);
+  const dataStart = lOff + 30 + lNameLen + lExtraLen;
+  const compressed = bytes.subarray(dataStart, dataStart + target.compSize);
+
+  let xmlBytes;
+  if (target.compMethod === 0) {
+    xmlBytes = compressed;
+  } else if (target.compMethod === 8) {
+    xmlBytes = await inflateRaw(compressed);
+  } else {
+    throw new Error(`Unsupported compression method ${target.compMethod} in .docx`);
+  }
+
+  const xml = decoder.decode(xmlBytes);
+
+  // 4) Convert the document XML to plain text:
+  //    - <w:p> (paragraph) → newline
+  //    - <w:br/>            → newline
+  //    - <w:tab/>           → tab
+  //    - <w:t>...</w:t>     → the text content (keep it)
+  //    - everything else    → strip
+  // We do this with simple regex passes (no real XML parser) — fine for
+  // Word-authored documents which don't put markup inside <w:t>.
+  let text = xml
+    .replace(/<w:tab[^>]*\/>/g, "\t")
+    .replace(/<w:br[^>]*\/>/g, "\n")
+    .replace(/<\/w:p>/g, "\n")
+    .replace(/<[^>]+>/g, "");
+
+  // Decode the five XML entities Word emits.
+  text = text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'");
+
+  // Collapse runs of blank lines and trim trailing whitespace per line.
+  text = text
+    .split("\n")
+    .map((ln) => ln.replace(/[ \t]+$/g, ""))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return text;
 }
 
 const EXTRACTION_SYSTEM = `You read trip-related documents (flight confirmations, hotel bookings, itinerary emails, calendar invites, screenshots, photos of paper itineraries) and produce a CLEAN, CONDENSED plain-text summary the traveler can paste directly into their trip-planning app.
@@ -111,10 +255,17 @@ export async function onRequestPost(context) {
   }
 
   const contentType = normalizeContentType(file.name, file.type);
+  if (contentType === LEGACY_DOC_MIME) {
+    return json({
+      error: {
+        message: "Legacy .doc files aren't supported. Open it in Word and save as .docx, then upload again.",
+      },
+    }, 400);
+  }
   if (!ALLOWED_TYPES.has(contentType)) {
     return json({
       error: {
-        message: `Unsupported file type: ${file.type || "unknown"}. Accepted: PDF, JPEG, PNG, WebP, HEIC, plain text, .eml, .ics.`,
+        message: `Unsupported file type: ${file.type || "unknown"}. Accepted: PDF, Word (.docx), JPEG, PNG, WebP, HEIC, plain text, .eml, .ics.`,
       },
     }, 400);
   }
@@ -150,6 +301,27 @@ export async function onRequestPost(context) {
     userContent = [{
       type: "text",
       text: `Extract trip-relevant facts from this document and output the clean condensed summary per the system rules:\n\n"""\n${text}\n"""`,
+    }];
+  } else if (contentType === DOCX_MIME) {
+    // Inflate the .docx and pull text out of word/document.xml, then send
+    // it to Claude as plain text — same shape as the text/* branch.
+    let text;
+    try {
+      text = await extractDocxText(buffer);
+    } catch (err) {
+      return json({
+        error: { message: `Could not read .docx file: ${String(err?.message || err)}` },
+      }, 400);
+    }
+    if (!text || text.length < 4) {
+      return json({
+        error: { message: "The Word document appears to be empty or contains only images. Export it to PDF and try again." },
+      }, 422);
+    }
+    text = text.slice(0, 30000);
+    userContent = [{
+      type: "text",
+      text: `Extract trip-relevant facts from this Word document and output the clean condensed summary per the system rules:\n\n"""\n${text}\n"""`,
     }];
   } else if (contentType === "application/pdf") {
     const b64 = arrayBufferToBase64(buffer);
