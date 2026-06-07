@@ -4192,26 +4192,48 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             const applicable = findings.filter(f => !appliedIds.includes(f.id));
             const allChecked = applicable.length > 0 && applicable.every(f => applyState[f.id]);
             const noneChecked = applicable.every(f => !applyState[f.id]);
+            // User reported the 'accept all' control was 'broken'. Two issues:
+            //   1. Findings ship with default_apply: true on most items, so by
+            //      the time the user looks at the panel, allChecked is already
+            //      true — and the button was disabled, looking dead/broken.
+            //   2. Label 'Select all' didn't match the user's mental model of
+            //      'accept all recommendations'.
+            // Fix: never disable Queue all when it's the no-op state; instead
+            // give it an inert pill-style 'All queued' label so the user can
+            // see at a glance that the panel is already set up to apply
+            // everything. The actual revision still fires from the bottom CTA.
             return (
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", margin: "4px 0 6px", padding: "8px 10px", background: "var(--color-background-secondary, #fafafa)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)" }}>
-                <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.4 }}>
-                  Pick which changes to apply — each finding has its own toggle below.
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", margin: "4px 0 6px", padding: "10px 12px", background: "var(--color-background-secondary, #fafafa)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)" }}>
+                <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.4, flex: "1 1 180px" }}>
+                  {allChecked
+                    ? `All ${applicable.length} change${applicable.length === 1 ? "" : "s"} queued. Hit Apply at the bottom to revise the plan.`
+                    : noneChecked
+                      ? "Queue the changes you want, then hit Apply at the bottom."
+                      : `Pick which changes to apply — ↑ each toggle queues that finding.`}
                 </p>
                 <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setApplyState(prev => {
-                        const next = { ...prev };
-                        for (const f of applicable) next[f.id] = true;
-                        return next;
-                      });
-                    }}
-                    disabled={allChecked}
-                    style={{ fontSize: "10.5px", color: allChecked ? "var(--color-text-tertiary)" : GOLD, background: "transparent", border: `0.5px solid ${allChecked ? "var(--color-border-tertiary)" : GOLD}`, padding: "4px 10px", borderRadius: "3px", cursor: allChecked ? "default" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
-                  >
-                    Select all
-                  </button>
+                  {allChecked ? (
+                    // Inert state: don't show a broken-looking grayed button.
+                    // A simple checkmark pill communicates 'this is already done'.
+                    <span style={{ fontSize: "10.5px", color: GOLD, background: "transparent", border: `0.5px solid ${GOLD}`, padding: "4px 10px", borderRadius: "3px", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}>
+                      ✓ All queued
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setApplyState(prev => {
+                          const next = { ...prev };
+                          for (const f of applicable) next[f.id] = true;
+                          return next;
+                        });
+                      }}
+                      title="Queue every finding for apply"
+                      style={{ fontSize: "10.5px", color: "#0F0F0F", background: GOLD, border: `0.5px solid ${GOLD}`, padding: "4px 10px", borderRadius: "3px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}
+                    >
+                      Queue all
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -4222,9 +4244,10 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                       });
                     }}
                     disabled={noneChecked}
+                    title="Remove every finding from the apply queue"
                     style={{ fontSize: "10.5px", color: noneChecked ? "var(--color-text-tertiary)" : "var(--color-text-secondary)", background: "transparent", border: `0.5px solid ${noneChecked ? "var(--color-border-tertiary)" : "var(--color-border-secondary)"}`, padding: "4px 10px", borderRadius: "3px", cursor: noneChecked ? "default" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
                   >
-                    Select none
+                    Clear queue
                   </button>
                 </div>
               </div>
