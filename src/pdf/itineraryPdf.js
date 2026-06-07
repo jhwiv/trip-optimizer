@@ -94,9 +94,50 @@ function to12h(t) {
   return `${h12}:${mm} ${ampm}${tail}`;
 }
 
+// Decompose Latin diacritics to their base ASCII letter so destinations
+// like Korčula, Hvar, Pelješac, Šibenik, Mladý, Bršadin render cleanly
+// instead of as "Kor?ula" / "Pelje?ac". jsPDF's built-in Helvetica only
+// supports WinAnsi/CP1252, which doesn't include the Central-European
+// Latin Extended-A block (ČćŽšđ etc.) — so we fold them down to
+// their ASCII equivalents BEFORE the catchall strip.
+const DIACRITIC_FOLDS = {
+  // Latin Extended-A / Latin Extended-B Croatian + general European set
+  "\u0100": "A", "\u0101": "a", "\u0102": "A", "\u0103": "a", "\u0104": "A", "\u0105": "a",
+  "\u0106": "C", "\u0107": "c", "\u0108": "C", "\u0109": "c", "\u010A": "C", "\u010B": "c", "\u010C": "C", "\u010D": "c",
+  "\u010E": "D", "\u010F": "d", "\u0110": "D", "\u0111": "d",
+  "\u0112": "E", "\u0113": "e", "\u0114": "E", "\u0115": "e", "\u0116": "E", "\u0117": "e", "\u0118": "E", "\u0119": "e", "\u011A": "E", "\u011B": "e",
+  "\u011C": "G", "\u011D": "g", "\u011E": "G", "\u011F": "g", "\u0120": "G", "\u0121": "g", "\u0122": "G", "\u0123": "g",
+  "\u0124": "H", "\u0125": "h", "\u0126": "H", "\u0127": "h",
+  "\u0128": "I", "\u0129": "i", "\u012A": "I", "\u012B": "i", "\u012C": "I", "\u012D": "i", "\u012E": "I", "\u012F": "i", "\u0130": "I", "\u0131": "i",
+  "\u0134": "J", "\u0135": "j",
+  "\u0136": "K", "\u0137": "k",
+  "\u0139": "L", "\u013A": "l", "\u013B": "L", "\u013C": "l", "\u013D": "L", "\u013E": "l", "\u013F": "L", "\u0140": "l", "\u0141": "L", "\u0142": "l",
+  "\u0143": "N", "\u0144": "n", "\u0145": "N", "\u0146": "n", "\u0147": "N", "\u0148": "n",
+  "\u014C": "O", "\u014D": "o", "\u014E": "O", "\u014F": "o", "\u0150": "O", "\u0151": "o",
+  "\u0154": "R", "\u0155": "r", "\u0156": "R", "\u0157": "r", "\u0158": "R", "\u0159": "r",
+  "\u015A": "S", "\u015B": "s", "\u015C": "S", "\u015D": "s", "\u015E": "S", "\u015F": "s", "\u0160": "S", "\u0161": "s",
+  "\u0162": "T", "\u0163": "t", "\u0164": "T", "\u0165": "t", "\u0166": "T", "\u0167": "t",
+  "\u0168": "U", "\u0169": "u", "\u016A": "U", "\u016B": "u", "\u016C": "U", "\u016D": "u", "\u016E": "U", "\u016F": "u", "\u0170": "U", "\u0171": "u", "\u0172": "U", "\u0173": "u",
+  "\u0174": "W", "\u0175": "w",
+  "\u0176": "Y", "\u0177": "y", "\u0178": "Y",
+  "\u0179": "Z", "\u017A": "z", "\u017B": "Z", "\u017C": "z", "\u017D": "Z", "\u017E": "z",
+  // Common ligatures
+  "\u0152": "OE", "\u0153": "oe", "\u00C6": "AE", "\u00E6": "ae", "\u00DF": "ss",
+};
+const DIACRITIC_RE = new RegExp("[" + Object.keys(DIACRITIC_FOLDS).join("") + "]", "g");
+
+function foldDiacritics(s) {
+  // First try NFKD-decompose-and-strip-combining-marks (covers a much wider
+  // set than the manual table). The table above handles the precomposed
+  // characters that NFKD doesn't break apart (đ, ł, ø, etc.).
+  let out = s;
+  try { out = out.normalize("NFKD").replace(/[\u0300-\u036F]/g, ""); } catch { /* normalize unsupported */ }
+  return out.replace(DIACRITIC_RE, (ch) => DIACRITIC_FOLDS[ch] || ch);
+}
+
 function asciiSafe(s) {
   if (s == null) return "";
-  return String(s)
+  let out = String(s)
     // Directional arrows -> ASCII tokens.
     .replace(/[\u2192\u279C\u27A1\u2794]/g, " -> ")
     .replace(/\u2190/g, " <- ")
@@ -112,7 +153,14 @@ function asciiSafe(s) {
     // Smart quotes -> ASCII.
     .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
     .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
-    .replace(/\u2015/g, "--") // horizontal bar
+    .replace(/\u2015/g, "--"); // horizontal bar
+
+  // Fold Latin diacritics down to base ASCII so destinations like Korčula
+  // / Šibenik / Pelješac render as Korcula / Sibenik / Peljesac instead of
+  // Kor?ula / ?ibenik / Pelje?ac.
+  out = foldDiacritics(out);
+
+  return out
     // The remaining CP1252-mapped chars (en dash 0x2013, em dash 0x2014,
     // ellipsis 0x2026, bullet 0x2022) are passed through — jsPDF's default
     // Helvetica encoding maps them correctly through WinAnsi/CP1252 even
@@ -122,9 +170,30 @@ function asciiSafe(s) {
     .replace(/ {2,}/g, " ")
     // Strip anything OTHER than ASCII, Latin-1 Supplement, and the CP1252
     // "extras" (smart quotes, dashes, bullet, ellipsis, trademark, euro).
-    // This prevents emoji / box-drawing / geometric glyphs from rendering
-    // as garbled internal glyph IDs.
     .replace(/[^\x00-\xFF\u2013\u2014\u2018-\u201D\u2022\u2026\u20AC\u2122]/g, "?");
+}
+
+// Strip the markdown the planner pours into the Trip Guidelines narrative
+// box (## headers, **bold**, [text](url), -----, leading dashes for bullets)
+// down to clean prose with paragraph breaks. The PDF can't render the
+// markup, so left as-is it looked like a wall of code on the cover.
+function markdownToProse(s) {
+  if (!s) return "";
+  let t = String(s);
+  // Remove markdown link wrappers, keep the visible label: [text](url) -> text
+  t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+  // Remove ATX headers but keep the title text on its own line.
+  t = t.replace(/^#{1,6}\s*/gm, "");
+  // Remove emphasis markers (** *** _italic_ etc.) without dropping content.
+  t = t.replace(/\*{1,3}([^*\n]+)\*{1,3}/g, "$1");
+  t = t.replace(/_{1,2}([^_\n]+)_{1,2}/g, "$1");
+  // Convert horizontal rules to blank lines.
+  t = t.replace(/^\s*-{3,}\s*$/gm, "");
+  // Leading bullets: "- item" -> "• item" (the bullet char is in CP1252).
+  t = t.replace(/^\s*[-*]\s+/gm, "\u2022 ");
+  // Collapse runs of >2 blank lines to a single blank line.
+  t = t.replace(/\n{3,}/g, "\n\n");
+  return t.trim();
 }
 
 // -----------------------------------------------------------------------------
@@ -418,12 +487,62 @@ function titleCase(s) {
   return String(s).replace(/\b\w/g, c => c.toUpperCase());
 }
 
+// Render a freeform prose block (Trip Guidelines / Trip Narrative) under
+// a small gold section heading. Strips markdown first and groups paragraphs
+// with a single blank line between them.
+function renderProseSection(cur, title, raw) {
+  const cleaned = markdownToProse(raw);
+  if (!cleaned) return;
+  const { pdf } = cur;
+  cur.space(4);
+  cur.ensureSpace(18);
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(7.5);
+  pdf.setCharSpace(1.4);
+  cur.setColor(COLOR.inkFaint);
+  pdf.text(asciiSafe(String(title).toUpperCase()), PAGE.marginX, cur.state.y);
+  pdf.setCharSpace(0);
+  cur.space(3.5);
+
+  // Render each paragraph as its own text block so the blank line between
+  // paragraphs survives. wrap() collapses internal whitespace which would
+  // otherwise turn a multi-paragraph block into one giant paragraph.
+  const paragraphs = cleaned.split(/\n{2,}/);
+  paragraphs.forEach((para, idx) => {
+    const trimmed = para.trim();
+    if (!trimmed) return;
+    // A paragraph might be a bullet list — keep each "• ..." line on its own.
+    const lines = trimmed.split("\n");
+    lines.forEach((ln) => {
+      const t = ln.trim();
+      if (!t) return;
+      cur.text(t, { font: FONT.sans, style: "normal", size: 9.5, color: COLOR.ink, leading: 1.4 });
+    });
+    if (idx < paragraphs.length - 1) cur.space(2);
+  });
+}
+
 // -----------------------------------------------------------------------------
 // COVER PAGE
 // -----------------------------------------------------------------------------
 function renderCover(cur, data, inputs, _opts) {
   const { pdf } = cur;
-  const dest = safe(data?.destination || (Array.isArray(data?.cities) && data.cities[0]?.name) || "Your trip");
+  // Title text. For a multi-city trip the destination field becomes a long
+  // "A -> B -> C -> ..." chain which sets unevenly at 26pt and screams
+  // "unformatted code". If we have a structured cities array, use the first
+  // + last city to form an elegant "Venice to Split" title; the full route
+  // appears immediately below in the meta / cities preview lines anyway.
+  let dest = safe(data?.destination || (Array.isArray(data?.cities) && data.cities[0]?.name) || "Your trip");
+  const cityList = Array.isArray(data?.cities) ? data.cities : [];
+  if (cityList.length >= 2) {
+    const first = safe(cityList[0]?.name);
+    const last = safe(cityList[cityList.length - 1]?.name);
+    if (first && last && first !== last) dest = `${first} to ${last}`;
+  } else if (/\s->\s/.test(dest)) {
+    // Fallback when only the legacy string is available: pick endpoints.
+    const parts = dest.split(/\s->\s/).map(s => s.trim()).filter(Boolean);
+    if (parts.length >= 2) dest = `${parts[0]} to ${parts[parts.length - 1]}`;
+  }
   const meta = safe(data?.meta || "");
 
   // Compact top — tightened from 14mm to 8mm so the cover packs more onto
@@ -514,11 +633,17 @@ function renderCover(cur, data, inputs, _opts) {
       ["Requested activities", Array.isArray(inputs.activities) ? inputs.activities.join(", ") : null],
       ["Interest level", it.level],
       ["Interest detail", it.text],
-      ["Trip guidelines", inputs.guidelines],
-      ["Trip narrative", inputs.narrative],
     ].filter(r => r && r[1] !== undefined && r[1] !== null && r[1] !== "" && r[1] !== "—");
 
     rows.forEach(r => cur.kvRow(r[0], r[1]));
+
+    // Trip Guidelines / Narrative — rendered as a real prose section, NOT a
+    // kvRow value. Earlier these were jammed into a key/value row which
+    // dumped raw markdown (##, **bold**, [link](url), -----) into a wall
+    // of unformatted text. Now we strip the markup and lay it out as a
+    // proper paragraph with a section heading.
+    renderProseSection(cur, "Trip Guidelines", inputs.guidelines);
+    renderProseSection(cur, "Trip Narrative", inputs.narrative);
   }
 
   // Generated stamp removed from the cover body. Now that day-by-day content
@@ -607,6 +732,7 @@ function renderItem(cur, item, isLast) {
   cur.ensureSpace(32);
   cur.space(0.4);
   const itemTop = cur.state.y;
+  const itemTopPage = cur.state.page;
 
   // Time block (left column)
   pdf.setFont(FONT.sans, "bold");
@@ -682,8 +808,15 @@ function renderItem(cur, item, isLast) {
   } else {
     cur.space(0.8);
   }
-  // Make sure item top reference exists (keeps the column visually aligned even if body shorter than label).
-  if (cur.state.y < itemTop + 10) cur.state.y = itemTop + 10;
+  // Make sure item top reference exists (keeps the column visually aligned
+  // even if the body is shorter than the time label). Only enforce this
+  // when we're still on the page the item started on — otherwise we'd push
+  // state.y past the bottom margin of the new page, leaving everything
+  // after the item on a fresh page with the rest of the current page blank.
+  // (That was the cause of the giant whitespace gap between Day 1 and Day 2.)
+  if (cur.state.page === itemTopPage && cur.state.y < itemTop + 10) {
+    cur.state.y = itemTop + 10;
+  }
 }
 
 // Fixed label column for detail rows — ensures consistent value start X
