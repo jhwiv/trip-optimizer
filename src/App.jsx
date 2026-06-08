@@ -6916,6 +6916,13 @@ const REVIEWER_SOURCES = [
   { id: "nyt36",      name: "NYT 36 Hours",                  lens: "local",       dflt: true,  blurb: "Tight, pacing-aware day plans" },
   { id: "ftHTSI",     name: "FT How to Spend It",            lens: "local",       dflt: false, blurb: "Bloomberg Pursuits–style insider picks" },
   { id: "reddit",     name: "Reddit + locals",               lens: "local",       dflt: true,  blurb: "r/travel, r/[city] real talk" },
+  // Off-the-beaten-path lens — finds the experiences mainstream travel
+  // press misses. Atlas Obscura is the canonical hidden-gems catalog;
+  // Substack travel newsletters are where editors who left Condé Nast /
+  // T+L publish their real picks. Both default-on so every reviewer run
+  // surfaces at least a couple of off-beat options the model can weave in.
+  { id: "atlasObscura", name: "Atlas Obscura",               lens: "local",       dflt: true,  blurb: "Hidden gems, oddities, obscure landmarks" },
+  { id: "substack",   name: "Substack travel",               lens: "local",       dflt: true,  blurb: "Indie editors' fresh picks, newly opened" },
 ];
 
 const REVIEWER_LENSES = [
