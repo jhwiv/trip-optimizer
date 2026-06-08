@@ -682,13 +682,25 @@ function renderDay(cur, day, index) {
 
   // Day label — bigger, more tracked, and with a generous gold accent rule
   // so the start of each day reads like a proper section, not another bullet.
+  //
+  // WRAP the label rather than drawing it on one fixed line. Long labels
+  // like "DAY 7 · WED AUG 31 · DUBROVNIK -> KORCULA (CATAMARAN)" render
+  // ~190mm wide at 10pt bold + 1.6mm letter-spacing, well past the page
+  // edge. splitTextToSize handles the wrap; we draw each line at the
+  // current y and advance manually.
   cur.space(2);
   pdf.setFont(FONT.sans, "bold");
   pdf.setFontSize(10);
   pdf.setCharSpace(1.6);
   cur.setColor(COLOR.gold);
   const labelText = (day.label || `DAY ${index + 1}`).toString();
-  pdf.text(asciiSafe(labelText.toUpperCase()), PAGE.marginX, cur.state.y);
+  const labelMaxW = PAGE.width - PAGE.marginX * 2;
+  const labelLines = pdf.splitTextToSize(asciiSafe(labelText.toUpperCase()), labelMaxW);
+  const labelLineH = (10 * 1.2) / 2.83465; // pt -> mm, tight leading for caps
+  labelLines.forEach((ln, i) => {
+    pdf.text(ln, PAGE.marginX, cur.state.y + i * labelLineH);
+  });
+  cur.state.y += Math.max(0, labelLines.length - 1) * labelLineH;
   pdf.setCharSpace(0);
   cur.space(2);
   cur.accentRule(36);
@@ -736,12 +748,23 @@ function renderItem(cur, item, isLast) {
   const timeLabel = endTime ? `${time}–${endTime}` : time;
   const type = safe(item.type);
 
-  // Time column width. Must fit the widest time label at 10.5pt bold sans.
-  // Real-world worst cases include "12:30 PM–2:00 PM" and "4:00 PM–5:30 PM"
-  // — both around 30mm at this font/size. 24mm overflowed and the time text
-  // crashed into the item title ("4:00 PM–5:30 PStroll"). 32mm gives the
-  // longest realistic time range a 2mm buffer before the title column.
-  const timeColW = 32;
+  // Time column width — measure the ACTUAL rendered label width and reserve
+  // enough room for it plus a 2mm gutter before the title column.
+  //
+  // The previous fixed 32mm worked for most labels but real-world cases
+  // overflowed:
+  //   "10:00 AM–12:30 PM" ≈ 33.5mm → collided with "Catamaran ..."
+  //   "10:45 AM–2:00 PM"  ≈ 32.2mm → collided with "Private transfer ..."
+  //   "11:00 AM–12:15 PM" ≈ 33.0mm → collided with "Roxanich Winery ..."
+  // (user-reported PDF screenshot 2026-06-08.)
+  //
+  // Measured width is bounded at 42mm so a freak label can't eat the whole
+  // page; if a label is wider than that the bound clips it and the title
+  // column still gets reasonable space.
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(10.5);
+  const measuredTimeW = timeLabel ? pdf.getTextWidth(asciiSafe(timeLabel)) : 0;
+  const timeColW = Math.min(42, Math.max(32, measuredTimeW + 3));
   const headX = PAGE.marginX + timeColW;
   const bodyMaxW = PAGE.width - PAGE.marginX - headX;
 
@@ -807,8 +830,31 @@ function renderItem(cur, item, isLast) {
   if (item.why) {
     let whyText = safe(item.why).trim();
     // Take the first sentence; fall back to a 140-char hard cap.
-    const firstSentence = whyText.match(/^[^.!?\n]{8,}[.!?]/);
-    if (firstSentence) whyText = firstSentence[0];
+    //
+    // Skip common abbreviations whose period is NOT a sentence terminator.
+    // The original regex /^[^.!?\n]{8,}[.!?]/ would clip
+    //   "Stone-paved alleys climb steeply to St. Euphemia, ..."
+    // at "St." — the user-reported PDF showed dozens of these mid-sentence
+    // truncations (St./Mt./Ave./Mr./Mrs./Dr./Jr./Sr./Co./Inc.).
+    // New approach: walk forward through candidate terminators and skip
+    // any preceded by a known abbreviation. Falls back to whole text if no
+    // genuine terminator is found inside the 140-char cap.
+    const ABBREVS = /\b(?:St|Mt|Mr|Mrs|Ms|Dr|Jr|Sr|Co|Inc|Ltd|Ave|Blvd|Rd|Ft|No|vs|etc|e\.g|i\.e)$/i;
+    const findEnd = (s) => {
+      const re = /[.!?]/g;
+      let m;
+      while ((m = re.exec(s)) !== null) {
+        if (m.index < 8) continue; // need at least 8 chars before terminator
+        const prefix = s.slice(0, m.index);
+        if (ABBREVS.test(prefix)) continue; // abbreviation, not a sentence end
+        return m.index + 1;
+      }
+      return -1;
+    };
+    const endIdx = findEnd(whyText);
+    if (endIdx > 0 && endIdx <= 200) {
+      whyText = whyText.slice(0, endIdx);
+    }
     if (whyText.length > 140) whyText = whyText.slice(0, 137).replace(/\s+\S*$/, "") + "…";
     pdf.setFont(FONT.serif, "italic");
     pdf.setFontSize(10);
