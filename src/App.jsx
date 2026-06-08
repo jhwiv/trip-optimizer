@@ -89,6 +89,46 @@ function cachedTools(tools) {
   return out;
 }
 
+// --------------------------------------------------------------------------
+// Two-block cached system prompt: STATIC (cross-trip cacheable) + DYNAMIC.
+//
+// Anthropic supports up to 4 cache breakpoints per request. We use ONE here
+// for the static rulebook so it becomes the cached prefix, and emit the
+// per-trip dynamic preamble as a second uncached block. Result:
+//   • First build of any trip on a fresh deploy   → cache write on staticRules
+//   • Every subsequent build within 5 min         → cache read on staticRules
+//     (regardless of destination, dates, travelers, etc.)
+//
+// The dynamic preamble is small (typically 2–10k chars) so cache misses on
+// the second block are cheap. The static rulebook is ~15–20k chars — that's
+// where the savings come from.
+//
+// Used by the build (/api/build) call site only. Review/revision call sites
+// keep using cachedSystem() because their value-per-call comes from the
+// embedded plan JSON (which is dynamic but identical between review→revise),
+// not the static rulebook.
+// --------------------------------------------------------------------------
+function cachedSystemBlocks(staticText, dynamicText) {
+  // If either piece is missing or too small to cache, fall back to a single
+  // concatenated block so we always send something sensible.
+  if (typeof staticText !== "string" || staticText.length < 4000) {
+    return cachedSystem(
+      [staticText, dynamicText].filter(s => typeof s === "string" && s).join("\n\n"),
+    );
+  }
+  const blocks = [
+    {
+      type: "text",
+      text: staticText,
+      cache_control: { type: "ephemeral" },
+    },
+  ];
+  if (typeof dynamicText === "string" && dynamicText.length > 0) {
+    blocks.push({ type: "text", text: dynamicText });
+  }
+  return blocks;
+}
+
 // Curated city list for autocomplete. Free-text entries are still allowed.
 const CITIES = [
   { name: "Lisbon", country: "Portugal" },
@@ -8224,15 +8264,54 @@ Total: ${totalNights} nights = ${totalDays} days.
 
     const _destinationFactsBlock = buildDestinationFactsBlock(basics.destination || (cities[0] && cities[0].name) || "");
 
-    return `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}
-${_destinationFactsBlock}
+    // -------------------------------------------------------------------
+    // PROMPT SPLIT FOR ANTHROPIC CACHING.
+    //
+    // We return TWO strings:
+    //   • staticRules    — byte-identical across every build of every trip.
+    //                      This is the cache-write target; subsequent builds
+    //                      hit cache (~10% of input-token cost). Includes:
+    //                        - identity line ("You are a luxury travel
+    //                          planner...") so the model still sees role
+    //                          FIRST, as system prompts conventionally do
+    //                        - the entire general rulebook
+    //                        - field emission order (single-city default;
+    //                          multi-city emits an explicit hint in the
+    //                          dynamic preamble)
+    //
+    //   • dynamicPreamble — per-trip overrides only:
+    //                        - conditional HARD-RULE blocks (train, private
+    //                          driver, private tour, skip-the-line). Each
+    //                          block is self-contained and reasserts itself
+    //                          with HARD RULE language, so position-in-prompt
+    //                          is not load-bearing for any individual rule.
+    //                        - exact day count for this trip
+    //                        - multi-city field-order override + city list
+    //                        - destination-specific facts (marquee sights,
+    //                          airport mappings, route truth) each labeled
+    //                          with the rule they parametrize
+    //                        - destination facts block
+    //
+    // The build call site assembles them as:
+    //     [staticRules block (cached)] + [dynamicPreamble block] + user message
+    //
+    // SAFETY: vs. the original prompt, only the per-trip override blocks
+    // (HARD RULES + destination facts + day count) moved from FIRST to AFTER
+    // the rulebook. The IDENTITY line is preserved at the start of block 1.
+    // The destination-filtered facts each include an explicit pointer back
+    // to the rule they parametrize ("schedule each per the MARQUEE SIGHTS
+    // rule", "apply per the FLIGHTS rule", etc.).
+    // -------------------------------------------------------------------
+    const totalDaysLine = `• days[] must contain exactly ${totalDays} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). Compute the correct weekday for each day starting from the start date.`;
+
+    const staticRules = `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.
 
 FIELD EMISSION ORDER — CRITICAL:
-Write the tool input in this exact order: destination, meta, ${isMultiCity ? "cities, " : ""}days, logistics, flags, planb, snobs, tonight.
-days[] is the main deliverable. Write the entire days[] array BEFORE writing logistics, flags, planb, snobs, or tonight. Never write logistics/flags/planb first and then days — if anything gets cut off, we lose the whole plan. Always write days first.${multiCityBlock}
+Write the tool input in this exact order: destination, meta, days, logistics, flags, planb, snobs, tonight. (Multi-city trips also emit a cities[] field — see the per-trip preamble below for placement.)
+days[] is the main deliverable. Write the entire days[] array BEFORE writing logistics, flags, planb, snobs, or tonight. Never write logistics/flags/planb first and then days — if anything gets cut off, we lose the whole plan. Always write days first.
 
 TRIP REQUIREMENTS:
-• days[] must contain exactly ${totalDays} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). Compute the correct weekday for each day starting from the start date.
+• The exact required day count for this trip is given in the per-trip preamble below. Compute the correct weekday for each day starting from the start date.
 • Each day MUST include: label, headline (the one-line "if you only do one thing" call), weather (seasonal expectation, NOT a live forecast), and items[].
 • Each day's items[] needs at least 3 items — a typical full day is: morning Activity, midday Activity, evening Dinner. Arrival/departure days also include Flight + Hotel.
 • EVERY item in items[] MUST have a "time" field (24h local time, e.g. '08:30', '14:00', '19:30'). Items should appear in chronological order within each day. This is what turns the day into a real time-based itinerary instead of a vague list.
@@ -8277,10 +8356,9 @@ VARIETY RULES — STRICT, NON-NEGOTIABLE:
 • Never repeat the same activity venue across days. Vary neighborhoods — Plaza one day, Railyard another, Tesuque another.
 
 MARQUEE SIGHTS — NEVER ASSUME, ALWAYS SCHEDULE:
-Every destination has 2–6 marquee sights that any luxury traveler will expect to see. You MUST explicitly schedule each one as a dedicated Activity item with a specific day, time slot, and (when ticketed) booking detail. Do NOT mention them only in passing in a headline or snobs entry. If a marquee sight is intentionally skipped (e.g. the user already saw it on a previous trip, or the dates exclude it), say so explicitly in flags[].
-${_marqueeBlock}
+Every destination has 2–6 marquee sights that any luxury traveler will expect to see. You MUST explicitly schedule each one as a dedicated Activity item with a specific day, time slot, and (when ticketed) booking detail. Do NOT mention them only in passing in a headline or snobs entry. If a marquee sight is intentionally skipped (e.g. the user already saw it on a previous trip, or the dates exclude it), say so explicitly in flags[]. The destination-specific marquee list (when one is on file for this trip's destination) is in the per-trip preamble below.
 
-General rule: if your destination is not in the list above, generate the equivalent "top 4–6 marquee experiences any first-time visitor would expect" list mentally and schedule each one. If the user gave fewer nights than needed to cover all marquees, surface the gap in flags[].
+General rule: if your destination is not in the per-trip marquee list, generate the equivalent "top 4–6 marquee experiences any first-time visitor would expect" list mentally and schedule each one. If the user gave fewer nights than needed to cover all marquees, surface the gap in flags[].
 
 BESPOKE LOCAL SERVICES — RESEARCH PER DESTINATION, DO NOT DEFAULT TO GLOBAL BRANDS:
 For private/specialty services (wine tastings, private drivers, sommelier-led dinners, fishing charters, photography guides, private chefs, helicopter tours, sailing day-charters, golf caddies, fly-fishing guides, e-bike outfitters, off-roading, ranch experiences, ski-guide / mountain-host service, spa specialists, etc.) you MUST name a service that actually operates in THIS destination. Default brands fail outside their footprints: Blacklane doesn't serve most leisure destinations; Cinq à Sept doesn't exist in mountain towns; ToursByLocals coverage is uneven; chef's-table experiences vary by city.
@@ -8339,12 +8417,13 @@ FLIGHTS — ACCURACY OVER SPECIFICITY, PREFER NONSTOP, ALWAYS STRUCTURED:
   2. Still emit depart_time and arrive_time as realistic windows for that route. The app verifies these against a live flight-status service at render time, so a reasonable estimate is fine — it will be replaced with canonical data.
   3. Still emit carrier. If the user gave "flight 1040" without an airline, infer the most likely carrier for that route + number combination (e.g. for EWR—AUA, 1040 likely = United UA1040; for JFK—AUA, 1040 likely = JetBlue B61040).
 Otherwise, when the user did NOT state a number, set "flight_number": null. Do NOT invent numbers — they will be stripped. The app handles look-up for the unstated case.
-${_routeTruthBlock}• Every confirmation_note MUST literally end with this exact sentence: "Verify flight number, times and equipment at booking — schedules change." Copy it verbatim; do not paraphrase.
+• Route-specific carrier truth (when on file for this trip's route) appears in the per-trip preamble below — follow it strictly.
+• Every confirmation_note MUST literally end with this exact sentence: "Verify flight number, times and equipment at booking — schedules change." Copy it verbatim; do not paraphrase.
 • WRONG confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C"
 • RIGHT confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C. Verify flight number, times and equipment at booking — schedules change."
 • Search for nonstop service from the home airport to the destination's primary airport first.
-• ARRIVAL AIRPORT — PICK THE CLOSEST VIABLE ONE, NOT THE NEAREST MAJOR HUB. For destinations with smaller regional airports, the right answer is the regional, not the metro hub the model knows best. Specifically:
-${_airportBlock}  GENERAL RULE: when a regional airport with scheduled passenger service exists within ~1 h of the destination, prefer it over a metro hub 2–5 h away even if the hub has more flight options. Long drives erode trip time; users prefer one short drive over a savings of a couple connecting flights.
+• ARRIVAL AIRPORT — PICK THE CLOSEST VIABLE ONE, NOT THE NEAREST MAJOR HUB. For destinations with smaller regional airports, the right answer is the regional, not the metro hub the model knows best. Destination-specific airport mappings (when on file for this trip) appear in the per-trip preamble below.
+  GENERAL RULE: when a regional airport with scheduled passenger service exists within ~1 h of the destination, prefer it over a metro hub 2–5 h away even if the hub has more flight options. Long drives erode trip time; users prefer one short drive over a savings of a couple connecting flights.
 • If no nonstop exists to the requested airport but one exists to a nearby airport in the same metro (e.g., ABQ ~60min from Santa Fe instead of SAF), RECOMMEND THE NONSTOP and add a flags[] note mentioning the drive time.
 • Only return a connecting itinerary if no nonstop exists to any reasonable nearby airport. Set nonstop=false and fill "connection" with the connecting airport IATA.
 • In each Flight item's text, explicitly state "nonstop" or "connecting via X".
@@ -8401,6 +8480,31 @@ TONIGHT (top-level):
 • Prefix each action: '⚠︎ Must today:' for things that lose value if delayed (sold-out restaurants, advance-only tours), '· This week:' for important but flexible, 'Anytime:' for low-urgency. Order most-urgent first.
 
 TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood detail. Avoid travel-blog vagueness.`;
+
+    // ---- DYNAMIC PER-TRIP PREAMBLE ----------------------------------
+    // Identity + every conditional constraint block + destination facts +
+    // exact day count + multi-city structure + destination-filtered
+    // marquee/airport/route facts. Compact (~2–10k chars depending on
+    // options). Sent uncached as the second system block.
+    const _marqueePreamble = _marqueeBlock
+      ? `\nDESTINATION-SPECIFIC MARQUEE SIGHTS for this trip (schedule each as a dedicated Activity item per the MARQUEE SIGHTS rule):\n${_marqueeBlock}\n`
+      : "";
+    const _airportPreamble = _airportBlock
+      ? `\nDESTINATION-SPECIFIC ARRIVAL AIRPORTS for this trip (apply per the ARRIVAL AIRPORT rule):\n${_airportBlock}`
+      : "";
+    const _routePreamble = _routeTruthBlock
+      ? `\nDESTINATION-SPECIFIC ROUTE TRUTH for this trip (apply per the FLIGHTS rule):\n${_routeTruthBlock}`
+      : "";
+    const _multiCityFieldOrder = isMultiCity
+      ? `\nFIELD EMISSION ORDER OVERRIDE — MULTI-CITY: this is a multi-city trip. Insert a cities[] field between meta and days in the tool input, so the order becomes: destination, meta, cities, days, logistics, flags, planb, snobs, tonight.`
+      : "";
+
+    const dynamicPreamble = `PER-TRIP REQUIREMENTS (these are the trip-specific values + overrides referenced by the static rulebook above — follow them strictly):${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}
+${_destinationFactsBlock}
+
+${totalDaysLine}${_multiCityFieldOrder}${multiCityBlock}${_marqueePreamble}${_airportPreamble}${_routePreamble}`;
+
+    return { staticRules, dynamicPreamble };
   };
 
   const buildUserPrompt = () => {
@@ -9048,10 +9152,14 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       Math.max(8000, 5000 + (nightsNum + 1) * 2200 + Math.max(0, citiesCount - 1) * 1200),
     );
     const userPromptForBuild = buildUserPrompt();
+    // buildSystemPrompt() now returns { staticRules, dynamicPreamble } so we
+    // can mark the static rulebook (byte-identical across every trip) as the
+    // cached prefix and ship the per-trip preamble as a separate block.
+    const { staticRules, dynamicPreamble } = buildSystemPrompt();
     const body = {
       model: "claude-sonnet-4-5",
       max_tokens: maxTokensForTrip,
-      system: cachedSystem(buildSystemPrompt()),
+      system: cachedSystemBlocks(staticRules, dynamicPreamble),
       messages: [{ role: "user", content: userPromptForBuild }],
       tools: cachedTools([TRIP_PLAN_TOOL]),
       tool_choice: { type: "tool", name: "submit_trip_plan" },
