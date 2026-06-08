@@ -4169,6 +4169,10 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   };
   const toggleFindingApply = (fid) => {
     setApplyState(prev => ({ ...prev, [fid]: !prev[fid] }));
+    // Clear any stale apply error (e.g. "Apply cancelled." from a previous
+    // attempt) so it doesn't sit under the queued-changes button next to
+    // fresh selections, which looks like the current selection is failing.
+    if (error) setError("");
   };
 
   // ----- shared styles ---------------------------------------------------
@@ -4905,13 +4909,23 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
       />
 
       {/* Always-visible traveler change request — same revision pipeline as
-          the review panel, but doesn't require running a review first. */}
-      <ChangeRequestCard
-        plan={rawData}
-        inputs={inputs}
-        onPlanRevised={onPlanRevised}
-        variant="toplevel"
-      />
+          the review panel, but doesn't require running a review first.
+
+          GATED: when the user has already run a review, the ReviewPanel
+          renders its OWN embedded ChangeRequestCard (variant="review")
+          inside its findings footer. Showing both at the same time
+          produced a confusing duplicate "Suggest a change" pair stacked
+          on top of each other (user-reported screenshot 2026-06-08).
+          Hide this toplevel one whenever a review is present so only
+          ONE change-request affordance is visible at a time. */}
+      {!initialReview && (
+        <ChangeRequestCard
+          plan={rawData}
+          inputs={inputs}
+          onPlanRevised={onPlanRevised}
+          variant="toplevel"
+        />
+      )}
 
       {data.days && data.days.length > 0 && tab !== "overview" && (
         <Section title={({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities", essentials: "Essentials" }[tab] || "")}>
@@ -8929,19 +8943,29 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // chunks in KV, so a client-side SSE timeout doesn't lose the build
     // — the user can reconnect/poll and pick up where they left off.
     //
-    // Worked examples:
-    //   3-night single-city:  5000 + 4*2200 + 0   = 13800   (was 12000)
-    //   7-night single-city:  5000 + 8*2200 + 0   = 22600   (was 20000)
-    //   11-night single-city: 5000 + 12*2200 + 0  = 31400   (was capped 24000 — truncated)
-    //   14-night single-city: 5000 + 15*2200 + 0  = 38000 → capped 32000
-    //   14-night 4-city:      5000 + 15*2200 + 3*1200 = 41600 → capped 32000
+    // Worked examples (now capped at 40000):
+    //   3-night single-city:   5000 + 4*2200 + 0           = 13800
+    //   7-night single-city:   5000 + 8*2200 + 0           = 22600
+    //   11-night single-city:  5000 + 12*2200 + 0          = 31400
+    //   14-night single-city:  5000 + 15*2200 + 0          = 38000  (under cap)
+    //   12-night 7-city:       5000 + 13*2200 + 6*1200     = 40800 → capped 40000
+    //                            (the Croatia Rovinj→Plitvice→Zadar→Dubrovnik
+    //                             →Korčula→Hvar→Split case — user-reported
+    //                             truncation screenshot 2026-06-08)
+    //   14-night 4-city:       5000 + 15*2200 + 3*1200     = 41600 → capped 40000
     //
-    // Big single-city trips longer than 12 nights and big multi-city trips
-    // (≥6 city-nights of overhead) can still hit the cap. Those cases are
-    // rare; if they truncate, the salvage layer recovers a partial plan and
-    // the user can hit Build again or split into a multi-leg flow.
+    // Cap raised 32k → 40k specifically for content-dense multi-city tours
+    // (Croatia island-hop, Italy multi-stop, Scandinavia loop). 40k at
+    // ~60 tok/s ≈ 11 min worst case — above the SSE comfort window, but the
+    // build pipeline runs in a Worker with ctx.waitUntil + JOBS KV chunk
+    // storage, so a client-side SSE drop doesn't lose the build. The user
+    // reconnects and picks up where they left off via the resume path in
+    // /api/build/[id].
+    //
+    // Sonnet-4-5 supports up to 64k output tokens, so 40k still leaves room
+    // to grow if real-world data shows even bigger tours still saturating.
     const maxTokensForTrip = Math.min(
-      32000,
+      40000,
       Math.max(8000, 5000 + (nightsNum + 1) * 2200 + Math.max(0, citiesCount - 1) * 1200),
     );
     const userPromptForBuild = buildUserPrompt();
