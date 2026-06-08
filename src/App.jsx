@@ -2682,7 +2682,17 @@ function applyQualityLayer(input, inputs) {
   // Truncation / partial-plan flags propagated from the parse layer get top
   // billing so the user knows the itinerary they're looking at is incomplete.
   if (input._truncated) {
-    warnings.push("Plan was cut off before finishing — some sections may be incomplete. Tap Build again for a full plan.");
+    // _truncationCause is set when we have a definitive signal from
+    // Anthropic's stop_reason. Without it we only know the JSON didn't
+    // parse cleanly, which could be truncation OR a transient network drop
+    // — "tap Build again" is the right hint for that case. With
+    // 'max_tokens' we know retrying as-is won't help and can give
+    // actionable guidance.
+    if (input._truncationCause === "max_tokens") {
+      warnings.push("Plan hit the model's token budget mid-output. Try fewer cities or a shorter trip, or split this into a multi-leg flow.");
+    } else {
+      warnings.push("Plan was cut off before finishing — some sections may be incomplete. Tap Build again for a full plan.");
+    }
   }
   if (input._dayCountWarning) {
     warnings.push(input._dayCountWarning);
@@ -6019,6 +6029,7 @@ async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
   let toolJson = "";
   let jobId = null;
   let doneSeen = false;
+  let stopReason = null;
 
   try {
     while (true) {
@@ -6044,12 +6055,18 @@ async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
         } else if (evt.type === "delta" && evt.text) {
           toolJson += evt.text;
           if (typeof onDelta === "function") onDelta(evt.text, toolJson.length);
+        } else if (evt.type === "stop_reason" && evt.reason) {
+          // Forwarded from Anthropic's message_delta event. Captured here
+          // so the caller can distinguish a clean end_turn (the JSON is
+          // genuinely complete) from a max_tokens hit (the JSON is
+          // truncated regardless of how well it parses).
+          stopReason = evt.reason;
         } else if (evt.type === "ping") {
           // Server heartbeat — keeps NDJSON alive through long model pauses.
           continue;
         } else if (evt.type === "done") {
           doneSeen = true;
-          return { jobId, toolJson };
+          return { jobId, toolJson, stopReason };
         } else if (evt.type === "error") {
           throw new Error(evt.error || "Build failed on server.");
         }
@@ -6134,13 +6151,17 @@ async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
         lastProgressAt = Date.now();
         if (typeof onDelta === "function") onDelta(data.delta, toolJson.length);
       }
-      if (data.status === "done") return { jobId, toolJson };
+      // The status payload mirrors the worker's stopReason once the model
+      // sends message_delta. Read it on the final poll so resume-via-poll
+      // clients get the same stop_reason signal as SSE-stream clients.
+      if (data.stopReason && !stopReason) stopReason = data.stopReason;
+      if (data.status === "done") return { jobId, toolJson, stopReason };
       if (data.status === "error") throw new Error(data.error || "Build failed on server.");
       await new Promise(r => setTimeout(r, POLL_MS));
     }
   }
 
-  return { jobId, toolJson };
+  return { jobId, toolJson, stopReason };
 }
 
 // Clean an error message before it hits the UI. Strips HTML tags, collapses
@@ -8478,6 +8499,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     const decoder = new TextDecoder();
     let buf = "";
     let totalLen = 0;
+    let stopReason = null;
     try {
       while (true) {
         if (signal?.aborted) {
@@ -8502,6 +8524,15 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           } else if (evt.type === "delta" && evt.text) {
             totalLen += evt.text.length;
             onDelta(evt.text, totalLen);
+          } else if (evt.type === "stop_reason" && evt.reason) {
+            // Forwarded from Anthropic's message_delta event. Captured so
+            // the caller can detect a max_tokens hit BEFORE the JSON
+            // salvage layer fires — the salvage path can recover most
+            // truncated JSON but the error message it surfaces is generic
+            // ("plan was cut off"). With stopReason in hand we can surface
+            // the precise actionable error ("Plan exceeded the model's
+            // budget — try fewer cities or split into a multi-leg trip").
+            stopReason = evt.reason;
           } else if (evt.type === "ping") {
             // Server heartbeat — silently keeps the NDJSON stream alive
             // through long model thinking pauses (big menu objects, large
@@ -8509,7 +8540,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             // keeps the stall detector happy if it later kicks in.
             continue;
           } else if (evt.type === "done") {
-            return { len: evt.len ?? totalLen };
+            return { len: evt.len ?? totalLen, stopReason };
           } else if (evt.type === "error") {
             // If we've already streamed real output, salvage the partial.
             // Anthropic occasionally drops the SSE connection 7–9 min into
@@ -8528,7 +8559,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     }
     // Stream ended without an explicit done — treat as soft EOF; caller can
     // fall back to polling KV.
-    return { len: totalLen, softEnd: true };
+    return { len: totalLen, softEnd: true, stopReason };
   };
 
   // Shared poller used by both fresh builds and the resume-on-mount path.
@@ -8539,6 +8570,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   // server-side job (build keeps running for next time).
   const pollJob = async ({ jobId, signal, onDelta, startCursor = 0 }) => {
     let cursor = startCursor;
+    let stopReasonFromStatus = null;
     const POLL_MS = 1500;
     // Bound both wall-clock and stall so the UI never spins forever.
     // MAX_POLL_MS is the hard ceiling; MAX_STALL_MS catches the "server is
@@ -8614,7 +8646,11 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         lastProgressAt = Date.now();
         onDelta(data.delta, cursor);
       }
-      if (data.status === "done") return { len: data.cursor };
+      // stopReason is mirrored on the status payload by the worker once the
+      // model sends message_delta. Capture it so the build call site can
+      // produce a precise error message instead of the generic salvage path.
+      if (data.stopReason && !stopReasonFromStatus) stopReasonFromStatus = data.stopReason;
+      if (data.status === "done") return { len: data.cursor, stopReason: stopReasonFromStatus };
       if (data.status === "error") throw new Error(data.error || "Build failed on server.");
 
       await new Promise(r => setTimeout(r, POLL_MS));
@@ -8783,6 +8819,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       // KV polling if the connection drops mid-build.
       let needPollFallback = !streamResp;
       let resolvedJobId = jobId;
+      // Anthropic's stop_reason for this build. "end_turn" = clean finish;
+      // "max_tokens" = hit the budget (output is truncated regardless of how
+      // well the JSON parses); null = stream dropped before message_delta.
+      // Used below to pick a precise error message instead of the generic
+      // "plan was cut off" copy.
+      let buildStopReason = null;
       if (streamResp) {
         try {
           const out = await streamBuildResponse({
@@ -8795,6 +8837,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             onDelta,
           });
           if (out.softEnd) needPollFallback = true;
+          if (out.stopReason) buildStopReason = out.stopReason;
         } catch (streamErr) {
           if (streamErr?.name === "AbortError") throw streamErr;
           // Anthropic SSE drop with partial content already in toolJson — try
@@ -8833,18 +8876,27 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         }
         // toolJson may already hold partial bytes from the stream — tell the
         // poller our cursor so it doesn't re-deliver them.
-        await pollJob({
+        const pollOut = await pollJob({
           jobId: resolvedJobId,
           signal: controller.signal,
           onDelta,
           startCursor: toolJson.length,
         });
+        if (pollOut?.stopReason && !buildStopReason) buildStopReason = pollOut.stopReason;
       }
 
       setProgress(1);
       setProgressLabel("Finalizing…");
 
       if (!toolJson) throw new Error("No content returned from AI service.");
+
+      // If the model explicitly told us it hit max_tokens, surface a
+      // precise actionable error BEFORE we attempt JSON parse/salvage. The
+      // salvage layer can usually recover a partial plan, but the user
+      // should know the truncation was due to budget exhaustion (so they
+      // can split the trip or reduce its scope) rather than think it was
+      // a random model glitch they can retry through.
+      const hitMaxTokens = buildStopReason === "max_tokens";
 
       let parsed;
       try {
@@ -8855,12 +8907,26 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           try {
             parsed = JSON.parse(salvaged);
             parsed._truncated = true;
+            if (hitMaxTokens) parsed._truncationCause = "max_tokens";
           } catch (salvageErr) {
-            throw new Error("The plan was cut off before it finished. Try again.", { cause: salvageErr });
+            const msg = hitMaxTokens
+              ? "The plan hit the model's token budget mid-output and couldn't be recovered. Try fewer cities or a shorter trip, or split this into a multi-leg flow."
+              : "The plan was cut off before it finished. Try again.";
+            throw new Error(msg, { cause: salvageErr });
           }
         } else {
-          throw new Error("The plan was cut off before it finished. Try again.", { cause: parseErr });
+          const msg = hitMaxTokens
+            ? "The plan hit the model's token budget mid-output and couldn't be recovered. Try fewer cities or a shorter trip, or split this into a multi-leg flow."
+            : "The plan was cut off before it finished. Try again.";
+          throw new Error(msg, { cause: parseErr });
         }
+      }
+      // Even when JSON.parse succeeded, max_tokens means the plan is
+      // genuinely truncated — mark it so the QualityBadge surfaces the
+      // warning and the user knows to re-build with fewer constraints.
+      if (hitMaxTokens && parsed && typeof parsed === "object") {
+        parsed._truncated = true;
+        parsed._truncationCause = "max_tokens";
       }
 
       const expectedDays = nightsNum + 1;
@@ -9659,29 +9725,53 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             )}
             {(loading || extractingFromGuidelines) && (
               <div style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px", gap: "10px" }}>
-                  <p style={{ fontSize: "12px", color: "var(--color-text-primary)", margin: 0, fontWeight: 500, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {/* Single source of truth: stream-driven progressLabel wins
-                       whenever it has real content ("Day 4 of 8 · dining",
-                       "Insider notes & Plan B…"). Otherwise fall back to the
-                       phase cycler (loadingMsg). progressLabel is intentionally
-                       blank for placeholder states so we never show two
-                       contradictory strings simultaneously. */}
-                    {progressLabel || loadingMsg || "Working…"}
-                  </p>
-                  <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-                    {progress > 0 ? `${Math.round(progress * 100)}%` : ""}
-                    {elapsedSec > 0 ? `  ·  ${Math.floor(elapsedSec/60)}:${String(elapsedSec%60).padStart(2,'0')}` : ""}
-                  </p>
-                </div>
-                {/* Real progress bar driven by token stream. Falls back to indeterminate stripe before first token arrives. */}
-                <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
-                  {progress > 0 ? (
-                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: GOLD, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
-                  ) : (
-                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
-                  )}
-                </div>
+                {/* Progress bar honesty.
+                    Once progress pegs at ≥95% the percentage is no longer
+                    informative — the time-based estimator has saturated and
+                    we genuinely don't know how much longer the model needs.
+                    Showing "95%" frozen for 2–3 minutes reads as a hang.
+                    Switch to "still building · m:ss" with an indeterminate
+                    moving stripe so the user knows the build is alive and
+                    we're being honest about not knowing the ETA. */}
+                {(() => {
+                  const longTail = progress >= 0.95;
+                  const elapsedTxt = elapsedSec > 0
+                    ? `${Math.floor(elapsedSec/60)}:${String(elapsedSec%60).padStart(2,'0')}`
+                    : "";
+                  return (
+                    <>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px", gap: "10px" }}>
+                        <p style={{ fontSize: "12px", color: "var(--color-text-primary)", margin: 0, fontWeight: 500, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {/* Single source of truth: stream-driven progressLabel wins
+                             whenever it has real content ("Day 4 of 8 · dining",
+                             "Insider notes & Plan B…"). Otherwise fall back to the
+                             phase cycler (loadingMsg). progressLabel is intentionally
+                             blank for placeholder states so we never show two
+                             contradictory strings simultaneously. */}
+                          {progressLabel || loadingMsg || "Working…"}
+                        </p>
+                        <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                          {longTail
+                            ? (elapsedTxt ? `still building · ${elapsedTxt}` : "still building…")
+                            : `${progress > 0 ? `${Math.round(progress * 100)}%` : ""}${elapsedTxt ? `  ·  ${elapsedTxt}` : ""}`}
+                        </p>
+                      </div>
+                      {/* In normal mode show the real progress bar.
+                          In long-tail mode show the indeterminate stripe so
+                          the bar visibly KEEPS MOVING instead of sitting
+                          frozen at 95%. */}
+                      <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
+                        {longTail ? (
+                          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
+                        ) : progress > 0 ? (
+                          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: GOLD, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
+                        ) : (
+                          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
+                        )}
+                      </div>
+                    </>
+                  );
+                })()}
                 {/* Sub-line: show loadingMsg (phase) only when progressLabel is
                    driving the header. That way the user always sees BOTH the
                    data-driven detail ("Day 4 of 8 · dining") AND the broader

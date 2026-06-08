@@ -159,6 +159,10 @@ async function runBuild({ env, jobId, body, startedAt, writeEvent, kvState }) {
   let accumulated = "";
   let lastFlush = 0;
   let lastFlushedLen = 0;
+  // Captured from Anthropic's message_delta event when present. Persisted to
+  // KV so the resume path (/api/build/[id]) can return it to a reconnecting
+  // client. "end_turn" = clean finish; "max_tokens" = hit the budget; etc.
+  let stopReason = null;
   let lastClientWriteAt = Date.now();
 
   // Heartbeat timer — fires {type:"ping"} to the client every
@@ -185,6 +189,7 @@ async function runBuild({ env, jobId, body, startedAt, writeEvent, kvState }) {
         updatedAt: now,
         ...(final ? { completedAt: now } : {}),
         ...(extra.error ? { error: String(extra.error) } : {}),
+        ...(stopReason ? { stopReason } : {}),
       }),
       { expirationTtl: JOB_TTL_SECONDS },
       kvState,
@@ -248,6 +253,17 @@ async function runBuild({ env, jobId, body, startedAt, writeEvent, kvState }) {
             if (chunk) {
               accumulated += chunk;
               pendingDelta += chunk;
+            }
+          } else if (evt.type === "message_delta") {
+            // message_delta carries the FINAL stop_reason once the model
+            // finishes (or hits a limit). Forward it so the client can
+            // distinguish a clean end_turn vs a truncating max_tokens
+            // hit and surface a precise error message instead of the
+            // generic JSON-salvage "plan was cut off" path.
+            const sr = evt.delta?.stop_reason || null;
+            if (sr) {
+              stopReason = sr; // captured for the final flushKV / resume path
+              writeEvent({ type: "stop_reason", reason: sr });
             }
           } else if (evt.type === "error" || evt.error) {
             throw new Error(evt.error?.message || evt.message || "Stream error");
