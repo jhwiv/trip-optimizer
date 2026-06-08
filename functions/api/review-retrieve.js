@@ -180,6 +180,26 @@ const SOURCE_CONFIG = {
     domains: ["reddit.com", "tripadvisor.com", "fodors.com"],
     q: ({ destination }) => `${destination} trip report tips`,
   },
+  // Atlas Obscura: the canonical "off the beaten path" database — unusual
+  // landmarks, obscure museums, neighborhood oddities, hidden traditions.
+  // No recency filter; the catalog is intentionally timeless (e.g. the
+  // Vodnjan mummified saints discovery referenced in our own Croatia plans
+  // came directly from this lineage of source).
+  atlasObscura: {
+    name: "Atlas Obscura",
+    domains: ["atlasobscura.com"],
+    q: ({ destination }) => `${destination} hidden gems offbeat`,
+  },
+  // Substack: travel newsletters are where editors who left Conde Nast /
+  // T+L now publish their real picks — Black Tomato musings, Carat Letter,
+  // Mr & Mrs Smith editors, etc. Recency-filtered because newsletter content
+  // dates fast ("opened last month" pieces) and we want fresh signal.
+  substack: {
+    name: "Substack travel",
+    domains: ["substack.com"],
+    q: ({ destination }) => `${destination} restaurant hotel guide 2025 2026`,
+    recency: "month",
+  },
 };
 
 export async function onRequestOptions() {
