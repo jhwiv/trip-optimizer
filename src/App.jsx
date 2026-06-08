@@ -62,6 +62,33 @@ function cachedSystem(systemString) {
   ];
 }
 
+// --------------------------------------------------------------------------
+// Tools-array cache helper.
+//
+// Anthropic's prompt cache covers tools too — and the planner's TRIP_PLAN_TOOL
+// schema alone is ~150 lines of constant JSON that ships on every /api/build
+// call. Adding cache_control to the LAST tool in the array tells Anthropic
+// to cache the entire request prefix up to and including tools.
+//
+// Why this is a free win:
+//   • Our tool schemas (TRIP_PLAN_TOOL, REVIEW_TOOL, REVISION_TOOL_SURGICAL,
+//     REVISION_TOOL_FULL) are module-level constants — byte-identical on every
+//     call within the same deploy. Cache hits are deterministic.
+//   • cachedSystem() above already marks the system prompt as cached; the
+//     two breakpoints stack. The system breakpoint catches review→revise on
+//     the same plan; the tools breakpoint catches every same-tool call even
+//     when the system prompt differs.
+//   • Adds a non-enumerable cache_control field by cloning the last tool —
+//     never mutates the module-level tool constants.
+// --------------------------------------------------------------------------
+function cachedTools(tools) {
+  if (!Array.isArray(tools) || tools.length === 0) return tools;
+  const out = tools.slice(0, -1);
+  const last = tools[tools.length - 1];
+  out.push({ ...last, cache_control: { type: "ephemeral" } });
+  return out;
+}
+
 // Curated city list for autocomplete. Free-text entries are still allowed.
 const CITIES = [
   { name: "Lisbon", country: "Portugal" },
@@ -3971,7 +3998,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
         max_tokens: 8000,
         system: cachedSystem(buildReviewSystemPrompt(plan, selectedSources, inputs, liveSnippets)),
         messages: [{ role: "user", content: buildReviewUserPrompt() }],
-        tools: [REVIEW_TOOL],
+        tools: cachedTools([REVIEW_TOOL]),
         tool_choice: { type: "tool", name: "submit_review" },
       };
       let toolJson = "";
@@ -4059,7 +4086,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             max_tokens: 8000,
             system: cachedSystem(buildRevisionSystemPromptSurgical(plan, selectedForApply, inputs)),
             messages: [{ role: "user", content: buildRevisionUserPromptSurgical() }],
-            tools: [REVISION_TOOL_SURGICAL],
+            tools: cachedTools([REVISION_TOOL_SURGICAL]),
             tool_choice: { type: "tool", name: "submit_revision_patches" },
           }
         : {
@@ -4067,7 +4094,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             max_tokens: 32000,
             system: cachedSystem(buildRevisionSystemPromptFull(plan, selectedForApply, inputs)),
             messages: [{ role: "user", content: buildRevisionUserPromptFull() }],
-            tools: [REVISION_TOOL_FULL],
+            tools: cachedTools([REVISION_TOOL_FULL]),
             tool_choice: { type: "tool", name: "submit_trip_plan" },
           };
       let toolJson = "";
@@ -4489,7 +4516,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
             max_tokens: 8000,
             system: cachedSystem(buildRevisionSystemPromptSurgical(plan, [fakeFinding], inputs)),
             messages: [{ role: "user", content: buildRevisionUserPromptSurgical() }],
-            tools: [REVISION_TOOL_SURGICAL],
+            tools: cachedTools([REVISION_TOOL_SURGICAL]),
             tool_choice: { type: "tool", name: "submit_revision_patches" },
           }
         : {
@@ -4497,7 +4524,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
             max_tokens: 32000,
             system: cachedSystem(buildRevisionSystemPromptFull(plan, [fakeFinding], inputs)),
             messages: [{ role: "user", content: buildRevisionUserPromptFull() }],
-            tools: [REVISION_TOOL_FULL],
+            tools: cachedTools([REVISION_TOOL_FULL]),
             tool_choice: { type: "tool", name: "submit_trip_plan" },
           };
 
@@ -8850,7 +8877,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       max_tokens: maxTokensForTrip,
       system: cachedSystem(buildSystemPrompt()),
       messages: [{ role: "user", content: userPromptForBuild }],
-      tools: [TRIP_PLAN_TOOL],
+      tools: cachedTools([TRIP_PLAN_TOOL]),
       tool_choice: { type: "tool", name: "submit_trip_plan" },
     };
     // Diagnostic — confirm the freeform boxes are actually reaching the model.
