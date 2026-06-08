@@ -7593,33 +7593,80 @@ export default function TripOptimizer() {
     setStaleSuggestion(null);
   };
 
-  // Auto-save form on every change.
+  // --------------------------------------------------------------------
+  // AUTO-SAVE — debounced.
+  //
+  // Both auto-saves used to run SYNCHRONOUSLY on every keystroke. The form
+  // payload is small (a few KB) but the session snapshot can include a built
+  // `result` (50–100k chars) + reviewState (the plan JSON repeated). Pasting
+  // a 15k-character instruction into the narrative box fired the snapshot
+  // effect once, but the synchronous JSON.stringify + localStorage.setItem of
+  // a ~200k-payload during a paste committed enough work on the main thread
+  // to lock up the page — and could trip the localStorage 5MB quota when a
+  // big result was already in state.
+  //
+  // Two-part fix:
+  //   1. Debounce both writes by 400ms — a paste or burst of typing fires
+  //      ONE write after the user pauses instead of N writes during.
+  //   2. Catch QuotaExceededError on the snapshot and degrade gracefully:
+  //      first try dropping `result` from the snapshot (form + step is enough
+  //      to recover); if that still fails, clear the slot and log to console.
+  // --------------------------------------------------------------------
   useEffect(() => {
-    try {
-      localStorage.setItem(LS_KEY, JSON.stringify({ basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative }));
-    } catch {}
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem(
+          LS_KEY,
+          JSON.stringify({ basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative }),
+        );
+      } catch (err) {
+        // Quota or serialization error — don't crash the app.
+        console.warn("[trip-optimizer] form auto-save skipped:", err?.message || err);
+      }
+    }, 400);
+    return () => clearTimeout(t);
   }, [basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative]);
 
   // Persist a session snapshot whenever the built `result` or step changes.
   // This is the safety net against unexpected reloads losing an unsaved trip.
   // Only writes when we have a real result OR have advanced past Step 1.
   useEffect(() => {
-    try {
-      if (!result && step === 1) {
-        // Nothing meaningful to preserve. Clear any stale slot from a prior session.
-        localStorage.removeItem(SESSION_KEY);
-        return;
-      }
-      const snapshot = {
+    if (!result && step === 1) {
+      // Nothing meaningful to preserve. Clear any stale slot from a prior session.
+      try { localStorage.removeItem(SESSION_KEY); } catch {}
+      return undefined;
+    }
+    const t = setTimeout(() => {
+      const baseSnapshot = {
         savedAt: Date.now(),
         step,
-        result,
         currentSavedTripId,
         reviewState,
         inputs: { basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative },
       };
-      localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot));
-    } catch {}
+      const writeOrDegrade = () => {
+        try {
+          // First attempt: full snapshot including the built result.
+          localStorage.setItem(SESSION_KEY, JSON.stringify({ ...baseSnapshot, result }));
+          return;
+        } catch (err) {
+          if (!(err && /quota|exceed/i.test(String(err.name || err.message || "")))) {
+            console.warn("[trip-optimizer] session snapshot skipped:", err?.message || err);
+            return;
+          }
+        }
+        // Degrade: drop the heavy `result` so we can still recover form+step on reload.
+        try {
+          localStorage.setItem(SESSION_KEY, JSON.stringify(baseSnapshot));
+          console.warn("[trip-optimizer] session snapshot saved WITHOUT built result (localStorage quota).");
+        } catch (err2) {
+          try { localStorage.removeItem(SESSION_KEY); } catch {}
+          console.warn("[trip-optimizer] session snapshot dropped (quota):", err2?.message || err2);
+        }
+      };
+      writeOrDegrade();
+    }, 400);
+    return () => clearTimeout(t);
   }, [result, step, currentSavedTripId, reviewState, basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative]);
   const [outputs, setOut] = useState({ itinerary: true, weather: true, navigation: true, logistics: true, tonight: true, menus: true, flags: true, planb: true, snobs: true, practical: false, badges: false, pronunciation: false });
 
