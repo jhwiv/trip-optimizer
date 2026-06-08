@@ -8864,12 +8864,43 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // how long Claude can stream before the connection gets unhappy. At
     // ~60 output tokens/sec, 24k tokens ≈ 6.5 minutes — inside the window
     // where SSE stays stable. 32k previously pushed 9+ minute generations
-    // which were timing out 7-8 minutes in for big multi-city trips. The
-    // 24k cap forces the model to emit a finished plan without padding,
-    // and is still plenty for an 11-night 9-city itinerary (~14–18k typical).
+    // which were timing out 7-8 minutes in for big multi-city trips.
+    //
+    // The previous formula (4000 + nights*2000 + cities*1200 capped at 24000)
+    // was tuned for sparse trips and truncated real luxury itineraries: an
+    // 11-night single-city Venice computed 28000 → capped at 24000 → "plan
+    // was cut off" because the model ran out of budget mid-days[] on a
+    // content-dense European city with 5 items per day.
+    //
+    // Revised formula:
+    //   floor: 5000 (system overhead for logistics/flags/planb/snobs/tonight)
+    //   per-day: 2200 (was 2000) — luxury destinations need ~2200 tokens/day
+    //                              for 5 items with names, addresses,
+    //                              reservation notes, confirmation hints
+    //   per-extra-city: 1200 (unchanged — multi-city overhead)
+    //   cap: 32000 (was 24000)
+    //
+    // Cap raised to 32000 to match the full-revision flow's max_tokens —
+    // the original 24k build cap was perversely below its own revision
+    // pass. 32k at ~60 tok/s ≈ 9 min: at the edge of SSE stability but
+    // the build pipeline runs in a Worker with ctx.waitUntil and stores
+    // chunks in KV, so a client-side SSE timeout doesn't lose the build
+    // — the user can reconnect/poll and pick up where they left off.
+    //
+    // Worked examples:
+    //   3-night single-city:  5000 + 4*2200 + 0   = 13800   (was 12000)
+    //   7-night single-city:  5000 + 8*2200 + 0   = 22600   (was 20000)
+    //   11-night single-city: 5000 + 12*2200 + 0  = 31400   (was capped 24000 — truncated)
+    //   14-night single-city: 5000 + 15*2200 + 0  = 38000 → capped 32000
+    //   14-night 4-city:      5000 + 15*2200 + 3*1200 = 41600 → capped 32000
+    //
+    // Big single-city trips longer than 12 nights and big multi-city trips
+    // (≥6 city-nights of overhead) can still hit the cap. Those cases are
+    // rare; if they truncate, the salvage layer recovers a partial plan and
+    // the user can hit Build again or split into a multi-leg flow.
     const maxTokensForTrip = Math.min(
-      24000,
-      Math.max(8000, 4000 + (nightsNum + 1) * 2000 + Math.max(0, citiesCount - 1) * 1200),
+      32000,
+      Math.max(8000, 5000 + (nightsNum + 1) * 2200 + Math.max(0, citiesCount - 1) * 1200),
     );
     const userPromptForBuild = buildUserPrompt();
     const body = {
