@@ -40,6 +40,67 @@ const PER_SOURCE_TIMEOUT_MS = 8000;
 const TOTAL_TIMEOUT_MS = 15000;
 const MAX_RESULTS_PER_QUERY = 3;
 
+// ---- KV response cache for Sonar lookups --------------------------------
+// Each /api/review-retrieve fans out up to 7 paid Sonar calls in parallel,
+// each 1–2 seconds and a non-trivial line item per call. Cache results so
+// re-running review on the same trip (very common while iterating on a
+// build) or running review on a different trip with the same destination
+// returns instantly with zero Sonar spend.
+//
+// Cache key: rev:v1:<sha256-of-source_id+query>
+//   The query string already incorporates destination, hotel_name, and the
+//   first restaurant (see SOURCE_CONFIG). Domains and recency are static
+//   per source. So identical (source_id, query) tuples always hit.
+//
+// TTL: 2 hours. Travel-press results genuinely DO move (Michelin updates,
+// hotels close, hot lists rotate) so 30 days would serve stale content;
+// 2h captures the common case (re-runs and same-day work) without ever
+// returning a result more than a couple of hours old.
+const REVIEW_CACHE_VERSION = "v1"; // bump when SOURCE_CONFIG queries change shape
+const REVIEW_CACHE_TTL = 60 * 60 * 2; // 2 hours
+
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  const view = new Uint8Array(digest);
+  let hex = "";
+  for (let i = 0; i < view.length; i++) {
+    hex += view[i].toString(16).padStart(2, "0");
+  }
+  return hex;
+}
+
+async function cacheKeyFor(source_id, query) {
+  const hash = await sha256Hex(`${source_id}\u0000${query}`);
+  return `rev:${REVIEW_CACHE_VERSION}:${hash}`;
+}
+
+async function readCache(env, key) {
+  if (!env?.JOBS) return null;
+  try {
+    const raw = await env.JOBS.get(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.results)) return parsed.results;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(env, key, results, ctx) {
+  if (!env?.JOBS) return;
+  // Don't cache empty result sets — they're usually transient (Sonar quota,
+  // domain block, etc.) and we want the next call to actually retry.
+  if (!Array.isArray(results) || results.length === 0) return;
+  const p = env.JOBS.put(key, JSON.stringify({ results }), {
+    expirationTtl: REVIEW_CACHE_TTL,
+  }).catch(() => { /* swallow — a failed write is never worth blocking on */ });
+  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(p);
+}
+
 // Map each reviewer source id → query builder + domain filter.
 // `q(ctx)` returns the single best query for that source given trip context.
 // `domains` scopes Sonar to authoritative URLs only (max 20 per Sonar docs).
@@ -131,7 +192,8 @@ export async function onRequestOptions() {
   });
 }
 
-export async function onRequestPost({ request, env }) {
+export async function onRequestPost(context) {
+  const { request, env } = context;
   const startedAt = Date.now();
 
   if (!env.PERPLEXITY_API_KEY) {
@@ -189,16 +251,34 @@ export async function onRequestPost({ request, env }) {
   const snippets = [];
   const errors = [];
 
+  let cacheHits = 0;
   await Promise.all(
     queries.map(async (q) => {
       try {
+        // Cache lookup first — sub-50ms KV read beats 1–2s Sonar call.
+        const key = await cacheKeyFor(q.source_id, q.query);
+        const cached = await readCache(env, key);
+        if (cached) {
+          cacheHits++;
+          snippets.push({
+            source_id: q.source_id,
+            source_name: q.source_name,
+            query: q.query,
+            results: cached,
+            cached: true,
+          });
+          return;
+        }
         const results = await searchOne(q, env.PERPLEXITY_API_KEY, totalAbort.signal);
         snippets.push({
           source_id: q.source_id,
           source_name: q.source_name,
           query: q.query,
           results,
+          cached: false,
         });
+        // Fire-and-forget cache write so we don't delay the response.
+        writeCache(env, key, results, context);
       } catch (err) {
         errors.push({ source_id: q.source_id, message: errMessage(err) });
       }
@@ -211,6 +291,8 @@ export async function onRequestPost({ request, env }) {
     snippets,
     errors,
     elapsed_ms: Date.now() - startedAt,
+    cache_hits: cacheHits,
+    cache_total: queries.length,
   });
 }
 
