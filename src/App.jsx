@@ -24,6 +24,44 @@ const GOLD = "#C4A862";
 const GOLD_LIGHT = "#F5EDD6";
 const GOLD_DARK = "#A08845";
 
+// --------------------------------------------------------------------------
+// Anthropic prompt-caching helper.
+//
+// Anthropic's Messages API accepts `system` as either a string OR an array of
+// content blocks. Adding `cache_control: { type: "ephemeral" }` to a block
+// tells Anthropic to cache the entire prompt prefix up to and including that
+// block for ~5 minutes. Subsequent calls with the same prefix pay ~10% of the
+// normal input-token price for the cached portion.
+//
+// Why we wrap every call site instead of caching by default:
+//   • Cache WRITES cost ~25% more than uncached input. Break-even is ~2 reads
+//     within the 5-minute TTL. Our review→revise pipeline and the
+//     surgical→full fallback both fire within seconds of each other on the
+//     same plan JSON, so they hit cache reliably.
+//   • We pass the system prompt as ONE block here for safety. A follow-up
+//     refactor can split static-reference vs dynamic-trip portions of
+//     buildSystemPrompt into two blocks to enable cache hits across builds
+//     for different trips (the bulky reference data is identical).
+//   • Min cacheable prefix is 1024 tokens (~4000 chars) for sonnet-4. Our
+//     smallest system prompt (review) is comfortably above that.
+//
+// Safe to call with any string — returns the array form Anthropic expects.
+// --------------------------------------------------------------------------
+function cachedSystem(systemString) {
+  if (typeof systemString !== "string" || systemString.length < 4000) {
+    // Below the cacheable threshold; pass through as-is. Anthropic accepts
+    // both string and array forms so this is a no-op shape change.
+    return systemString;
+  }
+  return [
+    {
+      type: "text",
+      text: systemString,
+      cache_control: { type: "ephemeral" },
+    },
+  ];
+}
+
 // Curated city list for autocomplete. Free-text entries are still allowed.
 const CITIES = [
   { name: "Lisbon", country: "Portugal" },
@@ -3931,7 +3969,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       const body = {
         model: "claude-sonnet-4-5",
         max_tokens: 8000,
-        system: buildReviewSystemPrompt(plan, selectedSources, inputs, liveSnippets),
+        system: cachedSystem(buildReviewSystemPrompt(plan, selectedSources, inputs, liveSnippets)),
         messages: [{ role: "user", content: buildReviewUserPrompt() }],
         tools: [REVIEW_TOOL],
         tool_choice: { type: "tool", name: "submit_review" },
@@ -4019,7 +4057,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
         ? {
             model: "claude-sonnet-4-5",
             max_tokens: 8000,
-            system: buildRevisionSystemPromptSurgical(plan, selectedForApply, inputs),
+            system: cachedSystem(buildRevisionSystemPromptSurgical(plan, selectedForApply, inputs)),
             messages: [{ role: "user", content: buildRevisionUserPromptSurgical() }],
             tools: [REVISION_TOOL_SURGICAL],
             tool_choice: { type: "tool", name: "submit_revision_patches" },
@@ -4027,7 +4065,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
         : {
             model: "claude-sonnet-4-5",
             max_tokens: 32000,
-            system: buildRevisionSystemPromptFull(plan, selectedForApply, inputs),
+            system: cachedSystem(buildRevisionSystemPromptFull(plan, selectedForApply, inputs)),
             messages: [{ role: "user", content: buildRevisionUserPromptFull() }],
             tools: [REVISION_TOOL_FULL],
             tool_choice: { type: "tool", name: "submit_trip_plan" },
@@ -4449,7 +4487,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
         ? {
             model: "claude-sonnet-4-5",
             max_tokens: 8000,
-            system: buildRevisionSystemPromptSurgical(plan, [fakeFinding], inputs),
+            system: cachedSystem(buildRevisionSystemPromptSurgical(plan, [fakeFinding], inputs)),
             messages: [{ role: "user", content: buildRevisionUserPromptSurgical() }],
             tools: [REVISION_TOOL_SURGICAL],
             tool_choice: { type: "tool", name: "submit_revision_patches" },
@@ -4457,7 +4495,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
         : {
             model: "claude-sonnet-4-5",
             max_tokens: 32000,
-            system: buildRevisionSystemPromptFull(plan, [fakeFinding], inputs),
+            system: cachedSystem(buildRevisionSystemPromptFull(plan, [fakeFinding], inputs)),
             messages: [{ role: "user", content: buildRevisionUserPromptFull() }],
             tools: [REVISION_TOOL_FULL],
             tool_choice: { type: "tool", name: "submit_trip_plan" },
@@ -8810,7 +8848,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     const body = {
       model: "claude-sonnet-4-5",
       max_tokens: maxTokensForTrip,
-      system: buildSystemPrompt(),
+      system: cachedSystem(buildSystemPrompt()),
       messages: [{ role: "user", content: userPromptForBuild }],
       tools: [TRIP_PLAN_TOOL],
       tool_choice: { type: "tool", name: "submit_trip_plan" },
