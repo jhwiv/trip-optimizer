@@ -2935,13 +2935,13 @@ async function clearShellCaches() {
   } catch (_) { /* ignore */ }
   try {
     if ('caches' in window) {
-      const keys = await caches.keys();
-      await Promise.all(keys.map((k) => caches.delete(k)));
+      const keys = await window.caches.keys();
+      await Promise.all(keys.map((k) => window.caches.delete(k)));
     }
   } catch (_) { /* ignore */ }
 }
 function hardReloadNow() {
-  const url = new URL(window.location.href);
+  const url = new window.URL(window.location.href);
   url.searchParams.set('_r', Date.now().toString(36));
   window.location.replace(url.toString());
 }
@@ -3596,6 +3596,16 @@ function ActivitiesView({ data }) {
 // Essentials view — pulls every non-itinerary block (Tonight, Weather & pack,
 // Heads up, Plan B, Snob's guide) into one focused tab. This frees Overview
 // from being a kitchen-sink view and gives a single "things to know" surface.
+// Hoisted section heading for EssentialsView. Previously defined inside the
+// component body, which made it a brand-new function reference on every
+// render — causing React to unmount + remount the heading nodes any time
+// the parent re-rendered. Now stable across renders.
+function EssentialsSectionHeading({ children }) {
+  return (
+    <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "18px 0 10px" }}>{children}</p>
+  );
+}
+
 function EssentialsView({ data }) {
   const sortedTonight = Array.isArray(data.tonight)
     ? [...data.tonight].map((t, i) => ({ t, i, p: tonightPriority(t) })).sort((a, b) => a.p.rank - b.p.rank || a.i - b.i)
@@ -3611,9 +3621,7 @@ function EssentialsView({ data }) {
       </p>
     );
   }
-  const H = ({ children }) => (
-    <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "18px 0 10px" }}>{children}</p>
-  );
+  const H = EssentialsSectionHeading;
   return (
     <div>
       {sortedTonight.length > 0 && (
@@ -7230,7 +7238,15 @@ export default function TripOptimizer() {
       return s;
     } catch { return null; }
   };
-  const recovered = loadSession();
+  // recovered must be computed ONCE per component mount, not on every render.
+  // Previously called loadSession() directly during render which executed
+  // Date.now() + localStorage.getItem on every render (and re-evaluated the
+  // TTL check, so a session could be "recovered" on first render and then
+  // "missing" on the next render after the TTL expired mid-session).
+  // useState with a lazy initializer runs loadSession() exactly once on mount
+  // and keeps the snapshot stable across all subsequent renders. The setter
+  // is intentionally unused — we just need the lazy-init contract.
+  const [recovered] = useState(() => loadSession());
 
   const [step, setStep] = useState(recovered?.step || 1);
   const [loading, setLoading] = useState(false);
