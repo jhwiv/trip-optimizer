@@ -7026,6 +7026,48 @@ function renderLiveSourceBlock(snippets) {
   return `\nLIVE SOURCE SIGNAL — real published results pulled just now from your reviewer panel. Use these as grounded evidence:\n${lines.join("\n")}\n\nWhen a finding is supported by one of these results, you MAY put the URL in the finding's source field alongside the source name (e.g. "Michelin Guide — https://guide.michelin.com/…"). Prefer findings supported by these live sources over speculative ones.\n`;
 }
 
+// --------------------------------------------------------------------------
+// planForPrompt(plan)
+//
+// Returns a compact JSON string of the plan with internal/app-only metadata
+// stripped, suitable for embedding in an LLM system prompt.
+//
+// Two wins vs the previous JSON.stringify(plan, null, 2):
+//
+//   1. Drops indentation. The pretty-printed form is ~30–40% larger than
+//      compact JSON for no model-side benefit — Claude reads both equally
+//      well. On a typical 18k-char plan, compact form is ~12k chars
+//      (~1500 fewer input tokens).
+//
+//   2. Strips fields starting with '_' (\_review, \_qc, \_verifiedAt, etc.).
+//      These are app-internal: the review state, quality-check overlays,
+//      URL-verification status, and assorted timestamps the app attaches
+//      after the model returned. The model never patches them in surgical
+//      mode and re-emits them fresh in full mode via the tool schema.
+//      Saves another 1–3k chars depending on review history.
+//
+// Used by buildReviewSystemPrompt, buildRevisionSystemPromptSurgical, and
+// buildRevisionSystemPromptFull — the three places that embed the full
+// plan JSON in their system prompt.
+//
+// Conservative: this is a NEW helper, not a replacement of plan structure.
+// The plan object in state is unchanged.
+// --------------------------------------------------------------------------
+function planForPrompt(plan) {
+  if (!plan || typeof plan !== "object") return JSON.stringify(plan);
+  // Shallow-copy then drop top-level keys starting with '_'. The model never
+  // needs these; they're set after the model returns and are noise in the
+  // prompt. Days[] items currently don't carry underscore-prefixed keys, so
+  // we don't need to recurse.
+  const cleaned = {};
+  for (const k of Object.keys(plan)) {
+    if (k.startsWith("_")) continue;
+    cleaned[k] = plan[k];
+  }
+  // Compact JSON — no indentation, no extra whitespace. Same semantics, fewer tokens.
+  return JSON.stringify(cleaned);
+}
+
 // full result object) plus the list of selected reviewer source objects so the
 // model knows which lenses to weight.
 function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
@@ -7095,7 +7137,7 @@ MODE_HINT GUIDE:
 • change_hotel_brand_tier — hotel brand or tier is wrong for budget. REQUIRES full re-plan.
 
 PLAN TO REVIEW (JSON):
-${JSON.stringify(plan, null, 2)}`;
+${planForPrompt(plan)}`;
 }
 
 function buildReviewUserPrompt() {
@@ -7135,7 +7177,7 @@ PATCH RULES:
 • Rationale: one short sentence per patch, plain language.
 
 PLAN TO PATCH (JSON):
-${JSON.stringify(plan, null, 2)}`;
+${planForPrompt(plan)}`;
 }
 
 function buildRevisionUserPromptSurgical() {
@@ -7189,7 +7231,7 @@ REVISION RULES:
 • If a finding's mode_hint is 'change_hotel_brand_tier', change the hotel item AND update any related fields (transport_in if hotel moved across town, neighborhood references in headlines, etc.) — keep the plan internally consistent.
 
 ORIGINAL PLAN (use as starting point — change only what the findings require):
-${JSON.stringify(plan, null, 2)}`;
+${planForPrompt(plan)}`;
 }
 
 function buildRevisionUserPromptFull() {
