@@ -669,6 +669,107 @@ function renderCover(cur, data, inputs, _opts) {
 }
 
 // -----------------------------------------------------------------------------
+// INTRODUCTION PAGE
+// -----------------------------------------------------------------------------
+// Standing instruction (user-set 2026-06-08): every itinerary PDF includes a
+// dedicated full Introduction page positioned after the cover and before the
+// Day-by-Day section. The page is destination-name + year as heading (same
+// style as day headers), then two flowing-prose paragraphs separated by a
+// thin rule — Part 1 "Arc of the Journey" and Part 2 "What Makes This
+// Itinerary Different". No headers between parts. No bullets. The page MUST
+// NOT show the word "Introduction".
+//
+// The two prose strings live on data.introduction.{arc, differentiators} and
+// are emitted by the planner model (see INTRODUCTION-PAGE rule in the system
+// prompt). When the model returned no genuinely distinctive off-path
+// elements it writes 'NONE_FLAGGED' in differentiators — we surface that as
+// a small italic note instead of fabricating content.
+// -----------------------------------------------------------------------------
+function renderIntroduction(cur, data, inputs) {
+  const { pdf } = cur;
+  const intro = data && data.introduction;
+  if (!intro || (typeof intro.arc !== "string" && typeof intro.differentiators !== "string")) {
+    return; // no introduction to render — silently skip
+  }
+
+  // Force a fresh page so the intro always gets its own.
+  cur.newPage();
+
+  // Heading: destination name + year, same style as day headers — small caps,
+  // tracked, gold. NO word "Introduction".
+  const headingDest = (() => {
+    const cityList = Array.isArray(data?.cities) ? data.cities : [];
+    if (cityList.length >= 2) {
+      const first = safe(cityList[0]?.name);
+      const last = safe(cityList[cityList.length - 1]?.name);
+      if (first && last && first !== last) return `${first} to ${last}`;
+    }
+    return safe(data?.destination || (cityList[0]?.name) || "Your trip");
+  })();
+  // Derive year from inputs.basics.startDate (YYYY-MM-DD) when available.
+  const startDate = safe(inputs?.basics?.startDate || "");
+  const yearMatch = startDate.match(/(\d{4})/);
+  const year = yearMatch ? yearMatch[1] : "";
+  const headingText = year ? `${headingDest} · ${year}` : headingDest;
+
+  cur.space(2);
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(10);
+  pdf.setCharSpace(1.6);
+  cur.setColor(COLOR.gold);
+  const headingMaxW = PAGE.width - PAGE.marginX * 2;
+  const headingLines = pdf.splitTextToSize(asciiSafe(headingText.toUpperCase()), headingMaxW);
+  const headingLineH = (10 * 1.2) / 2.83465;
+  headingLines.forEach((ln, i) => {
+    pdf.text(ln, PAGE.marginX, cur.state.y + i * headingLineH);
+  });
+  cur.state.y += Math.max(0, headingLines.length - 1) * headingLineH;
+  pdf.setCharSpace(0);
+  cur.space(2);
+  cur.accentRule(48);
+  cur.space(8);
+
+  // Body — navy text in serif, generous leading for an editorial read.
+  // The two parts sit as separated paragraphs; a thin gold rule between
+  // them gives a visual breath without breaking the spec's "no headers"
+  // rule (the spec explicitly allows a rule when the design system uses one).
+  const arcText = (intro.arc && typeof intro.arc === "string") ? intro.arc.trim() : "";
+  const diffText = (intro.differentiators && typeof intro.differentiators === "string") ? intro.differentiators.trim() : "";
+
+  if (arcText) {
+    cur.text(arcText, {
+      font: FONT.serif,
+      style: "normal",
+      size: 11.5,
+      color: COLOR.ink,
+      leading: 1.55,
+    });
+  }
+
+  if (diffText && diffText !== "NONE_FLAGGED") {
+    cur.space(4);
+    // Thin gold rule between Part 1 and Part 2 — spec-permitted breath.
+    cur.accentRule(28);
+    cur.space(4);
+    cur.text(diffText, {
+      font: FONT.serif,
+      style: "normal",
+      size: 11.5,
+      color: COLOR.ink,
+      leading: 1.55,
+    });
+  } else if (diffText === "NONE_FLAGGED") {
+    // The model flagged that this itinerary has no genuinely distinctive
+    // off-path elements. Surface that honestly rather than fabricate.
+    cur.space(4);
+    cur.text(
+      "The planner flagged this itinerary as a strong but standard route — no off-the-beaten-path differentiators worth singling out. Consider asking the reviewer for unusual additions if you want more distinction.",
+      { font: FONT.sans, style: "italic", size: 10, color: COLOR.inkSoft, leading: 1.4 },
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
 // DAY PAGES
 // -----------------------------------------------------------------------------
 function renderDay(cur, day, index) {
@@ -1168,6 +1269,11 @@ function renderFooters(pdf, opts) {
       : `Trip Optimizer${opts.buildId ? ` · ${opts.buildId}` : ""}`;
     pdf.text(asciiSafe(left), PAGE.marginX, footerY);
 
+    // Suppress the X/Y page number on the introduction page per spec
+    // ("no page number on this page"). The brand mark on the left stays so
+    // the page still anchors visually to the rest of the document.
+    if (opts.introPageIndex && i === opts.introPageIndex) continue;
+
     const right = `${i} / ${total}`;
     const rw = pdf.getTextWidth(right);
     pdf.text(right, PAGE.width - PAGE.marginX - rw, footerY);
@@ -1202,7 +1308,18 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
   // 1. Cover
   renderCover(cur, data, inputs, { buildId });
 
-  // 2. Days — flow onto the current page if there's room, otherwise let
+  // 2. Introduction page — a dedicated full page after the cover and before
+  // the Day-by-Day section. Skipped silently if data.introduction is missing
+  // (older builds, partial recovery from truncated streams) so the PDF still
+  // generates cleanly without it.
+  const beforeIntroPage = cur.state.page;
+  renderIntroduction(cur, data, inputs);
+  // The intro page (if it rendered) is the page right after the cover.
+  // Capture it so renderFooters can suppress the X/Y page number on it,
+  // per the spec "no page number on this page".
+  const introPageIndex = (cur.state.page > beforeIntroPage) ? cur.state.page : null;
+
+  // 3. Days — flow onto the current page if there's room, otherwise let
   // ensureSpace push to a new page. Previously this hard-coded a newPage()
   // which left a huge blank gap at the bottom of the cover page whenever
   // "What you told us" was short. Reserving ~60mm forces a break only when
@@ -1219,11 +1336,11 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
     days.forEach((d, i) => renderDay(cur, d, i));
   }
 
-  // 3. References
+  // 4. References
   renderReferences(cur, data);
 
-  // 4. Footers (after everything else so page count is final)
-  renderFooters(pdf, { buildId });
+  // 5. Footers (after everything else so page count is final)
+  renderFooters(pdf, { buildId, introPageIndex });
 
   return pdf;
 }

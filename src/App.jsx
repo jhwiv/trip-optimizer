@@ -6879,6 +6879,15 @@ const TRIP_PLAN_TOOL = {
       },
       snobs: { type: "array", items: { type: "string" }, description: "WRITE LAST. Insider tone notes." },
       tonight: { type: "array", items: { type: "string" }, description: "WRITE LAST. Action items to do tonight — each prefixed with priority: '⚠︎ Must today:', '· This week:', or 'Anytime:'. Most urgent first." },
+      introduction: {
+        type: "object",
+        description: "WRITE LAST. Two-part introduction page for the PDF — see INTRODUCTION-PAGE rule in the system prompt for full spec. Required for every trip; the PDF renders a dedicated full page from this object.",
+        properties: {
+          arc: { type: "string", description: "Part 1 — The Arc of the Journey. 3–4 sentences explaining the logic and emotional flow of THIS specific trip's route: why this sequence, what the traveler moves through geographically and culturally from first day to last. Second person ('you', 'your group') or third person using traveler names. Never first person. No bullets. No superlatives ('world-class', 'once-in-a-lifetime', 'breathtaking', 'incredible', 'amazing'). No passive voice. Reflects the ACTUAL routing logic of this trip, not generic destination copy." },
+          differentiators: { type: "string", description: "Part 2 — What Makes This Itinerary Different. One compact paragraph (NOT a bullet list) weaving in 5–8 specific moments / off-the-beaten-path stops / insider access / sequencing choices a generic itinerary would not include. Name each one specifically (the actual restaurant, winery, hidden site, contact name, or sequencing decision FROM THIS PLAN). Do NOT invent or generalize — every item must already appear in days[]. If this itinerary has no genuinely distinctive off-path elements, write exactly 'NONE_FLAGGED' in this field instead of fabricating them. Same tone rules as arc: no superlatives, no passive voice, no bullets." },
+        },
+        required: ["arc", "differentiators"],
+      },
     },
     required: ["destination", "meta", "days"],
   },
@@ -8486,6 +8495,18 @@ PLAN B (top-level, ≥5 entries):
 TONIGHT (top-level):
 • Prefix each action: '⚠︎ Must today:' for things that lose value if delayed (sold-out restaurants, advance-only tours), '· This week:' for important but flexible, 'Anytime:' for low-urgency. Order most-urgent first.
 
+INTRODUCTION PAGE — REQUIRED, WRITTEN LAST AFTER days[]:
+Every plan MUST include an introduction object with two prose fields: arc and differentiators. The PDF renders these as a dedicated full page after the cover. Both fields are flowing prose, never bullet lists.
+• arc (3–4 sentences, ~80–120 words): The Arc of the Journey. Explain WHY THIS SPECIFIC ROUTE is sequenced the way it is and what the traveler moves through geographically, culturally, and atmospherically from first day to last. Build anticipation by giving the reader a mental map of the trip's shape. NOT a destination description, NOT a list of stops — a narrative arc grounded in the actual day-by-day routing of THIS plan.
+• differentiators (one paragraph, ~150–250 words): What Makes This Itinerary Different. Weave 5–8 specific moments / off-the-beaten-path stops / insider access / sequencing choices into flowing prose. EVERY item named here must already appear in days[] — name the actual restaurant, winery, hidden site, contact (e.g. "Andrea Del Vecchio"), or sequencing decision. Do NOT invent. Do NOT generalize.
+• If this itinerary has NO genuinely distinctive off-path elements, write exactly the literal string 'NONE_FLAGGED' in the differentiators field instead of fabricating distinction. The app will surface this to the user.
+• Total intro length 350–450 words combined.
+• Voice: second person ("you", "your group") or third person using traveler names. NEVER first person.
+• BANNED phrases: world-class, once-in-a-lifetime, breathtaking, incredible, amazing, unforgettable, magical, journey of a lifetime, hidden gem (as a phrase), bucket list. Use specific concrete language instead.
+• NO passive voice. NO bullet points. NO bold markdown. NO headers between the two parts — they sit as two paragraphs.
+• Tone: warm, confident, specific. Write as if a well-traveled friend who knows this destination deeply is telling another sophisticated traveler what makes this particular trip worth doing. The travelers are sophisticated adults who appreciate knowing WHY each decision was made.
+• The introduction is written from scratch for every trip. Do not reuse phrasing across builds.
+
 TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood detail. Avoid travel-blog vagueness.`;
 
     // ---- DYNAMIC PER-TRIP PREAMBLE ----------------------------------
@@ -9156,7 +9177,9 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // to grow if real-world data shows even bigger tours still saturating.
     const maxTokensForTrip = Math.min(
       40000,
-      Math.max(8000, 5000 + (nightsNum + 1) * 2200 + Math.max(0, citiesCount - 1) * 1200),
+      // Floor bumped 5000 → 5800 to fit the introduction object (~600 output
+      // tokens for the arc + differentiators paragraphs).
+      Math.max(8000, 5800 + (nightsNum + 1) * 2200 + Math.max(0, citiesCount - 1) * 1200),
     );
     const userPromptForBuild = buildUserPrompt();
     // buildSystemPrompt() now returns { staticRules, dynamicPreamble } so we
