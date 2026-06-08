@@ -4662,7 +4662,14 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
           return (
             <button
               key={t.id}
-              onClick={() => setTargetId(t.id)}
+              onClick={() => {
+                setTargetId(t.id);
+                // Re-engaging with the composer should clear any stale
+                // 'Change cancelled.' / 'Change failed.' error so the user
+                // doesn't see an error message hovering over a fresh
+                // selection, which reads like the new selection is failing.
+                if (status === "error") { setStatus("idle"); setError(""); }
+              }}
               style={{
                 fontSize: "11px",
                 fontWeight: 600,
@@ -4708,7 +4715,13 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
       <div style={{ marginBottom: "10px" }}>
         <NarrativeBox
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            // Same reasoning as the target-chip click handler above —
+            // typing into the textarea is re-engagement and should clear
+            // any stale error from the previous attempt.
+            if (status === "error") { setStatus("idle"); setError(""); }
+          }}
           placeholder={target.placeholder}
           size={target.id === "external_review" ? "large" : "compact"}
           minHeight={target.id === "external_review" ? "220px" : undefined}
