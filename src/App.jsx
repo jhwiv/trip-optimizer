@@ -9165,18 +9165,25 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     //                             truncation screenshot 2026-06-08)
     //   14-night 4-city:       5000 + 15*2200 + 3*1200     = 41600 → capped 40000
     //
-    // Cap raised 32k → 40k specifically for content-dense multi-city tours
-    // (Croatia island-hop, Italy multi-stop, Scandinavia loop). 40k at
-    // ~60 tok/s ≈ 11 min worst case — above the SSE comfort window, but the
-    // build pipeline runs in a Worker with ctx.waitUntil + JOBS KV chunk
-    // storage, so a client-side SSE drop doesn't lose the build. The user
-    // reconnects and picks up where they left off via the resume path in
-    // /api/build/[id].
+    // Cap raised 32k → 40k → 48k as real trips saturated each prior ceiling.
+    // The 40k ceiling truncated an 11-night 9-city Croatia tour at the
+    // planb field (user-reported QualityCheck warning 2026-06-08:
+    // "Plan B has only 0 entries (expected ≥5)" together with
+    // "Plan hit the model's token budget mid-output"). That trip's raw
+    // demand was 41,800 tokens; 48k gives a comfortable margin for trips
+    // up to about 14 nights / 9 cities before saturation returns.
     //
-    // Sonnet-4-5 supports up to 64k output tokens, so 40k still leaves room
-    // to grow if real-world data shows even bigger tours still saturating.
+    // 48k at ~60 tok/s ≈ 13 min worst case — past the SSE comfort window,
+    // but the build pipeline runs in a Worker with ctx.waitUntil + JOBS KV
+    // chunk storage, so a client-side SSE drop doesn't lose the build. The
+    // user reconnects and picks up where they left off via the resume path
+    // in /api/build/[id]. The 'still building' indicator from PR #15 keeps
+    // the long-tail wait honest.
+    //
+    // Sonnet-4-5 supports up to 64k output tokens, so 48k still leaves
+    // headroom if even bigger tours need it later.
     const maxTokensForTrip = Math.min(
-      40000,
+      48000,
       // Floor bumped 5000 → 5800 to fit the introduction object (~600 output
       // tokens for the arc + differentiators paragraphs).
       Math.max(8000, 5800 + (nightsNum + 1) * 2200 + Math.max(0, citiesCount - 1) * 1200),
