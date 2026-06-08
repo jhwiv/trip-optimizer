@@ -4876,6 +4876,151 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
   );
 }
 
+// --------------------------------------------------------------------------
+// IntroductionPasteCard
+//
+// Paste box on the result page for an externally-generated introduction. The
+// PDF renderer (renderIntroduction in itineraryPdf.js) reads two fields off
+// the plan:
+//   data.introduction.arc             — Part 1, The Arc of the Journey
+//   data.introduction.differentiators — Part 2, What Makes This Itinerary Different
+// or treats data.introduction.differentiators === 'NONE_FLAGGED' as the
+// honest-no-differentiators state.
+//
+// We removed the planner-side generation (PR #20) because adding ~600 output
+// tokens to the build was contributing to max_tokens truncations on big
+// trips. The intro is now produced by an external AI tool and pasted here.
+//
+// The card lifts state via onPlanRevised so the introduction persists with
+// the rest of the plan (auto-save, session recovery, saved trips). Same
+// lift idiom as ChangeRequestCard.
+// --------------------------------------------------------------------------
+function IntroductionPasteCard({ plan, onPlanRevised }) {
+  const existing = plan && plan.introduction;
+  const [open, setOpen] = useState(false);
+  const [arc, setArc] = useState(existing?.arc || "");
+  const [diff, setDiff] = useState(existing?.differentiators || "");
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  if (!plan?.days || plan.days.length === 0) return null;
+
+  const hasExisting = !!(existing && (existing.arc || existing.differentiators));
+  const cardStyle = {
+    border: `0.5px dashed ${GOLD}`,
+    borderRadius: "var(--border-radius-md)",
+    padding: "14px 16px",
+    marginBottom: "1.25rem",
+    background: "var(--color-background-primary)",
+  };
+  const labelStyle = { fontSize: "10.5px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" };
+
+  const handleSave = () => {
+    const arcTrim = arc.trim();
+    const diffTrim = diff.trim();
+    // Empty save = clear the introduction.
+    if (!arcTrim && !diffTrim) {
+      const next = { ...plan };
+      delete next.introduction;
+      onPlanRevised(next);
+    } else {
+      onPlanRevised({
+        ...plan,
+        introduction: { arc: arcTrim, differentiators: diffTrim },
+      });
+    }
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 1800);
+    setOpen(false);
+  };
+
+  // Collapsed teaser
+  if (!open) {
+    return (
+      <div style={cardStyle}>
+        <button
+          onClick={() => setOpen(true)}
+          style={{ width: "100%", border: "none", background: "transparent", padding: "4px 0", cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}
+        >
+          <span>
+            <span style={labelStyle}>{hasExisting ? "Introduction · saved" : "Paste an introduction"}</span>
+            <span style={{ display: "block", fontSize: "12.5px", color: "var(--color-text-secondary)", marginTop: "2px" }}>
+              {hasExisting
+                ? "This intro will appear as page 2 of the PDF. Click to edit or replace it."
+                : "Paste a two-part intro (Arc + Differentiators) generated externally. It will appear as page 2 of the PDF."}
+            </span>
+            {savedFlash && (
+              <span style={{ display: "block", fontSize: "11.5px", color: GOLD, marginTop: "4px" }}>✓ Saved — included on next PDF export.</span>
+            )}
+          </span>
+          <span style={{ flex: "0 0 auto", fontSize: "18px", color: GOLD, fontWeight: 300 }}>+</span>
+        </button>
+      </div>
+    );
+  }
+
+  // Open composer
+  const textAreaStyle = {
+    width: "100%",
+    boxSizing: "border-box",
+    border: "1px solid var(--color-border-tertiary, #e3e3e3)",
+    borderRadius: "6px",
+    padding: "10px 12px",
+    fontFamily: "inherit",
+    fontSize: "13px",
+    lineHeight: "1.45",
+    color: "var(--color-text-primary)",
+    background: "var(--color-background-primary)",
+    resize: "vertical",
+  };
+
+  return (
+    <div style={cardStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "10px" }}>
+        <span style={labelStyle}>Paste introduction</span>
+        <button onClick={() => setOpen(false)} style={{ border: "none", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontSize: "12px" }}>× close</button>
+      </div>
+      <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 12px" }}>
+        Two flowing-prose paragraphs. Part 1 · Arc of the Journey (3–4 sentences, ~80–120 words). Part 2 · What Makes This Itinerary Different (one paragraph, ~150–250 words). 350–450 words total. No bullets, no superlatives. Leave Part 2 empty (or paste the literal word NONE_FLAGGED) to render an honest “no differentiators” note instead of fabricated content.
+      </p>
+      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 6px" }}>Part 1 · The Arc of the Journey</label>
+      <textarea
+        value={arc}
+        onChange={(e) => setArc(e.target.value)}
+        rows={4}
+        placeholder={"3–4 sentences explaining why this route is sequenced the way it is, what the traveler moves through from first day to last…"}
+        style={{ ...textAreaStyle, marginBottom: "12px" }}
+      />
+      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 6px" }}>Part 2 · What Makes This Itinerary Different</label>
+      <textarea
+        value={diff}
+        onChange={(e) => setDiff(e.target.value)}
+        rows={8}
+        placeholder={"One paragraph weaving in 5–8 specific moments, off-the-beaten-path stops, insider access, or sequencing choices that a generic itinerary would miss. Name each one specifically. Or paste NONE_FLAGGED."}
+        style={{ ...textAreaStyle, marginBottom: "12px" }}
+      />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px" }}>
+        <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>
+          {(arc.trim().split(/\s+/).filter(Boolean).length + diff.trim().split(/\s+/).filter(Boolean).length)} words · target 350–450
+        </span>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button
+            onClick={() => { setArc(""); setDiff(""); }}
+            style={{ border: "1px solid var(--color-border-secondary)", background: "transparent", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", color: "var(--color-text-secondary)" }}
+          >
+            Clear
+          </button>
+          <button
+            onClick={handleSave}
+            style={{ border: `1px solid ${GOLD}`, background: GOLD, color: "#fff", padding: "6px 14px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", fontWeight: 600 }}
+          >
+            Save introduction
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, savedTripId, onPlanRevised, onReviewChange, initialReview }) {
   const [menuRestaurant, setMenuRestaurant] = useState(null);
   // Section tab state — default "overview" keeps the existing day-by-day
@@ -4961,6 +5106,11 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
 
       <TripHero data={data} />
       <QualityBadge qc={qc} />
+
+      {/* Introduction paste box — externally-generated intro lands here and
+          renders as page 2 of the PDF (see renderIntroduction). The planner
+          itself no longer generates the introduction (PR #20). */}
+      <IntroductionPasteCard plan={rawData} onPlanRevised={onPlanRevised} />
 
       {/* Professional review surface — user-initiated, sits between hero and the day-by-day content. */}
       <ReviewPanel
@@ -6879,15 +7029,11 @@ const TRIP_PLAN_TOOL = {
       },
       snobs: { type: "array", items: { type: "string" }, description: "WRITE LAST. Insider tone notes." },
       tonight: { type: "array", items: { type: "string" }, description: "WRITE LAST. Action items to do tonight — each prefixed with priority: '⚠︎ Must today:', '· This week:', or 'Anytime:'. Most urgent first." },
-      introduction: {
-        type: "object",
-        description: "WRITE LAST. Two-part introduction page for the PDF — see INTRODUCTION-PAGE rule in the system prompt for full spec. Required for every trip; the PDF renders a dedicated full page from this object.",
-        properties: {
-          arc: { type: "string", description: "Part 1 — The Arc of the Journey. 3–4 sentences explaining the logic and emotional flow of THIS specific trip's route: why this sequence, what the traveler moves through geographically and culturally from first day to last. Second person ('you', 'your group') or third person using traveler names. Never first person. No bullets. No superlatives ('world-class', 'once-in-a-lifetime', 'breathtaking', 'incredible', 'amazing'). No passive voice. Reflects the ACTUAL routing logic of this trip, not generic destination copy." },
-          differentiators: { type: "string", description: "Part 2 — What Makes This Itinerary Different. One compact paragraph (NOT a bullet list) weaving in 5–8 specific moments / off-the-beaten-path stops / insider access / sequencing choices a generic itinerary would not include. Name each one specifically (the actual restaurant, winery, hidden site, contact name, or sequencing decision FROM THIS PLAN). Do NOT invent or generalize — every item must already appear in days[]. If this itinerary has no genuinely distinctive off-path elements, write exactly 'NONE_FLAGGED' in this field instead of fabricating them. Same tone rules as arc: no superlatives, no passive voice, no bullets." },
-        },
-        required: ["arc", "differentiators"],
-      },
+      // NOTE: introduction is intentionally NOT in this schema. It is
+      // generated by an external AI tool and pasted into the rendered plan
+      // via the Introduction paste box on the result page. Keeping it out
+      // of the planner's responsibility saves ~600 output tokens per build
+      // and removes one source of max_tokens truncation pressure.
     },
     required: ["destination", "meta", "days"],
   },
@@ -8495,18 +8641,6 @@ PLAN B (top-level, ≥5 entries):
 TONIGHT (top-level):
 • Prefix each action: '⚠︎ Must today:' for things that lose value if delayed (sold-out restaurants, advance-only tours), '· This week:' for important but flexible, 'Anytime:' for low-urgency. Order most-urgent first.
 
-INTRODUCTION PAGE — REQUIRED, WRITTEN LAST AFTER days[]:
-Every plan MUST include an introduction object with two prose fields: arc and differentiators. The PDF renders these as a dedicated full page after the cover. Both fields are flowing prose, never bullet lists.
-• arc (3–4 sentences, ~80–120 words): The Arc of the Journey. Explain WHY THIS SPECIFIC ROUTE is sequenced the way it is and what the traveler moves through geographically, culturally, and atmospherically from first day to last. Build anticipation by giving the reader a mental map of the trip's shape. NOT a destination description, NOT a list of stops — a narrative arc grounded in the actual day-by-day routing of THIS plan.
-• differentiators (one paragraph, ~150–250 words): What Makes This Itinerary Different. Weave 5–8 specific moments / off-the-beaten-path stops / insider access / sequencing choices into flowing prose. EVERY item named here must already appear in days[] — name the actual restaurant, winery, hidden site, contact (e.g. "Andrea Del Vecchio"), or sequencing decision. Do NOT invent. Do NOT generalize.
-• If this itinerary has NO genuinely distinctive off-path elements, write exactly the literal string 'NONE_FLAGGED' in the differentiators field instead of fabricating distinction. The app will surface this to the user.
-• Total intro length 350–450 words combined.
-• Voice: second person ("you", "your group") or third person using traveler names. NEVER first person.
-• BANNED phrases: world-class, once-in-a-lifetime, breathtaking, incredible, amazing, unforgettable, magical, journey of a lifetime, hidden gem (as a phrase), bucket list. Use specific concrete language instead.
-• NO passive voice. NO bullet points. NO bold markdown. NO headers between the two parts — they sit as two paragraphs.
-• Tone: warm, confident, specific. Write as if a well-traveled friend who knows this destination deeply is telling another sophisticated traveler what makes this particular trip worth doing. The travelers are sophisticated adults who appreciate knowing WHY each decision was made.
-• The introduction is written from scratch for every trip. Do not reuse phrasing across builds.
-
 TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood detail. Avoid travel-blog vagueness.`;
 
     // ---- DYNAMIC PER-TRIP PREAMBLE ----------------------------------
@@ -9184,9 +9318,10 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // headroom if even bigger tours need it later.
     const maxTokensForTrip = Math.min(
       48000,
-      // Floor bumped 5000 → 5800 to fit the introduction object (~600 output
-      // tokens for the arc + differentiators paragraphs).
-      Math.max(8000, 5800 + (nightsNum + 1) * 2200 + Math.max(0, citiesCount - 1) * 1200),
+      // Floor reverted to 5000: the introduction is no longer generated by
+      // the planner (handled externally and pasted in), so the ~600-token
+      // bump that PR #18 added is no longer needed.
+      Math.max(8000, 5000 + (nightsNum + 1) * 2200 + Math.max(0, citiesCount - 1) * 1200),
     );
     const userPromptForBuild = buildUserPrompt();
     // buildSystemPrompt() now returns { staticRules, dynamicPreamble } so we
