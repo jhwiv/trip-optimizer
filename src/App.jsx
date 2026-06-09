@@ -8167,6 +8167,12 @@ export default function TripOptimizer() {
     return () => clearTimeout(t);
   }, [result, step, currentSavedTripId, reviewState, basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative]);
   const [outputs, setOut] = useState({ itinerary: true, weather: true, navigation: true, logistics: true, tonight: true, menus: true, flags: true, planb: true, snobs: true, practical: false, badges: false, pronunciation: false });
+  // Step 1 has a collapsible Output Sections panel so users can pick which
+  // sections to include BEFORE clicking 'Build now with essentials only' —
+  // which bypasses Step 2 entirely. Default collapsed to keep Step 1 visually
+  // calm; expanded by user choice. Same outputs state as Step 2's panel — the
+  // two cards share one source of truth.
+  const [step1OutputsOpen, setStep1OutputsOpen] = useState(false);
 
   const togOut = k => setOut(o => ({ ...o, [k]: !o[k] }));
 
@@ -9894,6 +9900,35 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 <Field label="Base area or neighborhood" hint={areaHint}>
                   <BaseAreaAutocomplete value={basics.baseArea} onChange={e => setB({ ...basics, baseArea: e.target.value })} placeholder="Where in the destination?" destination={basics.destination} />
                 </Field>
+              )}
+            </div>
+
+            {/* Output Sections — collapsible, available on Step 1 so users can
+                trim sections BEFORE clicking 'Build now with essentials only',
+                which bypasses Step 2 entirely. Same outputs state as Step 2's
+                Output Sections card. */}
+            <div style={cardStyle}>
+              <button
+                type="button"
+                onClick={() => setStep1OutputsOpen(!step1OutputsOpen)}
+                style={{ width: "100%", border: "none", background: "transparent", padding: 0, cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}
+              >
+                <span>
+                  <span style={ctStyle}>{`Output sections  ·  ${activeCount} of 12 active`}</span>
+                  {!step1OutputsOpen && (
+                    <span style={{ display: "block", fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "4px", fontStyle: "italic" }}>
+                      Want a slimmer PDF? Tap to choose which sections to include.
+                    </span>
+                  )}
+                </span>
+                <span style={{ flex: "0 0 auto", fontSize: "18px", color: GOLD, fontWeight: 300 }}>
+                  {step1OutputsOpen ? "−" : "+"}
+                </span>
+              </button>
+              {step1OutputsOpen && (
+                <div style={{ marginTop: "10px" }}>
+                  {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} />)}
+                </div>
               )}
             </div>
 
