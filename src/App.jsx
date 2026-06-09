@@ -4896,14 +4896,114 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
 // the rest of the plan (auto-save, session recovery, saved trips). Same
 // lift idiom as ChangeRequestCard.
 // --------------------------------------------------------------------------
-function IntroductionPasteCard({ plan, onPlanRevised }) {
+// Build a ready-to-paste prompt for an external AI to generate the intro.
+// Includes trip facts (destination, dates, route, traveler count, style) plus
+// a per-day one-liner summary so the AI has enough context to write specific,
+// non-generic copy. Wraps everything in the user's spec language so the
+// output matches the format the paste card and PDF renderer expect.
+function buildIntroPromptForExternalAI(plan, inputs) {
+  const dest = (plan?.destination || "").toString().trim();
+  const cities = Array.isArray(plan?.cities) ? plan.cities : [];
+  const route = cities.length >= 2
+    ? cities.map(c => (c?.name || "").toString().trim()).filter(Boolean).join(" → ")
+    : "";
+  const startDate = (inputs?.basics?.startDate || "").toString().trim();
+  const endDate = (inputs?.basics?.endDate || "").toString().trim();
+  const nights = (inputs?.basics?.nights || "").toString().trim();
+  const travelers = (inputs?.basics?.travelers || "").toString().trim();
+  const style = Array.isArray(inputs?.basics?.style) ? inputs.basics.style.filter(Boolean).join(", ") : "";
+  const pace = (inputs?.basics?.pace || "").toString().trim();
+  const budget = (inputs?.basics?.budget || "").toString().trim();
+
+  const factLines = [
+    dest && `Destination: ${dest}`,
+    route && `Route: ${route}`,
+    nights && `Nights: ${nights}`,
+    startDate && endDate ? `Dates: ${startDate} — ${endDate}` : (startDate && `Start date: ${startDate}`),
+    travelers && `Travelers: ${travelers}`,
+    style && `Style: ${style}`,
+    pace && `Pace: ${pace}`,
+    budget && `Budget tier: ${budget}`,
+  ].filter(Boolean);
+
+  // Per-day one-liner: "Day 3 · Rovinj → Plitvice: Plitvice Lakes lower trails + Roxanich winery (Wed Aug 26)"
+  const days = Array.isArray(plan?.days) ? plan.days : [];
+  const dayLines = days.map((d, i) => {
+    const label = (d?.label || `Day ${i + 1}`).toString().trim();
+    const headline = (d?.headline || "").toString().trim();
+    // Pull the top 2-3 named items so the AI knows what's actually scheduled.
+    const items = Array.isArray(d?.items) ? d.items : [];
+    const namedItems = items
+      .filter(it => it && (it.type === "Activity" || it.type === "Dinner" || it.type === "Hotel"))
+      .map(it => (it.text || it.name || "").toString().trim())
+      .filter(Boolean)
+      .slice(0, 3)
+      .join("; ");
+    const tail = [headline, namedItems].filter(Boolean).join(" — ");
+    return `• ${label}${tail ? ": " + tail : ""}`;
+  });
+
+  const flagsLine = Array.isArray(plan?.flags) && plan.flags.length
+    ? `\nKey flags from the build: ${plan.flags.slice(0, 4).map(f => (f || "").toString().trim()).filter(Boolean).join(" | ")}`
+    : "";
+
+  return `Write a two-part Introduction page for the trip below. The output will be pasted into a trip itinerary PDF as page 2.
+
+TRIP FACTS:
+${factLines.join("\n")}
+
+ITINERARY (one line per day so you know what's actually scheduled — reference these specifically; do not invent new stops):
+${dayLines.join("\n")}${flagsLine}
+
+FORMAT (strict):
+
+Part 1 — The Arc of the Journey
+3–4 sentences, ~80–120 words. Explain why THIS specific route is sequenced the way it is and what the traveler moves through geographically, culturally, and atmospherically from first day to last. Build anticipation by giving the reader a mental map of the trip's shape. NOT a destination description, NOT a list of stops — a narrative arc grounded in the actual day-by-day routing above.
+
+Part 2 — What Makes This Itinerary Different
+ONE compact paragraph (not a bullet list), ~150–250 words. Weave 5–8 SPECIFIC moments, off-the-beaten-path stops, insider access, or sequencing choices a generic itinerary would miss. Name each one specifically using the actual restaurant / winery / hidden site / contact / sequencing decision from the itinerary above. Do not invent. Do not generalize. If the itinerary has no genuinely distinctive off-path elements, write exactly the literal string NONE_FLAGGED for Part 2 instead of fabricating distinction.
+
+TOTAL LENGTH: 350–450 words combined.
+
+VOICE: Second person ("you", "your group") or third person using traveler names. NEVER first person.
+
+BANNED phrases (do not use any of these): world-class, once-in-a-lifetime, breathtaking, incredible, amazing, unforgettable, magical, journey of a lifetime, hidden gem (as a phrase), bucket list. Use specific concrete language instead.
+
+OTHER RULES:
+• No passive voice. No bullet points. No bold markdown. No headers between the two parts — they sit as two paragraphs.
+• Tone: warm, confident, specific. Write as if a well-traveled friend who knows this destination deeply is telling another sophisticated traveler what makes this particular trip worth doing.
+• The travelers are sophisticated adults who appreciate knowing WHY each decision was made.
+
+OUTPUT EXACTLY two paragraphs separated by a single blank line. No labels, no headers, no preamble — just the prose.`;
+}
+
+function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
   const existing = plan && plan.introduction;
   const [open, setOpen] = useState(false);
   const [arc, setArc] = useState(existing?.arc || "");
   const [diff, setDiff] = useState(existing?.differentiators || "");
   const [savedFlash, setSavedFlash] = useState(false);
+  const [copiedFlash, setCopiedFlash] = useState(false);
 
   if (!plan?.days || plan.days.length === 0) return null;
+
+  const handleCopyPrompt = async () => {
+    const prompt = buildIntroPromptForExternalAI(plan, inputs);
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setCopiedFlash(true);
+      setTimeout(() => setCopiedFlash(false), 2200);
+    } catch {
+      // Fallback for browsers that block clipboard API (insecure context,
+      // older Safari, etc.). Open a new tab with the prompt selected so the
+      // user can still Cmd+A / Cmd+C it manually.
+      const w = window.open("", "_blank");
+      if (w) {
+        w.document.write(`<pre style="white-space:pre-wrap;font-family:system-ui;padding:24px;max-width:800px;margin:0 auto">${prompt.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</pre>`);
+        w.document.close();
+      }
+    }
+  };
 
   const hasExisting = !!(existing && (existing.arc || existing.differentiators));
   const cardStyle = {
@@ -4934,27 +5034,38 @@ function IntroductionPasteCard({ plan, onPlanRevised }) {
     setOpen(false);
   };
 
-  // Collapsed teaser
+  // Collapsed teaser — two stacked affordances:
+  //   1) Copy prompt button (so user can hand the prompt to their external AI)
+  //   2) Click anywhere else to expand into the paste composer
   if (!open) {
     return (
       <div style={cardStyle}>
-        <button
-          onClick={() => setOpen(true)}
-          style={{ width: "100%", border: "none", background: "transparent", padding: "4px 0", cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}
-        >
-          <span>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+          <button
+            onClick={() => setOpen(true)}
+            style={{ flex: 1, border: "none", background: "transparent", padding: "4px 0", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
+          >
             <span style={labelStyle}>{hasExisting ? "Introduction · saved" : "Paste an introduction"}</span>
             <span style={{ display: "block", fontSize: "12.5px", color: "var(--color-text-secondary)", marginTop: "2px" }}>
               {hasExisting
                 ? "This intro will appear as page 2 of the PDF. Click to edit or replace it."
-                : "Paste a two-part intro (Arc + Differentiators) generated externally. It will appear as page 2 of the PDF."}
+                : "Hand the prompt to your AI, paste the two paragraphs back here, and the intro lands on page 2 of the PDF."}
             </span>
             {savedFlash && (
               <span style={{ display: "block", fontSize: "11.5px", color: GOLD, marginTop: "4px" }}>✓ Saved — included on next PDF export.</span>
             )}
-          </span>
-          <span style={{ flex: "0 0 auto", fontSize: "18px", color: GOLD, fontWeight: 300 }}>+</span>
-        </button>
+            {copiedFlash && (
+              <span style={{ display: "block", fontSize: "11.5px", color: GOLD, marginTop: "4px" }}>✓ Prompt copied — paste it into your AI now.</span>
+            )}
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); handleCopyPrompt(); }}
+            title="Copy a ready-made prompt for your external AI with all trip facts already filled in."
+            style={{ flex: "0 0 auto", border: `1px solid ${GOLD}`, background: "transparent", color: GOLD, padding: "7px 12px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "11.5px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", whiteSpace: "nowrap" }}
+          >
+            Copy AI prompt
+          </button>
+        </div>
       </div>
     );
   }
@@ -4976,10 +5087,22 @@ function IntroductionPasteCard({ plan, onPlanRevised }) {
 
   return (
     <div style={cardStyle}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "10px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "10px", gap: "12px" }}>
         <span style={labelStyle}>Paste introduction</span>
-        <button onClick={() => setOpen(false)} style={{ border: "none", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontSize: "12px" }}>× close</button>
+        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <button
+            onClick={handleCopyPrompt}
+            title="Copy a ready-made prompt for your external AI with all trip facts already filled in."
+            style={{ border: `1px solid ${GOLD}`, background: "transparent", color: GOLD, padding: "5px 10px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" }}
+          >
+            Copy AI prompt
+          </button>
+          <button onClick={() => setOpen(false)} style={{ border: "none", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontSize: "12px" }}>× close</button>
+        </div>
       </div>
+      {copiedFlash && (
+        <p style={{ fontSize: "11.5px", color: GOLD, margin: "0 0 8px" }}>✓ Prompt copied — paste it into your AI, then paste the two paragraphs back below.</p>
+      )}
       <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 12px" }}>
         Two flowing-prose paragraphs. Part 1 · Arc of the Journey (3–4 sentences, ~80–120 words). Part 2 · What Makes This Itinerary Different (one paragraph, ~150–250 words). 350–450 words total. No bullets, no superlatives. Leave Part 2 empty (or paste the literal word NONE_FLAGGED) to render an honest “no differentiators” note instead of fabricated content.
       </p>
@@ -5110,8 +5233,9 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
 
       {/* Introduction paste box — externally-generated intro lands here and
           renders as page 2 of the PDF (see renderIntroduction). The planner
-          itself no longer generates the introduction (PR #20). */}
-      <IntroductionPasteCard plan={rawData} onPlanRevised={onPlanRevised} />
+          itself no longer generates the introduction (PR #20). Inputs are
+          passed so the "Copy AI prompt" button can include trip facts. */}
+      <IntroductionPasteCard plan={rawData} inputs={inputs} onPlanRevised={onPlanRevised} />
 
       {/* Professional review surface — user-initiated, sits between hero and the day-by-day content. */}
       <ReviewPanel
