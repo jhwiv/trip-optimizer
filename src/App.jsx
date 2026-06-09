@@ -531,7 +531,8 @@ const AIRPORTS = [
 
 // Airlines — major carriers globally.
 const AIRLINES = [
-  "United", "American", "Delta", "JetBlue", "Alaska", "Southwest", "Spirit", "Frontier", "Hawaiian",
+  // Spirit (NK) removed 2026-06-09 — carrier ceased operations.
+  "United", "American", "Delta", "JetBlue", "Alaska", "Southwest", "Frontier", "Hawaiian",
   "Air Canada", "WestJet",
   "British Airways", "Virgin Atlantic", "Lufthansa", "Swiss", "Austrian", "Brussels Airlines",
   "Air France", "KLM", "Iberia", "TAP Air Portugal", "Aer Lingus",
