@@ -10610,15 +10610,44 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)" }}>
 
       <div style={{ padding: "2rem 1.75rem 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}>
-        <p style={{ fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 8px", color: "var(--color-text-secondary)" }}>Travel planning</p>
-        <p style={{ fontSize: "28px", fontWeight: "400", margin: "0 0 10px", color: "var(--color-text-primary)", letterSpacing: "-0.5px", fontFamily: "var(--font-serif)", fontStyle: "italic" }}>Trip Optimizer</p>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
-          <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Powered by</span>
-          <img
-            src="/brand-wordmark.png?v=2"
-            alt="Barrier Island Digital, LLC"
-            style={{ display: "block", height: "22px", width: "auto", opacity: 0.9 }}
-          />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <p style={{ fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 8px", color: "var(--color-text-secondary)" }}>Travel planning</p>
+            <p style={{ fontSize: "28px", fontWeight: "400", margin: "0 0 10px", color: "var(--color-text-primary)", letterSpacing: "-0.5px", fontFamily: "var(--font-serif)", fontStyle: "italic" }}>Trip Optimizer</p>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
+              <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Powered by</span>
+              <img
+                src="/brand-wordmark.png?v=2"
+                alt="Barrier Island Digital, LLC"
+                style={{ display: "block", height: "22px", width: "auto", opacity: 0.9 }}
+              />
+            </div>
+          </div>
+          <a
+            href="/find"
+            aria-label="Find restaurants and activities by location"
+            title="Find restaurants and activities by location"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              flexShrink: 0,
+              fontSize: "11px",
+              color: GOLD,
+              textDecoration: "none",
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              fontWeight: 500,
+              padding: "8px 12px",
+              border: `0.5px solid ${GOLD}`,
+              borderRadius: "var(--border-radius-md)",
+              background: "transparent",
+              minHeight: "36px",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Find <span aria-hidden="true">→</span>
+          </a>
         </div>
         <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "14px 0 0" }} />
       </div>
