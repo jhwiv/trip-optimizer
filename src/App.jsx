@@ -7755,19 +7755,76 @@ function collectFindURLs(results) {
   return Array.from(out);
 }
 
-// FindRestaurantCard — wraps the existing RestaurantCard with a ContactBlock
-// row below it, so search results show website/phone/directions even though
-// the itinerary-context RestaurantCard doesn't (the itinerary shows those
-// elsewhere). We compose rather than modify the original card to guarantee
-// zero risk to the build flow.
+// FindRestaurantCard — a search-result-shaped restaurant card.
+//
+// Why this duplicates a chunk of RestaurantCard rather than wrapping it:
+//   RestaurantCard is built for the itinerary context where contact info
+//   (website/phone/directions) is shown on a separate day-view row, not
+//   inside the card. Wrapping RestaurantCard to append a ContactBlock
+//   produces an awkward double-border seam because the inner card paints
+//   its own outline. Negative-margin compositions didn't cleanly hide
+//   the seam. The least-surprising fix is to render an integrated card
+//   that keeps RestaurantCard's typography, badge, and Reserve button
+//   styling exactly, then includes ContactBlock inside the same border.
+//
+// What we deliberately leave OUT compared to RestaurantCard:
+//   - Itinerary-specific chips: weekday-mismatch, missing-backup, return-visit
+//   - Closure banner (the find prompt forbids closed places)
+//   - Backup-restaurant sub-block (only meaningful with a known reservation slot)
+//
+// What we keep IDENTICAL by reusing shared primitives:
+//   - Badge component (top-left type chip)
+//   - reservationLink() helper (OpenTable / Resy / Tock / Yelp / phone)
+//   - ContactBlock component (the dead-link-aware website/phone/directions row)
+//   - MenuModal trigger via onOpenMenu prop
+//
+// If RestaurantCard's typography or padding changes, this card should be
+// updated to match — they're meant to look like the same surface.
 function FindRestaurantCard({ restaurant, onOpenMenu }) {
   if (!restaurant) return null;
+  const r = restaurant;
+  const resv = reservationLink(r);
+  const platformLabel = resv ? ({
+    opentable: "OpenTable", resy: "Resy", tock: "Tock", yelp: "Yelp", phone: "Call",
+  }[resv.platform] || "Reserve") : null;
+  const hasContact = r.contact &&
+    (r.contact.address || r.contact.phone || r.contact.website ||
+     r.contact.booking_url || r.contact.hours);
   return (
-    <div>
-      <RestaurantCard type={restaurant.type || "Restaurant"} restaurant={restaurant} onOpenMenu={onOpenMenu} />
-      {restaurant.contact && (
-        <div style={{ marginTop: "-6px", marginBottom: "12px", padding: "0 14px 12px", border: "0.5px solid var(--color-border-secondary)", borderTop: "none", borderRadius: "0 0 var(--border-radius-md) var(--border-radius-md)", background: "var(--color-background-primary)" }}>
-          <ContactBlock contact={restaurant.contact} name={restaurant.name} />
+    <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+        <Badge type={r.type || "Restaurant"} />
+        <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1 }}>{r.name}</p>
+      </div>
+      {(r.neighborhood || r.cuisine || r.price_range) && (
+        <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 6px", letterSpacing: "0.02em" }}>
+          {[r.neighborhood, r.cuisine, r.price_range].filter(Boolean).join("  ·  ")}
+        </p>
+      )}
+      {r.why && (
+        <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{r.why}</p>
+      )}
+      {(r.menu || resv) && (
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px", marginBottom: hasContact ? "4px" : 0 }}>
+          {r.menu && (
+            <button
+              onClick={() => onOpenMenu(r)}
+              style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}
+            >View Menu</button>
+          )}
+          {resv && (
+            <a
+              href={resv.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, textDecoration: "none", display: "inline-block" }}
+            >Reserve · {platformLabel}</a>
+          )}
+        </div>
+      )}
+      {hasContact && (
+        <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
+          <ContactBlock contact={r.contact} name={r.name} />
         </div>
       )}
     </div>
@@ -7972,7 +8029,7 @@ function FindView() {
             <p style={{ fontSize: "10px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Trip Optimizer</p>
             <p style={{ fontSize: "22px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "2px 0 0", color: "var(--color-text-primary)" }}>Find</p>
           </div>
-          <a href="/" style={{ fontSize: "11px", color: GOLD, textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", padding: "8px 12px", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)" }}>← Trip Builder</a>
+          <a href="/" style={{ fontSize: "11px", color: GOLD, textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", padding: "10px 14px", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", display: "inline-flex", alignItems: "center", minHeight: "40px" }}>← Trip Builder</a>
         </div>
 
         {/* Headline */}
@@ -8029,7 +8086,7 @@ function FindView() {
               <button
                 type="button"
                 onClick={onClear}
-                style={{ fontSize: "11px", padding: "8px 12px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase" }}
+                style={{ fontSize: "11px", padding: "12px 16px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", minHeight: "44px" }}
               >Clear</button>
             )}
           </div>
