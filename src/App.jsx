@@ -7817,11 +7817,20 @@ function FindView() {
     destination: results?.queryUsed?.location || location || "",
   }), [urlVerify.status, urlVerify.isReady, results, location]);
 
-  // -------- persist inputs to localStorage on change --------
+  // -------- persist inputs to localStorage on change (debounced 400ms) ---
+  // localStorage.setItem is synchronous on the main thread. Without a
+  // debounce, typing into guidelines would write on every keystroke. 400ms
+  // is imperceptible but reduces writes ~50x during sustained typing.
   useEffect(() => {
-    try {
-      window.localStorage.setItem(FIND_LS_KEY, JSON.stringify({ q: location, c: category, g: guidelines }));
-    } catch { /* quota — non-fatal */ }
+    const t = setTimeout(() => {
+      try {
+        window.localStorage.setItem(
+          FIND_LS_KEY,
+          JSON.stringify({ q: location, c: category, g: guidelines }),
+        );
+      } catch { /* quota — non-fatal */ }
+    }, 400);
+    return () => clearTimeout(t);
   }, [location, category, guidelines]);
 
   // -------- document title + noindex on mount --------
@@ -7844,20 +7853,33 @@ function FindView() {
   // -------- the search action --------
   // Defined before the auto-search effect so the reference is resolved at
   // effect-creation time, not via legacy block-scoped function hoisting.
-  // In-flight requests cannot be cancelled here — we accept that a user
-  // who rapidly changes search terms might see two responses race; the
-  // last setState wins and that's fine for this use case. The Search button
-  // is disabled while loading, which is the practical guard.
+  //
+  // Race-condition defense: each call gets a monotonically-increasing
+  // requestId. Only the LATEST in-flight request's response is allowed to
+  // update state. If the user starts search A (slow) then B (fast), B's
+  // response can land first; when A finally returns, its requestId no
+  // longer matches and we discard it. Without this, the user could see
+  // results for an older query overwrite results for the newer one.
+  //
+  // Timeout: 30s AbortController. Well above the typical 3–8s Anthropic
+  // tool-call latency, but short enough that a stuck call surfaces a real
+  // error to the user instead of spinning forever.
+  const requestIdRef = useRef(0);
   const runSearch = async (q, c, g) => {
     const loc = String(q || "").trim();
     if (!loc) {
       setError("Enter a location to search.");
       return;
     }
+    const myId = ++requestIdRef.current;
     setLoading(true);
     setError("");
     setResults(null);
     writeFindParams({ q: loc, c, g });
+
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), 30000);
+
     try {
       const res = await fetch("/api/find", {
         method: "POST",
@@ -7867,13 +7889,17 @@ function FindView() {
           category: c,
           guidelines: g || "",
         }),
+        signal: controller.signal,
       });
+      if (myId !== requestIdRef.current) return; // stale
       const json = await res.json().catch(() => ({}));
+      if (myId !== requestIdRef.current) return; // stale
       if (!res.ok) {
         setError(json?.error?.message || `Search failed (${res.status}).`);
         setResults(null);
       } else {
-        // Apply client-side defensive lodging filter as the third line of defense.
+        // Third line of defense — server schema + server response filter
+        // already filtered lodging; this is the client-side belt.
         const restaurants = (json?.results?.restaurants || []).filter(findIsNotLodging);
         const activities = (json?.results?.activities || []).filter(findIsNotLodging);
         if (restaurants.length === 0 && activities.length === 0) {
@@ -7889,9 +7915,16 @@ function FindView() {
         }
       }
     } catch (err) {
-      setError(`Search couldn't reach the server. Try again in a moment. (${String(err?.message || err).slice(0, 80)})`);
+      if (myId !== requestIdRef.current) return; // stale
+      const isAbort = err?.name === "AbortError";
+      setError(
+        isAbort
+          ? "Search is taking too long. Try a more specific location or fewer guidelines and try again."
+          : "Search couldn't reach the server. Try again in a moment.",
+      );
     } finally {
-      setLoading(false);
+      clearTimeout(timeoutHandle);
+      if (myId === requestIdRef.current) setLoading(false);
     }
   };
 

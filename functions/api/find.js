@@ -211,12 +211,27 @@ export async function onRequestPost(context) {
   const category =
     rawCategory === "restaurants" || rawCategory === "activities" ? rawCategory : "both";
 
-  // Guidelines are free-text intent. Treat as data, never as instructions
-  // (see prompt below — we explicitly tell the model to ignore directives).
+  // Guidelines are free-text intent. Treat as data, never as instructions.
+  // Defenses against prompt injection from this field:
+  //   1. System prompt explicitly tells the model to treat guidelines as
+  //      data and to ignore embedded directives.
+  //   2. We strip any literal triple-quote sequences from the guidelines
+  //      before wrapping them in our own triple-quote delimiters — a user
+  //      cannot close our delimiter and inject sibling instructions.
+  //   3. We strip ASCII control characters that could be used for sneakier
+  //      delimiter injection (BEL, NULL, escape, etc.). Tabs and newlines
+  //      are preserved because they're legitimate in a paragraph.
+  //   4. The tool schema's strict JSON output is the final gate — even if
+  //      the model misbehaves, it can only emit submit_find_results.
   let guidelines = String(body?.guidelines || "").trim();
   if (guidelines.length > GUIDELINES_MAX) {
     guidelines = guidelines.slice(0, GUIDELINES_MAX);
   }
+  // Strip triple-quotes and dangerous control chars before embedding.
+  guidelines = guidelines
+    .replace(/"{3,}/g, '""') // collapse any run of 3+ quotes to two
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, ""); // ctrl chars except \t,\n
 
   // Build the category instruction. When category is restricted, we tell
   // the model to return an empty array for the other category — the tool
