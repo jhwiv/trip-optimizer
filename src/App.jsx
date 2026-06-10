@@ -7977,7 +7977,14 @@ function FindView() {
         const restaurants = (json?.results?.restaurants || []).filter(findIsNotLodging);
         const activities = (json?.results?.activities || []).filter(findIsNotLodging);
         if (restaurants.length === 0 && activities.length === 0) {
-          setError("No results for that search. Try a different location or relax the guidelines.");
+          // For local_expert: be explicit that this is a Sonar follow-up
+          // failing to surface fresh results — the user's original results
+          // (if any) are still on the page, untouched.
+          setError(
+            isLocalExpert
+              ? "The locals didn't surface different results this time. Your original list above is unchanged."
+              : "No results for that search. Try a different location or relax the guidelines.",
+          );
           if (!isLocalExpert) setResults(null);
         } else {
           setResults({
@@ -7993,10 +8000,21 @@ function FindView() {
     } catch (err) {
       if (myId !== requestIdRef.current) return; // stale
       const isAbort = err?.name === "AbortError";
-      const baseMsg = isAbort
-        ? "Search is taking too long. Try a more specific location or fewer guidelines and try again."
-        : "Search couldn't reach the server. Try again in a moment.";
-      setError(isLocalExpert ? "Local-expert " + baseMsg.toLowerCase() : baseMsg);
+      if (isLocalExpert) {
+        // Don't blow away the user's standard results on a local-expert
+        // failure — they can keep what they had and try again later.
+        setError(
+          isAbort
+            ? "Asking the locals took too long. Your original results above are unchanged — try again later."
+            : "Couldn't reach the local sources right now. Your original results above are unchanged.",
+        );
+      } else {
+        setError(
+          isAbort
+            ? "Search is taking too long. Try a more specific location or fewer guidelines and try again."
+            : "Search couldn't reach the server. Try again in a moment.",
+        );
+      }
     } finally {
       clearTimeout(timeoutHandle);
       if (myId === requestIdRef.current) {
