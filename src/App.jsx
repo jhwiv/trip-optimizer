@@ -7661,7 +7661,408 @@ function applyPatchesToPlan(plan, patches) {
   return next;
 }
 
+
+// ===========================================================================
+// /find — standalone restaurants + activities search.
+//
+// Path-mounted as a sibling to the wizard (see TripOptimizer below). When the
+// URL pathname starts with /find, this component renders instead of the
+// 3-step wizard. Completely separate state, completely separate localStorage
+// key, no shared form context — so it cannot regress anything in the build
+// flow.
+//
+// Reuses RestaurantCard and ActivityCard from the wizard's itinerary view to
+// keep visual treatment identical. Sets up its own URLVerifyContext provider
+// so the cards' dead-link defense (/api/verify-url) works here too.
+//
+// Hotel exclusion: server-side at /api/find (tool schema + system prompt +
+// defensive filter), plus a final client-side regex sweep here as the third
+// line of defense.
+// ===========================================================================
+
+const FIND_LS_KEY = "trip-optimizer-find-v1";
+const FIND_GUIDELINES_MAX = 1000;
+
+// Defensive client-side lodging filter — mirrors functions/api/find.js
+// isNotLodging(). Belt and braces: even if /api/find ever changes and lets
+// something through, the UI will not render a hotel on the /find page.
+const LODGING_RX = /\b(hotel|resort|inn|lodge|hostel|b&b|bed[\s-]?and[\s-]?breakfast|guesthouse|airbnb|vacation rental|accommodation)\b/i;
+function findIsNotLodging(item) {
+  if (!item || typeof item !== "object") return false;
+  const typeName = [item.name, item.text, item.type, item.cuisine]
+    .filter((s) => typeof s === "string")
+    .join(" | ");
+  return !LODGING_RX.test(typeName);
+}
+
+// Read /find query params. Returns { q, c, g } where any value may be "".
+function readFindParams() {
+  if (typeof window === "undefined") return { q: "", c: "both", g: "" };
+  try {
+    const p = new URLSearchParams(window.location.search);
+    const c = (p.get("c") || "both").toLowerCase();
+    return {
+      q: (p.get("q") || "").trim(),
+      c: c === "restaurants" || c === "activities" ? c : "both",
+      g: (p.get("g") || "").slice(0, FIND_GUIDELINES_MAX),
+    };
+  } catch {
+    return { q: "", c: "both", g: "" };
+  }
+}
+
+function writeFindParams({ q, c, g }) {
+  if (typeof window === "undefined") return;
+  try {
+    const p = new URLSearchParams();
+    if (q) p.set("q", q);
+    if (c && c !== "both") p.set("c", c);
+    if (g) p.set("g", g);
+    const qs = p.toString();
+    const newUrl = "/find" + (qs ? "?" + qs : "");
+    window.history.replaceState({}, "", newUrl);
+  } catch { /* non-fatal */ }
+}
+
+// Collect every verifiable URL from the find results so useURLVerification
+// (the same hook the wizard uses) can probe them. Restaurants supply
+// contact.website + contact.booking_url + reservation.url; activities supply
+// contact.website + contact.booking_url.
+function collectFindURLs(results) {
+  const out = new Set();
+  const push = (u) => { if (typeof u === "string" && /^https?:\/\//i.test(u)) out.add(u); };
+  for (const r of (results?.restaurants || [])) {
+    push(r?.contact?.website);
+    push(r?.contact?.booking_url);
+    push(r?.reservation?.url);
+  }
+  for (const a of (results?.activities || [])) {
+    push(a?.contact?.website);
+    push(a?.contact?.booking_url);
+  }
+  return Array.from(out);
+}
+
+// FindRestaurantCard — wraps the existing RestaurantCard with a ContactBlock
+// row below it, so search results show website/phone/directions even though
+// the itinerary-context RestaurantCard doesn't (the itinerary shows those
+// elsewhere). We compose rather than modify the original card to guarantee
+// zero risk to the build flow.
+function FindRestaurantCard({ restaurant, onOpenMenu }) {
+  if (!restaurant) return null;
+  return (
+    <div>
+      <RestaurantCard type={restaurant.type || "Restaurant"} restaurant={restaurant} onOpenMenu={onOpenMenu} />
+      {restaurant.contact && (
+        <div style={{ marginTop: "-6px", marginBottom: "12px", padding: "0 14px 12px", border: "0.5px solid var(--color-border-secondary)", borderTop: "none", borderRadius: "0 0 var(--border-radius-md) var(--border-radius-md)", background: "var(--color-background-primary)" }}>
+          <ContactBlock contact={restaurant.contact} name={restaurant.name} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FindView() {
+  // -------- input state --------
+  const initial = useMemo(() => {
+    // 1. URL params win (shareable links).
+    const fromUrl = readFindParams();
+    if (fromUrl.q) return fromUrl;
+    // 2. Then localStorage (last session).
+    try {
+      const raw = window.localStorage.getItem(FIND_LS_KEY);
+      if (raw) {
+        const j = JSON.parse(raw);
+        return {
+          q: typeof j?.q === "string" ? j.q : "",
+          c: ["both", "restaurants", "activities"].includes(j?.c) ? j.c : "both",
+          g: typeof j?.g === "string" ? j.g.slice(0, FIND_GUIDELINES_MAX) : "",
+        };
+      }
+    } catch { /* ignore */ }
+    return { q: "", c: "both", g: "" };
+  }, []);
+
+  const [location, setLocation] = useState(initial.q);
+  const [category, setCategory] = useState(initial.c);
+  const [guidelines, setGuidelines] = useState(initial.g);
+
+  // -------- search state --------
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [results, setResults] = useState(null); // { restaurants, activities, note, queryUsed }
+  const [menuRestaurant, setMenuRestaurant] = useState(null);
+
+  // -------- URL verify provider (same pattern as ItineraryView) --------
+  const urlsToVerify = useMemo(() => collectFindURLs(results), [results]);
+  const urlVerify = useURLVerification(urlsToVerify);
+  const verifyContextValue = useMemo(() => ({
+    status: urlVerify.status,
+    isReady: urlVerify.isReady,
+    destination: results?.queryUsed?.location || location || "",
+  }), [urlVerify.status, urlVerify.isReady, results, location]);
+
+  // -------- persist inputs to localStorage on change --------
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(FIND_LS_KEY, JSON.stringify({ q: location, c: category, g: guidelines }));
+    } catch { /* quota — non-fatal */ }
+  }, [location, category, guidelines]);
+
+  // -------- if URL had a q on first load, auto-search --------
+  // (Wrapped in a ref-flag so this only fires once per page load, even if
+  // React StrictMode double-invokes effects in dev.)
+  const autoSearchRef = useRef(false);
+  useEffect(() => {
+    if (autoSearchRef.current) return;
+    autoSearchRef.current = true;
+    if (initial.q) {
+      runSearch(initial.q, initial.c, initial.g);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function runSearch(q, c, g) {
+    const loc = String(q || "").trim();
+    if (!loc) {
+      setError("Enter a location to search.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setResults(null);
+    writeFindParams({ q: loc, c, g });
+    try {
+      const res = await fetch("/api/find", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: loc,
+          category: c,
+          guidelines: g || "",
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(json?.error?.message || `Search failed (${res.status}).`);
+        setResults(null);
+      } else {
+        // Apply client-side defensive lodging filter as the third line of defense.
+        const restaurants = (json?.results?.restaurants || []).filter(findIsNotLodging);
+        const activities = (json?.results?.activities || []).filter(findIsNotLodging);
+        if (restaurants.length === 0 && activities.length === 0) {
+          setError("No results for that search. Try a different location or relax the guidelines.");
+          setResults(null);
+        } else {
+          setResults({
+            restaurants,
+            activities,
+            note: typeof json?.note === "string" ? json.note : "",
+            queryUsed: { location: loc, category: c, guidelines: g },
+          });
+        }
+      }
+    } catch (err) {
+      setError(`Search couldn't reach the server. Try again in a moment. (${String(err?.message || err).slice(0, 80)})`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function onSubmit(e) {
+    e?.preventDefault?.();
+    runSearch(location, category, guidelines);
+  }
+
+  function onClear() {
+    setLocation("");
+    setCategory("both");
+    setGuidelines("");
+    setResults(null);
+    setError("");
+    try { window.localStorage.removeItem(FIND_LS_KEY); } catch {}
+    writeFindParams({ q: "", c: "both", g: "" });
+  }
+
+  const hasRestaurants = (results?.restaurants?.length || 0) > 0;
+  const hasActivities = (results?.activities?.length || 0) > 0;
+  const showSectionToggle = !!results && hasRestaurants && hasActivities;
+
+  return (
+    <URLVerifyContext.Provider value={verifyContextValue}>
+      <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)", padding: "0 1rem", maxWidth: "780px", margin: "0 auto" }}>
+        {/* Header band */}
+        <div style={{ paddingTop: "1.25rem", paddingBottom: "1rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+          <div>
+            <p style={{ fontSize: "10px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Trip Optimizer</p>
+            <p style={{ fontSize: "22px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "2px 0 0", color: "var(--color-text-primary)" }}>Find</p>
+          </div>
+          <a href="/" style={{ fontSize: "11px", color: GOLD, textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", padding: "8px 12px", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)" }}>← Trip Builder</a>
+        </div>
+
+        {/* Headline */}
+        <div style={{ marginBottom: "1.25rem" }}>
+          <h1 style={{ fontSize: "26px", fontFamily: "var(--font-serif)", fontWeight: 400, margin: "0 0 6px", color: "var(--color-text-primary)", lineHeight: 1.25 }}>Find restaurants and activities</h1>
+          <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.55 }}>Tell us where. We&rsquo;ll skip the hotels.</p>
+        </div>
+
+        {/* Search form */}
+        <form onSubmit={onSubmit} style={{ display: "flex", flexDirection: "column", gap: "14px", padding: "16px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-lg)", background: "var(--color-background-primary)", marginBottom: "1.25rem" }}>
+          <Field label="Location" hint="City, neighborhood, or landmark.">
+            <input
+              type="text"
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder="Santa Fe, NM"
+              autoComplete="off"
+              autoCapitalize="words"
+              spellCheck={false}
+              enterKeyHint="search"
+              style={{ fontSize: "16px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box" }}
+            />
+          </Field>
+
+          <Field label="Show">
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              style={{ fontSize: "14px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box" }}
+            >
+              <option value="both">Restaurants &amp; activities</option>
+              <option value="restaurants">Restaurants only</option>
+              <option value="activities">Activities only</option>
+            </select>
+          </Field>
+
+          <Field label="Guidelines (optional)" hint={`Anything specific. We treat this as preferences, not commands. ${guidelines.length}/${FIND_GUIDELINES_MAX}`}>
+            <textarea
+              value={guidelines}
+              onChange={(e) => setGuidelines(e.target.value.slice(0, FIND_GUIDELINES_MAX))}
+              placeholder="Dinner spots good for a celebration, walking distance from the plaza. Morning activities, no strenuous hikes. We're vegetarian."
+              rows={3}
+              style={{ fontSize: "14px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", resize: "vertical", minHeight: "70px", lineHeight: 1.5 }}
+            />
+          </Field>
+
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+            <button
+              type="submit"
+              disabled={loading || !location.trim()}
+              style={{ flex: 1, minWidth: "140px", fontSize: "13px", padding: "12px 18px", borderRadius: "var(--border-radius-md)", border: "none", background: loading || !location.trim() ? "var(--color-border-secondary)" : GOLD, color: loading || !location.trim() ? "var(--color-text-tertiary)" : "#0F0F0F", cursor: loading || !location.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
+            >{loading ? "Searching…" : "Search"}</button>
+            {(location || guidelines || results) && (
+              <button
+                type="button"
+                onClick={onClear}
+                style={{ fontSize: "11px", padding: "8px 12px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase" }}
+              >Clear</button>
+            )}
+          </div>
+        </form>
+
+        {/* Error banner */}
+        {error && (
+          <div role="alert" style={{ padding: "10px 14px", marginBottom: "1rem", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", color: "#8C1F1F", fontSize: "13px", lineHeight: 1.5 }}>
+            {error}
+          </div>
+        )}
+
+        {/* Summary line — proves to the user what we heard */}
+        {results && (
+          <div style={{ marginBottom: "1rem", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.55, display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "flex-start", flexWrap: "wrap" }}>
+            <span>
+              Showing{" "}
+              <strong style={{ color: "var(--color-text-primary)" }}>
+                {results.queryUsed.category === "both" ? "restaurants & activities" : results.queryUsed.category}
+              </strong>{" "}
+              for{" "}
+              <strong style={{ color: "var(--color-text-primary)" }}>{results.queryUsed.location}</strong>
+              {results.queryUsed.guidelines && (
+                <>
+                  {" "}·{" "}
+                  <em style={{ fontStyle: "italic" }}>&ldquo;{results.queryUsed.guidelines.length > 120 ? results.queryUsed.guidelines.slice(0, 117) + "…" : results.queryUsed.guidelines}&rdquo;</em>
+                </>
+              )}
+            </span>
+            <a
+              href="#top"
+              onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              style={{ color: GOLD, textDecoration: "none", fontSize: "11px", letterSpacing: "0.06em", textTransform: "uppercase", whiteSpace: "nowrap" }}
+            >Edit</a>
+          </div>
+        )}
+
+        {/* Optional note from the model */}
+        {results?.note && (
+          <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{results.note}</p>
+        )}
+
+        {/* Section toggle — only when both sections have results */}
+        {showSectionToggle && (
+          <div style={{ position: "sticky", top: 0, background: "#F4F2EE", padding: "10px 0", marginBottom: "0.5rem", zIndex: 10, display: "flex", gap: "16px", fontSize: "12px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+            <a href="#find-restaurants" style={{ color: "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Restaurants <span style={{ color: GOLD }}>({results.restaurants.length})</span></a>
+            <a href="#find-activities" style={{ color: "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Activities <span style={{ color: GOLD }}>({results.activities.length})</span></a>
+          </div>
+        )}
+
+        {/* Loading skeleton */}
+        {loading && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "1rem" }}>
+            {[0, 1, 2].map((i) => (
+              <div key={i} style={{ height: "82px", borderRadius: "var(--border-radius-md)", background: "linear-gradient(90deg, var(--color-background-secondary) 0%, #EBE7DF 50%, var(--color-background-secondary) 100%)", backgroundSize: "200% 100%", animation: "find-shimmer 1.4s linear infinite" }} />
+            ))}
+            <style>{`@keyframes find-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }`}</style>
+          </div>
+        )}
+
+        {/* Restaurants section */}
+        {hasRestaurants && (
+          <section id="find-restaurants" style={{ marginTop: "1.25rem", scrollMarginTop: "60px" }}>
+            <h2 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Restaurants in {results.queryUsed.location} ({results.restaurants.length})</h2>
+            {results.restaurants.map((r, i) => (
+              <FindRestaurantCard key={`${r.name}-${i}`} restaurant={r} onOpenMenu={setMenuRestaurant} />
+            ))}
+          </section>
+        )}
+
+        {/* Activities section */}
+        {hasActivities && (
+          <section id="find-activities" style={{ marginTop: "1.25rem", scrollMarginTop: "60px" }}>
+            <h2 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Activities in {results.queryUsed.location} ({results.activities.length})</h2>
+            {results.activities.map((a, i) => (
+              <ActivityCard key={`${a.text}-${i}`} time={null} end_time={null} item={a} />
+            ))}
+          </section>
+        )}
+
+        {/* Menu modal — reused */}
+        {menuRestaurant && <MenuModal restaurant={menuRestaurant} onClose={() => setMenuRestaurant(null)} />}
+
+        {/* Footer */}
+        <div style={{ padding: "1.75rem 0 1.5rem", borderTop: "0.5px solid var(--color-border-tertiary)", marginTop: "2rem", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Powered by</span>
+            <img src="/brand-wordmark.png?v=2" alt="Barrier Island Digital, LLC" style={{ display: "block", height: "22px", width: "auto", opacity: 0.9 }} />
+          </div>
+          <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "4px 0 0" }} />
+          <span style={{ color: "var(--color-text-tertiary)", fontSize: "10px", letterSpacing: "0.06em", marginTop: "2px" }}>
+            build {(typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "dev"}
+          </span>
+        </div>
+      </div>
+    </URLVerifyContext.Provider>
+  );
+}
+
 export default function TripOptimizer() {
+  // Path-aware mount: /find renders the standalone search view instead of the
+  // 3-step wizard. No router library involved — we branch at the top of the
+  // single mounted component so the wizard's state and effects never run for
+  // /find users. See FindView above.
+  if (typeof window !== "undefined" && window.location.pathname.startsWith("/find")) {
+    return <FindView />;
+  }
+
   // Form state is INTENTIONALLY NOT PERSISTED across launches. The user wants
   // a clean slate on every launch and after "Plan another trip". We still
   // write to localStorage during a session for crash recovery within the
