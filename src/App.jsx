@@ -8027,9 +8027,13 @@ function FindView() {
   // longer matches and we discard it. Without this, the user could see
   // results for an older query overwrite results for the newer one.
   //
-  // Timeout: 30s AbortController. Well above the typical 3–8s Anthropic
-  // tool-call latency, but short enough that a stuck call surfaces a real
-  // error to the user instead of spinning forever.
+  // Timeout: standard mode 60s, local-expert mode 60s. Real-world Anthropic
+  // latency for a both-category search with rich guidelines + the full
+  // restaurant/activity tool schema is consistently 28–35s end-to-end
+  // (Anthropic call + Cloudflare cold-start overhead). The original 30s
+  // ceiling was too tight — users were seeing the "taking too long" error
+  // while the server was still completing the call. 60s gives generous
+  // headroom while still surfacing a real failure for a truly stuck call.
   // Loading flag specifically for the "Ask the locals" follow-up. Tracked
   // separately so the rest of the page (form, baseline results) doesn't
   // reset while the local-expert pass is running.
@@ -8063,7 +8067,7 @@ function FindView() {
     // Local-expert calls fan out to Sonar in parallel server-side. Per-source
     // 8s + retrieval overhead can push total latency higher than standard,
     // so we give the timeout extra headroom for that mode.
-    const timeoutMs = isLocalExpert ? 45000 : 30000;
+    const timeoutMs = isLocalExpert ? 60000 : 60000;
     const controller = new AbortController();
     const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -8126,7 +8130,7 @@ function FindView() {
       } else {
         setError(
           isAbort
-            ? "Search is taking too long. Try a more specific location or fewer guidelines and try again."
+            ? "Search timed out after 60 seconds. The server may be under load — please try again."
             : "Search couldn't reach the server. Try again in a moment.",
         );
       }
@@ -8347,6 +8351,9 @@ function FindView() {
               disabled={loading || !location.trim()}
               style={{ flex: 1, minWidth: "140px", fontSize: "13px", padding: "12px 18px", borderRadius: "var(--border-radius-md)", border: "none", background: loading || !location.trim() ? "var(--color-border-secondary)" : GOLD, color: loading || !location.trim() ? "var(--color-text-tertiary)" : "#0F0F0F", cursor: loading || !location.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
             >{loading ? "Searching…" : "Search"}</button>
+            {loading && (
+              <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", letterSpacing: "0.04em", fontStyle: "italic" }}>This usually takes 20–40 seconds.</span>
+            )}
             {(location || guidelines || results) && (
               <button
                 type="button"
