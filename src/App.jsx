@@ -7699,7 +7699,7 @@ function findIsNotLodging(item) {
 function readFindParams() {
   if (typeof window === "undefined") return { q: "", c: "both", g: "" };
   try {
-    const p = new URLSearchParams(window.location.search);
+    const p = new window.URLSearchParams(window.location.search);
     const c = (p.get("c") || "both").toLowerCase();
     return {
       q: (p.get("q") || "").trim(),
@@ -7714,7 +7714,7 @@ function readFindParams() {
 function writeFindParams({ q, c, g }) {
   if (typeof window === "undefined") return;
   try {
-    const p = new URLSearchParams();
+    const p = new window.URLSearchParams();
     if (q) p.set("q", q);
     if (c && c !== "both") p.set("c", c);
     if (g) p.set("g", g);
@@ -8054,14 +8054,14 @@ function FindView() {
   );
 }
 
+// FindView is exported as a named export so main.jsx can mount it as a
+// sibling-of-TripOptimizer when the URL pathname starts with /find. We do
+// the path branch ABOVE the React tree (in main.jsx) — not inside
+// TripOptimizer — because TripOptimizer holds dozens of hooks and the
+// rules-of-hooks forbid returning before them.
+export { FindView };
+
 export default function TripOptimizer() {
-  // Path-aware mount: /find renders the standalone search view instead of the
-  // 3-step wizard. No router library involved — we branch at the top of the
-  // single mounted component so the wizard's state and effects never run for
-  // /find users. See FindView above.
-  if (typeof window !== "undefined" && window.location.pathname.startsWith("/find")) {
-    return <FindView />;
-  }
 
   // Form state is INTENTIONALLY NOT PERSISTED across launches. The user wants
   // a clean slate on every launch and after "Plan another trip". We still

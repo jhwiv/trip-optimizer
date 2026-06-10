@@ -360,20 +360,12 @@ Call submit_find_results exactly once. Emit no prose.`;
 // name, type, and cuisine for lodging keywords.
 function isNotLodging(item) {
   if (!item || typeof item !== "object") return false;
-  const haystack = [
-    item.name,
-    item.text,
-    item.type,
-    item.cuisine,
-    item.why,
-  ]
-    .filter((s) => typeof s === "string")
-    .join(" | ")
-    .toLowerCase();
   // Word-boundary matches so 'Innovation' or 'resort-to' don't false-positive.
   // We're permissive on false negatives (better to let a borderline through
   // than to over-filter legitimate restaurants) — the tool schema is the
-  // strict gate; this is the safety net.
+  // strict gate; this is the safety net. We deliberately do NOT include
+  // item.why in the haystack: a restaurant's why might legitimately mention
+  // 'near the hotel' without making the place itself a hotel.
   const lodgingPatterns = [
     /\bhotel\b/,
     /\bresort\b/,
