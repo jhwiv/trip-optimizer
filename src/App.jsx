@@ -7804,24 +7804,21 @@ function FindRestaurantCard({ restaurant, onOpenMenu }) {
       {r.why && (
         <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{r.why}</p>
       )}
-      {(r.menu || resv) && (
-        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px", marginBottom: hasContact ? "4px" : 0 }}>
-          {r.menu && (
-            <button
-              onClick={() => onOpenMenu(r)}
-              style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}
-            >View Menu</button>
-          )}
-          {resv && (
-            <a
-              href={resv.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, textDecoration: "none", display: "inline-block" }}
-            >Reserve · {platformLabel}</a>
-          )}
-        </div>
-      )}
+      {/* Always show View Menu — lazy-fetches via /api/menu. Reserve button conditional on platform. */}
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px", marginBottom: hasContact ? "4px" : 0 }}>
+        <button
+          onClick={() => onOpenMenu(r)}
+          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}
+        >View Menu</button>
+        {resv && (
+          <a
+            href={resv.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, textDecoration: "none", display: "inline-block" }}
+          >Reserve · {platformLabel}</a>
+        )}
+      </div>
       {hasContact && (
         <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
           <ContactBlock contact={r.contact} name={r.name} />
@@ -7852,6 +7849,94 @@ function computeInitialFindState() {
   return { q: "", c: "both", g: "" };
 }
 
+// ActivityDetailsModal — bottom-sheet modal showing expanded details for
+// a single activity, lazy-fetched from /api/activity-details. Mirrors the
+// visual treatment of MenuModal (bottom-sheet on mobile, max 640px wide,
+// scrollable) so the two feel like the same surface.
+function ActivityDetailsModal({ activity, details, loading, error, onClose }) {
+  if (!activity) return null;
+  const sections = details ? [
+    ["Best time", details.best_time],
+    ["Typical duration", details.typical_duration],
+    ["What to bring", details.what_to_bring],
+    ["Booking tips", details.booking_tips],
+    ["Crowd tips", details.crowd_tips],
+    ["What locals know", details.locals_tips],
+    ["Cost breakdown", details.cost_breakdown],
+    ["Accessibility", details.accessibility],
+  ] : [];
+  const dashIdx = (activity.text || "").indexOf(" — ");
+  const head = dashIdx > 0 ? (activity.text || "").slice(0, dashIdx) : (activity.text || "");
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 1000, padding: 0 }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Details for ${head}`}
+        style={{ background: "var(--color-background-primary)", maxWidth: "640px", width: "100%", maxHeight: "90vh", overflowY: "auto", borderRadius: "16px 16px 0 0", padding: "22px 22px 32px", boxShadow: "0 -8px 32px rgba(0,0,0,0.25)" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
+          <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Details</p>
+          <button
+            onClick={onClose}
+            aria-label="Close details"
+            style={{ background: "transparent", border: "none", fontSize: "22px", color: "var(--color-text-secondary)", cursor: "pointer", padding: "4px 8px", lineHeight: 1 }}
+          >×</button>
+        </div>
+        <p style={{ fontSize: "20px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 14px", color: "var(--color-text-primary)" }}>{head}</p>
+        {loading && (
+          <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontStyle: "italic" }}>Loading details…</p>
+        )}
+        {error && (
+          <p role="alert" style={{ fontSize: "13px", color: "#8C1F1F", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{error}</p>
+        )}
+        {details && sections.map(([title, body]) => body && (
+          <div key={title} style={{ marginBottom: "14px" }}>
+            <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 6px", paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{title}</p>
+            <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: 0, lineHeight: 1.55 }}>{body}</p>
+          </div>
+        ))}
+        {details && Array.isArray(details.nearby_pairings) && details.nearby_pairings.length > 0 && (
+          <div style={{ marginBottom: "14px" }}>
+            <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 6px", paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Pair it with</p>
+            <ul style={{ margin: 0, paddingLeft: "20px" }}>
+              {details.nearby_pairings.map((p, i) => (
+                <li key={i} style={{ fontSize: "13px", color: "var(--color-text-primary)", marginBottom: "4px", lineHeight: 1.5 }}>{p}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {details?.source_note && (
+          <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", marginTop: "16px", fontStyle: "italic", lineHeight: 1.5 }}>{details.source_note}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// FindActivityCard — wraps the existing ActivityCard with a "More details"
+// button that triggers a lazy /api/activity-details fetch. We compose
+// rather than modify ActivityCard so the itinerary view is untouched.
+function FindActivityCard({ activity, onOpenDetails }) {
+  if (!activity) return null;
+  return (
+    <div style={{ marginBottom: "12px" }}>
+      <ActivityCard time={null} end_time={null} item={activity} />
+      <div style={{ marginTop: "-6px", marginBottom: 0, display: "flex" }}>
+        <button
+          type="button"
+          onClick={() => onOpenDetails(activity)}
+          style={{ fontSize: "11px", padding: "6px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, marginLeft: "auto" }}
+        >More details →</button>
+      </div>
+    </div>
+  );
+}
+
 function FindView() {
   // -------- input state --------
   // Lazy-init each useState so computeInitialFindState() runs exactly once.
@@ -7862,11 +7947,35 @@ function FindView() {
   // -------- search state --------
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [results, setResults] = useState(null); // { restaurants, activities, note, queryUsed }
+  // results       — standard mode results, never replaced by Ask-the-locals
+  // localExpert   — Sonar-grounded results, rendered as its own section below
+  const [results, setResults] = useState(null);
+  const [localExpertResults, setLocalExpertResults] = useState(null);
+
+  // -------- on-demand menu state (lazy /api/menu fetch) --------
+  // menuRestaurant : the restaurant whose menu modal is open (or null)
+  // menuData       : { menu } when loaded
+  // menuLoading    : while the fetch is in flight
+  // menuError      : friendly error string on fetch failure
   const [menuRestaurant, setMenuRestaurant] = useState(null);
+  const [menuData, setMenuData] = useState(null);
+  const [menuLoading, setMenuLoading] = useState(false);
+  const [menuError, setMenuError] = useState("");
+
+  // -------- on-demand activity-details state (lazy /api/activity-details) --
+  const [detailsActivity, setDetailsActivity] = useState(null);
+  const [detailsData, setDetailsData] = useState(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsError, setDetailsError] = useState("");
 
   // -------- URL verify provider (same pattern as ItineraryView) --------
-  const urlsToVerify = useMemo(() => collectFindURLs(results), [results]);
+  // Pull URLs from BOTH the standard and locally-sourced result sets so the
+  // dead-link defense covers cards in either section.
+  const urlsToVerify = useMemo(() => {
+    const a = collectFindURLs(results);
+    const b = collectFindURLs(localExpertResults);
+    return Array.from(new Set([...a, ...b]));
+  }, [results, localExpertResults]);
   const urlVerify = useURLVerification(urlsToVerify);
   const verifyContextValue = useMemo(() => ({
     status: urlVerify.status,
@@ -7938,9 +8047,14 @@ function FindView() {
     const myId = ++requestIdRef.current;
     if (isLocalExpert) {
       setAskingLocals(true);
+      // Do NOT touch `results` — standard results stay visible above the
+      // soon-to-be-rendered "Locally sourced" section.
     } else {
       setLoading(true);
       setResults(null);
+      // A new standard search wipes any prior locally-sourced section too,
+      // since those snippets were grounded for a different query.
+      setLocalExpertResults(null);
       setSourcesExpanded(false);
     }
     setError("");
@@ -7977,9 +8091,6 @@ function FindView() {
         const restaurants = (json?.results?.restaurants || []).filter(findIsNotLodging);
         const activities = (json?.results?.activities || []).filter(findIsNotLodging);
         if (restaurants.length === 0 && activities.length === 0) {
-          // For local_expert: be explicit that this is a Sonar follow-up
-          // failing to surface fresh results — the user's original results
-          // (if any) are still on the page, untouched.
           setError(
             isLocalExpert
               ? "The locals didn't surface different results this time. Your original list above is unchanged."
@@ -7987,22 +8098,26 @@ function FindView() {
           );
           if (!isLocalExpert) setResults(null);
         } else {
-          setResults({
+          const payload = {
             restaurants,
             activities,
             note: typeof json?.note === "string" ? json.note : "",
             queryUsed: { location: loc, category: c, guidelines: g, mode },
             localExpert: json?.local_expert || null,
-          });
-          if (isLocalExpert) setSourcesExpanded(false);
+          };
+          if (isLocalExpert) {
+            // Render BELOW the standard results, as its own section.
+            setLocalExpertResults(payload);
+            setSourcesExpanded(false);
+          } else {
+            setResults(payload);
+          }
         }
       }
     } catch (err) {
       if (myId !== requestIdRef.current) return; // stale
       const isAbort = err?.name === "AbortError";
       if (isLocalExpert) {
-        // Don't blow away the user's standard results on a local-expert
-        // failure — they can keep what they had and try again later.
         setError(
           isAbort
             ? "Asking the locals took too long. Your original results above are unchanged — try again later."
@@ -8026,7 +8141,9 @@ function FindView() {
 
   // Re-run the current query with Sonar-grounded local-expert mode. We keep
   // the same query inputs (location/category/guidelines) but ask the server
-  // to fan out to local press and forums first.
+  // to fan out to local press and forums first. The result is stored in
+  // localExpertResults and rendered BELOW the standard results — the
+  // standard list is never replaced.
   const onAskLocals = () => {
     if (!results || askingLocals || loading) return;
     runSearch(
@@ -8035,6 +8152,100 @@ function FindView() {
       results.queryUsed.guidelines,
       "local_expert",
     );
+  };
+
+  // -------- lazy menu fetch --------
+  // Opens the menu modal in a loading state, then resolves with menu data
+  // or an error. Cached per-restaurant-name in a session ref so re-opening
+  // the same restaurant's menu within the session is instant.
+  const menuCacheRef = useRef(new Map());
+  const onOpenMenu = async (restaurant) => {
+    if (!restaurant) return;
+    const cacheKey = `${restaurant.name}|${results?.queryUsed?.location || localExpertResults?.queryUsed?.location || ""}`;
+    setMenuRestaurant(restaurant);
+    setMenuError("");
+    const cached = menuCacheRef.current.get(cacheKey);
+    if (cached) {
+      setMenuData(cached);
+      setMenuLoading(false);
+      return;
+    }
+    setMenuData(null);
+    setMenuLoading(true);
+    try {
+      const loc = results?.queryUsed?.location || localExpertResults?.queryUsed?.location || "";
+      const res = await fetch("/api/menu", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: restaurant.name, location: loc, cuisine: restaurant.cuisine || "" }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMenuError(json?.error?.message || `Couldn't load the menu (${res.status}).`);
+      } else if (json?.menu) {
+        menuCacheRef.current.set(cacheKey, { menu: json.menu });
+        setMenuData({ menu: json.menu });
+      } else {
+        setMenuError("Couldn't load the menu.");
+      }
+    } catch (err) {
+      setMenuError(`Couldn't reach the menu service. ${String(err?.message || err).slice(0, 80)}`);
+    } finally {
+      setMenuLoading(false);
+    }
+  };
+  const onCloseMenu = () => {
+    setMenuRestaurant(null);
+    setMenuData(null);
+    setMenuError("");
+    setMenuLoading(false);
+  };
+
+  // -------- lazy activity-details fetch --------
+  const detailsCacheRef = useRef(new Map());
+  const onOpenDetails = async (activity) => {
+    if (!activity) return;
+    const cacheKey = `${activity.text}|${results?.queryUsed?.location || localExpertResults?.queryUsed?.location || ""}`;
+    setDetailsActivity(activity);
+    setDetailsError("");
+    const cached = detailsCacheRef.current.get(cacheKey);
+    if (cached) {
+      setDetailsData(cached);
+      setDetailsLoading(false);
+      return;
+    }
+    setDetailsData(null);
+    setDetailsLoading(true);
+    try {
+      const loc = results?.queryUsed?.location || localExpertResults?.queryUsed?.location || "";
+      // The activity's "name" is the part before ' — ' in text.
+      const dashIdx = (activity.text || "").indexOf(" — ");
+      const justName = dashIdx > 0 ? activity.text.slice(0, dashIdx) : activity.text;
+      const res = await fetch("/api/activity-details", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: justName, location: loc, type: activity.type || "" }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDetailsError(json?.error?.message || `Couldn't load details (${res.status}).`);
+      } else if (json?.details) {
+        detailsCacheRef.current.set(cacheKey, json.details);
+        setDetailsData(json.details);
+      } else {
+        setDetailsError("Couldn't load details for this activity.");
+      }
+    } catch (err) {
+      setDetailsError(`Couldn't reach the details service. ${String(err?.message || err).slice(0, 80)}`);
+    } finally {
+      setDetailsLoading(false);
+    }
+  };
+  const onCloseDetails = () => {
+    setDetailsActivity(null);
+    setDetailsData(null);
+    setDetailsError("");
+    setDetailsLoading(false);
   };
 
   // -------- if URL had a q on first load, auto-search --------
@@ -8063,7 +8274,9 @@ function FindView() {
     setCategory("both");
     setGuidelines("");
     setResults(null);
+    setLocalExpertResults(null);
     setError("");
+    setSourcesExpanded(false);
     try { window.localStorage.removeItem(FIND_LS_KEY); } catch {}
     writeFindParams({ q: "", c: "both", g: "" });
   }
@@ -8185,13 +8398,14 @@ function FindView() {
           <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{results.note}</p>
         )}
 
-        {/* Ask the locals — opt-in retrieval pass */}
-        {results && results.queryUsed.mode !== "local_expert" && !askingLocals && (
+        {/* Ask the locals — opt-in retrieval pass. Hidden while a local-expert
+            result is already on the page; user can clear and re-ask if needed. */}
+        {results && !localExpertResults && !askingLocals && (
           <div style={{ marginBottom: "1rem", padding: "12px 14px", border: `0.5px dashed ${GOLD}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
             <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
               <div style={{ flex: 1, minWidth: "200px" }}>
-                <p style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 2px", letterSpacing: "0.02em" }}>Not quite what you were looking for?</p>
-                <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.5 }}>Pulls in regional press, local forums, and area guides. Takes a bit longer.</p>
+                <p style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 2px", letterSpacing: "0.02em" }}>Want a hyperlocal second opinion?</p>
+                <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.5 }}>Pulls in regional press, local forums, and area guides. Adds a second list below — your results above stay put.</p>
               </div>
               <button
                 type="button"
@@ -8208,46 +8422,6 @@ function FindView() {
           <div style={{ marginBottom: "1rem", padding: "12px 14px", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", background: GOLD_LIGHT, display: "flex", alignItems: "center", gap: "10px" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: GOLD_DARK, letterSpacing: "0.04em" }}>Asking the locals…</span>
             <span style={{ fontSize: "11px", color: GOLD_DARK }}>Querying regional press, local forums, and area guides.</span>
-          </div>
-        )}
-
-        {/* Local-expert badge + source list (when local_expert results are loaded) */}
-        {results && results.queryUsed.mode === "local_expert" && results.localExpert && (
-          <div style={{ marginBottom: "1rem", padding: "10px 14px", background: GOLD_LIGHT, border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", fontSize: "12px", color: GOLD_DARK, lineHeight: 1.55 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "flex-start", flexWrap: "wrap" }}>
-              <span>
-                <strong style={{ letterSpacing: "0.04em", textTransform: "uppercase", fontSize: "11px" }}>Locally sourced</strong>
-                {results.localExpert.status === "ok" && results.localExpert.sources?.length > 0 && (
-                  <>
-                    {" · "}
-                    <button
-                      type="button"
-                      onClick={() => setSourcesExpanded((v) => !v)}
-                      style={{ background: "transparent", border: "none", color: GOLD_DARK, textDecoration: "underline", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", padding: 0 }}
-                    >{results.localExpert.sources.length} source{results.localExpert.sources.length === 1 ? "" : "s"} consulted {sourcesExpanded ? "▲" : "▼"}</button>
-                  </>
-                )}
-                {results.localExpert.status === "no_results" && (
-                  <> · No usable results from local sources — falling back to general knowledge.</>
-                )}
-                {results.localExpert.status === "skipped_no_key" && (
-                  <> · Local-expert retrieval is not configured on this deployment.</>
-                )}
-                {results.localExpert.source_set === "curated" && results.localExpert.status === "ok" && (
-                  <span style={{ marginLeft: "6px", fontSize: "10.5px", padding: "2px 6px", background: GOLD, color: "#0F0F0F", borderRadius: "3px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>Curated</span>
-                )}
-              </span>
-            </div>
-            {sourcesExpanded && results.localExpert.sources?.length > 0 && (
-              <ul style={{ margin: "8px 0 0", padding: "0 0 0 18px", fontSize: "11.5px" }}>
-                {results.localExpert.sources.map((s) => (
-                  <li key={s.source_id} style={{ marginBottom: "2px" }}>
-                    {s.source_name}{" "}
-                    <span style={{ color: GOLD_DARK, opacity: 0.7 }}>({s.result_count} result{s.result_count === 1 ? "" : "s"})</span>
-                  </li>
-                ))}
-              </ul>
-            )}
           </div>
         )}
 
@@ -8274,7 +8448,7 @@ function FindView() {
           <section id="find-restaurants" style={{ marginTop: "1.25rem", scrollMarginTop: "60px" }}>
             <h2 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Restaurants in {results.queryUsed.location} ({results.restaurants.length})</h2>
             {results.restaurants.map((r, i) => (
-              <FindRestaurantCard key={`${r.name}-${i}`} restaurant={r} onOpenMenu={setMenuRestaurant} />
+              <FindRestaurantCard key={`${r.name}-${i}`} restaurant={r} onOpenMenu={onOpenMenu} />
             ))}
           </section>
         )}
@@ -8284,13 +8458,96 @@ function FindView() {
           <section id="find-activities" style={{ marginTop: "1.25rem", scrollMarginTop: "60px" }}>
             <h2 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Activities in {results.queryUsed.location} ({results.activities.length})</h2>
             {results.activities.map((a, i) => (
-              <ActivityCard key={`${a.text}-${i}`} time={null} end_time={null} item={a} />
+              <FindActivityCard key={`${a.text}-${i}`} activity={a} onOpenDetails={onOpenDetails} />
             ))}
           </section>
         )}
 
-        {/* Menu modal — reused */}
-        {menuRestaurant && <MenuModal restaurant={menuRestaurant} onClose={() => setMenuRestaurant(null)} />}
+        {/* Locally sourced section — appears BELOW the standard results.
+            Independent from the standard section above; its own header,
+            its own badge, its own restaurants and activities lists. */}
+        {localExpertResults && (
+          <section style={{ marginTop: "2rem", paddingTop: "1.25rem", borderTop: `1px solid ${GOLD}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
+              <h2 style={{ fontSize: "13px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.12em", textTransform: "uppercase", margin: 0 }}>Locally sourced</h2>
+              {localExpertResults.localExpert?.source_set === "curated" && localExpertResults.localExpert?.status === "ok" && (
+                <span style={{ fontSize: "10.5px", padding: "2px 6px", background: GOLD, color: "#0F0F0F", borderRadius: "3px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>Curated</span>
+              )}
+              {localExpertResults.localExpert?.status === "ok" && localExpertResults.localExpert.sources?.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSourcesExpanded((v) => !v)}
+                  style={{ background: "transparent", border: "none", color: GOLD_DARK, textDecoration: "underline", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", padding: 0 }}
+                >{localExpertResults.localExpert.sources.length} source{localExpertResults.localExpert.sources.length === 1 ? "" : "s"} consulted {sourcesExpanded ? "▲" : "▼"}</button>
+              )}
+              {localExpertResults.localExpert?.status === "no_results" && (
+                <span style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", fontStyle: "italic" }}>local sources returned nothing usable — these are the model's best guesses</span>
+              )}
+              {localExpertResults.localExpert?.status === "skipped_no_key" && (
+                <span style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", fontStyle: "italic" }}>local-source retrieval not configured</span>
+              )}
+            </div>
+            {sourcesExpanded && localExpertResults.localExpert?.sources?.length > 0 && (
+              <ul style={{ margin: "0 0 12px", padding: "0 0 0 18px", fontSize: "11.5px", color: GOLD_DARK }}>
+                {localExpertResults.localExpert.sources.map((s) => (
+                  <li key={s.source_id} style={{ marginBottom: "2px" }}>
+                    {s.source_name}{" "}
+                    <span style={{ opacity: 0.7 }}>({s.result_count} result{s.result_count === 1 ? "" : "s"}){s.cached ? " · cached" : ""}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {localExpertResults.note && (
+              <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{localExpertResults.note}</p>
+            )}
+            {localExpertResults.restaurants?.length > 0 && (
+              <div style={{ marginTop: "0.75rem" }}>
+                <h3 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Restaurants ({localExpertResults.restaurants.length})</h3>
+                {localExpertResults.restaurants.map((r, i) => (
+                  <FindRestaurantCard key={`le-${r.name}-${i}`} restaurant={r} onOpenMenu={onOpenMenu} />
+                ))}
+              </div>
+            )}
+            {localExpertResults.activities?.length > 0 && (
+              <div style={{ marginTop: "1.25rem" }}>
+                <h3 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Activities ({localExpertResults.activities.length})</h3>
+                {localExpertResults.activities.map((a, i) => (
+                  <FindActivityCard key={`le-${a.text}-${i}`} activity={a} onOpenDetails={onOpenDetails} />
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Menu modal — opens with loading/error states, then renders MenuModal once data lands. */}
+        {menuRestaurant && (
+          menuData?.menu ? (
+            <MenuModal restaurant={{ ...menuRestaurant, menu: menuData.menu }} onClose={onCloseMenu} />
+          ) : (
+            <div onClick={onCloseMenu} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 1000, padding: 0 }}>
+              <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Menu" style={{ background: "var(--color-background-primary)", maxWidth: "640px", width: "100%", maxHeight: "90vh", overflowY: "auto", borderRadius: "16px 16px 0 0", padding: "22px 22px 32px", boxShadow: "0 -8px 32px rgba(0,0,0,0.25)" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
+                  <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Menu</p>
+                  <button onClick={onCloseMenu} aria-label="Close menu" style={{ background: "transparent", border: "none", fontSize: "22px", color: "var(--color-text-secondary)", cursor: "pointer", padding: "4px 8px", lineHeight: 1 }}>×</button>
+                </div>
+                <p style={{ fontSize: "20px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 14px", color: "var(--color-text-primary)" }}>{menuRestaurant.name}</p>
+                {menuLoading && <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontStyle: "italic" }}>Loading menu…</p>}
+                {menuError && <p role="alert" style={{ fontSize: "13px", color: "#8C1F1F", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{menuError}</p>}
+              </div>
+            </div>
+          )
+        )}
+
+        {/* Activity details modal — lazy /api/activity-details */}
+        {detailsActivity && (
+          <ActivityDetailsModal
+            activity={detailsActivity}
+            details={detailsData}
+            loading={detailsLoading}
+            error={detailsError}
+            onClose={onCloseDetails}
+          />
+        )}
 
         {/* Footer */}
         <div style={{ padding: "1.75rem 0 1.5rem", borderTop: "0.5px solid var(--color-border-tertiary)", marginTop: "2rem", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}>
