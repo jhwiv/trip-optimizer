@@ -1,10 +1,24 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import App from './App.jsx'
+import App, { FindView } from './App.jsx'
+
+// Path-aware mount: /find renders the standalone restaurant + activity
+// search view as a SIBLING of the wizard — not inside it — so the
+// wizard's hooks never execute on /find pages. This is the right place
+// to do the branch because main.jsx has no hooks of its own; doing it
+// inside TripOptimizer would violate the React rules-of-hooks (early
+// return before useState/useEffect calls).
+// Match /find, /find/, /find?... — but NOT /findxyz. Anchored exact-segment match.
+const FIND_ROUTE_RX = /^\/find(\/|\?|$)/
+const isFindRoute = typeof window !== 'undefined'
+  && typeof window.location?.pathname === 'string'
+  && FIND_ROUTE_RX.test(window.location.pathname + window.location.search)
+
+const Root = isFindRoute ? FindView : App
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
+    <Root />
   </React.StrictMode>,
 )
 

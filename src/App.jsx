@@ -7661,7 +7661,662 @@ function applyPatchesToPlan(plan, patches) {
   return next;
 }
 
+
+// ===========================================================================
+// /find — standalone restaurants + activities search.
+//
+// Path-mounted as a sibling to the wizard (see TripOptimizer below). When the
+// URL pathname starts with /find, this component renders instead of the
+// 3-step wizard. Completely separate state, completely separate localStorage
+// key, no shared form context — so it cannot regress anything in the build
+// flow.
+//
+// Reuses RestaurantCard and ActivityCard from the wizard's itinerary view to
+// keep visual treatment identical. Sets up its own URLVerifyContext provider
+// so the cards' dead-link defense (/api/verify-url) works here too.
+//
+// Hotel exclusion: server-side at /api/find (tool schema + system prompt +
+// defensive filter), plus a final client-side regex sweep here as the third
+// line of defense.
+// ===========================================================================
+
+const FIND_LS_KEY = "trip-optimizer-find-v1";
+const FIND_GUIDELINES_MAX = 1000;
+
+// Defensive client-side lodging filter — mirrors functions/api/find.js
+// isNotLodging(). Belt and braces: even if /api/find ever changes and lets
+// something through, the UI will not render a hotel on the /find page.
+//
+// Trade-off acknowledged: this WILL drop a legitimate restaurant whose name
+// includes a lodging word (e.g. "Inn at Little Washington" — a real,
+// 3-Michelin-star restaurant). We accept that false-positive risk because:
+//   1. The server-side schema + system prompt are the primary defense —
+//      this is the safety net, not the primary filter.
+//   2. The cost of dropping one famous edge-case restaurant is much lower
+//      than the cost of accidentally rendering an actual hotel as a search
+//      result, which violates the core product promise of /find.
+//   3. Only item.name, item.text, item.type, and item.cuisine are checked.
+//      item.why can legitimately mention "near the hotel" or "walking from
+//      your hotel" without making the place itself lodging.
+const LODGING_RX = /\b(hotel|resort|inn|lodge|hostel|b&b|bed[\s-]?and[\s-]?breakfast|guesthouse|airbnb|vacation rental|accommodation)\b/i;
+function findIsNotLodging(item) {
+  if (!item || typeof item !== "object") return false;
+  const typeName = [item.name, item.text, item.type, item.cuisine]
+    .filter((s) => typeof s === "string")
+    .join(" | ");
+  return !LODGING_RX.test(typeName);
+}
+
+// Read /find query params. Returns { q, c, g } where any value may be "".
+function readFindParams() {
+  if (typeof window === "undefined") return { q: "", c: "both", g: "" };
+  try {
+    const p = new window.URLSearchParams(window.location.search);
+    const c = (p.get("c") || "both").toLowerCase();
+    return {
+      q: (p.get("q") || "").trim(),
+      c: c === "restaurants" || c === "activities" ? c : "both",
+      g: (p.get("g") || "").slice(0, FIND_GUIDELINES_MAX),
+    };
+  } catch {
+    return { q: "", c: "both", g: "" };
+  }
+}
+
+function writeFindParams({ q, c, g }) {
+  if (typeof window === "undefined") return;
+  try {
+    const p = new window.URLSearchParams();
+    if (q) p.set("q", q);
+    if (c && c !== "both") p.set("c", c);
+    if (g) p.set("g", g);
+    const qs = p.toString();
+    const newUrl = "/find" + (qs ? "?" + qs : "");
+    window.history.replaceState({}, "", newUrl);
+  } catch { /* non-fatal */ }
+}
+
+// Collect every verifiable URL from the find results so useURLVerification
+// (the same hook the wizard uses) can probe them. Restaurants supply
+// contact.website + contact.booking_url + reservation.url; activities supply
+// contact.website + contact.booking_url.
+function collectFindURLs(results) {
+  const out = new Set();
+  const push = (u) => { if (typeof u === "string" && /^https?:\/\//i.test(u)) out.add(u); };
+  for (const r of (results?.restaurants || [])) {
+    push(r?.contact?.website);
+    push(r?.contact?.booking_url);
+    push(r?.reservation?.url);
+  }
+  for (const a of (results?.activities || [])) {
+    push(a?.contact?.website);
+    push(a?.contact?.booking_url);
+  }
+  return Array.from(out);
+}
+
+// FindRestaurantCard — a search-result-shaped restaurant card.
+//
+// Why this duplicates a chunk of RestaurantCard rather than wrapping it:
+//   RestaurantCard is built for the itinerary context where contact info
+//   (website/phone/directions) is shown on a separate day-view row, not
+//   inside the card. Wrapping RestaurantCard to append a ContactBlock
+//   produces an awkward double-border seam because the inner card paints
+//   its own outline. Negative-margin compositions didn't cleanly hide
+//   the seam. The least-surprising fix is to render an integrated card
+//   that keeps RestaurantCard's typography, badge, and Reserve button
+//   styling exactly, then includes ContactBlock inside the same border.
+//
+// What we deliberately leave OUT compared to RestaurantCard:
+//   - Itinerary-specific chips: weekday-mismatch, missing-backup, return-visit
+//   - Closure banner (the find prompt forbids closed places)
+//   - Backup-restaurant sub-block (only meaningful with a known reservation slot)
+//
+// What we keep IDENTICAL by reusing shared primitives:
+//   - Badge component (top-left type chip)
+//   - reservationLink() helper (OpenTable / Resy / Tock / Yelp / phone)
+//   - ContactBlock component (the dead-link-aware website/phone/directions row)
+//   - MenuModal trigger via onOpenMenu prop
+//
+// If RestaurantCard's typography or padding changes, this card should be
+// updated to match — they're meant to look like the same surface.
+function FindRestaurantCard({ restaurant, onOpenMenu }) {
+  if (!restaurant) return null;
+  const r = restaurant;
+  const resv = reservationLink(r);
+  const platformLabel = resv ? ({
+    opentable: "OpenTable", resy: "Resy", tock: "Tock", yelp: "Yelp", phone: "Call",
+  }[resv.platform] || "Reserve") : null;
+  const hasContact = r.contact &&
+    (r.contact.address || r.contact.phone || r.contact.website ||
+     r.contact.booking_url || r.contact.hours);
+  return (
+    <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+        <Badge type={r.type || "Restaurant"} />
+        <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1 }}>{r.name}</p>
+      </div>
+      {(r.neighborhood || r.cuisine || r.price_range) && (
+        <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 6px", letterSpacing: "0.02em" }}>
+          {[r.neighborhood, r.cuisine, r.price_range].filter(Boolean).join("  ·  ")}
+        </p>
+      )}
+      {r.why && (
+        <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{r.why}</p>
+      )}
+      {(r.menu || resv) && (
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px", marginBottom: hasContact ? "4px" : 0 }}>
+          {r.menu && (
+            <button
+              onClick={() => onOpenMenu(r)}
+              style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}
+            >View Menu</button>
+          )}
+          {resv && (
+            <a
+              href={resv.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, textDecoration: "none", display: "inline-block" }}
+            >Reserve · {platformLabel}</a>
+          )}
+        </div>
+      )}
+      {hasContact && (
+        <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
+          <ContactBlock contact={r.contact} name={r.name} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Compute the initial input state once, outside React, so it runs exactly
+// once per FindView mount (not on every render and not memoized weirdly).
+// Source-of-truth order: URL ?q= wins (shareable links), then localStorage
+// (last session), then defaults.
+function computeInitialFindState() {
+  const fromUrl = readFindParams();
+  if (fromUrl.q) return fromUrl;
+  try {
+    const raw = window.localStorage.getItem(FIND_LS_KEY);
+    if (raw) {
+      const j = JSON.parse(raw);
+      return {
+        q: typeof j?.q === "string" ? j.q : "",
+        c: ["both", "restaurants", "activities"].includes(j?.c) ? j.c : "both",
+        g: typeof j?.g === "string" ? j.g.slice(0, FIND_GUIDELINES_MAX) : "",
+      };
+    }
+  } catch { /* ignore */ }
+  return { q: "", c: "both", g: "" };
+}
+
+function FindView() {
+  // -------- input state --------
+  // Lazy-init each useState so computeInitialFindState() runs exactly once.
+  const [location, setLocation] = useState(() => computeInitialFindState().q);
+  const [category, setCategory] = useState(() => computeInitialFindState().c);
+  const [guidelines, setGuidelines] = useState(() => computeInitialFindState().g);
+
+  // -------- search state --------
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [results, setResults] = useState(null); // { restaurants, activities, note, queryUsed }
+  const [menuRestaurant, setMenuRestaurant] = useState(null);
+
+  // -------- URL verify provider (same pattern as ItineraryView) --------
+  const urlsToVerify = useMemo(() => collectFindURLs(results), [results]);
+  const urlVerify = useURLVerification(urlsToVerify);
+  const verifyContextValue = useMemo(() => ({
+    status: urlVerify.status,
+    isReady: urlVerify.isReady,
+    destination: results?.queryUsed?.location || location || "",
+  }), [urlVerify.status, urlVerify.isReady, results, location]);
+
+  // -------- persist inputs to localStorage on change (debounced 400ms) ---
+  // localStorage.setItem is synchronous on the main thread. Without a
+  // debounce, typing into guidelines would write on every keystroke. 400ms
+  // is imperceptible but reduces writes ~50x during sustained typing.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try {
+        window.localStorage.setItem(
+          FIND_LS_KEY,
+          JSON.stringify({ q: location, c: category, g: guidelines }),
+        );
+      } catch { /* quota — non-fatal */ }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [location, category, guidelines]);
+
+  // -------- document title + noindex on mount --------
+  // Set on mount and never reverted: FindView never unmounts during a session
+  // because main.jsx picks one root component for the lifetime of the page.
+  useEffect(() => {
+    try {
+      document.title = "Find — Trip Optimizer";
+      // /find pages can have a user's query in ?q=, which we don't want crawled.
+      let m = document.querySelector('meta[name="robots"]');
+      if (!m) {
+        m = document.createElement("meta");
+        m.setAttribute("name", "robots");
+        document.head.appendChild(m);
+      }
+      m.setAttribute("content", "noindex, nofollow");
+    } catch { /* non-fatal */ }
+  }, []);
+
+  // -------- the search action --------
+  // Defined before the auto-search effect so the reference is resolved at
+  // effect-creation time, not via legacy block-scoped function hoisting.
+  //
+  // Race-condition defense: each call gets a monotonically-increasing
+  // requestId. Only the LATEST in-flight request's response is allowed to
+  // update state. If the user starts search A (slow) then B (fast), B's
+  // response can land first; when A finally returns, its requestId no
+  // longer matches and we discard it. Without this, the user could see
+  // results for an older query overwrite results for the newer one.
+  //
+  // Timeout: 30s AbortController. Well above the typical 3–8s Anthropic
+  // tool-call latency, but short enough that a stuck call surfaces a real
+  // error to the user instead of spinning forever.
+  // Loading flag specifically for the "Ask the locals" follow-up. Tracked
+  // separately so the rest of the page (form, baseline results) doesn't
+  // reset while the local-expert pass is running.
+  const [askingLocals, setAskingLocals] = useState(false);
+  const [sourcesExpanded, setSourcesExpanded] = useState(false);
+
+  const requestIdRef = useRef(0);
+  const runSearch = async (q, c, g, mode = "standard") => {
+    const loc = String(q || "").trim();
+    if (!loc) {
+      setError("Enter a location to search.");
+      return;
+    }
+    const isLocalExpert = mode === "local_expert";
+    const myId = ++requestIdRef.current;
+    if (isLocalExpert) {
+      setAskingLocals(true);
+    } else {
+      setLoading(true);
+      setResults(null);
+      setSourcesExpanded(false);
+    }
+    setError("");
+    writeFindParams({ q: loc, c, g });
+
+    // Local-expert calls fan out to Sonar in parallel server-side. Per-source
+    // 8s + retrieval overhead can push total latency higher than standard,
+    // so we give the timeout extra headroom for that mode.
+    const timeoutMs = isLocalExpert ? 45000 : 30000;
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch("/api/find", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: loc,
+          category: c,
+          guidelines: g || "",
+          mode,
+        }),
+        signal: controller.signal,
+      });
+      if (myId !== requestIdRef.current) return; // stale
+      const json = await res.json().catch(() => ({}));
+      if (myId !== requestIdRef.current) return; // stale
+      if (!res.ok) {
+        setError(json?.error?.message || `Search failed (${res.status}).`);
+        if (!isLocalExpert) setResults(null);
+      } else {
+        // Third line of defense — server schema + server response filter
+        // already filtered lodging; this is the client-side belt.
+        const restaurants = (json?.results?.restaurants || []).filter(findIsNotLodging);
+        const activities = (json?.results?.activities || []).filter(findIsNotLodging);
+        if (restaurants.length === 0 && activities.length === 0) {
+          // For local_expert: be explicit that this is a Sonar follow-up
+          // failing to surface fresh results — the user's original results
+          // (if any) are still on the page, untouched.
+          setError(
+            isLocalExpert
+              ? "The locals didn't surface different results this time. Your original list above is unchanged."
+              : "No results for that search. Try a different location or relax the guidelines.",
+          );
+          if (!isLocalExpert) setResults(null);
+        } else {
+          setResults({
+            restaurants,
+            activities,
+            note: typeof json?.note === "string" ? json.note : "",
+            queryUsed: { location: loc, category: c, guidelines: g, mode },
+            localExpert: json?.local_expert || null,
+          });
+          if (isLocalExpert) setSourcesExpanded(false);
+        }
+      }
+    } catch (err) {
+      if (myId !== requestIdRef.current) return; // stale
+      const isAbort = err?.name === "AbortError";
+      if (isLocalExpert) {
+        // Don't blow away the user's standard results on a local-expert
+        // failure — they can keep what they had and try again later.
+        setError(
+          isAbort
+            ? "Asking the locals took too long. Your original results above are unchanged — try again later."
+            : "Couldn't reach the local sources right now. Your original results above are unchanged.",
+        );
+      } else {
+        setError(
+          isAbort
+            ? "Search is taking too long. Try a more specific location or fewer guidelines and try again."
+            : "Search couldn't reach the server. Try again in a moment.",
+        );
+      }
+    } finally {
+      clearTimeout(timeoutHandle);
+      if (myId === requestIdRef.current) {
+        if (isLocalExpert) setAskingLocals(false);
+        else setLoading(false);
+      }
+    }
+  };
+
+  // Re-run the current query with Sonar-grounded local-expert mode. We keep
+  // the same query inputs (location/category/guidelines) but ask the server
+  // to fan out to local press and forums first.
+  const onAskLocals = () => {
+    if (!results || askingLocals || loading) return;
+    runSearch(
+      results.queryUsed.location,
+      results.queryUsed.category,
+      results.queryUsed.guidelines,
+      "local_expert",
+    );
+  };
+
+  // -------- if URL had a q on first load, auto-search --------
+  // Wrapped in a ref-flag so this only fires once per page load, even if
+  // React StrictMode double-invokes effects in dev. We read params fresh
+  // from URL here rather than closing over `initial` — simpler reasoning,
+  // and avoids the closure-on-mount fragility.
+  const autoSearchRef = useRef(false);
+  useEffect(() => {
+    if (autoSearchRef.current) return;
+    autoSearchRef.current = true;
+    const params = readFindParams();
+    if (params.q) {
+      runSearch(params.q, params.c, params.g);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function onSubmit(e) {
+    e?.preventDefault?.();
+    runSearch(location, category, guidelines);
+  }
+
+  function onClear() {
+    setLocation("");
+    setCategory("both");
+    setGuidelines("");
+    setResults(null);
+    setError("");
+    try { window.localStorage.removeItem(FIND_LS_KEY); } catch {}
+    writeFindParams({ q: "", c: "both", g: "" });
+  }
+
+  const hasRestaurants = (results?.restaurants?.length || 0) > 0;
+  const hasActivities = (results?.activities?.length || 0) > 0;
+  const showSectionToggle = !!results && hasRestaurants && hasActivities;
+
+  return (
+    <URLVerifyContext.Provider value={verifyContextValue}>
+      <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)", padding: "0 1rem", maxWidth: "780px", margin: "0 auto" }}>
+        {/* Header band */}
+        <div style={{ paddingTop: "1.25rem", paddingBottom: "1rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+          <div>
+            <p style={{ fontSize: "10px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Trip Optimizer</p>
+            <p style={{ fontSize: "22px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "2px 0 0", color: "var(--color-text-primary)" }}>Find</p>
+          </div>
+          <a href="/" style={{ fontSize: "11px", color: GOLD, textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", padding: "10px 14px", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", display: "inline-flex", alignItems: "center", minHeight: "40px" }}>← Trip Builder</a>
+        </div>
+
+        {/* Headline */}
+        <div style={{ marginBottom: "1.25rem" }}>
+          <h1 style={{ fontSize: "26px", fontFamily: "var(--font-serif)", fontWeight: 400, margin: "0 0 6px", color: "var(--color-text-primary)", lineHeight: 1.25 }}>Find restaurants and activities</h1>
+          <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.55 }}>Tell us where. We&rsquo;ll skip the hotels.</p>
+        </div>
+
+        {/* Search form */}
+        <form onSubmit={onSubmit} style={{ display: "flex", flexDirection: "column", gap: "14px", padding: "16px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-lg)", background: "var(--color-background-primary)", marginBottom: "1.25rem" }}>
+          <Field label="Location" hint="City, neighborhood, or landmark.">
+            <input
+              type="text"
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder="Santa Fe, NM"
+              autoComplete="off"
+              autoCapitalize="words"
+              spellCheck={false}
+              enterKeyHint="search"
+              style={{ fontSize: "16px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box" }}
+            />
+          </Field>
+
+          <Field label="Show">
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              style={{ fontSize: "14px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box" }}
+            >
+              <option value="both">Restaurants &amp; activities</option>
+              <option value="restaurants">Restaurants only</option>
+              <option value="activities">Activities only</option>
+            </select>
+          </Field>
+
+          <Field label="Guidelines (optional)" hint={`Anything specific. We treat this as preferences, not commands. ${guidelines.length}/${FIND_GUIDELINES_MAX}`}>
+            <textarea
+              value={guidelines}
+              onChange={(e) => setGuidelines(e.target.value.slice(0, FIND_GUIDELINES_MAX))}
+              placeholder="Dinner spots good for a celebration, walking distance from the plaza. Morning activities, no strenuous hikes. We're vegetarian."
+              rows={3}
+              style={{ fontSize: "14px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", resize: "vertical", minHeight: "70px", lineHeight: 1.5 }}
+            />
+          </Field>
+
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+            <button
+              type="submit"
+              disabled={loading || !location.trim()}
+              style={{ flex: 1, minWidth: "140px", fontSize: "13px", padding: "12px 18px", borderRadius: "var(--border-radius-md)", border: "none", background: loading || !location.trim() ? "var(--color-border-secondary)" : GOLD, color: loading || !location.trim() ? "var(--color-text-tertiary)" : "#0F0F0F", cursor: loading || !location.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
+            >{loading ? "Searching…" : "Search"}</button>
+            {(location || guidelines || results) && (
+              <button
+                type="button"
+                onClick={onClear}
+                style={{ fontSize: "11px", padding: "12px 16px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", minHeight: "44px" }}
+              >Clear</button>
+            )}
+          </div>
+        </form>
+
+        {/* Error banner */}
+        {error && (
+          <div role="alert" style={{ padding: "10px 14px", marginBottom: "1rem", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", color: "#8C1F1F", fontSize: "13px", lineHeight: 1.5 }}>
+            {error}
+          </div>
+        )}
+
+        {/* Summary line — proves to the user what we heard */}
+        {results && (
+          <div style={{ marginBottom: "1rem", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.55, display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "flex-start", flexWrap: "wrap" }}>
+            <span>
+              Showing{" "}
+              <strong style={{ color: "var(--color-text-primary)" }}>
+                {results.queryUsed.category === "both"
+                  ? "restaurants & activities"
+                  : results.queryUsed.category === "restaurants"
+                  ? "restaurants only"
+                  : "activities only"}
+              </strong>{" "}
+              for{" "}
+              <strong style={{ color: "var(--color-text-primary)" }}>{results.queryUsed.location}</strong>
+              {results.queryUsed.guidelines && (
+                <>
+                  {" "}·{" "}
+                  <em style={{ fontStyle: "italic" }}>&ldquo;{results.queryUsed.guidelines.length > 120 ? results.queryUsed.guidelines.slice(0, 117) + "…" : results.queryUsed.guidelines}&rdquo;</em>
+                </>
+              )}
+            </span>
+            <a
+              href="#top"
+              onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              style={{ color: GOLD, textDecoration: "none", fontSize: "11px", letterSpacing: "0.06em", textTransform: "uppercase", whiteSpace: "nowrap" }}
+            >Edit</a>
+          </div>
+        )}
+
+        {/* Optional note from the model */}
+        {results?.note && (
+          <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{results.note}</p>
+        )}
+
+        {/* Ask the locals — opt-in retrieval pass */}
+        {results && results.queryUsed.mode !== "local_expert" && !askingLocals && (
+          <div style={{ marginBottom: "1rem", padding: "12px 14px", border: `0.5px dashed ${GOLD}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
+            <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: "200px" }}>
+                <p style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 2px", letterSpacing: "0.02em" }}>Not quite what you were looking for?</p>
+                <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.5 }}>Pulls in regional press, local forums, and area guides. Takes a bit longer.</p>
+              </div>
+              <button
+                type="button"
+                onClick={onAskLocals}
+                disabled={askingLocals}
+                style={{ fontSize: "12px", padding: "10px 16px", borderRadius: "var(--border-radius-md)", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600, minHeight: "44px", whiteSpace: "nowrap" }}
+              >Ask the locals →</button>
+            </div>
+          </div>
+        )}
+
+        {/* Asking-the-locals progress */}
+        {askingLocals && (
+          <div style={{ marginBottom: "1rem", padding: "12px 14px", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", background: GOLD_LIGHT, display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: GOLD_DARK, letterSpacing: "0.04em" }}>Asking the locals…</span>
+            <span style={{ fontSize: "11px", color: GOLD_DARK }}>Querying regional press, local forums, and area guides.</span>
+          </div>
+        )}
+
+        {/* Local-expert badge + source list (when local_expert results are loaded) */}
+        {results && results.queryUsed.mode === "local_expert" && results.localExpert && (
+          <div style={{ marginBottom: "1rem", padding: "10px 14px", background: GOLD_LIGHT, border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", fontSize: "12px", color: GOLD_DARK, lineHeight: 1.55 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "flex-start", flexWrap: "wrap" }}>
+              <span>
+                <strong style={{ letterSpacing: "0.04em", textTransform: "uppercase", fontSize: "11px" }}>Locally sourced</strong>
+                {results.localExpert.status === "ok" && results.localExpert.sources?.length > 0 && (
+                  <>
+                    {" · "}
+                    <button
+                      type="button"
+                      onClick={() => setSourcesExpanded((v) => !v)}
+                      style={{ background: "transparent", border: "none", color: GOLD_DARK, textDecoration: "underline", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", padding: 0 }}
+                    >{results.localExpert.sources.length} source{results.localExpert.sources.length === 1 ? "" : "s"} consulted {sourcesExpanded ? "▲" : "▼"}</button>
+                  </>
+                )}
+                {results.localExpert.status === "no_results" && (
+                  <> · No usable results from local sources — falling back to general knowledge.</>
+                )}
+                {results.localExpert.status === "skipped_no_key" && (
+                  <> · Local-expert retrieval is not configured on this deployment.</>
+                )}
+                {results.localExpert.source_set === "curated" && results.localExpert.status === "ok" && (
+                  <span style={{ marginLeft: "6px", fontSize: "10.5px", padding: "2px 6px", background: GOLD, color: "#0F0F0F", borderRadius: "3px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>Curated</span>
+                )}
+              </span>
+            </div>
+            {sourcesExpanded && results.localExpert.sources?.length > 0 && (
+              <ul style={{ margin: "8px 0 0", padding: "0 0 0 18px", fontSize: "11.5px" }}>
+                {results.localExpert.sources.map((s) => (
+                  <li key={s.source_id} style={{ marginBottom: "2px" }}>
+                    {s.source_name}{" "}
+                    <span style={{ color: GOLD_DARK, opacity: 0.7 }}>({s.result_count} result{s.result_count === 1 ? "" : "s"})</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {/* Section toggle — only when both sections have results */}
+        {showSectionToggle && (
+          <div style={{ position: "sticky", top: 0, background: "#F4F2EE", padding: "10px 0", marginBottom: "0.5rem", zIndex: 10, display: "flex", gap: "16px", fontSize: "12px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+            <a href="#find-restaurants" style={{ color: "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Restaurants <span style={{ color: GOLD }}>({results.restaurants.length})</span></a>
+            <a href="#find-activities" style={{ color: "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Activities <span style={{ color: GOLD }}>({results.activities.length})</span></a>
+          </div>
+        )}
+
+        {/* Loading skeleton */}
+        {loading && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "1rem" }}>
+            {[0, 1, 2].map((i) => (
+              <div key={i} style={{ height: "82px", borderRadius: "var(--border-radius-md)", background: "linear-gradient(90deg, var(--color-background-secondary) 0%, #EBE7DF 50%, var(--color-background-secondary) 100%)", backgroundSize: "200% 100%", animation: "find-shimmer 1.4s linear infinite" }} />
+            ))}
+            <style>{`@keyframes find-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }`}</style>
+          </div>
+        )}
+
+        {/* Restaurants section */}
+        {hasRestaurants && (
+          <section id="find-restaurants" style={{ marginTop: "1.25rem", scrollMarginTop: "60px" }}>
+            <h2 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Restaurants in {results.queryUsed.location} ({results.restaurants.length})</h2>
+            {results.restaurants.map((r, i) => (
+              <FindRestaurantCard key={`${r.name}-${i}`} restaurant={r} onOpenMenu={setMenuRestaurant} />
+            ))}
+          </section>
+        )}
+
+        {/* Activities section */}
+        {hasActivities && (
+          <section id="find-activities" style={{ marginTop: "1.25rem", scrollMarginTop: "60px" }}>
+            <h2 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Activities in {results.queryUsed.location} ({results.activities.length})</h2>
+            {results.activities.map((a, i) => (
+              <ActivityCard key={`${a.text}-${i}`} time={null} end_time={null} item={a} />
+            ))}
+          </section>
+        )}
+
+        {/* Menu modal — reused */}
+        {menuRestaurant && <MenuModal restaurant={menuRestaurant} onClose={() => setMenuRestaurant(null)} />}
+
+        {/* Footer */}
+        <div style={{ padding: "1.75rem 0 1.5rem", borderTop: "0.5px solid var(--color-border-tertiary)", marginTop: "2rem", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Powered by</span>
+            <img src="/brand-wordmark.png?v=2" alt="Barrier Island Digital, LLC" style={{ display: "block", height: "22px", width: "auto", opacity: 0.9 }} />
+          </div>
+          <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "4px 0 0" }} />
+          <span style={{ color: "var(--color-text-tertiary)", fontSize: "10px", letterSpacing: "0.06em", marginTop: "2px" }}>
+            build {(typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "dev"}
+          </span>
+        </div>
+      </div>
+    </URLVerifyContext.Provider>
+  );
+}
+
+// FindView is exported as a named export so main.jsx can mount it as a
+// sibling-of-TripOptimizer when the URL pathname starts with /find. We do
+// the path branch ABOVE the React tree (in main.jsx) — not inside
+// TripOptimizer — because TripOptimizer holds dozens of hooks and the
+// rules-of-hooks forbid returning before them.
+export { FindView };
+
 export default function TripOptimizer() {
+
   // Form state is INTENTIONALLY NOT PERSISTED across launches. The user wants
   // a clean slate on every launch and after "Plan another trip". We still
   // write to localStorage during a session for crash recovery within the
