@@ -7921,21 +7921,37 @@ function FindView() {
   // Timeout: 30s AbortController. Well above the typical 3–8s Anthropic
   // tool-call latency, but short enough that a stuck call surfaces a real
   // error to the user instead of spinning forever.
+  // Loading flag specifically for the "Ask the locals" follow-up. Tracked
+  // separately so the rest of the page (form, baseline results) doesn't
+  // reset while the local-expert pass is running.
+  const [askingLocals, setAskingLocals] = useState(false);
+  const [sourcesExpanded, setSourcesExpanded] = useState(false);
+
   const requestIdRef = useRef(0);
-  const runSearch = async (q, c, g) => {
+  const runSearch = async (q, c, g, mode = "standard") => {
     const loc = String(q || "").trim();
     if (!loc) {
       setError("Enter a location to search.");
       return;
     }
+    const isLocalExpert = mode === "local_expert";
     const myId = ++requestIdRef.current;
-    setLoading(true);
+    if (isLocalExpert) {
+      setAskingLocals(true);
+    } else {
+      setLoading(true);
+      setResults(null);
+      setSourcesExpanded(false);
+    }
     setError("");
-    setResults(null);
     writeFindParams({ q: loc, c, g });
 
+    // Local-expert calls fan out to Sonar in parallel server-side. Per-source
+    // 8s + retrieval overhead can push total latency higher than standard,
+    // so we give the timeout extra headroom for that mode.
+    const timeoutMs = isLocalExpert ? 45000 : 30000;
     const controller = new AbortController();
-    const timeoutHandle = setTimeout(() => controller.abort(), 30000);
+    const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const res = await fetch("/api/find", {
@@ -7945,6 +7961,7 @@ function FindView() {
           location: loc,
           category: c,
           guidelines: g || "",
+          mode,
         }),
         signal: controller.signal,
       });
@@ -7953,7 +7970,7 @@ function FindView() {
       if (myId !== requestIdRef.current) return; // stale
       if (!res.ok) {
         setError(json?.error?.message || `Search failed (${res.status}).`);
-        setResults(null);
+        if (!isLocalExpert) setResults(null);
       } else {
         // Third line of defense — server schema + server response filter
         // already filtered lodging; this is the client-side belt.
@@ -7961,28 +7978,45 @@ function FindView() {
         const activities = (json?.results?.activities || []).filter(findIsNotLodging);
         if (restaurants.length === 0 && activities.length === 0) {
           setError("No results for that search. Try a different location or relax the guidelines.");
-          setResults(null);
+          if (!isLocalExpert) setResults(null);
         } else {
           setResults({
             restaurants,
             activities,
             note: typeof json?.note === "string" ? json.note : "",
-            queryUsed: { location: loc, category: c, guidelines: g },
+            queryUsed: { location: loc, category: c, guidelines: g, mode },
+            localExpert: json?.local_expert || null,
           });
+          if (isLocalExpert) setSourcesExpanded(false);
         }
       }
     } catch (err) {
       if (myId !== requestIdRef.current) return; // stale
       const isAbort = err?.name === "AbortError";
-      setError(
-        isAbort
-          ? "Search is taking too long. Try a more specific location or fewer guidelines and try again."
-          : "Search couldn't reach the server. Try again in a moment.",
-      );
+      const baseMsg = isAbort
+        ? "Search is taking too long. Try a more specific location or fewer guidelines and try again."
+        : "Search couldn't reach the server. Try again in a moment.";
+      setError(isLocalExpert ? "Local-expert " + baseMsg.toLowerCase() : baseMsg);
     } finally {
       clearTimeout(timeoutHandle);
-      if (myId === requestIdRef.current) setLoading(false);
+      if (myId === requestIdRef.current) {
+        if (isLocalExpert) setAskingLocals(false);
+        else setLoading(false);
+      }
     }
+  };
+
+  // Re-run the current query with Sonar-grounded local-expert mode. We keep
+  // the same query inputs (location/category/guidelines) but ask the server
+  // to fan out to local press and forums first.
+  const onAskLocals = () => {
+    if (!results || askingLocals || loading) return;
+    runSearch(
+      results.queryUsed.location,
+      results.queryUsed.category,
+      results.queryUsed.guidelines,
+      "local_expert",
+    );
   };
 
   // -------- if URL had a q on first load, auto-search --------
@@ -8131,6 +8165,72 @@ function FindView() {
         {/* Optional note from the model */}
         {results?.note && (
           <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{results.note}</p>
+        )}
+
+        {/* Ask the locals — opt-in retrieval pass */}
+        {results && results.queryUsed.mode !== "local_expert" && !askingLocals && (
+          <div style={{ marginBottom: "1rem", padding: "12px 14px", border: `0.5px dashed ${GOLD}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
+            <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: "200px" }}>
+                <p style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 2px", letterSpacing: "0.02em" }}>Not quite what you were looking for?</p>
+                <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.5 }}>Pulls in regional press, local forums, and area guides. Takes a bit longer.</p>
+              </div>
+              <button
+                type="button"
+                onClick={onAskLocals}
+                disabled={askingLocals}
+                style={{ fontSize: "12px", padding: "10px 16px", borderRadius: "var(--border-radius-md)", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600, minHeight: "44px", whiteSpace: "nowrap" }}
+              >Ask the locals →</button>
+            </div>
+          </div>
+        )}
+
+        {/* Asking-the-locals progress */}
+        {askingLocals && (
+          <div style={{ marginBottom: "1rem", padding: "12px 14px", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", background: GOLD_LIGHT, display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: GOLD_DARK, letterSpacing: "0.04em" }}>Asking the locals…</span>
+            <span style={{ fontSize: "11px", color: GOLD_DARK }}>Querying regional press, local forums, and area guides.</span>
+          </div>
+        )}
+
+        {/* Local-expert badge + source list (when local_expert results are loaded) */}
+        {results && results.queryUsed.mode === "local_expert" && results.localExpert && (
+          <div style={{ marginBottom: "1rem", padding: "10px 14px", background: GOLD_LIGHT, border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", fontSize: "12px", color: GOLD_DARK, lineHeight: 1.55 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "flex-start", flexWrap: "wrap" }}>
+              <span>
+                <strong style={{ letterSpacing: "0.04em", textTransform: "uppercase", fontSize: "11px" }}>Locally sourced</strong>
+                {results.localExpert.status === "ok" && results.localExpert.sources?.length > 0 && (
+                  <>
+                    {" · "}
+                    <button
+                      type="button"
+                      onClick={() => setSourcesExpanded((v) => !v)}
+                      style={{ background: "transparent", border: "none", color: GOLD_DARK, textDecoration: "underline", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", padding: 0 }}
+                    >{results.localExpert.sources.length} source{results.localExpert.sources.length === 1 ? "" : "s"} consulted {sourcesExpanded ? "▲" : "▼"}</button>
+                  </>
+                )}
+                {results.localExpert.status === "no_results" && (
+                  <> · No usable results from local sources — falling back to general knowledge.</>
+                )}
+                {results.localExpert.status === "skipped_no_key" && (
+                  <> · Local-expert retrieval is not configured on this deployment.</>
+                )}
+                {results.localExpert.source_set === "curated" && results.localExpert.status === "ok" && (
+                  <span style={{ marginLeft: "6px", fontSize: "10.5px", padding: "2px 6px", background: GOLD, color: "#0F0F0F", borderRadius: "3px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>Curated</span>
+                )}
+              </span>
+            </div>
+            {sourcesExpanded && results.localExpert.sources?.length > 0 && (
+              <ul style={{ margin: "8px 0 0", padding: "0 0 0 18px", fontSize: "11.5px" }}>
+                {results.localExpert.sources.map((s) => (
+                  <li key={s.source_id} style={{ marginBottom: "2px" }}>
+                    {s.source_name}{" "}
+                    <span style={{ color: GOLD_DARK, opacity: 0.7 }}>({s.result_count} result{s.result_count === 1 ? "" : "s"})</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
 
         {/* Section toggle — only when both sections have results */}
