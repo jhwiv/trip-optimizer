@@ -7686,6 +7686,18 @@ const FIND_GUIDELINES_MAX = 1000;
 // Defensive client-side lodging filter — mirrors functions/api/find.js
 // isNotLodging(). Belt and braces: even if /api/find ever changes and lets
 // something through, the UI will not render a hotel on the /find page.
+//
+// Trade-off acknowledged: this WILL drop a legitimate restaurant whose name
+// includes a lodging word (e.g. "Inn at Little Washington" — a real,
+// 3-Michelin-star restaurant). We accept that false-positive risk because:
+//   1. The server-side schema + system prompt are the primary defense —
+//      this is the safety net, not the primary filter.
+//   2. The cost of dropping one famous edge-case restaurant is much lower
+//      than the cost of accidentally rendering an actual hotel as a search
+//      result, which violates the core product promise of /find.
+//   3. Only item.name, item.text, item.type, and item.cuisine are checked.
+//      item.why can legitimately mention "near the hotel" or "walking from
+//      your hotel" without making the place itself lodging.
 const LODGING_RX = /\b(hotel|resort|inn|lodge|hostel|b&b|bed[\s-]?and[\s-]?breakfast|guesthouse|airbnb|vacation rental|accommodation)\b/i;
 function findIsNotLodging(item) {
   if (!item || typeof item !== "object") return false;
@@ -7762,30 +7774,33 @@ function FindRestaurantCard({ restaurant, onOpenMenu }) {
   );
 }
 
+// Compute the initial input state once, outside React, so it runs exactly
+// once per FindView mount (not on every render and not memoized weirdly).
+// Source-of-truth order: URL ?q= wins (shareable links), then localStorage
+// (last session), then defaults.
+function computeInitialFindState() {
+  const fromUrl = readFindParams();
+  if (fromUrl.q) return fromUrl;
+  try {
+    const raw = window.localStorage.getItem(FIND_LS_KEY);
+    if (raw) {
+      const j = JSON.parse(raw);
+      return {
+        q: typeof j?.q === "string" ? j.q : "",
+        c: ["both", "restaurants", "activities"].includes(j?.c) ? j.c : "both",
+        g: typeof j?.g === "string" ? j.g.slice(0, FIND_GUIDELINES_MAX) : "",
+      };
+    }
+  } catch { /* ignore */ }
+  return { q: "", c: "both", g: "" };
+}
+
 function FindView() {
   // -------- input state --------
-  const initial = useMemo(() => {
-    // 1. URL params win (shareable links).
-    const fromUrl = readFindParams();
-    if (fromUrl.q) return fromUrl;
-    // 2. Then localStorage (last session).
-    try {
-      const raw = window.localStorage.getItem(FIND_LS_KEY);
-      if (raw) {
-        const j = JSON.parse(raw);
-        return {
-          q: typeof j?.q === "string" ? j.q : "",
-          c: ["both", "restaurants", "activities"].includes(j?.c) ? j.c : "both",
-          g: typeof j?.g === "string" ? j.g.slice(0, FIND_GUIDELINES_MAX) : "",
-        };
-      }
-    } catch { /* ignore */ }
-    return { q: "", c: "both", g: "" };
-  }, []);
-
-  const [location, setLocation] = useState(initial.q);
-  const [category, setCategory] = useState(initial.c);
-  const [guidelines, setGuidelines] = useState(initial.g);
+  // Lazy-init each useState so computeInitialFindState() runs exactly once.
+  const [location, setLocation] = useState(() => computeInitialFindState().q);
+  const [category, setCategory] = useState(() => computeInitialFindState().c);
+  const [guidelines, setGuidelines] = useState(() => computeInitialFindState().g);
 
   // -------- search state --------
   const [loading, setLoading] = useState(false);
@@ -7809,20 +7824,31 @@ function FindView() {
     } catch { /* quota — non-fatal */ }
   }, [location, category, guidelines]);
 
-  // -------- if URL had a q on first load, auto-search --------
-  // (Wrapped in a ref-flag so this only fires once per page load, even if
-  // React StrictMode double-invokes effects in dev.)
-  const autoSearchRef = useRef(false);
+  // -------- document title + noindex on mount --------
+  // Set on mount and never reverted: FindView never unmounts during a session
+  // because main.jsx picks one root component for the lifetime of the page.
   useEffect(() => {
-    if (autoSearchRef.current) return;
-    autoSearchRef.current = true;
-    if (initial.q) {
-      runSearch(initial.q, initial.c, initial.g);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    try {
+      document.title = "Find — Trip Optimizer";
+      // /find pages can have a user's query in ?q=, which we don't want crawled.
+      let m = document.querySelector('meta[name="robots"]');
+      if (!m) {
+        m = document.createElement("meta");
+        m.setAttribute("name", "robots");
+        document.head.appendChild(m);
+      }
+      m.setAttribute("content", "noindex, nofollow");
+    } catch { /* non-fatal */ }
   }, []);
 
-  async function runSearch(q, c, g) {
+  // -------- the search action --------
+  // Defined before the auto-search effect so the reference is resolved at
+  // effect-creation time, not via legacy block-scoped function hoisting.
+  // In-flight requests cannot be cancelled here — we accept that a user
+  // who rapidly changes search terms might see two responses race; the
+  // last setState wins and that's fine for this use case. The Search button
+  // is disabled while loading, which is the practical guard.
+  const runSearch = async (q, c, g) => {
     const loc = String(q || "").trim();
     if (!loc) {
       setError("Enter a location to search.");
@@ -7867,7 +7893,23 @@ function FindView() {
     } finally {
       setLoading(false);
     }
-  }
+  };
+
+  // -------- if URL had a q on first load, auto-search --------
+  // Wrapped in a ref-flag so this only fires once per page load, even if
+  // React StrictMode double-invokes effects in dev. We read params fresh
+  // from URL here rather than closing over `initial` — simpler reasoning,
+  // and avoids the closure-on-mount fragility.
+  const autoSearchRef = useRef(false);
+  useEffect(() => {
+    if (autoSearchRef.current) return;
+    autoSearchRef.current = true;
+    const params = readFindParams();
+    if (params.q) {
+      runSearch(params.q, params.c, params.g);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function onSubmit(e) {
     e?.preventDefault?.();
@@ -7973,7 +8015,11 @@ function FindView() {
             <span>
               Showing{" "}
               <strong style={{ color: "var(--color-text-primary)" }}>
-                {results.queryUsed.category === "both" ? "restaurants & activities" : results.queryUsed.category}
+                {results.queryUsed.category === "both"
+                  ? "restaurants & activities"
+                  : results.queryUsed.category === "restaurants"
+                  ? "restaurants only"
+                  : "activities only"}
               </strong>{" "}
               for{" "}
               <strong style={{ color: "var(--color-text-primary)" }}>{results.queryUsed.location}</strong>

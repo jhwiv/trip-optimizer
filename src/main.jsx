@@ -8,9 +8,11 @@ import App, { FindView } from './App.jsx'
 // to do the branch because main.jsx has no hooks of its own; doing it
 // inside TripOptimizer would violate the React rules-of-hooks (early
 // return before useState/useEffect calls).
+// Match /find, /find/, /find?... — but NOT /findxyz. Anchored exact-segment match.
+const FIND_ROUTE_RX = /^\/find(\/|\?|$)/
 const isFindRoute = typeof window !== 'undefined'
   && typeof window.location?.pathname === 'string'
-  && window.location.pathname.startsWith('/find')
+  && FIND_ROUTE_RX.test(window.location.pathname + window.location.search)
 
 const Root = isFindRoute ? FindView : App
 
