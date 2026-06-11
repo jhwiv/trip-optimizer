@@ -1680,12 +1680,12 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
         </div>
       )}
       <div style={{ display: isClosed ? "none" : "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px" }}>
-        {r.menu && (
-          <button
-            onClick={() => onOpenMenu(r)}
-            style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}
-          >View Menu</button>
-        )}
+        {/* View Menu always shown — if the model included a menu it renders
+            instantly; otherwise the parent lazy-fetches via /api/menu. */}
+        <button
+          onClick={() => onOpenMenu(r)}
+          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}
+        >View Menu</button>
         {r.contact?.website && (
           <a
             href={r.contact.website}
@@ -1717,12 +1717,11 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
           )}
           {r.backup.why && <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 6px", lineHeight: 1.5 }}>{r.backup.why}</p>}
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            {r.backup.menu && (
-              <button
-                onClick={() => onOpenMenu(r.backup)}
-                style={{ fontSize: "10.5px", padding: "5px 10px", borderRadius: "4px", border: `0.5px solid var(--color-border-secondary)`, background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.04em", textTransform: "uppercase" }}
-              >Menu</button>
-            )}
+            {/* Backup Menu button also always shown, lazy-fetches on tap. */}
+            <button
+              onClick={() => onOpenMenu(r.backup)}
+              style={{ fontSize: "10.5px", padding: "5px 10px", borderRadius: "4px", border: `0.5px solid var(--color-border-secondary)`, background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.04em", textTransform: "uppercase" }}
+            >Menu</button>
             {r.backup.contact?.website && (
               <a
                 href={r.backup.contact.website}
@@ -5300,7 +5299,69 @@ function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
 }
 
 function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, savedTripId, onPlanRevised, onReviewChange, initialReview }) {
+  // --- Menu modal state (lazy-fetch via /api/menu) ---
+  // For large multi-city trips the build prompt now OMITS per-restaurant
+  // menu data to keep the streaming response small (was 10-15k tokens of
+  // pure menu boilerplate). When the user taps 'View Menu' we fall back to
+  // /api/menu, which already powers FindView. Restaurants with model-
+  // supplied menus (older saved trips or small trips that still get them)
+  // skip the fetch and render immediately.
   const [menuRestaurant, setMenuRestaurant] = useState(null);
+  const [menuData, setMenuData] = useState(null);
+  const [menuLoading, setMenuLoading] = useState(false);
+  const [menuError, setMenuError] = useState("");
+  const menuCacheRef = useRef(new Map());
+  const destinationForMenu =
+    inputs?.basics?.destination ||
+    (Array.isArray(inputs?.basics?.cities) ? inputs.basics.cities.map(c => c?.name).filter(Boolean).join(" ") : "") ||
+    rawData?.destination ||
+    "";
+  const openMenu = async (restaurant) => {
+    if (!restaurant) return;
+    setMenuRestaurant(restaurant);
+    setMenuError("");
+    // If the model already shipped a menu, no fetch needed.
+    if (restaurant.menu && (
+      (Array.isArray(restaurant.menu.signature_dishes) && restaurant.menu.signature_dishes.length > 0) ||
+      (Array.isArray(restaurant.menu.mains) && restaurant.menu.mains.length > 0)
+    )) {
+      setMenuData(null);
+      setMenuLoading(false);
+      return;
+    }
+    const cacheKey = `${restaurant.name}|${destinationForMenu}`;
+    const cached = menuCacheRef.current.get(cacheKey);
+    if (cached) {
+      setMenuData(cached);
+      setMenuLoading(false);
+      return;
+    }
+    setMenuData(null);
+    setMenuLoading(true);
+    try {
+      const res = await fetch("/api/menu", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: restaurant.name, location: destinationForMenu, cuisine: restaurant.cuisine || "" }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) setMenuError(json?.error?.message || `Couldn't load the menu (${res.status}).`);
+      else if (json?.menu) {
+        menuCacheRef.current.set(cacheKey, { menu: json.menu });
+        setMenuData({ menu: json.menu });
+      } else setMenuError("Couldn't load the menu.");
+    } catch (err) {
+      setMenuError(`Couldn't reach the menu service. ${String(err?.message || err).slice(0, 80)}`);
+    } finally {
+      setMenuLoading(false);
+    }
+  };
+  const closeMenu = () => {
+    setMenuRestaurant(null);
+    setMenuData(null);
+    setMenuError("");
+    setMenuLoading(false);
+  };
   // Section tab state — default "overview" keeps the existing day-by-day
   // timeline as the landing view. The other tabs (flights/lodging/dining/etc)
   // flatten plan content into category cards. Switching tabs scrolls back to
@@ -5374,12 +5435,37 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
         </button>
       </div>
       <InputSummary inputs={inputs} />
-      <MenuModal restaurant={menuRestaurant} onClose={() => setMenuRestaurant(null)} />
+      {/* Menu modal renders MenuModal once data is available (either model-
+          supplied at build time or lazy-fetched via /api/menu). While the
+          lazy fetch is in flight we show a small loading sheet — same
+          treatment as FindView for visual consistency. */}
+      {menuRestaurant && (() => {
+        const effectiveMenu = (menuRestaurant.menu && ((Array.isArray(menuRestaurant.menu.signature_dishes) && menuRestaurant.menu.signature_dishes.length > 0) || (Array.isArray(menuRestaurant.menu.mains) && menuRestaurant.menu.mains.length > 0)))
+          ? menuRestaurant.menu
+          : menuData?.menu;
+        if (effectiveMenu) {
+          return <MenuModal restaurant={{ ...menuRestaurant, menu: effectiveMenu }} onClose={closeMenu} />;
+        }
+        return (
+          <div onClick={closeMenu} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 1000, padding: 0 }}>
+            <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Menu" style={{ background: "var(--color-background-primary)", maxWidth: "640px", width: "100%", maxHeight: "90vh", overflowY: "auto", borderRadius: "16px 16px 0 0", padding: "22px 22px 32px", boxShadow: "0 -8px 32px rgba(0,0,0,0.25)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
+                <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Menu</p>
+                <button onClick={closeMenu} aria-label="Close menu" style={{ background: "transparent", border: "none", fontSize: "22px", color: "var(--color-text-secondary)", cursor: "pointer", padding: "4px 8px", lineHeight: 1 }}>×</button>
+              </div>
+              <p style={{ fontSize: "20px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 14px", color: "var(--color-text-primary)" }}>{menuRestaurant.name}</p>
+              {menuLoading && <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontStyle: "italic" }}>Loading menu…</p>}
+              {menuError && <p role="alert" style={{ fontSize: "13px", color: "#8C1F1F", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{menuError}</p>}
+              {!menuLoading && !menuError && <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontStyle: "italic" }}>No menu available.</p>}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Sticky two-row tab nav lives ABOVE the hero so the hero stays compact and every
          tab is reachable at a glance — modeled after zurich-weekend.com / maritimesgrandloop.com. */}
       {data.days && data.days.length > 0 && (
-        <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} onOpenMenu={setMenuRestaurant} />
+        <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} onOpenMenu={openMenu} />
       )}
 
       <TripHero data={data} />
@@ -5421,7 +5507,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
 
       {data.days && data.days.length > 0 && tab !== "overview" && (
         <Section title={({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities", essentials: "Essentials" }[tab] || "")}>
-          <TripSectionView tab={tab} data={data} onOpenMenu={setMenuRestaurant} />
+          <TripSectionView tab={tab} data={data} onOpenMenu={openMenu} />
         </Section>
       )}
 
@@ -5442,7 +5528,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
                     <span style={{ fontSize: "15px", fontFamily: "var(--font-serif)", fontStyle: "italic", letterSpacing: "-0.2px" }}>{d.city}</span>
                   </div>
                 )}
-                <DayBlock day={d} dayIndex={i} onOpenMenu={setMenuRestaurant} />
+                <DayBlock day={d} dayIndex={i} onOpenMenu={openMenu} />
               </div>
             );
           })}
@@ -6461,7 +6547,15 @@ function salvageTruncatedJSON(str) {
 //
 // Used by the Professional Review and Apply Changes flows. The fresh-build
 // path has its own inline reader (streamBuildResponse) with extra UI hooks.
-async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
+// Streams an Anthropic build via /api/build, with KV polling fallback when
+// the SSE stream drops mid-build.
+//
+// maxPollMs: optional override for the absolute polling ceiling. Default 15
+//   minutes for general callers; the wizard build path passes a value
+//   scaled to the trip's expected duration (targetSec * 2.5) so multi-city
+//   trips that legitimately need 12-15 minutes of model output don't get
+//   guillotined by a 10-min ceiling.
+async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) {
   const resp = await fetch("/api/build", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -6555,7 +6649,11 @@ async function streamBuildJob(body, { signal, onJob, onDelta } = {}) {
   if (!doneSeen && jobId) {
     let cursor = toolJson.length;
     const POLL_MS = 1500;
-    const MAX_POLL_MS = 10 * 60 * 1000;
+    // Default ceiling raised from 10 to 15 min because pre-2026 the only
+    // builds that hit it were genuinely runaway; post-2026 (after the
+    // verify/menu/contact additions) heavy multi-city trips need 12-15 min
+    // of legitimate streaming. Callers can override via maxPollMs.
+    const MAX_POLL_MS = typeof maxPollMs === "number" && maxPollMs > 0 ? maxPollMs : 15 * 60 * 1000;
     // Stall threshold. The model can legitimately spend 90–150s emitting a
     // single large structure (a full menu object with appetizers + mains +
     // desserts + wine notes is one such block). 90s was tripping on healthy
@@ -9833,7 +9931,8 @@ HOTEL ITEMS:
 • The phone field is critical — it becomes a tappable "Call hotel" CTA in the app.
 
 RESTAURANTS:
-• Every Dinner/Lunch/Breakfast/Brunch item should include the full restaurant object: name, neighborhood, cuisine, price_range, why, closure_note, open_days, hours_note, reservation, menu, backup, verify_status, verify_url. verify_status and verify_url are MANDATORY — do not omit them. verify_url should be the canonical Google Maps search URL (https://www.google.com/maps/search/?api=1&query=<URL-encoded restaurant name + city>) when no better source exists, or the restaurant's own website / OpenTable / Resy listing when you know it.
+• Every Dinner/Lunch/Breakfast/Brunch item should include the full restaurant object: name, neighborhood, cuisine, price_range, why, closure_note, open_days, hours_note, reservation, contact, backup, verify_status, verify_url. verify_status and verify_url are MANDATORY — do not omit them. verify_url should be the canonical Google Maps search URL (https://www.google.com/maps/search/?api=1&query=<URL-encoded restaurant name + city>) when no better source exists, or the restaurant's own website / OpenTable / Resy listing when you know it.
+• DO NOT emit the 'menu' field. Menus are lazy-fetched via /api/menu when the user taps View Menu on a card. Leaving menu out frees up thousands of tokens per build for richer why-blurbs, hours, reservation notes, and insider tips on everything else. This is mandatory for multi-day trips — emitting full menus inline can blow the token budget before the trip finishes.
 • OPEN_DAYS — CRITICAL: For every restaurant you genuinely know the operating-day pattern for, populate open_days with the lowercase 3-letter weekday codes the restaurant SERVES THE MEAL YOU'RE ASSIGNING IT TO. Examples: a 'Closed Sundays' dinner spot gets ['mon','tue','wed','thu','fri','sat']; a 'Closed Mon–Tue' fine-dining spot gets ['wed','thu','fri','sat','sun']. Then check the weekday of the day you're placing this restaurant on — if the day is NOT in open_days, you have just scheduled the traveler at a dark storefront. PICK A DIFFERENT RESTAURANT instead. This is a hard rule.
 • hours_note: short human-readable summary like 'Mon–Sat 5–9pm' when you know it. Omit if not sure.
 • If you genuinely do NOT know a restaurant's open_days, omit the field entirely (do not guess). The renderer treats missing open_days as 'assume open' rather than 'closed every day', but you should set closure_note to 'Confirm hours — closure day uncertain' as a safety hint to the traveler.
@@ -9841,7 +9940,7 @@ RESTAURANTS:
 • Always include a same-tier backup in the same neighborhood / cuisine family. The backup must ALSO have open_days populated when known, and its open_days MUST include the meal's weekday — a backup that's also closed that day is useless.
 • reservation.platform: opentable for most US/UK/EU fine dining; resy for trendy NYC/LA/Miami; tock for tasting menus; phone with a phone number for hole-in-the-walls; walkin if no reservations. Include the canonical url when you know it. (A server-side pass grounds platform + url on the actual current booking system after the build, so honest best-guess is fine — just don't fabricate URLs.)
 • contact.website: include the restaurant's official site URL when you genuinely know it (e.g. https://thecompoundrestaurant.com). The website button is rendered next to Reserve so travelers can see menus, photos, and verify hours directly. Do NOT fabricate URLs — omit the field if uncertain. A separate confirmation pass fills in missing websites where possible.
-• menu schema: { style_note, signature_dishes, appetizers, mains, desserts, wine_and_drinks, source_note }. Real dishes the restaurant is actually known for. Always include the source_note acknowledging menus change.
+• The 'menu' field on the restaurant schema is reserved for legacy use. DO NOT populate it for new builds — the View Menu button on every card lazy-fetches it from /api/menu, which is grounded on the restaurant's actual current offerings. Emitting menus inline wastes ~500 tokens per restaurant and adds 30-60 seconds to multi-day builds.
 
 • RESTAURANT FRESHNESS — NEVER RECOMMEND A CLOSED RESTAURANT:
   Restaurants close permanently all the time, and the closure is usually weeks-to-months ahead of the news cycle the model was trained on. A recommendation for a permanently-closed restaurant is the single most damaging failure this app can ship — the traveler shows up to a dark storefront. Apply these guards on EVERY meal item:
@@ -10072,7 +10171,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   // accumulated text when status flips to "done". Throws on "error" or
   // notFound. The signal cancels the poll loop without killing the
   // server-side job (build keeps running for next time).
-  const pollJob = async ({ jobId, signal, onDelta, startCursor = 0 }) => {
+  const pollJob = async ({ jobId, signal, onDelta, startCursor = 0, maxPollMs }) => {
     let cursor = startCursor;
     let stopReasonFromStatus = null;
     const POLL_MS = 1500;
@@ -10080,7 +10179,13 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // MAX_POLL_MS is the hard ceiling; MAX_STALL_MS catches the "server is
     // up but generation has frozen" case where 5xx polls succeed but
     // no new bytes arrive.
-    const MAX_POLL_MS = 10 * 60 * 1000;
+    //
+    // Default 15 min covers the long tail of legitimate builds. The wizard
+    // build path overrides this with a trip-size-scaled value so 12-night,
+    // 9-city builds that legitimately need 12-15 min get the headroom they
+    // need. Without this override a Croatia-sized build was being killed
+    // at 10 min while the model was still actively streaming Day 11.
+    const MAX_POLL_MS = typeof maxPollMs === "number" && maxPollMs > 0 ? maxPollMs : 15 * 60 * 1000;
     // Stall threshold. The model can legitimately spend 90–150s emitting a
     // single large structure (a full menu object with appetizers + mains +
     // desserts + wine notes is one such block). 90s was tripping on healthy
@@ -10278,6 +10383,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     abortRef.current = controller;
     const hardTimeoutMs = Math.max(300000, targetSec * 1000 * 3); // 3× the target, floor 5 min
     const hardTimeout = setTimeout(() => controller.abort(new Error("Polled too long")), hardTimeoutMs);
+    // Pass a poll ceiling that gives the model 2.5× the expected build time
+    // before giving up — always at least 15 min so small trips keep generous
+    // headroom, but scaling with trip size so a 12-day, 9-city build that
+    // legitimately needs 12-15 min of streaming gets ~30 min of polling
+    // window before the client guillotines it.
+    const maxPollMsForTrip = Math.max(15 * 60 * 1000, Math.round(targetSec * 1000 * 2.5));
 
     // "Still building" notice scales with expected build time so we don't
     // claim a 3-city plan is slow at 90s when 4-5 min is normal.
@@ -10385,6 +10496,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           signal: controller.signal,
           onDelta,
           startCursor: toolJson.length,
+          maxPollMs: maxPollMsForTrip,
         });
         if (pollOut?.stopReason && !buildStopReason) buildStopReason = pollOut.stopReason;
       }
