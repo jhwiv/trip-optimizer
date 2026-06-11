@@ -8443,6 +8443,33 @@ function FindView() {
     );
   };
 
+  // Auto-fire the local-expert pass as soon as standard results land. Users
+  // shouldn't have to know about, or click, a second button to get the
+  // locals' picks — the value of the feature is invisible until they see
+  // both lists side by side. Only auto-fires when:
+  //   • standard results just arrived (results truthy)
+  //   • we haven't already run the local pass for this query
+  //     (localExpertResults nullable)
+  //   • we're not already running anything
+  // Encoded as a query-signature dependency so re-running the same query
+  // (e.g. after a clear/re-submit) re-triggers it but no-ops on incidental
+  // re-renders.
+  const lastAutoLocalsKeyRef = useRef(null);
+  useEffect(() => {
+    if (!results || loading || askingLocals) return;
+    if (localExpertResults) return;
+    const sig = `${results.queryUsed.location}|${results.queryUsed.category}|${results.queryUsed.guidelines}`;
+    if (lastAutoLocalsKeyRef.current === sig) return;
+    lastAutoLocalsKeyRef.current = sig;
+    runSearch(
+      results.queryUsed.location,
+      results.queryUsed.category,
+      results.queryUsed.guidelines,
+      "local_expert",
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results]);
+
   // -------- lazy menu fetch --------
   // Opens the menu modal in a loading state, then resolves with menu data
   // or an error. Cached per-restaurant-name in a session ref so re-opening
@@ -10709,11 +10736,83 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       // bump that PR #18 added is no longer needed.
       Math.max(8000, 5000 + (nightsNum + 1) * 2200 + Math.max(0, citiesCount - 1) * 1200),
     );
-    const userPromptForBuild = buildUserPrompt();
+    let userPromptForBuild = buildUserPrompt();
     // buildSystemPrompt() now returns { staticRules, dynamicPreamble } so we
     // can mark the static rulebook (byte-identical across every trip) as the
     // cached prefix and ship the per-trip preamble as a separate block.
     const { staticRules, dynamicPreamble } = buildSystemPrompt();
+
+    // -------------------------------------------------------------------
+    // Pre-build LOCAL KNOWLEDGE PASS — fire /api/review-retrieve against
+    // the default reviewer sources (CN Traveler, Michelin Guide, NYT 36
+    // Hours, Reddit + locals, Atlas Obscura, Substack travel) to ground
+    // the plan on current, real-world picks instead of training data
+    // alone. This is what users mean by "local knowledge" — the model gets
+    // the SAME insider snippets the Pro Review pass would use, but
+    // applies them DURING the build, not after.
+    //
+    // Soft-fail: if the retrieval is slow, errors, or returns empty, we
+    // ship the build with the original prompt. The user's plan still
+    // lands; it just doesn't get the live-source bump.
+    //
+    // Time cost: ~5-10s for the 6 default sources in parallel (each
+    // server-side capped at 8s per Sonar call, 15s total). KV-cached so
+    // re-running builds for the same destination is free.
+    // -------------------------------------------------------------------
+    // Flip loading state ON here so the user sees the retrieval-phase
+    // message instead of an unresponsive button while we wait on Sonar.
+    setLoading(true);
+    setError("");
+    setLoadingMsg("Pulling local sources…");
+    const destForRetrieve = (basics?.destination || (Array.isArray(basics?.cities) ? basics.cities.map(c => c?.name).filter(Boolean).join(" ") : "") || "").trim();
+    if (destForRetrieve) {
+      try {
+        const retrieveCtrl = new AbortController();
+        const retrieveTimeout = setTimeout(() => retrieveCtrl.abort(), 18000);
+        const defaultSourceIds = REVIEWER_SOURCES.filter(s => s.dflt).map(s => s.id);
+        const retrieveResp = await fetch("/api/review-retrieve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: retrieveCtrl.signal,
+          body: JSON.stringify({
+            destination: destForRetrieve,
+            restaurants: Array.isArray(restaurants) ? restaurants.slice(0, 6) : [],
+            activities: Array.isArray(activities) ? activities.slice(0, 4) : [],
+            sources: defaultSourceIds,
+          }),
+        });
+        clearTimeout(retrieveTimeout);
+        if (retrieveResp.ok) {
+          const retrieveJson = await retrieveResp.json().catch(() => ({}));
+          const snippetGroups = Array.isArray(retrieveJson?.snippets) ? retrieveJson.snippets : [];
+          // Render each source as a labelled block of "<title> — <snippet> [<url>]"
+          // lines so the model can cite + dedupe. Keep small (~3 KB) so it
+          // doesn't displace user inputs in the prompt.
+          const lines = [];
+          for (const group of snippetGroups) {
+            const items = Array.isArray(group?.results) ? group.results : [];
+            if (items.length === 0) continue;
+            lines.push(`### ${group.source_name || group.source_id}`);
+            for (const it of items.slice(0, 3)) {
+              const title = String(it?.title || "").trim();
+              const snippet = String(it?.snippet || "").trim().slice(0, 280);
+              const url = String(it?.url || "").trim();
+              if (!title && !snippet) continue;
+              lines.push(`- ${title}${snippet ? ": " + snippet : ""}${url ? " (" + url + ")" : ""}`);
+            }
+          }
+          if (lines.length > 0) {
+            userPromptForBuild += `\n\nLOCAL KNOWLEDGE — LIVE SOURCES (auto-retrieved for this destination):\nUse these snippets to ground hotel, restaurant, and activity picks on current, real-world editorial coverage instead of training-data memory alone. Prefer venues mentioned here when they fit the trip's tier and style. Do NOT invent quotes or facts beyond what's stated.\n\n${lines.join("\n")}`;
+            try { console.info("[trip-optimizer] local-knowledge injected:", { groups: snippetGroups.length, totalLines: lines.length }); } catch {}
+          }
+        }
+      } catch (retrieveErr) {
+        // Aborted = timeout (18s ceiling) or user pressed Cancel. Either way
+        // we ship the build without the snippets — plan still gets made.
+        try { console.warn("[trip-optimizer] local-knowledge retrieval skipped:", retrieveErr?.message || retrieveErr); } catch {}
+      }
+    }
+
     const body = {
       model: "claude-sonnet-4-5",
       max_tokens: maxTokensForTrip,
@@ -10741,8 +10840,6 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       );
     } catch {}
 
-    setLoading(true);
-    setError("");
     setLoadingMsg("Starting build…");
 
     // Open the streaming POST. The server now returns an NDJSON body whose
@@ -10962,33 +11059,56 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               />
             </div>
           </div>
+        </div>
+        <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "14px 0 18px" }} />
+
+        {/* Two-path picker — makes the choice between full itinerary build
+            and quick restaurants+activities search visible BEFORE the user
+            starts filling in the wizard form. The card marked 'You're here'
+            is the current path (wizard build); the other card jumps to /find. */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "10px" }}>
+          <div
+            style={{
+              padding: "14px 16px",
+              border: `1px solid ${GOLD}`,
+              borderRadius: "var(--border-radius-md)",
+              background: GOLD_LIGHT,
+              boxShadow: "0 1px 0 rgba(0,0,0,0.02)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, color: GOLD_DARK }}>You're here</span>
+              <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>·</span>
+              <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>Full itinerary build</span>
+            </div>
+            <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.3 }}>Build a full trip plan</p>
+            <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.45 }}>Day-by-day itinerary with hotels, restaurants, activities, transport. 3 to 15 minutes depending on trip size.</p>
+          </div>
           <a
             href="/find"
             aria-label="Find restaurants and activities by location"
-            title="Find restaurants and activities by location"
+            title="Quick search — just restaurants and activities, no full itinerary"
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              flexShrink: 0,
-              fontSize: "11px",
-              color: GOLD,
-              textDecoration: "none",
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              fontWeight: 500,
-              padding: "8px 12px",
-              border: `0.5px solid ${GOLD}`,
+              padding: "14px 16px",
+              border: "1px solid var(--color-border-secondary)",
               borderRadius: "var(--border-radius-md)",
-              background: "transparent",
-              minHeight: "36px",
-              whiteSpace: "nowrap",
+              background: "var(--color-background-primary)",
+              textDecoration: "none",
+              color: "inherit",
+              display: "block",
             }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = GOLD; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--color-border-secondary)"; }}
           >
-            Find <span aria-hidden="true">→</span>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, color: GOLD }}>Quick search</span>
+              <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>·</span>
+              <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>Restaurants &amp; activities only</span>
+            </div>
+            <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.3 }}>Find places in a location <span style={{ color: GOLD, fontWeight: 400 }}>→</span></p>
+            <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.45 }}>Skip the wizard. Type a city, get hand-picked restaurants and activities in about a minute, with locals' picks auto-added.</p>
           </a>
         </div>
-        <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "14px 0 0" }} />
       </div>
 
       <div style={{ maxWidth: "640px", margin: "0 auto", padding: "1.75rem 1.25rem 2.5rem" }}>
