@@ -1414,6 +1414,92 @@ function DayBlock({ day, dayIndex, onOpenMenu }) {
   );
 }
 
+// Walk a parsed plan and collect every unique restaurant referenced anywhere
+// in days[].items[].restaurant (and items[].restaurant.backup). Used to feed
+// /api/confirm-booking so we can ground the reservation.platform on the
+// actual booking system instead of the model's heuristic guess.
+function collectPlanRestaurants(plan) {
+  if (!plan || !Array.isArray(plan.days)) return [];
+  const out = [];
+  const seen = new Set();
+  const cityHint = (plan.destination || (Array.isArray(plan.cities) && plan.cities[0]?.name) || "").trim();
+  const push = (r) => {
+    if (!r || typeof r.name !== "string" || !r.name.trim()) return;
+    // Dedup by name only — the same restaurant appearing for both Dinner Day
+    // 1 and Dinner Day 3 should produce a single confirm-booking lookup.
+    // Neighborhood is just a hint passed to Sonar; not part of identity.
+    const key = r.name.trim().toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      name: r.name.trim(),
+      city: cityHint,
+      neighborhood: r.neighborhood || "",
+    });
+  };
+  for (const day of plan.days) {
+    for (const item of (day.items || [])) {
+      if (item && item.restaurant) {
+        push(item.restaurant);
+        if (item.restaurant.backup) push(item.restaurant.backup);
+      }
+    }
+  }
+  return out;
+}
+
+// Merge /api/confirm-booking results back into a plan. For each confirmation
+// whose platform is something we trust (resy/opentable/tock/phone/walkin),
+// overwrite reservation.platform and reservation.url on the matching
+// restaurant object. Also fill in contact.website when the model didn't
+// supply one and Sonar found a confident match.
+//
+// Match is by case-insensitive name; if two restaurants share a name on the
+// same plan (very rare) both will receive the same confirmation, which is
+// the right call — they're presumably the same venue.
+//
+// Returns a NEW plan object (immutable update) so React picks up the change.
+function mergeBookingConfirmations(plan, confirmations) {
+  if (!plan || !Array.isArray(plan.days) || !Array.isArray(confirmations) || confirmations.length === 0) return plan;
+  const byName = new Map();
+  for (const c of confirmations) {
+    if (!c || typeof c.name !== "string") continue;
+    if (c.platform === "unknown") continue;
+    byName.set(c.name.trim().toLowerCase(), c);
+  }
+  if (byName.size === 0) return plan;
+
+  const applyTo = (r) => {
+    if (!r || typeof r.name !== "string") return r;
+    const conf = byName.get(r.name.trim().toLowerCase());
+    if (!conf) return r;
+    // Overwrite reservation.platform + url with confirmed values. Preserve
+    // any other fields the model supplied (phone, notes).
+    const nextReservation = { ...(r.reservation || {}), platform: conf.platform };
+    if (conf.url) nextReservation.url = conf.url;
+    // Walk-in: clear the url so reservationLink() returns null and the
+    // Reserve button hides.
+    if (conf.platform === "walkin") delete nextReservation.url;
+    // Fill in website if missing on contact.
+    const nextContact = { ...(r.contact || {}) };
+    if (!nextContact.website && conf.website) nextContact.website = conf.website;
+    return { ...r, reservation: nextReservation, contact: nextContact, _bookingConfirmed: true };
+  };
+
+  const nextDays = plan.days.map(day => ({
+    ...day,
+    items: (day.items || []).map(item => {
+      if (!item || !item.restaurant) return item;
+      const nextRestaurant = applyTo(item.restaurant);
+      if (nextRestaurant.backup) {
+        nextRestaurant.backup = applyTo(nextRestaurant.backup);
+      }
+      return { ...item, restaurant: nextRestaurant };
+    }),
+  }));
+  return { ...plan, days: nextDays };
+}
+
 // Build a reservation URL from a restaurant payload.
 // Anthropic should provide reservation.url directly; this is a fallback that
 // constructs a search URL on the named platform.
@@ -1600,6 +1686,14 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
             style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}
           >View Menu</button>
         )}
+        {r.contact?.website && (
+          <a
+            href={r.contact.website}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, textDecoration: "none", display: "inline-block" }}
+          >Website ↗</a>
+        )}
         {resv && (
           <a
             href={resv.url}
@@ -1628,6 +1722,14 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
                 onClick={() => onOpenMenu(r.backup)}
                 style={{ fontSize: "10.5px", padding: "5px 10px", borderRadius: "4px", border: `0.5px solid var(--color-border-secondary)`, background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.04em", textTransform: "uppercase" }}
               >Menu</button>
+            )}
+            {r.backup.contact?.website && (
+              <a
+                href={r.backup.contact.website}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: "10.5px", padding: "5px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.04em", textTransform: "uppercase", textDecoration: "none" }}
+              >Website ↗</a>
             )}
             {reservationLink(r.backup) && (
               <a
@@ -6953,6 +7055,16 @@ const RESTAURANT_SCHEMA = {
       },
       required: ["platform"],
     },
+    contact: {
+      type: "object",
+      description: "Restaurant contact info. The website field powers the 'Website ↗' button on the card.",
+      properties: {
+        phone: { type: "string" },
+        address: { type: "string" },
+        website: { type: "string", description: "Official restaurant website (e.g. https://thecompoundrestaurant.com). Omit if you don't know it — a confirmation pass fills missing websites." },
+        hours: { type: "string" },
+      },
+    },
     menu: MENU_SCHEMA,
   },
   required: ["name", "cuisine", "why"],
@@ -9652,7 +9764,8 @@ RESTAURANTS:
 • If you genuinely do NOT know a restaurant's open_days, omit the field entirely (do not guess). The renderer treats missing open_days as 'assume open' rather than 'closed every day', but you should set closure_note to 'Confirm hours — closure day uncertain' as a safety hint to the traveler.
 • Be aware of the weekday for each meal. Many fine-dining spots close Mon or Tue — don't recommend a restaurant on its closure day. If unsure, put "Confirm hours — closure day uncertain" in closure_note.
 • Always include a same-tier backup in the same neighborhood / cuisine family. The backup must ALSO have open_days populated when known, and its open_days MUST include the meal's weekday — a backup that's also closed that day is useless.
-• reservation.platform: opentable for most US/UK/EU fine dining; resy for trendy NYC/LA/Miami; tock for tasting menus; phone with a phone number for hole-in-the-walls; walkin if no reservations. Include the canonical url when you know it.
+• reservation.platform: opentable for most US/UK/EU fine dining; resy for trendy NYC/LA/Miami; tock for tasting menus; phone with a phone number for hole-in-the-walls; walkin if no reservations. Include the canonical url when you know it. (A server-side pass grounds platform + url on the actual current booking system after the build, so honest best-guess is fine — just don't fabricate URLs.)
+• contact.website: include the restaurant's official site URL when you genuinely know it (e.g. https://thecompoundrestaurant.com). The website button is rendered next to Reserve so travelers can see menus, photos, and verify hours directly. Do NOT fabricate URLs — omit the field if uncertain. A separate confirmation pass fills in missing websites where possible.
 • menu schema: { style_note, signature_dishes, appetizers, mains, desserts, wine_and_drinks, source_note }. Real dishes the restaurant is actually known for. Always include the source_note acknowledging menus change.
 
 • RESTAURANT FRESHNESS — NEVER RECOMMEND A CLOSED RESTAURANT:
@@ -10264,6 +10377,38 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       setReviewState(null);
       setResult(parsed);
       setStep(3);
+
+      // Background pass: ground every restaurant's reservation.platform on
+      // the actual booking system via Sonar (Resy / OpenTable / Tock /
+      // phone-only / walk-in) and fill in missing official websites. This
+      // is fire-and-forget — the plan is fully usable without it; we just
+      // patch reservation links to the right platform as confirmations
+      // arrive. KV-cached per (name, city) for 30 days so iteration on the
+      // same trip is free after the first build.
+      (async () => {
+        try {
+          const restaurants = collectPlanRestaurants(parsed);
+          if (restaurants.length === 0) return;
+          const res = await fetch("/api/confirm-booking", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ restaurants }),
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          const confs = Array.isArray(data?.confirmations) ? data.confirmations : [];
+          if (confs.length === 0) return;
+          // Merge into whatever the current result is. If the user has
+          // moved on (cleared, started a new build, loaded a saved trip),
+          // skip the update to avoid stomping the new state.
+          setResult(prev => {
+            if (!prev || prev !== parsed) return prev;
+            return mergeBookingConfirmations(prev, confs);
+          });
+        } catch {
+          /* network or parse failure — silent, the original plan still works */
+        }
+      })();
     } catch (err) {
       let msg;
       if (err?.name === "AbortError") {
