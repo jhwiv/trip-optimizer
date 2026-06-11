@@ -4275,7 +4275,14 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       let newPlan;
       if (revisionMode === "surgical") {
         if (!parsed || !Array.isArray(parsed.patches)) throw new Error("Revision returned no patches.");
-        newPlan = applyPatchesToPlan(plan, parsed.patches);
+        const applyResult = applyPatchesToPlan(plan, parsed.patches);
+        if (applyResult.appliedCount === 0) {
+          // Model returned patches but none could be applied (out-of-range
+          // indices, missing fields). Surface a clear, actionable error
+          // instead of silently leaving the plan unchanged.
+          throw new Error(`Revision returned ${parsed.patches.length} patch${parsed.patches.length === 1 ? "" : "es"} but none could be applied. Try a full re-plan instead.`);
+        }
+        newPlan = applyResult.plan;
       } else {
         if (!parsed || !Array.isArray(parsed.days) || parsed.days.length === 0) throw new Error("Revision returned no plan.");
         newPlan = parsed;
@@ -4710,7 +4717,52 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
       let newPlan;
       if (target.mode === "surgical") {
         if (!parsed || !Array.isArray(parsed.patches)) throw new Error("Change returned no patches.");
-        newPlan = applyPatchesToPlan(plan, parsed.patches);
+        const applyResult = applyPatchesToPlan(plan, parsed.patches);
+        if (applyResult.appliedCount === 0) {
+          // Surgical mode returned zero applicable patches — most common
+          // when the user picked the wrong day for the item they want to
+          // change, or when the request is broader than a single card swap
+          // (e.g. "remove Dry Tortugas, replace with something else" where
+          // the excursion spans multiple items across days). Instead of
+          // failing silently, transparently fall through to a full re-plan
+          // using the same change text. Tell the user via the progress bar.
+          setProgressLabel("Single-card change didn't fit \u2014 re-planning the trip…");
+          // Build the full-replan body with the same change as a finding.
+          const fullBody = {
+            model: "claude-sonnet-4-5",
+            max_tokens: 32000,
+            system: cachedSystem(buildRevisionSystemPromptFull(plan, [fakeFinding], inputs)),
+            messages: [{ role: "user", content: buildRevisionUserPromptFull() }],
+            tools: cachedTools([REVISION_TOOL_FULL]),
+            tool_choice: { type: "tool", name: "submit_trip_plan" },
+          };
+          // Reset progress for the longer call — keep elapsedTimer running so
+          // the user sees continued progress instead of a frozen UI.
+          lastTokFrac = 0;
+          setProgress(0);
+          let fullToolJson = "";
+          const fullResult = await streamBuildJob(fullBody, {
+            signal: controller.signal,
+            onDelta: (delta, totalLen) => {
+              fullToolJson += delta;
+              const estTokens = totalLen / 3.5;
+              const tokFrac = Math.min(0.95, estTokens / 7000);
+              lastTokFrac = tokFrac;
+              setProgress(prev => Math.max(prev, tokFrac));
+              const dm = fullToolJson.match(/"label"\s*:\s*"/g) || [];
+              setProgressLabel(dm.length ? `Re-plan: day ${dm.length}…` : "Re-planning…");
+            },
+          });
+          fullToolJson = fullResult.toolJson;
+          setProgress(1);
+          const { parsed: fullParsed } = parseToolJson(fullToolJson);
+          if (!fullParsed || !Array.isArray(fullParsed.days) || fullParsed.days.length === 0) {
+            throw new Error("Could not apply your change. Try rephrasing (e.g. name the specific item and day) or pick 'Other change' for a full re-plan.");
+          }
+          newPlan = fullParsed;
+        } else {
+          newPlan = applyResult.plan;
+        }
       } else {
         if (!parsed || !Array.isArray(parsed.days) || parsed.days.length === 0) throw new Error("Change returned no plan.");
         newPlan = parsed;
@@ -7656,6 +7708,8 @@ ${findingsBlock}
 PATCH RULES:
 • Emit ONE patch per finding above (in the same order). Skip a finding only if it genuinely cannot be card-patched.
 • Identify the right day_index and item_index by reading the plan JSON below. Days are 0-indexed; items[] within a day are 0-indexed.
+• IMPORTANT: The day hint in the finding target (e.g. "day: 2") is a STARTING POINT, not authoritative. The user may have picked the wrong day, or the item they want to change (e.g. "remove the Dry Tortugas trip") may actually live on a different day in the plan. ALWAYS search the entire plan JSON below to find the item the user is describing. Use name, description, location, and item type to locate it — then patch the day/item index where it actually exists. If the request describes a multi-item excursion that spans more than one card or day, skip surgical patching for that finding (the system will retry as a full re-plan).
+• If after a thorough search you cannot identify a clear single card to swap, emit zero patches for that finding. The system will detect the empty result and auto-fall-through to a full re-plan.
 • For replace_item: new_item must have type ('Restaurant' | 'Activity' | 'Transport' | 'Breakfast' | 'Lunch' | 'Dinner' | 'Hotel' | 'Flight'), name, time (24h), and any other relevant fields the original item had (location, reservation, notes, end_time). Match the structure of the existing item shape.
 • For replace_hotel: same as replace_item but the new_item.type must be 'Hotel'.
 • For replace_planb_entry: provide planb_index (0-based) and new_text.
@@ -7732,8 +7786,13 @@ function buildRevisionUserPromptFull() {
 //   replace_planb_entry— plan.planb[planb_index] = new_text
 //   add_flag           — push new_text into plan.flags
 //   add_tonight        — push new_text into plan.tonight
+// Applies a list of surgical patches to a plan. Returns BOTH the patched
+// plan AND counters so the caller can detect the "model returned patches
+// but none actually applied" case (out-of-range indices, missing new_item,
+// unrecognised op) and decide whether to fall through to a full re-plan
+// instead of silently doing nothing.
 function applyPatchesToPlan(plan, patches) {
-  if (!plan || !Array.isArray(patches)) return plan;
+  if (!plan || !Array.isArray(patches)) return { plan, appliedCount: 0, skipped: [] };
   // Deep-clone the parts we'll mutate so React notices the change.
   const next = { ...plan };
   next.days = Array.isArray(plan.days) ? plan.days.map(d => ({ ...d, items: Array.isArray(d.items) ? [...d.items] : [] })) : [];
@@ -7741,13 +7800,18 @@ function applyPatchesToPlan(plan, patches) {
   next.flags = Array.isArray(plan.flags) ? [...plan.flags] : [];
   next.tonight = Array.isArray(plan.tonight) ? [...plan.tonight] : [];
 
+  let appliedCount = 0;
+  const skipped = [];
   for (const p of patches) {
-    if (!p || !p.op) continue;
+    if (!p || !p.op) { skipped.push("missing-op"); continue; }
     try {
       if (p.op === "replace_item" && typeof p.day_index === "number" && typeof p.item_index === "number" && p.new_item) {
         const day = next.days[p.day_index];
         if (day && Array.isArray(day.items) && p.item_index >= 0 && p.item_index < day.items.length) {
           day.items[p.item_index] = p.new_item;
+          appliedCount += 1;
+        } else {
+          skipped.push(`replace_item out-of-range (day=${p.day_index}, item=${p.item_index})`);
         }
       } else if (p.op === "replace_hotel" && typeof p.day_index === "number" && p.new_item) {
         const day = next.days[p.day_index];
@@ -7756,21 +7820,32 @@ function applyPatchesToPlan(plan, patches) {
           const hotelIdx = day.items.findIndex(it => it && typeof it.type === "string" && it.type.toLowerCase() === "hotel");
           if (hotelIdx >= 0) day.items[hotelIdx] = { ...p.new_item, type: "Hotel" };
           else day.items.push({ ...p.new_item, type: "Hotel" });
+          appliedCount += 1;
+        } else {
+          skipped.push(`replace_hotel bad day (day=${p.day_index})`);
         }
       } else if (p.op === "replace_planb_entry" && typeof p.planb_index === "number" && typeof p.new_text === "string") {
         if (p.planb_index >= 0 && p.planb_index < next.planb.length) {
           next.planb[p.planb_index] = p.new_text;
+          appliedCount += 1;
+        } else {
+          skipped.push(`replace_planb_entry out-of-range (idx=${p.planb_index})`);
         }
       } else if (p.op === "add_flag" && typeof p.new_text === "string") {
         next.flags.push(p.new_text);
+        appliedCount += 1;
       } else if (p.op === "add_tonight" && typeof p.new_text === "string") {
         next.tonight.push(p.new_text);
+        appliedCount += 1;
+      } else {
+        skipped.push(`unrecognised-or-incomplete (op=${p.op})`);
       }
-    } catch {
-      // Swallow per-patch errors; we'd rather apply 4-of-5 patches than abort.
+    } catch (err) {
+      skipped.push(`exception (op=${p.op}): ${String(err?.message || err).slice(0, 80)}`);
+      // Continue — we'd rather apply 4-of-5 patches than abort.
     }
   }
-  return next;
+  return { plan: next, appliedCount, skipped };
 }
 
 
@@ -10806,14 +10881,44 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
       <div style={{ maxWidth: "640px", margin: "0 auto", padding: "1.75rem 1.25rem 2.5rem" }}>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "7px", marginBottom: "1.75rem", fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--color-text-secondary)" }}>
-          {["Essentials", "Details", "Your plan"].map((s, i) => (
-            <Fragment key={s}>
-              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: step >= i + 1 ? GOLD : "var(--color-border-secondary)", display: "inline-block", flexShrink: 0 }} />
-              <span style={{ color: step >= i + 1 ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}>{s}</span>
-              {i < 2 && <span style={{ color: "var(--color-border-secondary)", margin: "0 2px" }}>·</span>}
-            </Fragment>
-          ))}
+        {/* Step pills double as navigation — a tap jumps to that step,
+            including back to Step 3 once a plan has been built. The Your
+            plan pill is only navigable when a result exists; Essentials
+            and Details are always navigable. Current step is bold + gold,
+            other navigable steps render as buttons styled like text. */}
+        <div style={{ display: "flex", alignItems: "center", gap: "7px", marginBottom: "1.75rem", fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--color-text-secondary)", flexWrap: "wrap" }}>
+          {["Essentials", "Details", "Your plan"].map((s, i) => {
+            const targetStep = i + 1;
+            const isCurrent = step === targetStep;
+            // Step 3 is only navigable when a plan exists. Steps 1 & 2 are
+            // always navigable so the user can revisit inputs at any time.
+            const isNavigable = !isCurrent && (targetStep < 3 || (targetStep === 3 && !!result));
+            const dotColor = step >= targetStep ? GOLD : "var(--color-border-secondary)";
+            const textColor = isCurrent
+              ? GOLD
+              : (step > targetStep || isNavigable ? "var(--color-text-primary)" : "var(--color-text-tertiary)");
+            const navHandler = () => {
+              if (!isNavigable) return;
+              setStep(targetStep);
+              try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+            };
+            return (
+              <Fragment key={s}>
+                <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: dotColor, display: "inline-block", flexShrink: 0 }} />
+                {isNavigable ? (
+                  <button
+                    type="button"
+                    onClick={navHandler}
+                    title={`Go to ${s}`}
+                    style={{ background: "transparent", border: "none", padding: "2px 0", cursor: "pointer", color: textColor, fontSize: "inherit", letterSpacing: "inherit", textTransform: "inherit", fontFamily: "inherit", textDecoration: "underline", textDecorationColor: "rgba(196, 168, 98, 0.4)", textUnderlineOffset: "3px" }}
+                  >{s}</button>
+                ) : (
+                  <span style={{ color: textColor, fontWeight: isCurrent ? 600 : 400 }}>{s}</span>
+                )}
+                {i < 2 && <span style={{ color: "var(--color-border-secondary)", margin: "0 2px" }}>·</span>}
+              </Fragment>
+            );
+          })}
         </div>
 
         {step === 1 && (
