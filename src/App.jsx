@@ -4214,7 +4214,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
     setStatus("applying");
     setError("");
     setProgress(0);
-    setProgressLabel(revisionMode === "surgical" ? "Applying patches…" : "Re-planning the trip…");
+    setProgressLabel(revisionMode === "surgical" ? "Applying changes…" : "Applying changes (detailed revision, ~2 min)…");
     setElapsedSec(0);
     const startedAt = Date.now();
     const targetSec = revisionMode === "surgical" ? 35 : 160;
@@ -4381,7 +4381,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       {(status === "running" || status === "applying") && (
         <div style={cardStyleLocal}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "8px", gap: "10px" }}>
-            <p style={{ ...sectionLabel, margin: 0 }}>{status === "running" ? "Review in progress" : revisionMode === "surgical" ? "Applying quick edits" : "Re-planning trip"}</p>
+            <p style={{ ...sectionLabel, margin: 0 }}>{status === "running" ? "Review in progress" : "Applying changes"}</p>
             <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums" }}>
               {progress > 0 ? `${Math.round(progress * 100)}%` : ""}{elapsedSec > 0 ? `  ·  ${Math.floor(elapsedSec/60)}:${String(elapsedSec%60).padStart(2,'0')}` : ""}
             </p>
@@ -4442,17 +4442,17 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", margin: "4px 0 6px", padding: "10px 12px", background: "var(--color-background-secondary, #fafafa)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)" }}>
                 <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.4, flex: "1 1 180px" }}>
                   {allChecked
-                    ? `All ${applicable.length} change${applicable.length === 1 ? "" : "s"} queued. Hit Apply at the bottom to revise the plan.`
+                    ? `All ${applicable.length} change${applicable.length === 1 ? "" : "s"} selected. Hit Apply at the bottom to revise the plan.`
                     : noneChecked
-                      ? "Queue the changes you want, then hit Apply at the bottom."
-                      : `Pick which changes to apply — ↑ each toggle queues that finding.`}
+                      ? "Select the changes you want, then hit Apply at the bottom."
+                      : `Pick which changes to include — toggle each one to add or remove it.`}
                 </p>
                 <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                   {allChecked ? (
                     // Inert state: don't show a broken-looking grayed button.
                     // A simple checkmark pill communicates 'this is already done'.
                     <span style={{ fontSize: "10.5px", color: GOLD, background: "transparent", border: `0.5px solid ${GOLD}`, padding: "4px 10px", borderRadius: "3px", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}>
-                      ✓ All queued
+                      ✓ All included
                     </span>
                   ) : (
                     <button
@@ -4464,10 +4464,10 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                           return next;
                         });
                       }}
-                      title="Queue every finding for apply"
+                      title="Include every change"
                       style={{ fontSize: "10.5px", color: "#0F0F0F", background: GOLD, border: `0.5px solid ${GOLD}`, padding: "4px 10px", borderRadius: "3px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}
                     >
-                      Queue all
+                      Include all
                     </button>
                   )}
                   <button
@@ -4480,10 +4480,10 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                       });
                     }}
                     disabled={noneChecked}
-                    title="Remove every finding from the apply queue"
+                    title="Remove every change"
                     style={{ fontSize: "10.5px", color: noneChecked ? "var(--color-text-tertiary)" : "var(--color-text-secondary)", background: "transparent", border: `0.5px solid ${noneChecked ? "var(--color-border-tertiary)" : "var(--color-border-secondary)"}`, padding: "4px 10px", borderRadius: "3px", cursor: noneChecked ? "default" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
                   >
-                    Clear queue
+                    Clear selection
                   </button>
                 </div>
               </div>
@@ -4507,13 +4507,13 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           {selectedForApply.length > 0 ? (
             <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: `1px solid ${GOLD}` }}>
               <p style={{ fontSize: "11.5px", color: "var(--color-text-primary)", margin: "0 0 8px", fontWeight: 600 }}>
-                {selectedForApply.length} change{selectedForApply.length === 1 ? "" : "s"} queued ·&nbsp;
+                {selectedForApply.length} change{selectedForApply.length === 1 ? "" : "s"} selected ·&nbsp;
                 <span style={{ color: GOLD, fontWeight: 700 }}>
-                  {revisionMode === "surgical" ? "Quick edit — ~30 sec" : "Full re-plan — ~2 min"}
+                  ~{revisionMode === "surgical" ? "30 sec" : "2 min"}
                 </span>
               </p>
               <button onClick={handleApply} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "14px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}>
-                {revisionMode === "surgical" ? `→ Apply ${selectedForApply.length} quick edit${selectedForApply.length === 1 ? "" : "s"}` : `→ Apply ${selectedForApply.length} change${selectedForApply.length === 1 ? "" : "s"} — full re-plan`}
+                {`→ Apply ${selectedForApply.length} change${selectedForApply.length === 1 ? "" : "s"}`}
               </button>
             </div>
           ) : findings.length > 0 && (
@@ -4636,7 +4636,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
     setElapsedSec(0);
     const startedAt = Date.now();
     const targetSec = target.mode === "surgical" ? 35 : 160;
-    setProgressLabel(target.mode === "surgical" ? "Applying your change…" : "Re-planning the trip…");
+    setProgressLabel(target.mode === "surgical" ? "Applying your change…" : "Applying your change (detailed revision, ~2 min)…");
     let lastTokFrac = 0;
     const elapsedTimer = setInterval(() => {
       const sec = Math.floor((Date.now() - startedAt) / 1000);
@@ -4725,7 +4725,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
           // the excursion spans multiple items across days). Instead of
           // failing silently, transparently fall through to a full re-plan
           // using the same change text. Tell the user via the progress bar.
-          setProgressLabel("Single-card change didn't fit \u2014 re-planning the trip…");
+          setProgressLabel("Single-card change didn't fit \u2014 applying as a detailed revision…");
           // Build the full-replan body with the same change as a finding.
           const fullBody = {
             model: "claude-sonnet-4-5",
@@ -4939,7 +4939,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
       <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "0 0 10px", fontStyle: "italic" }}>
         {target.id === "external_review"
           ? "Pastes the full external evaluation into the planner and re-plans the trip end-to-end — ~2 min."
-          : target.mode === "surgical" ? "Quick card-level edit — ~30 sec." : "Triggers a full re-plan — ~2 min."}
+          : target.mode === "surgical" ? "Quick card-level edit — ~30 sec." : "Detailed revision — ~2 min. Your existing plan stays intact; the model adjusts what you asked for."}
       </p>
 
       <button
@@ -5001,7 +5001,7 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
               type="button"
               onClick={onToggle}
               aria-pressed={checked}
-              title={checked ? "Click to remove this from the apply queue" : "Click to queue this change for apply"}
+              title={checked ? "Click to remove this change from the selection" : "Click to include this change"}
               style={{
                 marginTop: "8px",
                 display: "inline-flex",
@@ -5021,7 +5021,7 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
               }}
             >
               <span style={{ fontSize: "12px", lineHeight: 1 }}>{checked ? "✓" : "+"}</span>
-              <span>{checked ? "Will apply" : "Apply this change"}</span>
+              <span>{checked ? "Included" : "Include this change"}</span>
             </button>
           )}
         </div>
