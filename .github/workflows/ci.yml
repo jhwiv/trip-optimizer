@@ -1,0 +1,71 @@
+# CI for jhwiv/trip-optimizer
+#
+# Runs on:
+#   - every push to master (so master is always known-good)
+#   - every pull request targeting master (so we know before merge)
+#
+# Three jobs in parallel for fast feedback:
+#   1. test  — runs the offline unit suites (npm test)
+#   2. lint  — runs eslint (npm run lint)
+#   3. build — verifies the Vite production build still compiles
+#
+# Lint is set to NOT fail the workflow yet, because master has 14 known
+# errors today (see tests/known-lint-baseline.md). It runs and prints a
+# diff so we can see if a PR adds NEW errors, but it doesn't block merge
+# until the baseline is cleared in a follow-up PR. Once cleared, change
+# the `continue-on-error: true` to false (or just remove the line) and
+# lint becomes a hard gate.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# Cancel in-progress runs on the same ref so a rapid push series doesn't
+# pile up runners.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm test
+
+  lint:
+    name: ESLint
+    runs-on: ubuntu-latest
+    # Soft-fail today; flip to hard fail once the baseline 14 errors are
+    # cleared in the follow-up cleanup PR.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run lint
+
+  build:
+    name: Vite build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run build
