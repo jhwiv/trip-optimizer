@@ -3,7 +3,12 @@ import reactHooks from "eslint-plugin-react-hooks";
 export default [
   js.configs.recommended,
   {
-    files: ["src/**/*.jsx"],
+    // Apply our base rules to JSX components AND the plain JS helpers under
+    // src/ (e.g. src/pdf/itineraryPdf.js). Both share the same conventions:
+    // _-prefixed unused args are intentional, ctrl chars in regexes can be
+    // legitimate (see PDF sanitization), and the React-hooks plugin is a
+    // no-op on the plain JS files.
+    files: ["src/**/*.{js,jsx,mjs}"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",

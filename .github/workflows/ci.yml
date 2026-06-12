@@ -9,12 +9,10 @@
 #   2. lint  — runs eslint (npm run lint)
 #   3. build — verifies the Vite production build still compiles
 #
-# Lint is set to NOT fail the workflow yet, because master has 14 known
-# errors today (see tests/known-lint-baseline.md). It runs and prints a
-# diff so we can see if a PR adds NEW errors, but it doesn't block merge
-# until the baseline is cleared in a follow-up PR. Once cleared, change
-# the `continue-on-error: true` to false (or just remove the line) and
-# lint becomes a hard gate.
+# Lint is a HARD GATE — PR-B cleared the baseline 14 errors. Any PR that
+# reintroduces a lint error will fail this job and block merge. Justified
+# false-positives must be silenced with a per-line eslint-disable comment
+# AND a brief justification.
 
 name: CI
 
@@ -46,9 +44,6 @@ jobs:
   lint:
     name: ESLint
     runs-on: ubuntu-latest
-    # Soft-fail today; flip to hard fail once the baseline 14 errors are
-    # cleared in the follow-up cleanup PR.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
