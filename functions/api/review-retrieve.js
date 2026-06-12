@@ -200,6 +200,54 @@ const SOURCE_CONFIG = {
     q: ({ destination }) => `${destination} restaurant hotel guide 2025 2026`,
     recency: "month",
   },
+
+  // ------------------------------------------------------------------
+  // HYPERLOCAL SOURCES — destination-curated. These IDs are only included
+  // in the client's default selection when the destination matches a row
+  // in HYPERLOCAL_REGIONS (see src/App.jsx). Mirrors the LOCAL_SOURCE_
+  // OVERRIDES table in functions/api/find.js for the same region; the
+  // shape is different here because /api/review-retrieve expects a flat
+  // {name, domains, q, recency} per source whereas find.js groups by
+  // region. Keep both in sync when adding a new curated destination.
+  // ------------------------------------------------------------------
+
+  // Lake George / Bolton Landing, NY:
+  poststar: {
+    name: "The Post-Star",
+    domains: ["poststar.com"],
+    q: ({ destination }) => `${destination} restaurants dining`,
+    recency: "year",
+  },
+  lgexaminer: {
+    name: "Lake George Examiner",
+    domains: ["lakegeorgeexaminer.com"],
+    q: ({ destination }) => `${destination} restaurants things to do`,
+    recency: "year",
+  },
+  adklife: {
+    name: "Adirondack Life",
+    domains: ["adirondacklife.com"],
+    q: ({ destination }) => `${destination} dining guide`,
+    recency: "year",
+  },
+  adkreddit: {
+    name: "r/adirondacks",
+    domains: ["reddit.com"],
+    q: ({ destination }) => `${destination} restaurants recommendations`,
+    recency: "month",
+  },
+  visitlg: {
+    name: "Visit Lake George",
+    domains: ["visitlakegeorge.com", "lakegeorge.com"],
+    q: ({ destination }) => `${destination} dining attractions`,
+    recency: "year",
+  },
+  lgmirror: {
+    name: "Lake George Mirror",
+    domains: ["lakegeorgemirror.com"],
+    q: ({ destination }) => `${destination} dining`,
+    recency: "year",
+  },
 };
 
 export async function onRequestOptions() {

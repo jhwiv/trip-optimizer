@@ -4052,9 +4052,29 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   // 'applied' — revision back, brief success state before fading back to done
   const [status, setStatus] = useState(initialReview ? "done" : "idle");
   const [pickerOpen, setPickerOpen] = useState(false);
+
+  // Hyperlocal region match: did the user's destination resolve to one of the
+  // curated regions (Lake George today, more later)? If yes, auto-attach the
+  // region's source IDs to the default selection so the reviewer panel
+  // actually uses the hyperlocal coverage we already have wired up server-
+  // side. Pure derived value; safe to compute in render.
+  const destinationForMatch =
+    inputs?.basics?.destination ||
+    (Array.isArray(inputs?.basics?.cities) ? inputs.basics.cities.map(c => c?.name).filter(Boolean).join(" ") : "") ||
+    plan?.destination ||
+    "";
+  const hyperlocalRegion = matchHyperlocalRegion(destinationForMatch);
+
   const [selectedIds, setSelectedIds] = useState(() => {
+    // Restoring a prior review: use exactly the sources the user picked then.
     if (initialReview?.sources) return initialReview.sources;
-    return REVIEWER_SOURCES.filter(s => s.dflt).map(s => s.id);
+    // Fresh review: standard 6 defaults + (if destination matches) the
+    // curated hyperlocal source set for that region.
+    const baseDefaults = REVIEWER_SOURCES.filter(s => s.dflt).map(s => s.id);
+    if (hyperlocalRegion) {
+      return Array.from(new Set([...baseDefaults, ...hyperlocalRegion.sourceIds]));
+    }
+    return baseDefaults;
   });
   const [review, setReview] = useState(initialReview?.review || null);
   const [applyState, setApplyState] = useState({}); // findingId -> bool
@@ -4377,13 +4397,26 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           </p>
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
-            {selectedSources.map(s => (
+            {/* Pill rendering: hyperlocal sources get a slightly different
+                visual treatment (lighter background, gold border + bold name)
+                so the user can SEE that the picker auto-added a destination-
+                specific layer on top of the generic defaults. Standard pills
+                keep the solid-gold treatment. */}
+            {selectedSources.map(s => s.lens === "hyperlocal" ? (
+              <span key={s.id} title={`Hyperlocal source for ${hyperlocalRegion?.label || "this destination"}`} style={{ fontSize: "10.5px", color: GOLD_DARK, background: GOLD_LIGHT, padding: "3px 9px", borderRadius: "999px", border: `0.5px solid ${GOLD}`, letterSpacing: "0.02em", fontWeight: 700, whiteSpace: "nowrap" }}>{s.name}</span>
+            ) : (
               <span key={s.id} style={{ fontSize: "10.5px", color: "#0F0F0F", background: GOLD, padding: "3px 9px", borderRadius: "999px", letterSpacing: "0.02em", fontWeight: 600, whiteSpace: "nowrap" }}>{s.name}</span>
             ))}
             <button onClick={() => setPickerOpen(true)} style={{ fontSize: "10.5px", color: GOLD, background: "transparent", border: `0.5px dashed ${GOLD}`, padding: "3px 9px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", fontWeight: 600 }}>+ Change sources</button>
           </div>
+          {hyperlocalRegion && selectedSources.some(s => s.lens === "hyperlocal") && (
+            <p style={{ fontSize: "10.5px", color: GOLD_DARK, margin: "0 0 8px", fontWeight: 600, lineHeight: 1.4 }}>
+              <span aria-hidden="true">◉ </span>
+              Hyperlocal sources auto-added for {hyperlocalRegion.label}.
+            </p>
+          )}
           <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "0 0 12px", fontStyle: "italic" }}>
-            Why these? They cover taste (CN Traveler), food (Michelin), pacing (NYT 36 Hours), and ground-truth (Reddit + locals). Add more for hotel-specific or scene-specific feedback.
+            Why these? They cover taste (CN Traveler), food (Michelin), pacing (NYT 36 Hours), and ground-truth (Reddit + locals){hyperlocalRegion ? ", plus destination-specific local papers and the tourism board" : ""}. Add more for hotel-specific or scene-specific feedback.
           </p>
           <button onClick={handleRunReview} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}>
             Run review (~45 sec)
@@ -7525,13 +7558,71 @@ const REVIEWER_SOURCES = [
   // surfaces at least a couple of off-beat options the model can weave in.
   { id: "atlasObscura", name: "Atlas Obscura",               lens: "local",       dflt: true,  blurb: "Hidden gems, oddities, obscure landmarks" },
   { id: "substack",   name: "Substack travel",               lens: "local",       dflt: true,  blurb: "Indie editors' fresh picks, newly opened" },
+
+  // Hyperlocal lens — destination-specific authoritative sources. NOT default-on
+  // for every trip; they auto-attach (dflt becomes true via HYPERLOCAL_REGIONS
+  // matching) when the destination is one we have curated coverage for. Today
+  // that's Lake George / Bolton Landing, NY. The match runs on the resolved
+  // destination string and adds these IDs to the default-selected set on top
+  // of the 6 generic defaults.
+  { id: "poststar",   name: "The Post-Star",                 lens: "hyperlocal",  dflt: false, region: "lake_george", blurb: "Daily paper, Glens Falls / Lake George area" },
+  { id: "lgexaminer", name: "Lake George Examiner",          lens: "hyperlocal",  dflt: false, region: "lake_george", blurb: "Weekly local coverage" },
+  { id: "adklife",    name: "Adirondack Life",               lens: "hyperlocal",  dflt: false, region: "lake_george", blurb: "Regional magazine of record" },
+  { id: "adkreddit",  name: "r/adirondacks",                 lens: "hyperlocal",  dflt: false, region: "lake_george", blurb: "Current local-resident voice" },
+  { id: "visitlg",    name: "Visit Lake George",             lens: "hyperlocal",  dflt: false, region: "lake_george", blurb: "Tourism board" },
+  { id: "lgmirror",   name: "Lake George Mirror",            lens: "hyperlocal",  dflt: false, region: "lake_george", blurb: "Weekly summer paper" },
 ];
+
+// HYPERLOCAL_REGIONS — destination-matching table that decides which hyperlocal
+// sources to auto-attach to the default reviewer selection. Mirror of the
+// server's LOCAL_SOURCE_OVERRIDES (functions/api/find.js) but kept lean: we
+// only need the match predicate and the source IDs here. Source domains and
+// query templates live server-side in review-retrieve.js's SOURCE_CONFIG.
+//
+// Adding a new region means adding entries in THREE places:
+//   1. New rows here with the match() + sourceIds
+//   2. REVIEWER_SOURCES entries above with region: <key>
+//   3. SOURCE_CONFIG entries in functions/api/review-retrieve.js so the
+//      server knows the domains and query template
+// The duplication is intentional: server fan-out and client picker have
+// different shape requirements, but the matching logic stays in sync via
+// shared region keys.
+const HYPERLOCAL_REGIONS = [
+  {
+    key: "lake_george",
+    label: "Lake George / Bolton Landing, NY",
+    // Same predicate the server uses in find.js's LOCAL_SOURCE_OVERRIDES.
+    // Lower-cases destination first; rejects matches that mention a
+    // disambiguating state OTHER than NY (Lake George, MI exists).
+    match: (rawDest) => {
+      const loc = String(rawDest || "").toLowerCase();
+      if (!loc) return false;
+      const hasLakeGeorge = /\blake george\b/.test(loc);
+      const hasBoltonLanding = /\bbolton landing\b/.test(loc);
+      const hasBoltonNY = /\bbolton, ?ny\b/.test(loc);
+      const mentionsOtherState = /\b(mi|michigan|fl|florida|mn|minnesota|co|colorado|wa|washington)\b/.test(loc);
+      if (mentionsOtherState && !/(ny|new york)/.test(loc)) return false;
+      return hasLakeGeorge || hasBoltonLanding || hasBoltonNY;
+    },
+    sourceIds: ["poststar", "lgexaminer", "adklife", "adkreddit", "visitlg", "lgmirror"],
+  },
+];
+
+// Resolve which hyperlocal region (if any) a given destination string maps to.
+// Returns the matched region or null. Pure function; safe to call in render.
+function matchHyperlocalRegion(destination) {
+  for (const region of HYPERLOCAL_REGIONS) {
+    if (region.match(destination)) return region;
+  }
+  return null;
+}
 
 const REVIEWER_LENSES = [
   { id: "editorial",   label: "Editorial",       why: "Overall trip taste, shape, and neighborhood logic — do the days hold together as a coherent stay." },
   { id: "hotels",      label: "Hotels",          why: "Property tier, service, and room hierarchy — is this the right hotel for the trip's price and purpose." },
   { id: "restaurants", label: "Restaurants",     why: "Culinary quality, reservation feasibility, scene fit — would a serious diner make these picks." },
   { id: "local",       label: "Local voice",     why: "Pacing, walkability, what locals actually do — does the plan move like a local would, or a tourist." },
+  { id: "hyperlocal",  label: "Hyperlocal",      why: "Destination-specific authoritative sources — the local paper, the tourism board, the regional magazine. Only appears when the destination matches a curated region." },
 ];
 
 // findings[].mode_hint controls the surgical-vs-full router. Card-targeted
