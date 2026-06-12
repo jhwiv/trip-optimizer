@@ -11294,14 +11294,16 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         </div>
       </div>
 
-      {/* Wizard body container. The 640 → 720 → 880 progression keeps form
-          fields tappable on mobile (single column, full bleed), gives the
-          user breathing room on tablet, and prevents the page from looking
-          empty on desktop monitors. We deliberately stay under ~900px even
-          on wide screens because the form is still single-column
-          conceptually — a 1400px wide form is harder to scan, not easier. */}
+      {/* Wizard body container. The 100% → 720 → 960 → 1180 progression
+          gives mobile full bleed for tappability, tablet a comfortable
+          centered column, desktop room to breathe, and wide screens
+          (1280px+ external monitors / Windows desktops at 1536+) enough
+          width that the page no longer looks like a mobile site stranded
+          in a sea of grey. We still cap at 1180 even on 4K screens because
+          the wizard is fundamentally a single-column form — a 1600px-wide
+          form is harder to scan, not easier. */}
       <div style={{
-        maxWidth: vp.isMobile ? "100%" : vp.isTablet ? "720px" : "880px",
+        maxWidth: vp.isMobile ? "100%" : vp.isTablet ? "720px" : vp.isDesktop ? "960px" : "1180px",
         margin: "0 auto",
         padding: vp.isMobile ? "1.5rem 1rem 2.5rem" : "1.75rem 1.5rem 2.5rem",
       }}>
