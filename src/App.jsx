@@ -5313,7 +5313,7 @@ function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
   );
 }
 
-function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, savedTripId, onPlanRevised, onReviewChange, initialReview }) {
+function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId, onPlanRevised, onReviewChange, initialReview }) {
   // --- Menu modal state (lazy-fetch via /api/menu) ---
   // For large multi-city trips the build prompt now OMITS per-restaurant
   // menu data to keep the streaming response small (was 10-15k tokens of
@@ -5561,10 +5561,50 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onSaved, sav
         <button
           onClick={onBack}
           style={{ background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", color: "var(--color-text-secondary)" }}
-        >← Plan another trip</button>
+          title="Go back to the input form. Your trip details stay filled in."
+        >← Back to inputs</button>
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
         <PrintButton data={data} inputs={inputs} />
         <PrintRidesButton data={data} inputs={inputs} />
+        {/* Reset — surfaced here on Step 3 (results) so users don't have to
+            navigate Home + scroll Step 1 to find it. Styled as a clear but
+            secondary action: muted text, no border highlight, confirms
+            before wiping because Reset is destructive (form + plan + review
+            state all cleared). Sits at the END of the action row so it's
+            never the first thing tapped by mistake. */}
+        {onReset && (
+          <button
+            onClick={() => {
+              if (window.confirm("Start over? This clears the current trip details and the built itinerary.")) {
+                onReset();
+              }
+            }}
+            title="Clear the current trip and start with a blank form"
+            aria-label="Reset and start over"
+            style={{
+              background: "transparent",
+              border: "0.5px solid var(--color-border-secondary)",
+              borderRadius: "var(--border-radius-md)",
+              padding: "10px 16px",
+              fontSize: "11px",
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              color: "var(--color-text-tertiary)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              marginLeft: "auto",
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 12a9 9 0 1 0 3-6.7" />
+              <path d="M3 3v5h5" />
+            </svg>
+            <span>Start over</span>
+          </button>
+        )}
       </div>
     </div>
     </URLVerifyContext.Provider>
@@ -11229,6 +11269,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                     onClick={() => {
                       if (window.confirm("Clear all trip details and start fresh?")) {
                         resetFormToBlank();
+                        setResult(null);
                         setCurrentSavedTripId(null);
                         setReviewState(null);
                       }
@@ -11741,6 +11782,23 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               // plan), so they can tweak dates/cities/etc and rebuild.
               setStep(1);
               // Smooth scroll to top so they land on the "Where & when" card.
+              try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+            }}
+            onReset={() => {
+              // Destructive reset — the parent button confirms before calling.
+              // Wipes ALL state so the user lands on a blank Step 1:
+              //   • form buckets (basics/flights/hotel/.../narrative/outputs)
+              //   • the built plan (result)
+              //   • the reviewer state (findings, applied ids)
+              //   • the current saved-trip association so a re-save creates a
+              //     new entry instead of overwriting the prior trip
+              // Matches what the Reset plan button on Step 1 has always done,
+              // just reachable from Step 3 without the Home + scroll detour.
+              resetFormToBlank();
+              setResult(null);
+              setReviewState(null);
+              setCurrentSavedTripId(null);
+              setStep(1);
               try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
             }}
             onSaved={(entry) => { setCurrentSavedTripId(entry?.id || null); refreshSavedTrips(); }}
