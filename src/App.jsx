@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, Fragment, createContext, useContext } from "react";
+import { useViewport } from "./useViewport.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -8242,6 +8243,10 @@ function FindActivityCard({ activity, onOpenDetails }) {
 }
 
 function FindView() {
+  // Viewport awareness for responsive container widths and search-result grid
+  // density. Same rationale as in TripOptimizer.
+  const vp = useViewport();
+
   // -------- input state --------
   // Lazy-init each useState so computeInitialFindState() runs exactly once.
   const [location, setLocation] = useState(() => computeInitialFindState().q);
@@ -8623,7 +8628,17 @@ function FindView() {
 
   return (
     <URLVerifyContext.Provider value={verifyContextValue}>
-      <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)", padding: "0 1rem", maxWidth: "780px", margin: "0 auto" }}>
+      {/* Find page container. Wider than the wizard's because once results
+          land the layout supports a 2-col card grid on desktop+wide. Below
+          tablet we use the full viewport width (just gutter padding) so
+          inputs stay tappable. */}
+      <div style={{
+        fontFamily: "var(--font-sans)",
+        color: "var(--color-text-primary)",
+        padding: vp.isMobile ? "0 0.875rem" : "0 1.25rem",
+        maxWidth: vp.isMobile ? "100%" : vp.isTablet ? "780px" : vp.isDesktop ? "1040px" : "1200px",
+        margin: "0 auto",
+      }}>
         {/* Header band */}
         <div style={{ paddingTop: "1.25rem", paddingBottom: "1rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
           <div>
@@ -8782,23 +8797,30 @@ function FindView() {
           </div>
         )}
 
-        {/* Restaurants section */}
+        {/* Restaurants section. On desktop+ we render a 2-column card grid
+            so 8-12 results don't make the user scroll forever. The grid
+            uses auto-fit + minmax so on narrow desktop it stays single
+            column rather than cramming. */}
         {hasRestaurants && (
           <section id="find-restaurants" style={{ marginTop: "1.25rem", scrollMarginTop: "60px" }}>
             <h2 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Restaurants in {results.queryUsed.location} ({results.restaurants.length})</h2>
-            {results.restaurants.map((r, i) => (
-              <FindRestaurantCard key={`${r.name}-${i}`} restaurant={r} onOpenMenu={onOpenMenu} />
-            ))}
+            <div style={{ display: "grid", gridTemplateColumns: vp.isAtLeastDesktop ? "repeat(auto-fit, minmax(360px, 1fr))" : "1fr", gap: "12px" }}>
+              {results.restaurants.map((r, i) => (
+                <FindRestaurantCard key={`${r.name}-${i}`} restaurant={r} onOpenMenu={onOpenMenu} />
+              ))}
+            </div>
           </section>
         )}
 
-        {/* Activities section */}
+        {/* Activities section — same grid treatment as restaurants. */}
         {hasActivities && (
           <section id="find-activities" style={{ marginTop: "1.25rem", scrollMarginTop: "60px" }}>
             <h2 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Activities in {results.queryUsed.location} ({results.activities.length})</h2>
-            {results.activities.map((a, i) => (
-              <FindActivityCard key={`${a.text}-${i}`} activity={a} onOpenDetails={onOpenDetails} />
-            ))}
+            <div style={{ display: "grid", gridTemplateColumns: vp.isAtLeastDesktop ? "repeat(auto-fit, minmax(360px, 1fr))" : "1fr", gap: "12px" }}>
+              {results.activities.map((a, i) => (
+                <FindActivityCard key={`${a.text}-${i}`} activity={a} onOpenDetails={onOpenDetails} />
+              ))}
+            </div>
           </section>
         )}
 
@@ -8842,17 +8864,21 @@ function FindView() {
             {localExpertResults.restaurants?.length > 0 && (
               <div style={{ marginTop: "0.75rem" }}>
                 <h3 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Restaurants ({localExpertResults.restaurants.length})</h3>
-                {localExpertResults.restaurants.map((r, i) => (
-                  <FindRestaurantCard key={`le-${r.name}-${i}`} restaurant={r} onOpenMenu={onOpenMenu} />
-                ))}
+                <div style={{ display: "grid", gridTemplateColumns: vp.isAtLeastDesktop ? "repeat(auto-fit, minmax(360px, 1fr))" : "1fr", gap: "12px" }}>
+                  {localExpertResults.restaurants.map((r, i) => (
+                    <FindRestaurantCard key={`le-${r.name}-${i}`} restaurant={r} onOpenMenu={onOpenMenu} />
+                  ))}
+                </div>
               </div>
             )}
             {localExpertResults.activities?.length > 0 && (
               <div style={{ marginTop: "1.25rem" }}>
                 <h3 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Activities ({localExpertResults.activities.length})</h3>
-                {localExpertResults.activities.map((a, i) => (
-                  <FindActivityCard key={`le-${a.text}-${i}`} activity={a} onOpenDetails={onOpenDetails} />
-                ))}
+                <div style={{ display: "grid", gridTemplateColumns: vp.isAtLeastDesktop ? "repeat(auto-fit, minmax(360px, 1fr))" : "1fr", gap: "12px" }}>
+                  {localExpertResults.activities.map((a, i) => (
+                    <FindActivityCard key={`le-${a.text}-${i}`} activity={a} onOpenDetails={onOpenDetails} />
+                  ))}
+                </div>
               </div>
             )}
           </section>
@@ -8912,6 +8938,11 @@ function FindView() {
 export { FindView };
 
 export default function TripOptimizer() {
+
+  // Viewport awareness drives a few container widths so the wizard form
+  // doesn't sit in a 640px column on a 1280px+ screen. Per-component opt-in
+  // (most surfaces don't need it).
+  const vp = useViewport();
 
   // Form state is INTENTIONALLY NOT PERSISTED across launches. The user wants
   // a clean slate on every launch and after "Plan another trip". We still
@@ -11132,7 +11163,17 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         </div>
       </div>
 
-      <div style={{ maxWidth: "640px", margin: "0 auto", padding: "1.75rem 1.25rem 2.5rem" }}>
+      {/* Wizard body container. The 640 → 720 → 880 progression keeps form
+          fields tappable on mobile (single column, full bleed), gives the
+          user breathing room on tablet, and prevents the page from looking
+          empty on desktop monitors. We deliberately stay under ~900px even
+          on wide screens because the form is still single-column
+          conceptually — a 1400px wide form is harder to scan, not easier. */}
+      <div style={{
+        maxWidth: vp.isMobile ? "100%" : vp.isTablet ? "720px" : "880px",
+        margin: "0 auto",
+        padding: vp.isMobile ? "1.5rem 1rem 2.5rem" : "1.75rem 1.5rem 2.5rem",
+      }}>
 
         {/* Step pills double as navigation — a tap jumps to that step,
             including back to Step 3 once a plan has been built. The Your
