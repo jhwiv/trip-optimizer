@@ -56,19 +56,9 @@ const PAGE = {
 
 // IMPORTANT: jsPDF's built-in fonts (Helvetica/Times) use WinAnsi encoding,
 // which CANNOT render Unicode arrows, geometric shapes, or emoji. They print
-// as garbled glyph IDs. Stick to ASCII for type icons. The aesthetic is built
-// from typography (small caps + gold accents) instead of pictograms.
-const TYPE_LABEL_PREFIX = {
-  Flight: "—",
-  Hotel: "—",
-  Activity: "—",
-  Breakfast: "—",
-  Brunch: "—",
-  Lunch: "—",
-  Dinner: "—",
-  Transport: "—",
-  Note: "—",
-};
+// as garbled glyph IDs. Stick to ASCII (or Latin-1) for type icons. The
+// aesthetic is built from typography (small caps + gold accents) instead of
+// pictograms.
 
 // Sanitize free text to glyphs that jsPDF's built-in WinAnsi fonts can render.
 // Anything outside Latin-1 (smart arrows, geometric shapes, emoji, thin space,
@@ -178,6 +168,10 @@ function asciiSafe(s) {
     // "extras" (smart quotes, dashes, bullet, ellipsis, trademark, euro).
     // Silent strip (was "?") so leftover emoji don't pollute headlines like
     // "? Cocktails at Bar Mavar" / "? Sea Organ".
+    // The \x00-\xFF range is the deliberate "keep Latin-1" allowlist; the
+    // control bytes inside it are expected and harmless because the input
+    // strings never contain literal NULs / DELs. Suppress the warning.
+    // eslint-disable-next-line no-control-regex
     .replace(/[^\x00-\xFF\u2013\u2014\u2018-\u201D\u2022\u2026\u20AC\u2122]/g, "")
     // Trim leading whitespace left behind by stripped emoji.
     // (Do NOT strip bullet chars here — markdownToProse emits leading
@@ -498,41 +492,6 @@ function safe(s) { return s == null ? "" : String(s); }
 function titleCase(s) {
   if (!s) return s;
   return String(s).replace(/\b\w/g, c => c.toUpperCase());
-}
-
-// Render a freeform prose block (Trip Guidelines / Trip Narrative) under
-// a small gold section heading. Strips markdown first and groups paragraphs
-// with a single blank line between them.
-function renderProseSection(cur, title, raw) {
-  const cleaned = markdownToProse(raw);
-  if (!cleaned) return;
-  const { pdf } = cur;
-  cur.space(4);
-  cur.ensureSpace(18);
-  pdf.setFont(FONT.sans, "bold");
-  pdf.setFontSize(7.5);
-  pdf.setCharSpace(1.4);
-  cur.setColor(COLOR.inkFaint);
-  pdf.text(asciiSafe(String(title).toUpperCase()), PAGE.marginX, cur.state.y);
-  pdf.setCharSpace(0);
-  cur.space(3.5);
-
-  // Render each paragraph as its own text block so the blank line between
-  // paragraphs survives. wrap() collapses internal whitespace which would
-  // otherwise turn a multi-paragraph block into one giant paragraph.
-  const paragraphs = cleaned.split(/\n{2,}/);
-  paragraphs.forEach((para, idx) => {
-    const trimmed = para.trim();
-    if (!trimmed) return;
-    // A paragraph might be a bullet list — keep each "• ..." line on its own.
-    const lines = trimmed.split("\n");
-    lines.forEach((ln) => {
-      const t = ln.trim();
-      if (!t) return;
-      cur.text(t, { font: FONT.sans, style: "normal", size: 9.5, color: COLOR.ink, leading: 1.4 });
-    });
-    if (idx < paragraphs.length - 1) cur.space(2);
-  });
 }
 
 // -----------------------------------------------------------------------------
@@ -1176,7 +1135,12 @@ function renderReferences(cur, data) {
     sorted.forEach(t => {
       const raw = String(t);
       const isUrgent = /^[⚠!]/u.test(raw) || /must/i.test(raw.slice(0, 12));
-      const cleaned = raw.replace(/^[·•⚠︎!]+\s*/u, "").trim();
+      // Strip leading priority sigils. Match either the bare ⚠ (warning
+      // sign) OR the same glyph followed by the U+FE0E variation selector,
+      // plus the other sigils. Previous version placed both code points
+      // inside one […] class, which made the variation selector a
+      // standalone class element — lint flagged it as misleading.
+      const cleaned = raw.replace(/^(?:⚠︎|[·•⚠!])+\s*/u, "").trim();
       // Render with explicit prefix tag so the priority survives ASCII coercion.
       const prefix = isUrgent ? "MUST: " : (/^anytime/i.test(cleaned) ? "" : "");
       cur.bullet((prefix + cleaned).replace(/^MUST: must today:?\s*/i, "MUST: "), { size: 10.5 });
