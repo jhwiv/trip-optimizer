@@ -1052,21 +1052,116 @@ function renderHotelBlock(cur, h, x, maxW) {
   if (h.confirmation_note) renderDetailLine(cur, "Note", h.confirmation_note, x, maxW);
 }
 
+// Render a row of small pill-style reservation chips: pale-gold fill, gold
+// underlined platform label, tappable hyperlink. Matches the SantaFe .link-gold
+// feel inside a button-shaped container so the user can tap directly from the
+// PDF to OpenTable / Resy / Tock / Yelp / tel:. Wraps to a second line if the
+// row exceeds maxW. Each chip is { label, url }.
+function renderReservationChips(cur, chips, x, maxW) {
+  const { pdf } = cur;
+  if (!chips || !chips.length) return;
+  cur.ensureSpace(7);
+  _drawDetailLabel(cur, "Reserve", x);
+
+  const chipX0 = x + DETAIL_LABEL_W;
+  const chipH = 5.2;   // mm — pill height
+  const padX = 2.4;    // horizontal padding inside chip
+  const gap = 2.2;     // gap between chips
+  const radius = 1.6;
+  const fontSize = 9.5;
+  const lineH = chipH + 1.6;
+
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(fontSize);
+
+  // First pass: measure widths.
+  const sized = chips.map((c) => {
+    const safe = asciiSafe(String(c.label || ""));
+    const tw = pdf.getTextWidth(safe);
+    return { ...c, safe, w: tw + padX * 2 };
+  });
+
+  let curX = chipX0;
+  let curY = cur.state.y + 1.0;
+  const rowMaxX = x + maxW;
+
+  sized.forEach((c) => {
+    if (curX + c.w > rowMaxX && curX > chipX0) {
+      curY += lineH;
+      curX = chipX0;
+    }
+    // Pill background.
+    cur.setFill(COLOR.bgChip);
+    cur.setDraw(COLOR.gold);
+    pdf.setLineWidth(0.2);
+    pdf.roundedRect(curX, curY, c.w, chipH, radius, radius, "FD");
+    // Gold underlined label as a tappable link.
+    const textX = curX + padX;
+    const baselineY = curY + chipH - 1.5;
+    cur.setColor(COLOR.gold);
+    if (c.url) {
+      pdf.textWithLink(c.safe, textX, baselineY, { url: c.url });
+      pdf.setLineWidth(0.15);
+      pdf.line(textX, baselineY + 0.5, textX + pdf.getTextWidth(c.safe), baselineY + 0.5);
+    } else {
+      pdf.text(c.safe, textX, baselineY);
+    }
+    curX += c.w + gap;
+  });
+
+  cur.state.y = curY + lineH;
+}
+
+// Map reservation.platform → human chip label.
+const RESV_PLATFORM_LABEL = {
+  opentable: "OpenTable",
+  resy: "Resy",
+  tock: "Tock",
+  yelp: "Yelp",
+  phone: "Call",
+  walkin: "Walk-in",
+};
+
+function buildReservationChips(res) {
+  const chips = [];
+  if (!res) return chips;
+  const platform = (res.platform || "").toLowerCase();
+
+  // Walk-in: single static chip, no URL.
+  if (platform === "walkin") {
+    chips.push({ label: "Walk-in", url: null });
+    return chips;
+  }
+
+  // Primary online booking chip (OpenTable / Resy / Tock / Yelp) when we have
+  // a URL. Phone is intentionally suppressed when an online URL exists — best
+  // UX is one primary action, not a cluttered row.
+  if (res.url) {
+    const label = RESV_PLATFORM_LABEL[platform] || "Reserve";
+    chips.push({ label, url: res.url });
+    return chips;
+  }
+
+  // No URL: fall back to a Call chip if we have a phone number.
+  if (res.phone) {
+    chips.push({ label: "Call", url: telUrl(res.phone) });
+    return chips;
+  }
+
+  // Platform stated but neither URL nor phone — render a label-only chip so
+  // the user still sees the booking platform.
+  if (platform) {
+    chips.push({ label: RESV_PLATFORM_LABEL[platform] || titleCase(platform), url: null });
+  }
+  return chips;
+}
+
 function renderRestaurantBlock(cur, r, x, maxW) {
   if (r.name) renderDetailLine(cur, "Restaurant", r.name, x, maxW);
   const cuisineBits = [r.cuisine, r.price_range, r.neighborhood].filter(Boolean).join("  ·  ");
   if (cuisineBits) renderDetailLine(cur, "Style", cuisineBits, x, maxW);
-  const res = r.reservation || {};
-  if (res.platform || res.url || res.phone) {
-    const platLabel = res.platform ? titleCase(res.platform) : "Reserve";
-    if (res.url) {
-      renderLinkLine(cur, "Reserve", `${platLabel} — ${res.url}`, res.url, x, maxW);
-    } else if (res.phone) {
-      renderLinkLine(cur, "Reserve", `${platLabel} — ${res.phone}`, telUrl(res.phone), x, maxW);
-    } else {
-      renderDetailLine(cur, "Reserve", platLabel, x, maxW);
-    }
-  }
+  const chips = buildReservationChips(r.reservation);
+  if (chips.length) renderReservationChips(cur, chips, x, maxW);
   if (r.closure_note) renderDetailLine(cur, "Closures", r.closure_note, x, maxW);
   if (r.backup && r.backup.name) {
     renderDetailLine(cur, "Backup", `${r.backup.name}${r.backup.cuisine ? ` · ${r.backup.cuisine}` : ""}`, x, maxW);
