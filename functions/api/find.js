@@ -38,11 +38,25 @@
 //   - same error shape as the rest of the app
 //   - same Anthropic model + headers
 //
+// Venue verification (added 2026-06-13 — see CLAUDE.md "VENUE VERIFICATION
+// — HARD RULE"). After the model returns and we filter lodging, we run
+// every restaurant + activity through Google Places (New) via the
+// in-process verifyOneVenue() function. Venues with business_status
+// CLOSED_PERMANENTLY / CLOSED_TEMPORARILY, or zero Text Search matches
+// (NOT_FOUND), are DROPPED from the response — never flagged-and-shipped.
+// When Places returns OPERATIONAL, the venue's contact.address / phone /
+// website are OVERWRITTEN with Places values and contact.hours_verified
+// is populated. When the Places API key is missing or unreachable, the
+// venue is kept but tagged with an UNVERIFIED warn flag so the client
+// can surface a banner.
+//
 // The result shape is intentionally a SUPERSET of what the existing
 // RestaurantCard / ActivityCard render. Fields the cards ignore are
 // silently dropped on the client; fields they need (name, cuisine,
 // why, contact{phone,address,website,booking_url,hours}, reservation
 // {platform,url}) are explicitly requested in the schema.
+
+import { verifyOneVenue } from "./places-verify.js";
 
 const FIND_TOOL = {
   name: "submit_find_results",
@@ -617,11 +631,175 @@ Call submit_find_results exactly once. Emit no prose.`;
     );
   }
 
+  // ---- Venue verification pass ------------------------------------------
+  // Drop CLOSED_PERMANENTLY / CLOSED_TEMPORARILY / NOT_FOUND venues entirely.
+  // Overwrite contact.{address,phone,website} with Places values when found.
+  // Surface UNVERIFIED venues (no key / network error) with a warn flag so
+  // the client can render a banner without dropping the result.
+  const verification = await verifyVenuesForFind({
+    env,
+    ctx: context,
+    location,
+    restaurants,
+    activities,
+  });
+
+  if (
+    verification.restaurants.length === 0 &&
+    verification.activities.length === 0
+  ) {
+    return json(
+      {
+        error: {
+          message:
+            "No verifiably-open places found for that location. Try a more specific city, neighborhood, or landmark.",
+        },
+        verification: verification.summary,
+      },
+      422,
+    );
+  }
+
   return json({
-    results: { restaurants, activities },
+    results: {
+      restaurants: verification.restaurants,
+      activities: verification.activities,
+    },
     note: typeof input.note === "string" ? input.note : "",
     local_expert: localExpertMeta,
+    verification: verification.summary,
   });
+}
+
+// Verify every venue against Google Places (New). Returns the surviving
+// restaurants[] and activities[] (closed ones dropped, addresses
+// overwritten when found) plus a summary the client can surface.
+//
+// `location` is the raw search string the user typed — it's the best
+// city/area context we have to disambiguate the Places Text Search. The
+// model returns per-venue neighborhood/contact.address too, but those
+// can be wrong; Places is more forgiving when we pass the broader
+// location and let it locality-resolve.
+async function verifyVenuesForFind({ env, ctx, location, restaurants, activities }) {
+  const all = [
+    ...restaurants.map((r, i) => ({ kind: "restaurant", idx: i, item: r })),
+    ...activities.map((a, i) => ({ kind: "activity", idx: i, item: a })),
+  ];
+
+  let cacheHits = 0;
+  let blocked = 0;
+  let warnings = 0;
+
+  // Bounded parallelism — same pattern as confirm-booking.js's mapParallel.
+  const concurrency = 6;
+  const verified = new Array(all.length);
+  let cursor = 0;
+  async function worker() {
+    while (true) {
+      const i = cursor++;
+      if (i >= all.length) return;
+      const { kind, idx, item } = all[i];
+      try {
+        const result = await verifyOneVenue({
+          env,
+          ctx,
+          name: item?.name || "",
+          city: location,
+        });
+        if (result.cached) cacheHits += 1;
+        const flag = flagForVerifyResult(result);
+        if (flag) {
+          if (flag.severity === "block") blocked += 1;
+          else if (flag.severity === "warn") warnings += 1;
+        }
+        verified[i] = { kind, idx, item, result, flag };
+      } catch (err) {
+        warnings += 1;
+        const msg = String(err?.message || err).slice(0, 200);
+        verified[i] = {
+          kind, idx, item,
+          result: { found: false, error: msg },
+          flag: { code: "UNVERIFIED", severity: "warn", message: msg },
+        };
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, all.length) }, worker),
+  );
+
+  const outRestaurants = [];
+  const outActivities = [];
+  for (const row of verified) {
+    if (!row) continue;
+    // Drop block-severity venues entirely.
+    if (row.flag && row.flag.severity === "block") continue;
+
+    const item = row.item;
+    const result = row.result;
+    let next = item;
+
+    // OPERATIONAL — overwrite contact fields with Places values and add
+    // verified hours. Absent business_status is OPERATIONAL by Places convention.
+    if (result.found && (!result.business_status || result.business_status === "OPERATIONAL")) {
+      const prevContact = (item && item.contact && typeof item.contact === "object") ? item.contact : {};
+      const nextContact = { ...prevContact };
+      if (result.address) nextContact.address = result.address;
+      if (result.phone) nextContact.phone = result.phone;
+      if (result.website) nextContact.website = result.website;
+      if (Array.isArray(result.hours) && result.hours.length) {
+        nextContact.hours_verified = result.hours;
+      }
+      next = { ...item, contact: nextContact };
+      if (result.place_id) next.place_id = result.place_id;
+      if (typeof result.lat === "number") next.lat = result.lat;
+      if (typeof result.lng === "number") next.lng = result.lng;
+      next._verified = true;
+    }
+
+    if (row.flag) {
+      next = {
+        ...next,
+        flags: [...(Array.isArray(item?.flags) ? item.flags : []), row.flag],
+      };
+    }
+
+    if (row.kind === "restaurant") outRestaurants.push(next);
+    else outActivities.push(next);
+  }
+
+  return {
+    restaurants: outRestaurants,
+    activities: outActivities,
+    summary: {
+      checked: all.length,
+      blocked,
+      warnings,
+      cache_hits: cacheHits,
+    },
+  };
+}
+
+// Map a verifyOneVenue() result to the canonical flag (or null when OK).
+// Kept in lockstep with /api/places-verify-batch's flagsFor() — same
+// codes, same severities, same messages. Change one, change both.
+function flagForVerifyResult(result) {
+  if (result.found) {
+    if (result.business_status === "CLOSED_PERMANENTLY") {
+      return { code: "CLOSED_PERMANENTLY", severity: "block", message: "Permanently closed per Google Places" };
+    }
+    if (result.business_status === "CLOSED_TEMPORARILY") {
+      return { code: "CLOSED_TEMPORARILY", severity: "block", message: "Temporarily closed per Google Places" };
+    }
+    return null;
+  }
+  if (result.error === "not-found") {
+    return { code: "NOT_FOUND", severity: "block", message: "Google Places returned zero matches for this name + city" };
+  }
+  if (result.error) {
+    return { code: "UNVERIFIED", severity: "warn", message: result.error };
+  }
+  return null;
 }
 
 // Defensive lodging-name filter. Belt and braces — the tool schema already
