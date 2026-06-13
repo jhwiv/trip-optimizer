@@ -288,5 +288,190 @@ console.log("=== /api/find input validation ===");
   assert("upstream fetch throws → 502", status === 502 && /Upstream fetch failed/.test(json?.error?.message));
 }
 
+
+// ============================================================
+// Places verification integration
+// ============================================================
+// These tests exercise the post-lodging verification pass. They mock
+// BOTH Anthropic and Google Places by URL — Anthropic returns a fixed
+// venue list, Places returns a configurable business_status / fields.
+
+console.log("\n=== /api/find Places verification integration ===");
+
+const PLACES_TS = "https://places.googleapis.com/v1/places:searchText";
+const PLACES_DETAILS_PREFIX = "https://places.googleapis.com/v1/places/";
+
+function makeKV() {
+  const store = new Map();
+  return {
+    async get(k) { return store.has(k) ? store.get(k) : null; },
+    async put(k, v) { store.set(k, v); },
+    _store: store,
+  };
+}
+
+// Helper: build a fetch impl that mocks Anthropic + Places.
+function mockFindAndPlaces(anthropicVenues, placesByName) {
+  let pendingDetailsName = null;
+  return async (url, opts) => {
+    if (url === "https://api.anthropic.com/v1/messages") {
+      return new Response(JSON.stringify({
+        content: [{ type: "tool_use", name: "submit_find_results", input: anthropicVenues }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url === PLACES_TS) {
+      const body = JSON.parse(opts.body);
+      const name = body.textQuery.split(",")[0].trim();
+      const spec = placesByName[name];
+      if (!spec || spec.notFound) {
+        return new Response(JSON.stringify({ places: [] }), { status: 200 });
+      }
+      pendingDetailsName = name;
+      return new Response(JSON.stringify({
+        places: [{ id: `id_${name.replace(/\s+/g, "_")}`, displayName: { text: name } }],
+      }), { status: 200 });
+    }
+    if (url.startsWith(PLACES_DETAILS_PREFIX)) {
+      const spec = placesByName[pendingDetailsName];
+      const obj = { id: "id_x", displayName: { text: pendingDetailsName } };
+      if (spec.closed) obj.businessStatus = spec.closed;
+      if (spec.address) obj.formattedAddress = spec.address;
+      if (spec.phone) obj.internationalPhoneNumber = spec.phone;
+      if (spec.website) obj.websiteUri = spec.website;
+      if (spec.hours) obj.regularOpeningHours = { weekdayDescriptions: spec.hours };
+      return new Response(JSON.stringify(obj), { status: 200 });
+    }
+    throw new Error("Unexpected fetch URL: " + url);
+  };
+}
+
+async function callFindFull(body, env, fetchImpl) {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchImpl;
+  try {
+    const res = await onRequestPost({
+      request: mockRequest(body),
+      env,
+      waitUntil: (p) => p,
+    });
+    return { status: res.status, json: await res.json() };
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+// 18. CLOSED_PERMANENTLY venue is dropped from results
+{
+  const fetchImpl = mockFindAndPlaces(
+    {
+      restaurants: [
+        { name: "OpenSpot", why: "good", type: "Restaurant" },
+        { name: "ClosedSpot", why: "bad", type: "Restaurant" },
+      ],
+      activities: [],
+    },
+    {
+      OpenSpot: { open: true, address: "1 Real St" },
+      ClosedSpot: { closed: "CLOSED_PERMANENTLY" },
+    },
+  );
+  const { status, json } = await callFindFull(
+    { location: "Town" },
+    { ANTHROPIC_API_KEY: "k", GOOGLE_PLACES_API_KEY: "pk", PLACES: makeKV() },
+    fetchImpl,
+  );
+  assert("closed venue dropped — status 200", status === 200);
+  assert("only 1 surviving restaurant", json?.results?.restaurants?.length === 1);
+  assert("survivor is OpenSpot", json?.results?.restaurants?.[0]?.name === "OpenSpot");
+  assert("summary.blocked === 1", json?.verification?.blocked === 1);
+}
+
+// 19. NOT_FOUND venue is dropped
+{
+  const fetchImpl = mockFindAndPlaces(
+    { restaurants: [{ name: "Ghost", why: "x", type: "Restaurant" }, { name: "Real", why: "y", type: "Restaurant" }], activities: [] },
+    { Ghost: { notFound: true }, Real: { open: true } },
+  );
+  const { status, json } = await callFindFull(
+    { location: "Town" },
+    { ANTHROPIC_API_KEY: "k", GOOGLE_PLACES_API_KEY: "pk", PLACES: makeKV() },
+    fetchImpl,
+  );
+  assert("NOT_FOUND dropped — status 200", status === 200);
+  assert("1 surviving restaurant", json?.results?.restaurants?.length === 1);
+  assert("summary.blocked === 1", json?.verification?.blocked === 1);
+}
+
+// 20. Places overwrites address / phone / website / adds hours_verified
+{
+  const fetchImpl = mockFindAndPlaces(
+    {
+      restaurants: [{
+        name: "Geronimo",
+        why: "x",
+        type: "Restaurant",
+        contact: { address: "WRONG ADDR", phone: "WRONG PHONE", website: "WRONG.URL" },
+      }],
+      activities: [],
+    },
+    {
+      Geronimo: {
+        open: true,
+        address: "724 Canyon Rd, Santa Fe, NM",
+        phone: "+1 505-982-1500",
+        website: "https://geronimo.example/",
+        hours: ["Monday: 5:00 – 9:30 PM"],
+      },
+    },
+  );
+  const { status, json } = await callFindFull(
+    { location: "Santa Fe" },
+    { ANTHROPIC_API_KEY: "k", GOOGLE_PLACES_API_KEY: "pk", PLACES: makeKV() },
+    fetchImpl,
+  );
+  assert("status 200", status === 200);
+  const r = json?.results?.restaurants?.[0];
+  assert("address overwritten", r?.contact?.address === "724 Canyon Rd, Santa Fe, NM");
+  assert("phone overwritten", r?.contact?.phone === "+1 505-982-1500");
+  assert("website overwritten", r?.contact?.website === "https://geronimo.example/");
+  assert("hours_verified added", Array.isArray(r?.contact?.hours_verified) && r.contact.hours_verified.length === 1);
+  assert("_verified flag set", r?._verified === true);
+}
+
+// 21. Missing GOOGLE_PLACES_API_KEY → venues kept, all flagged UNVERIFIED
+{
+  const fetchImpl = mockFindAndPlaces(
+    { restaurants: [{ name: "A", why: "x", type: "Restaurant" }], activities: [{ name: "B", why: "y", type: "Cultural" }] },
+    {},
+  );
+  const { status, json } = await callFindFull(
+    { location: "X" },
+    { ANTHROPIC_API_KEY: "k" /* no GOOGLE_PLACES_API_KEY */ },
+    fetchImpl,
+  );
+  assert("no key — status 200", status === 200);
+  assert("restaurant kept", json?.results?.restaurants?.length === 1);
+  assert("activity kept", json?.results?.activities?.length === 1);
+  assert("restaurant flagged UNVERIFIED", json?.results?.restaurants?.[0]?.flags?.[0]?.code === "UNVERIFIED");
+  assert("summary.warnings === 2", json?.verification?.warnings === 2);
+  assert("summary.blocked === 0", json?.verification?.blocked === 0);
+}
+
+// 22. All venues closed → 422 with helpful message
+{
+  const fetchImpl = mockFindAndPlaces(
+    { restaurants: [{ name: "DeadA", why: "x", type: "Restaurant" }, { name: "DeadB", why: "y", type: "Restaurant" }], activities: [] },
+    { DeadA: { closed: "CLOSED_PERMANENTLY" }, DeadB: { closed: "CLOSED_PERMANENTLY" } },
+  );
+  const { status, json } = await callFindFull(
+    { location: "X" },
+    { ANTHROPIC_API_KEY: "k", GOOGLE_PLACES_API_KEY: "pk", PLACES: makeKV() },
+    fetchImpl,
+  );
+  assert("all closed → 422", status === 422);
+  assert("422 message mentions verifiably-open", /verifiably-open/.test(json?.error?.message || ""));
+  assert("summary surfaces blocked count", json?.verification?.blocked === 2);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
