@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, Fragment, createContext, useContext } from "react";
 import { useViewport } from "./useViewport.js";
+import { collectPlanVenues, mergePlacesVerifications } from "./placesVerify.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -10804,6 +10805,42 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           });
         } catch {
           /* network or parse failure — silent, the original plan still works */
+        }
+      })();
+
+      // Background pass: verify every named venue (restaurants, backups,
+      // activities) against Google Places (New) via /api/places-verify-batch.
+      // CLOSED_PERMANENTLY / CLOSED_TEMPORARILY / NOT_FOUND items are
+      // DROPPED from the plan entirely; OPERATIONAL items get their
+      // contact.{address,phone,website} overwritten with authoritative
+      // Places values and contact.hours_verified populated. UNVERIFIED
+      // venues (Places key missing or network error) are kept with a warn
+      // flag so the pre-export gate can surface a banner.
+      //
+      // This is fire-and-forget — the plan renders immediately without
+      // verification; we patch it as results come in. Same guarded
+      // setResult pattern as the confirm-booking pass: if the user moved
+      // on to a new build / saved trip, we skip the merge.
+      (async () => {
+        try {
+          const venues = collectPlanVenues(parsed);
+          if (venues.length === 0) return;
+          const res = await fetch("/api/places-verify-batch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ venues }),
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          const verifications = Array.isArray(data?.verifications) ? data.verifications : [];
+          if (verifications.length === 0) return;
+          setResult(prev => {
+            if (!prev || prev !== parsed) return prev;
+            return mergePlacesVerifications(prev, verifications);
+          });
+        } catch {
+          /* network or parse failure — silent. The plan still renders; the
+             user just doesn't get the Places-verified overlay. */
         }
       })();
     } catch (err) {
