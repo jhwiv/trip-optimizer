@@ -266,6 +266,66 @@ console.log("\n[mergePlacesVerifications — name match is case-insensitive]");
   assert("address overwritten despite case/whitespace", next.days[0].items[0].contact.address === "Real St");
 }
 
+console.log("\n[verify-or-strip — UNVERIFIED venue gets hard specifics stripped]");
+{
+  const plan = {
+    destination: "X",
+    days: [{
+      items: [
+        {
+          type: "Activity",
+          name: "Unverified Activity",
+          contact: {
+            address: "123 Fake Street",  // numbered — strip
+            phone: "555-0100",            // strip
+            website: "https://realsite.com",  // keep (URL verifier handles separately)
+            hours: "Mon–Fri 9–5",          // strip
+            booking_url: "https://book.com", // strip
+          },
+        },
+        {
+          type: "Activity",
+          name: "Neighborhood Only",
+          contact: { address: "Downtown" }, // no digit — keep
+        },
+      ],
+    }],
+  };
+  const verifications = [
+    { name: "Unverified Activity", kind: "activity", found: false, flags: [{ code: "UNVERIFIED", severity: "warn", message: "no-key" }] },
+    { name: "Neighborhood Only", kind: "activity", found: false, flags: [{ code: "UNVERIFIED", severity: "warn", message: "no-key" }] },
+  ];
+  const next = mergePlacesVerifications(plan, verifications);
+  const a = next.days[0].items[0];
+  assert("phone stripped", a.contact.phone === undefined);
+  assert("numbered address stripped", a.contact.address === undefined);
+  assert("hours stripped", a.contact.hours === undefined);
+  assert("booking_url stripped", a.contact.booking_url === undefined);
+  assert("website kept (URL verifier handles)", a.contact.website === "https://realsite.com");
+  assert("UNVERIFIED_SPECIFIC flag added", a.flags?.some((f) => f.code === "UNVERIFIED_SPECIFIC"));
+  assert("original UNVERIFIED flag still there", a.flags?.some((f) => f.code === "UNVERIFIED"));
+
+  const b = next.days[0].items[1];
+  assert("non-numbered address kept", b.contact.address === "Downtown");
+  assert("no UNVERIFIED_SPECIFIC since nothing stripped", !b.flags?.some((f) => f.code === "UNVERIFIED_SPECIFIC"));
+}
+
+console.log("\n[verify-or-strip — OPERATIONAL venues are NOT stripped]");
+{
+  const plan = {
+    destination: "X",
+    days: [{ items: [{ type: "Dinner", restaurant: { name: "Good", contact: { phone: "old-phone", address: "old addr 1" } } }] }],
+  };
+  const verifications = [
+    { name: "Good", kind: "restaurant", found: true, business_status: "OPERATIONAL", phone: "+1 555-0200", address: "200 Real St", flags: [] },
+  ];
+  const next = mergePlacesVerifications(plan, verifications);
+  const r = next.days[0].items[0].restaurant;
+  assert("phone overwritten not stripped", r.contact.phone === "+1 555-0200");
+  assert("address overwritten", r.contact.address === "200 Real St");
+  assert("no UNVERIFIED_SPECIFIC flag", !r.flags?.some((f) => f.code === "UNVERIFIED_SPECIFIC"));
+}
+
 console.log("\n[mergePlacesVerifications — dropBlocked:false keeps blocked items with flags]");
 {
   const plan = {

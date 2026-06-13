@@ -223,6 +223,19 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
   };
 }
 
+// Hard-specific contact fields. When a venue is UNVERIFIED (Places
+// couldn't resolve it — missing key / network / soft "not-found"
+// downgraded to warn), the model's claimed values for these fields
+// are exactly the kind of high-confidence hallucination the venue
+// verification framework exists to prevent. Strip them and tag the
+// venue UNVERIFIED_SPECIFIC so the UI can render "phone unavailable"
+// instead of a fake number a traveler might dial.
+//
+// We keep `address` IFF it has at least a street number; otherwise we
+// strip. Neighborhood / city-only strings are safe to leave.
+// (Heuristic: presence of any digit.)
+const HARD_SPECIFIC_FIELDS = ["phone", "hours", "booking_url"];
+
 // Apply Places fields to a venue (restaurant or activity item) and
 // attach flags. Pure, side-effect free except for the supplied `tally`
 // callback which lets the caller count outcomes.
@@ -232,12 +245,38 @@ function decorateVenue(venue, v, tally) {
 
   const prevContact = venue.contact && typeof venue.contact === "object" ? venue.contact : {};
   const nextContact = { ...prevContact };
+  const extraFlags = [];
+
   if (isOperational) {
     if (v.address) nextContact.address = v.address;
     if (v.phone) nextContact.phone = v.phone;
     if (v.website) nextContact.website = v.website;
     if (Array.isArray(v.hours) && v.hours.length) {
       nextContact.hours_verified = v.hours;
+    }
+  } else if (hasWarn) {
+    // Verify-or-strip: an UNVERIFIED venue's model-supplied phone /
+    // hours / booking_url are unsafe to ship. Strip them and tag
+    // UNVERIFIED_SPECIFIC. Address is kept only when it lacks a street
+    // number (neighborhood / city-only strings); a numbered address
+    // could be a hallucination.
+    let stripped = false;
+    for (const field of HARD_SPECIFIC_FIELDS) {
+      if (nextContact[field]) {
+        delete nextContact[field];
+        stripped = true;
+      }
+    }
+    if (nextContact.address && /\d/.test(nextContact.address)) {
+      delete nextContact.address;
+      stripped = true;
+    }
+    if (stripped) {
+      extraFlags.push({
+        code: "UNVERIFIED_SPECIFIC",
+        severity: "info",
+        message: "Phone, exact address, and hours stripped — Places couldn't verify these specifics.",
+      });
     }
   }
 
@@ -254,8 +293,13 @@ function decorateVenue(venue, v, tally) {
 
   // Always attach flags so the UI can render badges. Empty flag arrays
   // are omitted to keep the payload small.
-  if (Array.isArray(v.flags) && v.flags.length) {
-    next.flags = [...(Array.isArray(venue.flags) ? venue.flags : []), ...v.flags];
+  const allFlags = [
+    ...(Array.isArray(venue.flags) ? venue.flags : []),
+    ...(Array.isArray(v.flags) ? v.flags : []),
+    ...extraFlags,
+  ];
+  if (allFlags.length) {
+    next.flags = allFlags;
   }
   return next;
 }
