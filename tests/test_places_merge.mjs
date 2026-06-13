@@ -1,6 +1,6 @@
 // Tests for src/placesVerify.js — pure helpers, no fetch, no React.
 
-import { collectPlanVenues, mergePlacesVerifications } from "../src/placesVerify.js";
+import { collectPlanVenues, mergePlacesVerifications, findBlockingIssues } from "../src/placesVerify.js";
 
 let passed = 0;
 let failed = 0;
@@ -338,6 +338,68 @@ console.log("\n[mergePlacesVerifications — dropBlocked:false keeps blocked ite
   const next = mergePlacesVerifications(plan, verifications, { dropBlocked: false });
   assert("item kept when dropBlocked:false", next.days[0].items.length === 1);
   assert("flags attached", next.days[0].items[0].flags?.[0]?.code === "CLOSED_PERMANENTLY");
+}
+
+console.log("\n[findBlockingIssues — clean plan]");
+{
+  const plan = makePlan();
+  assert("no flags → no issues", findBlockingIssues(plan).length === 0);
+}
+
+console.log("\n[findBlockingIssues — blocked activity is detected]");
+{
+  const plan = {
+    destination: "X",
+    days: [{
+      items: [
+        { type: "Activity", name: "Bad", flags: [{ code: "NOT_FOUND", severity: "block" }] },
+        { type: "Activity", name: "Good", flags: [] },
+      ],
+    }],
+  };
+  const issues = findBlockingIssues(plan);
+  assert("1 issue surfaced", issues.length === 1);
+  assert("correct name", issues[0].name === "Bad");
+  assert("correct kind", issues[0].kind === "activity");
+  assert("correct flag", issues[0].flag.code === "NOT_FOUND");
+  assert("correct dayIdx", issues[0].dayIdx === 0);
+}
+
+console.log("\n[findBlockingIssues — blocked restaurant + blocked backup]");
+{
+  const plan = {
+    destination: "X",
+    days: [{
+      items: [{
+        type: "Dinner",
+        restaurant: {
+          name: "BadPrimary",
+          flags: [{ code: "CLOSED_PERMANENTLY", severity: "block" }],
+          backup: { name: "BadBackup", flags: [{ code: "CLOSED_TEMPORARILY", severity: "block" }] },
+        },
+      }],
+    }],
+  };
+  const issues = findBlockingIssues(plan);
+  assert("both surfaced", issues.length === 2);
+  assert("first is restaurant", issues[0].kind === "restaurant");
+  assert("second is backup", issues[1].kind === "backup");
+}
+
+console.log("\n[findBlockingIssues — warn flags do NOT block]");
+{
+  const plan = {
+    destination: "X",
+    days: [{ items: [{ type: "Activity", name: "Warn", flags: [{ code: "UNVERIFIED", severity: "warn" }] }] }],
+  };
+  assert("warn does not surface", findBlockingIssues(plan).length === 0);
+}
+
+console.log("\n[findBlockingIssues — null / empty plan]");
+{
+  assert("null plan → []", findBlockingIssues(null).length === 0);
+  assert("no days → []", findBlockingIssues({}).length === 0);
+  assert("empty days → []", findBlockingIssues({ days: [] }).length === 0);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

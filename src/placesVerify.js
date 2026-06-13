@@ -223,6 +223,57 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
   };
 }
 
+// Pre-export gate: walk a plan and return an array of blocking issues
+// (severity:'block' flags). Returns [] when the plan is safe to render.
+//
+// Shape per issue:
+//   { dayIdx, itemIdx, kind: 'restaurant' | 'activity' | 'backup',
+//     name, flag: { code, severity, message } }
+//
+// The PDF export path MUST call this before invoking the itinerary
+// builder. If it returns a non-empty array, refuse to render and
+// surface the issues to the user.
+//
+// The merge helper already DROPS blocked items — so this gate should
+// normally find nothing. Its job is to be the last line of defense
+// against:
+//   - block-severity flags added by a future code path that bypasses
+//     mergePlacesVerifications
+//   - manual user edits that re-introduce a blocked venue
+//   - bugs in this very module
+export function findBlockingIssues(plan) {
+  if (!plan || !Array.isArray(plan.days)) return [];
+  const issues = [];
+  for (let dayIdx = 0; dayIdx < plan.days.length; dayIdx++) {
+    const items = plan.days[dayIdx]?.items;
+    if (!Array.isArray(items)) continue;
+    for (let itemIdx = 0; itemIdx < items.length; itemIdx++) {
+      const item = items[itemIdx];
+      if (!item || typeof item !== "object") continue;
+      if (item.type === "Activity") {
+        addBlockingFlags(item.flags, { dayIdx, itemIdx, kind: "activity", name: item.name || item.text || "(unnamed activity)" }, issues);
+        continue;
+      }
+      if (item.restaurant && typeof item.restaurant === "object") {
+        addBlockingFlags(item.restaurant.flags, { dayIdx, itemIdx, kind: "restaurant", name: item.restaurant.name || "(unnamed restaurant)" }, issues);
+        if (item.restaurant.backup && typeof item.restaurant.backup === "object") {
+          addBlockingFlags(item.restaurant.backup.flags, { dayIdx, itemIdx, kind: "backup", name: item.restaurant.backup.name || "(unnamed backup)" }, issues);
+        }
+      }
+    }
+  }
+  return issues;
+}
+
+function addBlockingFlags(flags, location, issues) {
+  if (!Array.isArray(flags)) return;
+  for (const flag of flags) {
+    if (flag && flag.severity === "block") {
+      issues.push({ ...location, flag });
+    }
+  }
+}
+
 // Hard-specific contact fields. When a venue is UNVERIFIED (Places
 // couldn't resolve it — missing key / network / soft "not-found"
 // downgraded to warn), the model's claimed values for these fields

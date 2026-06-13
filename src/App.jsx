@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, Fragment, createContext, useContext } from "react";
 import { useViewport } from "./useViewport.js";
-import { collectPlanVenues, mergePlacesVerifications } from "./placesVerify.js";
+import { collectPlanVenues, mergePlacesVerifications, findBlockingIssues } from "./placesVerify.js";
 import { buildDateTable } from "./dateFacts.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
@@ -3032,6 +3032,27 @@ function pdfFilename(data) {
 // throws on malformed data.
 async function saveItineraryAsPDF(filename, setStatus, { data, inputs } = {}) {
   setStatus("Preparing…");
+  // Pre-export gate — see CLAUDE.md "VENUE VERIFICATION — HARD RULE".
+  // Block PDF generation if any venue still carries a severity:'block'
+  // flag (CLOSED_PERMANENTLY / CLOSED_TEMPORARILY / NOT_FOUND). The merge
+  // helper drops these in normal flow; this gate is the last line of
+  // defense against bypassed-merge code paths or future regressions.
+  if (data && Array.isArray(data.days)) {
+    const blockingIssues = findBlockingIssues(data);
+    if (blockingIssues.length > 0) {
+      const summary = blockingIssues
+        .slice(0, 5)
+        .map((iss) => `Day ${iss.dayIdx + 1}: ${iss.name} (${iss.flag.code})`)
+        .join("; ");
+      const more = blockingIssues.length > 5 ? ` … and ${blockingIssues.length - 5} more` : "";
+      const err = new Error(
+        `Cannot export: ${blockingIssues.length} venue${blockingIssues.length === 1 ? "" : "s"} failed verification — ${summary}${more}. Re-run the build or remove the affected items before exporting.`
+      );
+      err.code = "VERIFICATION_BLOCK";
+      err.issues = blockingIssues;
+      throw err;
+    }
+  }
   // Prefer the rich template when we have structured plan data.
   if (data && Array.isArray(data.days) && data.days.length > 0) {
     try {
