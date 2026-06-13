@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, Fragment, createContext, useContext } from "react";
 import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, mergePlacesVerifications } from "./placesVerify.js";
+import { buildDateTable } from "./dateFacts.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -7441,7 +7442,7 @@ const DAY_ITEM_SCHEMA = {
 const DAY_SCHEMA = {
   type: "object",
   properties: {
-    label: { type: "string", description: "e.g. 'Day 1 · Thu Jun 4 · Arrive Santa Fe'" },
+    label: { type: "string", description: "Day label using the EXACT stamp from the COMPUTED DATE TABLE, followed by the day's purpose. Format: 'Day N · <stamp from table> · <purpose>'. Example: 'Day 1 · Wed Aug 25 · Arrive Santa Fe'. Never compute the weekday yourself — always copy it from the table." },
     city: { type: "string", description: "Which city this day belongs to on multi-city trips (e.g. 'Santa Fe, NM'). Match the spelling in the cities[] array. Transit days that span two cities use 'From→To' format (e.g. 'Santa Fe → Taos')." },
     headline: { type: "string", description: "REQUIRED. The one signature moment of the day, written as a vivid 6–10 word phrase. Examples: 'Sunset margaritas on the Anasazi rooftop' · 'Walk Canyon Road slowly before the galleries close' · 'Drive to Abiquiú for the Pedernal light'. Never leave blank." },
     weather: { type: "string", description: "REQUIRED. Seasonal expectation for this destination/date: high/low + sky + any caveat. e.g. 'High 82°F / low 52°F · sun w/ 30% PM thunderstorm risk'. Use seasonal norms; never fabricate live forecasts." },
@@ -9832,7 +9833,7 @@ This is a ${cities.length}-city trip: ${cities.map((c, i) => `Leg ${i + 1} = ${c
 Total: ${totalNights} nights = ${totalDays} days.
 • Emit a cities[] array with ${cities.length} entries in this exact order: ${cities.map(c => c.name).join(" → ")}. Each entry needs name, nights, days_range, focus, transport_in, stay.
 • Day allocation: Leg 1 gets ${cities[0]?.nights || 0} nights but ${(parseInt(cities[0]?.nights, 10) || 0) + 1} days (arrival day + nights). Subsequent legs get N nights = N days each (the inter-city transit happens AT THE START of the leg's first day). Final departure happens on the last day of the last leg (no extra day).
-• Compute days_range for each leg: Leg 1 = Day 1–Day ${(parseInt(cities[0]?.nights, 10) || 0) + 1}. ${cities.length >= 2 ? `Leg 2 starts Day ${(parseInt(cities[0]?.nights, 10) || 0) + 2}.` : ""} ${cities.length === 3 ? `Leg 3 starts Day ${(parseInt(cities[0]?.nights, 10) || 0) + (parseInt(cities[1]?.nights, 10) || 0) + 2}.` : ""}
+• Use these PRECOMPUTED day ranges for each leg (do not recompute): Leg 1 = Day 1–Day ${(parseInt(cities[0]?.nights, 10) || 0) + 1}. ${cities.length >= 2 ? `Leg 2 starts Day ${(parseInt(cities[0]?.nights, 10) || 0) + 2}.` : ""} ${cities.length === 3 ? `Leg 3 starts Day ${(parseInt(cities[0]?.nights, 10) || 0) + (parseInt(cities[1]?.nights, 10) || 0) + 2}.` : ""}
 • Each day MUST have a "city" field with the city name. Transit days (the first day of legs 2 and 3) use "From→To" format (e.g. "Santa Fe → Taos").
 • PACING for transit days: the first day of legs 2/3 is a transit day. Front-load the morning with checkout + drive/fly, then a relaxed arrival lunch in the new city, then a light afternoon activity. Don't pack a transit day full — the user is moving with luggage.
 • INTER-CITY TRANSPORT: For each leg after Leg 1, include a Transport item at the START of that leg's first day with: realistic drive time, distance in miles AND km if international, route (highway/road number), and any pacing notes (rest stops, scenic detours). For flight transfers between cities, treat it as a Flight item.
@@ -10010,7 +10011,9 @@ Total: ${totalNights} nights = ${totalDays} days.
     // to the rule they parametrize ("schedule each per the MARQUEE SIGHTS
     // rule", "apply per the FLIGHTS rule", etc.).
     // -------------------------------------------------------------------
-    const totalDaysLine = `• days[] must contain exactly ${totalDays} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). Compute the correct weekday for each day starting from the start date.`;
+    // Weekday computation is COMPUTED IN CODE and injected into the per-trip
+    // preamble below — the model must NOT recompute. See COMPUTED DATE TABLE.
+    const totalDaysLine = `• days[] must contain exactly ${totalDays} entries (arrival day + ${parseInt(basics.nights,10)||3} full nights). Use the COMPUTED DATE TABLE for every day's weekday and date.`;
 
     const staticRules = `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.
 
@@ -10019,7 +10022,7 @@ Write the tool input in this exact order: destination, meta, days, logistics, fl
 days[] is the main deliverable. Write the entire days[] array BEFORE writing logistics, flags, planb, snobs, or tonight. Never write logistics/flags/planb first and then days — if anything gets cut off, we lose the whole plan. Always write days first.
 
 TRIP REQUIREMENTS:
-• The exact required day count for this trip is given in the per-trip preamble below. Compute the correct weekday for each day starting from the start date.
+• The exact required day count for this trip is given in the per-trip preamble below. Use the COMPUTED DATE TABLE for every day's weekday and date — do not compute weekdays yourself.
 • Each day MUST include: label, headline (the one-line "if you only do one thing" call), weather (seasonal expectation, NOT a live forecast), and items[].
 • Each day's items[] needs at least 3 items — a typical full day is: morning Activity, midday Activity, evening Dinner. Arrival/departure days also include Flight + Hotel.
 • EVERY item in items[] MUST have a "time" field (24h local time, e.g. '08:30', '14:00', '19:30'). Items should appear in chronological order within each day. This is what turns the day into a real time-based itinerary instead of a vague list.
@@ -10099,7 +10102,7 @@ The morning a traveler changes hotels or cities is the highest-friction moment o
 • VENICE arrivals/departures are special — there are NO cars and the canals are the only path. Spell out: water taxi from Piazzale Roma or Santa Lucia station to the hotel's private dock (Gritti Palace, Aman Venice, Cipriani all have private docks). Name a reputable water-taxi operator (e.g. Venezia Taxi, Consorzio Motoscafi Venezia) and budget €120–180 for a private water taxi from the airport, €70–100 from Piazzale Roma. If luggage is heavy, advise sending it ahead via the concierge service.
 • SANTORINI, CAPRI, AMALFI, CINQUE TERRE — also handle the ferry/water/staircase logistics. Capri requires a porter (la portineria) for any luggage above 1 small case; the streets are too steep and narrow for self-haul.
 • HOTEL CHECKOUT TIME (typically 11:00–12:00) constrains how early you can leave. If you need to depart earlier, the Activity item must include "Request 09:00 late checkout in advance" or specify "Hotel will hold luggage at concierge until your evening pickup."
-• AIRPORT DEPARTURE on the last day: arrival at the airport 2.5–3 hours before international, 1.5–2 hours before domestic. Work backwards from flight time to determine the latest morning activity that's safe to schedule.
+• AIRPORT DEPARTURE on the last day: arrival at the airport 2.5–3 hours before international, 1.5–2 hours before domestic. The latest morning activity is constrained by the airport-arrival buffer for that flight; schedule the last activity to END at least 30 minutes before the airport-arrival buffer kicks in.
 
 LONG-HAUL FLIGHT UPGRADES — SURFACE THE OPTIONS:
 For any Flight item whose duration exceeds 6 hours OR whose cabin is Economy on a long-haul route, the confirmation_note MUST mention the upgrade path:
@@ -10252,6 +10255,12 @@ ${totalDaysLine}${_multiCityFieldOrder}${multiCityBlock}${_marqueePreamble}${_ai
     const groundModeText = trainAllowed
       ? "driving or train (user opted into rail)"
       : "driving only — NO trains, NO rail, NO Amtrak under any circumstances";
+    // COMPUTED DATE TABLE — weekday-of-date is computed in code and
+    // injected here. The model is empirically unreliable at this math
+    // (Aug 25 2027 was rendered "Monday" when it's Wednesday). Forcing
+    // the model to copy from this table eliminates that failure mode.
+    const _totalDaysForTable = (isMultiCity ? totalNightsFromCities : (parseInt(basics.nights, 10) || 3)) + 1;
+    const dateTable = buildDateTable(basics.startDate, _totalDaysForTable);
     return `Plan this trip:
 ${cityLine}
 Base area: ${basics.baseArea || (isMultiCity ? "—" : "suggest best area")}
@@ -10284,6 +10293,7 @@ Treat the narrative as the source of truth when it conflicts with a dropdown fie
 
 ${flights.noFlight ? `IMPORTANT: NO FLIGHTS. The user is ${trainAllowed ? "driving or taking the train" : "driving"}. Day 1 must be a Transport item describing the surface-travel arrival; do not invent flights, do not include any Flight items in days[].items.` : `IMPORTANT: Prefer NONSTOP flights. If ${extractAirportCode(flights.homeAirport) || flights.homeAirport} has no nonstop to the primary airport for ${isMultiCity ? cities[0]?.name : basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.`}
 ${trainAllowed ? "" : "IMPORTANT — NO TRAINS: The user did NOT request train or rail transportation. Do NOT suggest Amtrak, regional rail, commuter rail, or any train segment anywhere in the plan — not as primary transport, not as an alternative in flags[], not in planb[], not in plan-B fallbacks, not in transport_in for any leg, not in any item.text. Every transport segment must be by car, flight (if applicable), or walking. If the destination is rail-friendly (e.g. Saratoga, the Hudson Valley, Hudson NY, Westchester, Connecticut shore, DC corridor, anywhere on the Northeast Corridor) you still must NOT suggest a train. Pretend rail does not exist for this trip."}
+${dateTable ? dateTable + "\n" : ""}
 IMPORTANT: Return a complete days[] array with ${(isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)) + 1} entries (arrival day + ${isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)} nights). Do not collapse the plan into the logistics chip list.${isMultiCity ? `
 IMPORTANT: This is a ${cities.length}-city trip. Emit cities[] with ${cities.length} entries. Each day's "city" field must match a city in cities[] (or use From→To format for transit days). Inter-city transit is a Transport item at the start of legs 2+ with realistic drive time + distance.` : ""}
 IMPORTANT: Write days[] BEFORE logistics, flags, planb, snobs, or tonight. days[] comes immediately after destination + meta in the tool input.
