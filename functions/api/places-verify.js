@@ -43,12 +43,19 @@
 //   - Missing GOOGLE_PLACES_API_KEY → { found: false, error: "no-key" }.
 //     Callers MUST treat this as "unverified", never as "operational".
 //   - Network / quota errors → { found: false, error: "<reason>" }.
-//   - Text Search returns zero candidates → { found: false }.
+//   - Text Search returns zero candidates → { found: false, error: "not-found" }.
 //
 // Cost shape:
 //   - Text Search (one call) + Place Details (one call) per fresh lookup.
 //   - Field mask on Details restricts billing to the cheapest SKU.
 //   - 30-day cache deduplicates aggressively.
+//
+// Module exports:
+//   - onRequestPost      — HTTP handler (this file's POST behavior).
+//   - onRequestOptions   — CORS preflight.
+//   - verifyOneVenue     — pure async function for in-process callers
+//                          (used by /api/places-verify-batch and the
+//                          server-side /api/find verification pass).
 
 const PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
 const PLACES_DETAILS_URL_BASE = "https://places.googleapis.com/v1/places/";
@@ -232,7 +239,52 @@ function shapeResult(textHit, details) {
   };
 }
 
-// Entry point
+// ----------------------------------------------------------------------
+// verifyOneVenue — pure function for in-process callers
+// ----------------------------------------------------------------------
+// Used by:
+//   - onRequestPost in this file (HTTP wrapper)
+//   - /api/places-verify-batch (batch endpoint)
+//   - /api/find (in-process server-side verification pass)
+//
+// Behavior is identical to the HTTP endpoint minus the JSON shell:
+//   - Cache hit → return cached payload + cached:true
+//   - Missing key → return { found:false, error:"no-key" }
+//   - Text Search empty → cache + return { found:false, error:"not-found" }
+//   - Text Search hit → Place Details → shape + cache + return
+//   - Transient error → return { found:false, error:<msg> }, NOT cached
+//
+// `ctx` is optional — passed only by HTTP callers so KV writes can hook
+// into waitUntil. Batch callers from inside another handler may omit it.
+export async function verifyOneVenue({ env, ctx, name, city, lat, lng }) {
+  if (!name) return { found: false, error: "missing-name" };
+  const key = await cacheKeyFor(name, city);
+  const cached = await readCache(env, key);
+  if (cached) return { ...cached, cached: true };
+
+  if (!env?.GOOGLE_PLACES_API_KEY) {
+    return { found: false, error: "no-key" };
+  }
+
+  try {
+    const textHit = await textSearch(env.GOOGLE_PLACES_API_KEY, name, city, lat, lng);
+    if (!textHit || !textHit.id) {
+      const result = { found: false, error: "not-found" };
+      writeCache(env, ctx, key, result);
+      return result;
+    }
+    const details = await placeDetails(env.GOOGLE_PLACES_API_KEY, textHit.id);
+    const shaped = shapeResult(textHit, details);
+    writeCache(env, ctx, key, shaped);
+    return shaped;
+  } catch (err) {
+    const msg = String(err?.message || err).slice(0, 200);
+    // Don't cache transient errors — give the next call a chance.
+    return { found: false, error: msg };
+  }
+}
+
+// Entry point — HTTP wrapper around verifyOneVenue.
 export async function onRequestPost(context) {
   const { request, env } = context;
   const startedAt = Date.now();
@@ -252,31 +304,6 @@ export async function onRequestPost(context) {
   const lat = typeof body?.lat === "number" ? body.lat : undefined;
   const lng = typeof body?.lng === "number" ? body.lng : undefined;
 
-  // Cache hit?
-  const key = await cacheKeyFor(name, city);
-  const cached = await readCache(env, key);
-  if (cached) {
-    return json({ ...cached, cached: true, elapsed_ms: Date.now() - startedAt });
-  }
-
-  if (!env.GOOGLE_PLACES_API_KEY) {
-    return json({ found: false, error: "no-key", elapsed_ms: Date.now() - startedAt });
-  }
-
-  try {
-    const textHit = await textSearch(env.GOOGLE_PLACES_API_KEY, name, city, lat, lng);
-    if (!textHit || !textHit.id) {
-      const result = { found: false, error: "not-found" };
-      writeCache(env, context, key, result);
-      return json({ ...result, elapsed_ms: Date.now() - startedAt });
-    }
-    const details = await placeDetails(env.GOOGLE_PLACES_API_KEY, textHit.id);
-    const shaped = shapeResult(textHit, details);
-    writeCache(env, context, key, shaped);
-    return json({ ...shaped, elapsed_ms: Date.now() - startedAt });
-  } catch (err) {
-    const msg = String(err?.message || err).slice(0, 200);
-    // Don't cache transient errors — give the next call a chance.
-    return json({ found: false, error: msg, elapsed_ms: Date.now() - startedAt });
-  }
+  const result = await verifyOneVenue({ env, ctx: context, name, city, lat, lng });
+  return json({ ...result, elapsed_ms: Date.now() - startedAt });
 }
