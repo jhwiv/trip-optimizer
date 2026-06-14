@@ -50,6 +50,8 @@ consumed by the merge helper and the pre-export gate.
 | `CLOSED_ON_THIS_DAY` | warn | Venue verified open but closed all day on the item's scheduled weekday |
 | `OUTSIDE_HOURS` | warn | Venue verified open but item's time is outside Places' posted hours |
 | `WRONG_LOCATION` | block | Verified venue is too far (>50 km or per-leg widened radius) from any trip city — likely a wrong-city match |
+| `PACING_IMPOSSIBLE` | block | Adjacent items can't be reached in the scheduled gap (travel time > gap) |
+| `PACING_CONFLICT` | warn | Adjacent items have <15 min buffer after travel — tight but possible |
 
 A venue with any `severity:"block"` flag must NOT reach the PDF
 exporter. The pre-export gate is the last line of defense; it is not

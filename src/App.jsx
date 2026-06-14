@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, Fragment, createContext, useContext } from "react";
 import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
+import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { buildDateTable } from "./dateFacts.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
@@ -10934,6 +10935,38 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             if (!prev || prev !== parsed) return prev;
             return mergePlacesVerifications(prev, allVerifications);
           });
+
+          // Pacing check (Spec 3, 2026-06-14). After Places verification
+          // attaches lat/lng to items, walk adjacent pairs and ask
+          // Routes API how long each transition takes. Flag impossibles
+          // (block) and tight buffers (warn). Soft-fail if Routes isn't
+          // enabled — the plan still ships, just without the pacing layer.
+          try {
+            // Use the freshly-merged plan, not the pre-merge `parsed`,
+            // so items carry lat/lng from the verification pass.
+            const merged = mergePlacesVerifications(parsed, allVerifications);
+            const pacingPairs = collectPacingPairs(merged);
+            if (pacingPairs.length > 0) {
+              const pacingRes = await fetch("/api/routes-verify", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pairs: pacingPairs }),
+              });
+              if (pacingRes.ok) {
+                const pacingData = await pacingRes.json();
+                const pacedPlan = applyPacingFlags(merged, pacingPairs, pacingData?.routes || []);
+                if (pacedPlan !== merged) {
+                  setResult(prev => {
+                    if (!prev || prev !== parsed) return prev;
+                    return pacedPlan;
+                  });
+                }
+              }
+            }
+          } catch {
+            /* pacing-check failure — silent. The verified plan from
+               mergePlacesVerifications is what we render. */
+          }
         } catch {
           /* network or parse failure — silent. The plan still renders; the
              user just doesn't get the Places-verified overlay. */
