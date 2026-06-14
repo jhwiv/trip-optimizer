@@ -11,7 +11,7 @@
 //   7.  Missing API key                         → UNVERIFIED warn flag
 //   8.  Transient 5xx                           → UNVERIFIED warn flag, not cached
 //   9.  Dedup — same name twice                 → 1 Places call, 2 echo rows
-//  10.  Cap at MAX_VENUES=50
+//  10.  Cap at MAX_VENUES=12 (Cloudflare Workers subrequest budget)
 //  11.  Cache hit on 2nd run                    → 0 new Places calls
 //  12.  Mixed batch: 1 open, 1 closed, 1 not-found → summary tally correct
 //  13.  Kind echoed in response
@@ -303,9 +303,9 @@ console.log("\n[9] Dedup");
 }
 
 // ============================================================
-// Test 10: Cap at MAX_VENUES=50
+// Test 10: Cap at MAX_VENUES=12 (Cloudflare Workers subrequest budget)
 // ============================================================
-console.log("\n[10] Cap at 50");
+console.log("\n[10] Cap at MAX_VENUES (12)");
 {
   const originalFetch = globalThis.fetch;
   // Mock that handles any name as "open"
@@ -325,7 +325,7 @@ console.log("\n[10] Cap at 50");
   };
   const res = await onRequestPost(ctx);
   const body = await res.json();
-  assert("capped at 50", body.verifications.length === 50);
+  assert("capped at 12", body.verifications.length === 12);
   globalThis.fetch = originalFetch;
 }
 

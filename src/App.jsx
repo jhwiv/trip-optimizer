@@ -10856,18 +10856,39 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         try {
           const venues = collectPlanVenues(parsed);
           if (venues.length === 0) return;
-          const res = await fetch("/api/places-verify-batch", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ venues }),
-          });
-          if (!res.ok) return;
-          const data = await res.json();
-          const verifications = Array.isArray(data?.verifications) ? data.verifications : [];
-          if (verifications.length === 0) return;
+
+          // Chunk to stay under Cloudflare Workers' 50-subrequest-per-
+          // invocation cap on the free tier. Worst case per uncached
+          // venue: 1 Text Search + 1 Place Details + 1 KV get + 1 KV
+          // put = 4 subrequests. 12 venues × 4 = 48 subrequests, just
+          // under the cap. Cached venues skip the Places calls entirely
+          // (only the KV get counts), so in steady state this is very
+          // comfortable. A 60-venue trip = 5 POSTs, each its own Worker
+          // invocation with its own subrequest budget.
+          const CHUNK_SIZE = 12;
+          const allVerifications = [];
+          for (let i = 0; i < venues.length; i += CHUNK_SIZE) {
+            const chunk = venues.slice(i, i + CHUNK_SIZE);
+            try {
+              const res = await fetch("/api/places-verify-batch", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ venues: chunk }),
+              });
+              if (!res.ok) continue; // skip this chunk, keep going
+              const data = await res.json();
+              if (Array.isArray(data?.verifications)) {
+                allVerifications.push(...data.verifications);
+              }
+            } catch {
+              /* one chunk failed — skip and keep the rest. */
+            }
+          }
+
+          if (allVerifications.length === 0) return;
           setResult(prev => {
             if (!prev || prev !== parsed) return prev;
-            return mergePlacesVerifications(prev, verifications);
+            return mergePlacesVerifications(prev, allVerifications);
           });
         } catch {
           /* network or parse failure — silent. The plan still renders; the
