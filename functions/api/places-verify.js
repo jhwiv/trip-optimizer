@@ -389,6 +389,81 @@ export async function verifyOneVenue({ env, ctx, name, city, lat, lng }) {
   }
 }
 
+// ----------------------------------------------------------------------
+// geocodeCity — resolve a city name to a {lat, lng} centroid
+// ----------------------------------------------------------------------
+// Used by the per-leg location check (src/locationCheck.js). For each
+// destination city on the trip, we need an authoritative lat/lng so we
+// can Haversine-distance every verified venue against it.
+//
+// Implementation: Places (New) Text Search with NO Place Details follow-up.
+// We only need lat/lng + a canonical name. That's 1 subrequest per city,
+// vs verifyOneVenue's 2 — a meaningful cost win since we'll call this
+// once per leg.
+//
+// Cached separately in env.PLACES with prefix "geocity:v1:" so it can't
+// collide with the per-venue cache. 30-day TTL — cities don't move.
+const GEOCITY_CACHE_PREFIX = "geocity:" + CACHE_VERSION + ":";
+
+export async function geocodeCity({ env, ctx, name }) {
+  if (!name || typeof name !== "string") return { found: false, error: "missing-name" };
+  const normalized = normalizeForCacheKey(name);
+  if (!normalized) return { found: false, error: "missing-name" };
+
+  const hash = await sha256Hex(normalized);
+  const cacheKey = GEOCITY_CACHE_PREFIX + hash;
+  const cached = await readCache(env, cacheKey);
+  if (cached) return { ...cached, cached: true };
+
+  if (!env?.GOOGLE_PLACES_API_KEY) {
+    return { found: false, error: "no-key" };
+  }
+
+  try {
+    const res = await fetchWithTimeout(PLACES_TEXT_SEARCH_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": env.GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": TEXT_SEARCH_FIELD_MASK,
+      },
+      body: JSON.stringify({
+        textQuery: name,
+        maxResultCount: 1,
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      // Don't cache transient errors.
+      return { found: false, error: `text-search ${res.status}: ${text.slice(0, 200)}` };
+    }
+    const data = await res.json();
+    const places = Array.isArray(data?.places) ? data.places : [];
+    if (places.length === 0) {
+      const result = { found: false, error: "not-found" };
+      writeCache(env, ctx, cacheKey, result);
+      return result;
+    }
+    const hit = places[0];
+    const loc = hit?.location || {};
+    const result = {
+      found: true,
+      place_id: hit?.id,
+      name: hit?.displayName?.text || name,
+      lat: typeof loc.latitude === "number" ? loc.latitude : undefined,
+      lng: typeof loc.longitude === "number" ? loc.longitude : undefined,
+    };
+    if (typeof result.lat !== "number" || typeof result.lng !== "number") {
+      // Got a hit but no coords — don't cache, surface as error.
+      return { found: false, error: "no-location" };
+    }
+    writeCache(env, ctx, cacheKey, result);
+    return result;
+  } catch (err) {
+    return { found: false, error: String(err?.message || err).slice(0, 200) };
+  }
+}
+
 // Entry point — HTTP wrapper around verifyOneVenue.
 export async function onRequestPost(context) {
   const { request, env } = context;

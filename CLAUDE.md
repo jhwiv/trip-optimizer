@@ -47,6 +47,9 @@ consumed by the merge helper and the pre-export gate.
 | `NOT_FOUND` | block | Places Text Search returned zero matches |
 | `UNVERIFIED` | warn | Places lookup couldn't run (missing key / network / timeout) |
 | `UNVERIFIED_SPECIFIC` | info | Client stripped phone / numbered-address / hours / booking_url from an UNVERIFIED venue |
+| `CLOSED_ON_THIS_DAY` | warn | Venue verified open but closed all day on the item's scheduled weekday |
+| `OUTSIDE_HOURS` | warn | Venue verified open but item's time is outside Places' posted hours |
+| `WRONG_LOCATION` | block | Verified venue is too far (>50 km or per-leg widened radius) from any trip city — likely a wrong-city match |
 
 A venue with any `severity:"block"` flag must NOT reach the PDF
 exporter. The pre-export gate is the last line of defense; it is not

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, Fragment, createContext, useContext } from "react";
 import { useViewport } from "./useViewport.js";
-import { collectPlanVenues, mergePlacesVerifications, findBlockingIssues } from "./placesVerify.js";
+import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
 import { buildDateTable } from "./dateFacts.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
@@ -10886,6 +10886,50 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           }
 
           if (allVerifications.length === 0) return;
+
+          // Per-leg location check (Spec 2, 2026-06-14). Geocode each
+          // trip leg's city to get a centroid, then flag any verified
+          // venue whose lat/lng is too far from any leg. Catches the
+          // 'Santa Fe NM vs Santa Fe Argentina' failure mode.
+          //
+          // Soft-fail: if geocoding errors or a city can't be resolved,
+          // location check degrades to a no-op (no false-positive blocks).
+          try {
+            const legCities = collectPlanLegCities(parsed);
+            if (legCities.length > 0) {
+              const geoRes = await fetch("/api/geocode-cities", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ cities: legCities }),
+              });
+              if (geoRes.ok) {
+                const geoData = await geoRes.json();
+                const centers = (Array.isArray(geoData?.geocodes) ? geoData.geocodes : [])
+                  .filter((g) => g.found && typeof g.lat === "number" && typeof g.lng === "number")
+                  .map((g) => ({ name: g.name, lat: g.lat, lng: g.lng }));
+                if (centers.length > 0) {
+                  const legs = computeLegRadii(centers);
+                  const locResult = findVenuesOutsideRadius(allVerifications, legs);
+                  if (locResult.blocked > 0) {
+                    // Attach the WRONG_LOCATION flag to the venues in
+                    // the verifications array so mergePlacesVerifications
+                    // sees it and drops the affected items.
+                    for (const v of allVerifications) {
+                      const flag = locResult.flagsByName.get(v.name);
+                      if (flag) {
+                        v.flags = [...(Array.isArray(v.flags) ? v.flags : []), flag];
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } catch {
+            /* geocoding or location-check failure — silent. We still
+               apply the Places verifications below; we just skip the
+               distance check. */
+          }
+
           setResult(prev => {
             if (!prev || prev !== parsed) return prev;
             return mergePlacesVerifications(prev, allVerifications);

@@ -1,6 +1,6 @@
 // Tests for src/placesVerify.js — pure helpers, no fetch, no React.
 
-import { collectPlanVenues, mergePlacesVerifications, findBlockingIssues } from "../src/placesVerify.js";
+import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues } from "../src/placesVerify.js";
 
 let passed = 0;
 let failed = 0;
@@ -107,6 +107,44 @@ console.log("\n[collectPlanVenues — empty plan]");
   assert("empty days → []", collectPlanVenues({ days: [] }).length === 0);
   assert("no days → []", collectPlanVenues({}).length === 0);
   assert("null → []", collectPlanVenues(null).length === 0);
+}
+
+console.log("\n[collectPlanLegCities — multi-city]");
+{
+  const plan = {
+    cities: [{ name: "Rovinj" }, { name: "Plitvice" }, { name: "Split" }],
+    days: [
+      { city: "Rovinj" },
+      { city: "Rovinj → Plitvice" }, // transit day, splits
+      { city: "Split" },
+    ],
+  };
+  const cities = collectPlanLegCities(plan);
+  assert("3 unique cities", cities.length === 3, cities.join(","));
+  assert("order preserved", cities[0] === "Rovinj" && cities[2] === "Split");
+}
+
+console.log("\n[collectPlanLegCities — single-city falls back to destination]");
+{
+  const plan = { destination: "Santa Fe, NM" };
+  const cities = collectPlanLegCities(plan);
+  assert("falls back", cities.length === 1 && cities[0] === "Santa Fe, NM");
+}
+
+console.log("\n[collectPlanLegCities — dedup case-insensitive]");
+{
+  const plan = {
+    days: [{ city: "Rovinj" }, { city: "rovinj" }, { city: "  ROVINJ  " }],
+  };
+  const cities = collectPlanLegCities(plan);
+  assert("deduped to 1", cities.length === 1);
+  assert("first-seen casing kept", cities[0] === "Rovinj");
+}
+
+console.log("\n[collectPlanLegCities — empty plan]");
+{
+  assert("null → []", collectPlanLegCities(null).length === 0);
+  assert("empty → []", collectPlanLegCities({}).length === 0);
 }
 
 console.log("\n[collectPlanVenues — multi-city falls back to cities[0]]");
