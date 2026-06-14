@@ -67,7 +67,13 @@
 
 import { verifyOneVenue } from "./places-verify.js";
 
-const MAX_VENUES = 50;
+// Cloudflare Workers free tier caps subrequests at 50 per invocation.
+// Worst case per uncached venue: 4 subrequests (Text Search + Details
+// + KV get + KV put). 12 venues * 4 = 48, just under the cap.
+// The client (src/App.jsx) chunks venue lists into groups of 12 before
+// posting; this cap is defensive against direct callers (curl, tests,
+// future tooling) who don't chunk.
+const MAX_VENUES = 12;
 const MAX_PARALLEL = 6;
 const NAME_MAX = 200;
 const CITY_MAX = 200;
