@@ -402,5 +402,163 @@ console.log("\n[findBlockingIssues — null / empty plan]");
   assert("empty days → []", findBlockingIssues({ days: [] }).length === 0);
 }
 
+
+// =========================================================
+// OPEN_ON_THIS_DAY / OUTSIDE_HOURS integration (Spec 1, 2026-06-14)
+// =========================================================
+// Verifies the end-to-end wiring: when the plan has a startDate, items
+// get day-context-aware flags from the hours parser. Anchor:
+// Aug 25 2027 = Wednesday.
+
+console.log("\n[hours check — CLOSED_ON_THIS_DAY (Joseph Restaurant, Monday)]");
+{
+  // Aug 25 2027 = Wed. Day 1 = Wed, ... Day 6 = Mon.
+  const plan = {
+    startDate: "2027-08-25",
+    destination: "Santa Fe, NM",
+    days: [
+      { items: [] }, { items: [] }, { items: [] }, { items: [] }, { items: [] },
+      { items: [{ type: "Dinner", time: "19:00", restaurant: { name: "Joseph" } }] },
+    ],
+  };
+  const verifications = [{
+    name: "Joseph", kind: "restaurant", found: true, business_status: "OPERATIONAL",
+    hours: [
+      "Monday: Closed", "Tuesday: Closed",
+      "Wednesday: 5:00 – 9:00 PM", "Thursday: 5:00 – 9:00 PM",
+      "Friday: 5:00 – 9:00 PM", "Saturday: 5:00 – 9:00 PM", "Sunday: 5:00 – 9:00 PM",
+    ],
+    flags: [],
+  }];
+  const next = mergePlacesVerifications(plan, verifications);
+  const r = next.days[5].items[0].restaurant;
+  assert("Joseph still in plan (warn, not block)", next.days[5].items.length === 1);
+  assert("CLOSED_ON_THIS_DAY flag on Joseph", r.flags?.some((f) => f.code === "CLOSED_ON_THIS_DAY"));
+  assert("flag is warn", r.flags?.find((f) => f.code === "CLOSED_ON_THIS_DAY")?.severity === "warn");
+}
+
+console.log("\n[hours check — OUTSIDE_HOURS (Geronimo at lunch)]");
+{
+  const plan = {
+    startDate: "2027-08-25",
+    destination: "Santa Fe, NM",
+    days: [{ items: [{ type: "Lunch", time: "12:30", restaurant: { name: "Geronimo" } }] }],
+  };
+  const verifications = [{
+    name: "Geronimo", kind: "restaurant", found: true, business_status: "OPERATIONAL",
+    hours: [
+      "Monday: 4:45 – 11:00 PM", "Tuesday: 4:45 – 11:00 PM",
+      "Wednesday: 4:45 – 11:00 PM", "Thursday: 4:45 – 11:00 PM",
+      "Friday: 4:45 – 11:00 PM", "Saturday: 4:45 – 11:00 PM", "Sunday: 4:45 – 11:00 PM",
+    ],
+    flags: [],
+  }];
+  const next = mergePlacesVerifications(plan, verifications);
+  const r = next.days[0].items[0].restaurant;
+  assert("OUTSIDE_HOURS flag", r.flags?.some((f) => f.code === "OUTSIDE_HOURS"));
+  assert("warn severity", r.flags?.find((f) => f.code === "OUTSIDE_HOURS")?.severity === "warn");
+}
+
+console.log("\n[hours check — in-hours dinner produces no flag]");
+{
+  const plan = {
+    startDate: "2027-08-25",
+    destination: "Santa Fe, NM",
+    days: [{ items: [{ type: "Dinner", time: "19:00", restaurant: { name: "Geronimo" } }] }],
+  };
+  const verifications = [{
+    name: "Geronimo", kind: "restaurant", found: true, business_status: "OPERATIONAL",
+    hours: [
+      "Monday: 4:45 – 11:00 PM", "Tuesday: 4:45 – 11:00 PM",
+      "Wednesday: 4:45 – 11:00 PM", "Thursday: 4:45 – 11:00 PM",
+      "Friday: 4:45 – 11:00 PM", "Saturday: 4:45 – 11:00 PM", "Sunday: 4:45 – 11:00 PM",
+    ],
+    flags: [],
+  }];
+  const next = mergePlacesVerifications(plan, verifications);
+  const r = next.days[0].items[0].restaurant;
+  assert("no CLOSED_ON_THIS_DAY", !r.flags?.some((f) => f.code === "CLOSED_ON_THIS_DAY"));
+  assert("no OUTSIDE_HOURS", !r.flags?.some((f) => f.code === "OUTSIDE_HOURS"));
+  assert("_verified still true", r._verified === true);
+}
+
+console.log("\n[hours check — Activity items get the check too]");
+{
+  const plan = {
+    startDate: "2027-08-25",
+    destination: "Santa Fe, NM",
+    days: [{ items: [{ type: "Activity", name: "Loretto Chapel", time: "18:00" }] }],
+  };
+  const verifications = [{
+    name: "Loretto Chapel", kind: "activity", found: true, business_status: "OPERATIONAL",
+    hours: [
+      "Monday: 9:00 AM – 5:00 PM", "Tuesday: 9:00 AM – 5:00 PM",
+      "Wednesday: 9:00 AM – 5:00 PM", "Thursday: 9:00 AM – 5:00 PM",
+      "Friday: 9:00 AM – 5:00 PM", "Saturday: 9:00 AM – 5:00 PM", "Sunday: 9:00 AM – 5:00 PM",
+    ],
+    flags: [],
+  }];
+  const next = mergePlacesVerifications(plan, verifications);
+  const a = next.days[0].items[0];
+  assert("OUTSIDE_HOURS on activity", a.flags?.some((f) => f.code === "OUTSIDE_HOURS"));
+}
+
+console.log("\n[hours check — missing plan.startDate skips check (graceful)]");
+{
+  const plan = {
+    destination: "Santa Fe, NM",
+    days: [{ items: [{ type: "Dinner", time: "19:00", restaurant: { name: "Joseph" } }] }],
+  };
+  const verifications = [{
+    name: "Joseph", kind: "restaurant", found: true, business_status: "OPERATIONAL",
+    hours: ["Monday: Closed", "Tuesday: Closed", "Wednesday: 5:00 – 9:00 PM",
+            "Thursday: 5:00 – 9:00 PM", "Friday: 5:00 – 9:00 PM",
+            "Saturday: 5:00 – 9:00 PM", "Sunday: 5:00 – 9:00 PM"],
+    flags: [],
+  }];
+  const next = mergePlacesVerifications(plan, verifications);
+  const r = next.days[0].items[0].restaurant;
+  assert("no CLOSED_ON_THIS_DAY (no startDate)", !r.flags?.some((f) => f.code === "CLOSED_ON_THIS_DAY"));
+}
+
+console.log("\n[hours check — missing item.time still catches closed_all_day]");
+{
+  const plan = {
+    startDate: "2027-08-25",
+    days: [
+      { items: [] }, { items: [] }, { items: [] }, { items: [] }, { items: [] },
+      { items: [{ type: "Dinner", restaurant: { name: "Joseph" } }] },
+    ],
+  };
+  const verifications = [{
+    name: "Joseph", kind: "restaurant", found: true, business_status: "OPERATIONAL",
+    hours: ["Monday: Closed", "Tuesday: Closed", "Wednesday: 5:00 – 9:00 PM",
+            "Thursday: 5:00 – 9:00 PM", "Friday: 5:00 – 9:00 PM",
+            "Saturday: 5:00 – 9:00 PM", "Sunday: 5:00 – 9:00 PM"],
+    flags: [],
+  }];
+  const next = mergePlacesVerifications(plan, verifications);
+  const r = next.days[5].items[0].restaurant;
+  assert("CLOSED_ON_THIS_DAY still fires without item.time", r.flags?.some((f) => f.code === "CLOSED_ON_THIS_DAY"));
+}
+
+console.log("\n[hours check — Hotel items are exempt]");
+{
+  // Defensive: Hotel items shouldn't have .restaurant per schema, but
+  // belt-and-braces guard.
+  const plan = {
+    startDate: "2027-08-25",
+    days: [{ items: [{ type: "Hotel", time: "23:00", restaurant: { name: "Joseph" } }] }],
+  };
+  const verifications = [{
+    name: "Joseph", kind: "restaurant", found: true, business_status: "OPERATIONAL",
+    hours: ["Monday: Closed", "Tuesday: Closed", "Wednesday: Closed",
+            "Thursday: Closed", "Friday: Closed", "Saturday: Closed", "Sunday: Closed"],
+    flags: [],
+  }];
+  const next = mergePlacesVerifications(plan, verifications);
+  const r = next.days[0].items[0].restaurant;
+  assert("Hotel + .restaurant: no CLOSED_ON_THIS_DAY", !r.flags?.some((f) => f.code === "CLOSED_ON_THIS_DAY"));
+}
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

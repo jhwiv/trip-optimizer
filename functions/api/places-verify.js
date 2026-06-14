@@ -70,6 +70,7 @@ const DETAILS_FIELD_MASK = [
   "formattedAddress",
   "internationalPhoneNumber",
   "regularOpeningHours.weekdayDescriptions",
+  "utcOffsetMinutes",
   "websiteUri",
   "location",
 ].join(",");
@@ -325,6 +326,7 @@ function shapeResult(textHit, details) {
     address: details?.formattedAddress || "",
     phone: details?.internationalPhoneNumber || "",
     hours,
+    utc_offset_minutes: typeof details?.utcOffsetMinutes === "number" ? details.utcOffsetMinutes : undefined,
     website: details?.websiteUri || "",
     lat: typeof loc.latitude === "number" ? loc.latitude : undefined,
     lng: typeof loc.longitude === "number" ? loc.longitude : undefined,
