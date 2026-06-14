@@ -1,6 +1,10 @@
 import { parseWeekdayDescriptions, isOpenAt } from "./hoursParser.js";
 import { addDays, weekdayOf } from "./dateFacts.js";
 
+// Re-export the leg helpers so a single placesVerify.js import covers
+// both venue verification and location checking on the client.
+export { findVenuesOutsideRadius, computeLegRadii } from "./locationCheck.js";
+
 // Client-side helpers for the post-build Places verification pass.
 //
 // Two pure functions:
@@ -91,6 +95,56 @@ export function collectPlanVenues(plan) {
         push(item.name, "activity");
       }
     }
+  }
+  return out;
+}
+
+// Collect the distinct leg city names from a plan. Used for per-leg
+// location checking — we geocode each leg city once to get a centroid,
+// then Haversine venues against the appropriate centroid.
+//
+// Returns an ordered array of unique city names. Order follows the
+// trip's chronological progression. Multi-city plans use plan.cities[]
+// when populated; single-city plans fall back to plan.destination.
+//
+// Transit-day labels like "Rovinj → Plitvice" are split on the arrow so
+// both endpoints become candidate leg cities (already covered if both
+// appear elsewhere; the dedup makes this safe).
+export function collectPlanLegCities(plan) {
+  if (!plan) return [];
+  const seen = new Set();
+  const out = [];
+  const push = (name) => {
+    if (typeof name !== "string") return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(trimmed);
+  };
+
+  // Preferred source: plan.cities[].name (multi-city trips).
+  if (Array.isArray(plan.cities) && plan.cities.length > 0) {
+    for (const c of plan.cities) {
+      if (c && typeof c.name === "string") push(c.name);
+    }
+  }
+
+  // Fallback / supplement: plan.days[].city. Splits transit-day
+  // "From → To" labels on arrows / hyphens so both ends are added.
+  if (Array.isArray(plan.days)) {
+    for (const day of plan.days) {
+      if (!day || typeof day.city !== "string") continue;
+      const parts = day.city.split(/\s*(?:→|->|\u2013|-)\s*/);
+      for (const part of parts) push(part);
+    }
+  }
+
+  // Last resort: plan.destination (single-city trips that don't populate
+  // cities[] or days[].city).
+  if (out.length === 0 && typeof plan.destination === "string") {
+    push(plan.destination);
   }
   return out;
 }
