@@ -1,3 +1,6 @@
+import { parseWeekdayDescriptions, isOpenAt } from "./hoursParser.js";
+import { addDays, weekdayOf } from "./dateFacts.js";
+
 // Client-side helpers for the post-build Places verification pass.
 //
 // Two pure functions:
@@ -136,9 +139,17 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
   let warnings = 0;
   let verified = 0;
 
+  // Bookkeeping for the day/hours check (Spec 1, 2026-06-14). Runs only
+  // when the plan has a startDate — without it we can't compute a per-day
+  // weekday. Items missing a `time` field still get a partial check
+  // (closed_all_day still fires).
+  const startDate = typeof plan.startDate === "string" ? plan.startDate : null;
+
   // Apply Places data to a single (restaurant or backup) restaurant object.
   // Returns either the updated restaurant or null if it should be dropped.
-  const applyToRestaurant = (r) => {
+  // dayContext = { weekday, time } when known — drives the OPEN_ON_THIS_DAY
+  // hours check inside decorateVenue.
+  const applyToRestaurant = (r, dayContext) => {
     if (!r || typeof r.name !== "string") return r;
     const v = byKey.get(`restaurant|${normName(r.name)}`);
     if (!v) return r;
@@ -147,12 +158,12 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
       blocked += 1;
       return null;
     }
-    return decorateVenue(r, v, (n) => { if (n === "verified") verified += 1; else if (n === "warn") warnings += 1; else if (n === "block") blocked += 1; });
+    return decorateVenue(r, v, (n) => { if (n === "verified") verified += 1; else if (n === "warn") warnings += 1; else if (n === "block") blocked += 1; }, dayContext);
   };
 
   // Apply Places data to an Activity item. Returns the updated item or
   // null if blocked.
-  const applyToActivity = (item) => {
+  const applyToActivity = (item, dayContext) => {
     if (!item || typeof item.name !== "string") return item;
     const v = byKey.get(`activity|${normName(item.name)}`);
     if (!v) return item;
@@ -161,11 +172,15 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
       blocked += 1;
       return null;
     }
-    return decorateVenue(item, v, (n) => { if (n === "verified") verified += 1; else if (n === "warn") warnings += 1; else if (n === "block") blocked += 1; });
+    return decorateVenue(item, v, (n) => { if (n === "verified") verified += 1; else if (n === "warn") warnings += 1; else if (n === "block") blocked += 1; }, dayContext);
   };
 
-  const nextDays = plan.days.map((day) => {
+  const nextDays = plan.days.map((day, dayIdx) => {
     if (!Array.isArray(day?.items)) return day;
+    // Compute this day's weekday from start date + day index. Null when
+    // startDate missing/unparseable; downstream check degrades to no-op.
+    const dayISO = startDate ? addDays(startDate, dayIdx) : null;
+    const dayWeekday = dayISO ? weekdayOf(dayISO) : null;
     const nextItems = [];
     for (const item of day.items) {
       if (!item || typeof item !== "object") {
@@ -173,8 +188,13 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
         continue;
       }
 
+      // Per user decision 2026-06-14: hours-check runs on Activity,
+      // Dinner, Breakfast/Brunch/Lunch items. Hotels are excluded.
+      const itemTime = typeof item.time === "string" ? item.time : null;
+      const dayContext = dayWeekday ? { weekday: dayWeekday, time: itemTime } : null;
+
       if (item.type === "Activity") {
-        const next = applyToActivity(item);
+        const next = applyToActivity(item, dayContext);
         if (next !== null) nextItems.push(next);
         continue;
       }
@@ -184,7 +204,11 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
       // and decorate the restaurant + its backup; drop the whole item
       // if the primary restaurant is blocked.
       if (item.restaurant && typeof item.restaurant === "object") {
-        const nextR = applyToRestaurant(item.restaurant);
+        // Hotels are excluded from the hours-check; their items don't
+        // have .restaurant in the schema, but guard explicitly anyway.
+        const isHotel = item.type === "Hotel";
+        const rDayContext = isHotel ? null : dayContext;
+        const nextR = applyToRestaurant(item.restaurant, rDayContext);
         if (nextR === null) {
           // Primary restaurant blocked — drop the entire item.
           continue;
@@ -192,7 +216,7 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
         // Try to apply the backup; if it's blocked, just remove the
         // backup field. A primary survives without a backup.
         if (nextR.backup && typeof nextR.backup === "object") {
-          const nextBackup = applyToRestaurant(nextR.backup);
+          const nextBackup = applyToRestaurant(nextR.backup, rDayContext);
           if (nextBackup === null) {
             const { backup: _drop, ...rest } = nextR;
             nextItems.push({ ...item, restaurant: rest });
@@ -290,7 +314,11 @@ const HARD_SPECIFIC_FIELDS = ["phone", "hours", "booking_url"];
 // Apply Places fields to a venue (restaurant or activity item) and
 // attach flags. Pure, side-effect free except for the supplied `tally`
 // callback which lets the caller count outcomes.
-function decorateVenue(venue, v, tally) {
+//
+// dayContext (optional) = { weekday: 'Monday', time: '19:00' } drives
+// the OPEN_ON_THIS_DAY hours check added in Spec 1 (2026-06-14). Both
+// fields are optional; missing fields degrade the check gracefully.
+function decorateVenue(venue, v, tally, dayContext) {
   const isOperational = v.found && (!v.business_status || v.business_status === "OPERATIONAL");
   const hasWarn = Array.isArray(v.flags) && v.flags.some((f) => f.severity === "warn");
 
@@ -304,6 +332,28 @@ function decorateVenue(venue, v, tally) {
     if (v.website) nextContact.website = v.website;
     if (Array.isArray(v.hours) && v.hours.length) {
       nextContact.hours_verified = v.hours;
+    }
+    // Day/hours check (Spec 1, 2026-06-14). Parse the venue's weekly
+    // hours and ask: is this venue open on the item's weekday at the
+    // item's time? Both surfaced flags are warn-severity per user
+    // decision — they surface a banner without blocking the PDF.
+    if (dayContext && dayContext.weekday && Array.isArray(v.hours) && v.hours.length) {
+      const parsed = parseWeekdayDescriptions(v.hours);
+      const check = isOpenAt(parsed, dayContext.weekday, dayContext.time || null);
+      if (check.status === "closed_all_day") {
+        extraFlags.push({
+          code: "CLOSED_ON_THIS_DAY",
+          severity: "warn",
+          message: `Closed on ${dayContext.weekday}s per Google Places hours.`,
+        });
+      } else if (check.status === "outside_hours") {
+        extraFlags.push({
+          code: "OUTSIDE_HOURS",
+          severity: "warn",
+          message: `Scheduled at ${dayContext.time} on ${dayContext.weekday}, but the venue's posted hours don't cover that time.`,
+        });
+      }
+      // open / open24 / unknown → no flag.
     }
   } else if (hasWarn) {
     // Verify-or-strip: an UNVERIFIED venue's model-supplied phone /

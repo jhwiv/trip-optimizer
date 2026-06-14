@@ -231,6 +231,7 @@ export async function onRequestPost(context) {
         ...(result.address ? { address: result.address } : {}),
         ...(result.phone ? { phone: result.phone } : {}),
         ...(Array.isArray(result.hours) && result.hours.length ? { hours: result.hours } : {}),
+        ...(typeof result.utc_offset_minutes === "number" ? { utc_offset_minutes: result.utc_offset_minutes } : {}),
         ...(result.website ? { website: result.website } : {}),
         ...(typeof result.lat === "number" ? { lat: result.lat } : {}),
         ...(typeof result.lng === "number" ? { lng: result.lng } : {}),
