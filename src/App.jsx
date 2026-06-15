@@ -9196,6 +9196,14 @@ export default function TripOptimizer() {
   const [result, setResult] = useState(recovered?.result || null);
   const [error, setError] = useState("");
   const abortRef = useRef(null);
+  // Points at the streaming-progress panel (rendered in step 2 while
+  // loading/extracting). Used to scroll the panel into view on build start so
+  // the user sees that something is happening even when it's below the fold.
+  const progressPanelRef = useRef(null);
+  // Tracks the previous value of `loading` so the auto-scroll effect fires
+  // only on the rising edge (false -> true), i.e. once per build, not on every
+  // progress-driven re-render while a build is already running.
+  const prevLoadingRef = useRef(false);
   // Tracks which saved-trip entry (if any) the current `result` came from.
   // When a saved trip is opened and then revised, we persist the revised plan
   // and review state back into THAT entry rather than creating a new one.
@@ -11277,6 +11285,26 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     });
   };
 
+  // Auto-scroll the streaming-progress panel into view when a build starts.
+  // On a long wizard the panel renders below the fold, so without this the
+  // user clicks Build and sees no visible change. We fire only on the rising
+  // edge of `loading` (false -> true) so it scrolls exactly once per build and
+  // does NOT re-scroll on the many progress-driven re-renders while the build
+  // is already running — which means if the user manually scrolls away
+  // mid-build, we don't snap them back. Cancelling resets loading to false
+  // (handleCancel), so a fresh start gives a new rising edge and re-scrolls.
+  useEffect(() => {
+    const rising = loading && !prevLoadingRef.current;
+    prevLoadingRef.current = loading;
+    if (!rising) return;
+    // Wait one frame so the panel (gated on `loading`) has mounted before we
+    // measure/scroll to it; the ref is null on the render that flips loading.
+    const raf = window.requestAnimationFrame(() => {
+      progressPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [loading]);
+
   // Deferred build trigger for the "Build from this" shortcut.
   // buildFromGuidelines extracts fields from the narrative, calls all the
   // setters, and sets pendingBuildFromGuidelines=true. On the NEXT render
@@ -11978,7 +12006,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               </div>
             )}
             {(loading || extractingFromGuidelines) && (
-              <div style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
+              <div ref={progressPanelRef} style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
                 {/* Progress bar honesty.
                     Once progress pegs at ≥95% the percentage is no longer
                     informative — the time-based estimator has saturated and
