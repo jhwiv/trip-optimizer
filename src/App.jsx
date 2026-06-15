@@ -9109,7 +9109,7 @@ export default function TripOptimizer() {
   // BLANK = truly empty state. Used on every launch and on "Plan another trip".
   const BLANK = {
     basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: "" },
-    flights: { homeAirport: "", airline: "", cabin: "", flex: "", noFlight: false },
+    flights: { homeAirport: "EWR", airline: "", cabin: "", flex: "", noFlight: false },
     hotel: { brand: [], tier: "", mustHave: "" },
     transport: { type: [], company: "", vehicle: "" },
     dining: { cuisine: "", budget: [] },
