@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, Fragment, createContext, useContext } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment, createContext, useContext } from "react";
 import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
@@ -6130,6 +6130,9 @@ function DateRangeInput({ startDate, endDate, onRangeChange }) {
   const [hoverISO, setHoverISO] = useState("");
   const popRef = useRef(null);
   const wrapRef = useRef(null);
+  // Horizontal nudge (px) applied when the popover would overflow the viewport's
+  // right edge. 0 on desktop when there's room → popover stays anchored as today.
+  const [shiftX, setShiftX] = useState(0);
 
   useEffect(() => {
     function onDocClick(e) {
@@ -6156,6 +6159,22 @@ function DateRangeInput({ startDate, endDate, onRangeChange }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial visible month when datepicker opens
     if (!isNaN(d)) setVisibleMonth(new Date(d.getFullYear(), d.getMonth(), 1));
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Right-edge guard: after the popover lays out, check whether it spills past
+  // the viewport's right edge and, if so, pull it left by exactly the overflow
+  // (plus an 8px gutter). Runs before paint so there's no visible jump. When the
+  // popover already fits (e.g. desktop with room), overflow <= 0 → shiftX stays 0
+  // and the popover renders exactly where it does today.
+  useLayoutEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: measure layout, then set the horizontal shift before paint
+    if (!open) { setShiftX(0); return; }
+    const el = popRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const GUTTER = 8;
+    const overflowRight = rect.right - (window.innerWidth - GUTTER);
+    setShiftX(overflowRight > 0 ? -overflowRight : 0);
+  }, [open, startDate, endDate]);
 
   const toISO = (d) => {
     const y = d.getFullYear();
@@ -6345,6 +6364,7 @@ function DateRangeInput({ startDate, endDate, onRangeChange }) {
             position: "absolute",
             top: "calc(100% + 6px)",
             left: 0,
+            transform: shiftX ? `translateX(${shiftX}px)` : undefined,
             zIndex: 50,
             background: "var(--color-background-primary)",
             border: "1px solid var(--color-border-secondary)",
