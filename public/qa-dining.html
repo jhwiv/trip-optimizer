@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>QA · Seed Dining Fixture</title>
+  <style>
+    body { font: 14px/1.5 system-ui, -apple-system, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; color: #222; }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    button { font: inherit; padding: 8px 14px; border: 1px solid #888; background: #fafafa; border-radius: 6px; cursor: pointer; margin: 4px 8px 4px 0; }
+    button:hover { background: #f0f0f0; }
+    pre { background: #f5f5f5; padding: 12px; border-radius: 6px; font-size: 11px; overflow:auto; max-height: 280px; }
+    .ok { color: green; }
+  </style>
+</head>
+<body>
+  <h1>QA fixture loader for DiningBrowseChips</h1>
+  <p>Pick a scenario; the page will write a fixture into localStorage and redirect to the app, which will rehydrate into the Dining tab.</p>
+
+  <div>
+    <button data-scenario="paris-2">Paris · 2 adults · ISO dates</button>
+    <button data-scenario="solo-no-date">Santa Fe · solo · no date</button>
+    <button data-scenario="long-name">"New York &amp; the Hamptons" · 4 · long name</button>
+    <button data-scenario="multicity">Multi-city (Lisbon → Porto) · 2</button>
+    <button data-clear>Clear &amp; reset</button>
+  </div>
+
+  <h2 style="font-size:14px;margin-top:24px">Fixture preview</h2>
+  <pre id="preview">(pick a scenario)</pre>
+
+<script>
+const SESSION_KEY = "trip-optimizer-session-v1";
+const LS_FORM = "trip-optimizer-form-v4";
+
+function buildFixture(kind) {
+  const base = {
+    basics: { destination: "", cities: [], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: "" },
+    flights: { homeAirport: "", airline: "", cabin: "", flex: "", noFlight: false },
+    hotel: { brand: [], tier: "", mustHave: "" },
+    transport: { type: [], company: "", vehicle: "" },
+    dining: { cuisine: "", budget: [] },
+    restaurants: [], activities: [], interests: { level: "", text: "" },
+  };
+
+  // Minimal restaurant payload that satisfies RestaurantCard rendering.
+  const sampleRest = (name, plat) => ({
+    name, type: "Restaurant",
+    address: "Sample address",
+    phone: "+33 1 00 00 00 00",
+    website: "https://example.com",
+    reservation: { platform: plat, url: `https://www.${plat}.com/example` },
+    cuisine: "Tasting menu",
+    price: "$$$",
+    why: "Used as a fixture for QA.",
+  });
+
+  const dayShape = (date, label, type, restName, plat) => ({
+    date, label,
+    items: [{ type, time: "19:00", end_time: "21:30", restaurant: sampleRest(restName, plat) }],
+  });
+
+  if (kind === "paris-2") {
+    return {
+      step: 3, savedAt: Date.now(), currentSavedTripId: null, reviewState: null,
+      inputs: { ...base, basics: { ...base.basics, destination: "Paris", travelers: "2 adults", startDate: "2026-09-12", endDate: "2026-09-15", nights: "3", cities: [{ name: "Paris", nights: "3", focus: "" }] } },
+      result: {
+        destination: "Paris",
+        days: [
+          dayShape("2026-09-12", "Sat · Sept 12", "Dinner", "Septime", "opentable"),
+          dayShape("2026-09-13", "Sun · Sept 13", "Dinner", "Clamato", "resy"),
+          dayShape("2026-09-14", "Mon · Sept 14", "Dinner", "Le Comptoir du Relais", "yelp"),
+        ],
+      },
+    };
+  }
+  if (kind === "solo-no-date") {
+    return {
+      step: 3, savedAt: Date.now(), currentSavedTripId: null, reviewState: null,
+      inputs: { ...base, basics: { ...base.basics, destination: "Santa Fe, NM", travelers: "1 adult", startDate: "", endDate: "", nights: "4", cities: [{ name: "Santa Fe", nights: "4", focus: "" }] } },
+      result: {
+        destination: "Santa Fe, NM",
+        days: [
+          { label: "Day 1", items: [{ type: "Dinner", time: "19:00", restaurant: sampleRest("Geronimo", "opentable") }] },
+          { label: "Day 2", items: [{ type: "Dinner", time: "19:00", restaurant: sampleRest("Sazón", "phone") }] },
+        ],
+      },
+    };
+  }
+  if (kind === "long-name") {
+    return {
+      step: 3, savedAt: Date.now(), currentSavedTripId: null, reviewState: null,
+      inputs: { ...base, basics: { ...base.basics, destination: "New York & the Hamptons — fall 2026", travelers: "2 adults + 2 kids", startDate: "2026-10-08", endDate: "2026-10-13", nights: "5", cities: [{ name: "New York", nights: "3", focus: "" }, { name: "East Hampton", nights: "2", focus: "" }] } },
+      result: {
+        destination: "New York & the Hamptons — fall 2026",
+        days: [
+          dayShape("2026-10-08", "Thu · Oct 8", "Dinner", "Atomix", "resy"),
+          dayShape("2026-10-09", "Fri · Oct 9", "Dinner", "Le Bernardin", "opentable"),
+        ],
+      },
+    };
+  }
+  if (kind === "multicity") {
+    return {
+      step: 3, savedAt: Date.now(), currentSavedTripId: null, reviewState: null,
+      inputs: { ...base, basics: { ...base.basics, destination: "Lisbon, Porto", travelers: "2", startDate: "2026-05-04", endDate: "2026-05-11", nights: "7", cities: [{ name: "Lisbon", nights: "4", focus: "" }, { name: "Porto", nights: "3", focus: "" }] } },
+      result: {
+        destination: "Lisbon → Porto",
+        cities: [{ name: "Lisbon" }, { name: "Porto" }],
+        days: [
+          dayShape("2026-05-04", "Mon · May 4 · Lisbon", "Dinner", "Belcanto", "opentable"),
+          dayShape("2026-05-08", "Fri · May 8 · Porto", "Dinner", "Pedro Lemos", "phone"),
+        ],
+      },
+    };
+  }
+  return null;
+}
+
+document.querySelectorAll("button[data-scenario]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const fixture = buildFixture(btn.dataset.scenario);
+    if (!fixture) return;
+    try { localStorage.removeItem(LS_FORM); } catch {}
+    localStorage.setItem(SESSION_KEY, JSON.stringify(fixture));
+    document.getElementById("preview").textContent = JSON.stringify(fixture, null, 2);
+    // Go to sibling index.html so this works on any deploy path (proxy or root).
+    location.href = "./index.html?qa=" + btn.dataset.scenario + "#dining";
+  });
+});
+document.querySelector("button[data-clear]").addEventListener("click", () => {
+  localStorage.removeItem(SESSION_KEY);
+  localStorage.removeItem(LS_FORM);
+  document.getElementById("preview").textContent = "(cleared)";
+});
+</script>
+</body>
+</html>

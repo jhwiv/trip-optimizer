@@ -35,6 +35,9 @@ function swBuildIdPlugin() {
 }
 
 export default defineConfig({
+  // Use relative asset URLs so the build works behind any deep proxy path
+  // (e.g. sites.pplx.app/sites/proxy/<token>/...) in addition to the root.
+  base: './',
   plugins: [react(), swBuildIdPlugin()],
   define: {
     __API_BASE__: JSON.stringify(apiBase),
