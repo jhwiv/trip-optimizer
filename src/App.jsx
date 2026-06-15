@@ -9351,9 +9351,9 @@ export default function TripOptimizer() {
   // BLANK = truly empty state. Used on every launch and on "Plan another trip".
   const BLANK = {
     basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: "" },
-    flights: { homeAirport: "EWR", airline: "", cabin: "", flex: "", noFlight: false },
-    hotel: { brand: [], tier: "", mustHave: "" },
-    transport: { type: [], company: "", vehicle: "" },
+    flights: { homeAirport: "EWR", airline: "United", cabin: "", flex: "", noFlight: false },
+    hotel: { brand: ["Marriott / Bonvoy"], tier: "", mustHave: "" },
+    transport: { type: [], company: "Hertz", vehicle: "" },
     dining: { cuisine: "", budget: [] },
     restaurants: [],
     activities: [],
