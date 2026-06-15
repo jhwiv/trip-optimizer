@@ -10169,35 +10169,33 @@ HOTEL ITEMS:
 RESTAURANTS:
 • Every Dinner/Lunch/Breakfast/Brunch item should include the full restaurant object: name, neighborhood, cuisine, price_range, why, closure_note, open_days, hours_note, reservation, contact, backup, verify_status, verify_url. verify_status and verify_url are MANDATORY — do not omit them. verify_url should be the canonical Google Maps search URL (https://www.google.com/maps/search/?api=1&query=<URL-encoded restaurant name + city>) when no better source exists, or the restaurant's own website / OpenTable / Resy listing when you know it.
 • DO NOT emit the 'menu' field. Menus are lazy-fetched via /api/menu when the user taps View Menu on a card. Leaving menu out frees up thousands of tokens per build for richer why-blurbs, hours, reservation notes, and insider tips on everything else. This is mandatory for multi-day trips — emitting full menus inline can blow the token budget before the trip finishes.
-• OPEN_DAYS — CRITICAL: For every restaurant you genuinely know the operating-day pattern for, populate open_days with the lowercase 3-letter weekday codes the restaurant SERVES THE MEAL YOU'RE ASSIGNING IT TO. Examples: a 'Closed Sundays' dinner spot gets ['mon','tue','wed','thu','fri','sat']; a 'Closed Mon–Tue' fine-dining spot gets ['wed','thu','fri','sat','sun']. Then check the weekday of the day you're placing this restaurant on — if the day is NOT in open_days, you have just scheduled the traveler at a dark storefront. PICK A DIFFERENT RESTAURANT instead. This is a hard rule.
+• OPEN_DAYS — POPULATE WHEN KNOWN: When you know a restaurant's open-day pattern, populate open_days with lowercase 3-letter codes (e.g. ['wed','thu','fri','sat','sun'] for Closed Mon-Tue). The post-build verifier cross-checks against Google Places' authoritative hours and flags CLOSED_ON_THIS_DAY when the scheduled weekday doesn't match. open_days is your best-effort signal; the verifier is the source of truth.
 • hours_note: short human-readable summary like 'Mon–Sat 5–9pm' when you know it. Omit if not sure.
 • If you genuinely do NOT know a restaurant's open_days, omit the field entirely (do not guess). The renderer treats missing open_days as 'assume open' rather than 'closed every day', but you should set closure_note to 'Confirm hours — closure day uncertain' as a safety hint to the traveler.
-• Be aware of the weekday for each meal. Many fine-dining spots close Mon or Tue — don't recommend a restaurant on its closure day. If unsure, put "Confirm hours — closure day uncertain" in closure_note.
-• Always include a same-tier backup in the same neighborhood / cuisine family. The backup must ALSO have open_days populated when known, and its open_days MUST include the meal's weekday — a backup that's also closed that day is useless.
+• Many fine-dining spots close Mon or Tue. If you're unsure of a closure day, put "Confirm hours — closure day uncertain" in closure_note. The post-build hours check catches real closure-day misses; this is just a quality signal.
+• Always include a same-tier backup in the same neighborhood / cuisine family. Populate open_days on the backup too when you know it — the verifier checks both.
 • reservation.platform: opentable for most US/UK/EU fine dining; resy for trendy NYC/LA/Miami; tock for tasting menus; phone with a phone number for hole-in-the-walls; walkin if no reservations. Include the canonical url when you know it. (A server-side pass grounds platform + url on the actual current booking system after the build, so honest best-guess is fine — just don't fabricate URLs.)
 • contact.website: include the restaurant's official site URL when you genuinely know it (e.g. https://thecompoundrestaurant.com). The website button is rendered next to Reserve so travelers can see menus, photos, and verify hours directly. Do NOT fabricate URLs — omit the field if uncertain. A separate confirmation pass fills in missing websites where possible.
 • The 'menu' field on the restaurant schema is reserved for legacy use. DO NOT populate it for new builds — the View Menu button on every card lazy-fetches it from /api/menu, which is grounded on the restaurant's actual current offerings. Emitting menus inline wastes ~500 tokens per restaurant and adds 30-60 seconds to multi-day builds.
 
-• RESTAURANT FRESHNESS — NEVER RECOMMEND A CLOSED RESTAURANT:
-  Restaurants close permanently all the time, and the closure is usually weeks-to-months ahead of the news cycle the model was trained on. A recommendation for a permanently-closed restaurant is the single most damaging failure this app can ship — the traveler shows up to a dark storefront. Apply these guards on EVERY meal item:
-  — Only recommend restaurants that you have HIGH confidence are still operating as of the user's travel dates. If your confidence is below ~85%, do NOT recommend it. Pick a different restaurant.
-  — Specifically AVOID restaurants you know to have a history of: ownership/concept changes, brief pop-up runs (<2 years), social media silence in the past year, or chef departures that ended the concept.
-  — Prefer institutions with a multi-year track record (5+ years, ideally 10+) and a stable owner/chef, OR brand-new openings (<18 months) that have generated verifiable press coverage. The danger zone is the 2–5 year old spot that may have quietly closed.
-  — EVERY restaurant object MUST include a verify_status field with EXACTLY ONE of these values:
-      "confirmed_operating"   — you have high confidence (institution, chain, recent verifiable press) the restaurant is still open.
-      "verify_before_booking" — you believe it's still open but freshness is uncertain. The card will surface a 'Confirm still open' microcopy line to the user.
-  — Default to "verify_before_booking" whenever in doubt. NEVER mark a restaurant "confirmed_operating" unless it is a well-known institution OR you know of recent (last ~12 months) press coverage.
-  — The closure_note field must capture the SPECIFIC closure-day pattern when known (e.g., "Closed Mondays", "Closed Sunday + Monday", "Closed for summer break in August"). "Confirm hours" alone is not enough.
-  — If you cannot find ANY restaurant in the destination you have high confidence in, default to the hotel restaurant or a well-known chain/institution — do not invent or guess.
-  — The backup field is not optional and must be a DIFFERENT operator (not a sister restaurant of the primary). The backup is what the traveler uses when the primary is closed/booked/gone.
-  — For every restaurant, also include verify_url (TheFork / OpenTable / Resy / Google Maps / the restaurant's own website) the traveler can tap to confirm hours before they walk over.
-  — EXPLICIT DENYLIST — these restaurants are confirmed permanently closed. Do NOT recommend any of them under any circumstances, anywhere in the plan, not as primary, not as backup, not in flags[], not in snobs, not in tonight, not in plan-B fallbacks:
-      • Greenville, SC: Husk (any variant — Husk Greenville, Husk Barbeque, Husk BBQ). Closed October 2021.
-      • New York: Frog Club, Absolute Bagels, Piccolo Angolo, Ugly Baby, M.Wells, Buttermilk Channel, En Japanese Brasserie, Sushi Azabu, La Grenouille, Holiday Bar, Contento, Khe-Yo, Momofuku Ko, Contra.
-      • San Francisco: Mourad.
-      • Los Angeles: Manzke.
-      • London: Le Gavroche, Locanda Locatelli.
-      Note: same-name restaurants in OTHER cities may remain open (e.g. Husk Charleston / Husk Nashville / Husk Savannah are all still operating — only the Greenville location is closed). Match closures by name AND city.
+• RESTAURANT FRESHNESS — POST-BUILD VERIFIED:
+  A post-build pass validates every venue against Google Places (New).
+  Permanently-closed, temporarily-closed, hallucinated, and wrong-city
+  venues are AUTOMATICALLY DROPPED from the plan before render.
+  Phone, hours, address, and website are OVERWRITTEN with Places values
+  on verified venues. The pre-export gate refuses to render a PDF that
+  still contains any block-severity verification flag.
+  Your job: recommend restaurants you believe are real and currently
+  operating, and produce a same-tier backup for each. The verifier is
+  the safety net; it lets you focus on creative direction rather than
+  defensive guessing.
+  — Prefer institutions with multi-year track records over fresh
+    openings when you have a choice.
+  — Keep populating verify_status ("confirmed_operating" or
+    "verify_before_booking") and verify_url. These drive UI badges;
+    the verifier overrides them when ground truth differs.
+  — backup is required: must be a DIFFERENT operator (not a sister
+    restaurant).
 
 LOGISTICS chips:
 • Short chips only — max 6, each ≤40 chars. Top-line facts only (airline summary, hotel name, car). DO NOT write sentences here. The full plan goes in days[].
