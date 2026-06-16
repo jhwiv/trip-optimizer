@@ -1145,6 +1145,26 @@ function LiveFlightStatus({ ident, isoDate, userSupplied }) {
   );
 }
 
+// Parse a time string like "8:45 AM", "13:30", or an ISO timestamp into an hour (0-23).
+function parseHour(t) {
+  if (!t) return null;
+  const s = String(t).trim();
+  if (/^\d{4}-/.test(s)) return new Date(s).getHours();
+  const m = s.match(/^(\d{1,2}):(\d{2})\s*(am|pm)?$/i);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const ap = (m[3] || "").toLowerCase();
+  if (ap === "pm" && h !== 12) h += 12;
+  if (ap === "am" && h === 12) h = 0;
+  return h;
+}
+function hourToBucket(h) {
+  if (h === null || h === undefined) return "morning";
+  if (h < 12) return "morning";
+  if (h < 17) return "afternoon";
+  return "evening";
+}
+
 function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) {
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
@@ -1209,7 +1229,8 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
   const [schedFlights, setSchedFlights] = useState(null);
   const [schedLoading, setSchedLoading] = useState(false);
   const [schedError, setSchedError] = useState(null);
-  const [lockedIdent, setLockedIdent] = useState(null);
+  const [lockedFlight, setLockedFlight] = useState(null);
+  const [timeFilter, setTimeFilter] = useState(() => hourToBucket(parseHour(f.depart_time)));
   const airlineIata = carrierLower.includes("united") ? "UA"
     : carrierLower.includes("american") ? "AA"
     : carrierLower.includes("delta") ? "DL"
@@ -1254,6 +1275,14 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
       .finally(() => { if (!cancelled) setSchedLoading(false); });
     return () => { cancelled = true; };
   }, [isoDate, f.from_airport, f.to_airport, airlineIata, knownIdent]);
+  const filteredFlights = useMemo(() => {
+    if (!schedFlights) return null;
+    if (timeFilter === "all") return schedFlights;
+    return schedFlights.filter(fl => {
+      if (!fl.scheduledOut) return false;
+      return hourToBucket(new Date(fl.scheduledOut).getHours()) === timeFilter;
+    });
+  }, [schedFlights, timeFilter]);
   return (
     <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
@@ -1303,9 +1332,31 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
       {note && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", lineHeight: 1.5, fontStyle: "italic" }}>{note}</p>
       )}
-      {/* Schedules lookup — shows real flights from AeroAPI when no known ident.
-         User taps a flight to lock the ident, which feeds LiveFlightStatus below. */}
-      {!(knownIdent || lockedIdent) && (
+      {/* Confirmed flight — shown after user taps a row from the picker */}
+      {lockedFlight && (
+        <div style={{ marginTop: "10px", borderTop: `0.5px solid ${GOLD}`, paddingTop: "8px" }}>
+          <p style={{ fontSize: "10.5px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 8px" }}>Flight selected</p>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "8px" }}>
+            <span style={{ fontSize: "15px", fontWeight: 800, color: "var(--color-text-primary)", letterSpacing: "0.02em" }}>{lockedFlight.flightNumber}</span>
+            <span style={{ fontSize: "13.5px", color: "var(--color-text-secondary)" }}>
+              {lockedFlight.scheduledOut ? new Date(lockedFlight.scheduledOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}
+              {lockedFlight.scheduledIn ? ` → ${new Date(lockedFlight.scheduledIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+            </span>
+            {lockedFlight.aircraft && <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>{lockedFlight.aircraft}</span>}
+          </div>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+            <button onClick={() => setLockedFlight(null)} style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-tertiary)", cursor: "pointer", letterSpacing: "0.04em", textTransform: "uppercase", fontWeight: 500, fontFamily: "inherit" }}>Change</button>
+            {bookUrl && (
+              <a href={bookUrl} target="_blank" rel="noopener noreferrer"
+                 style={{ fontSize: "11px", padding: "4px 10px", borderRadius: "20px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD_DARK, textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>
+                Book · {bookHost}
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+      {/* Flight picker — auto-loaded, filtered by time of day */}
+      {!lockedFlight && !knownIdent && (
         <div style={{ marginTop: "10px" }}>
           {schedLoading && (
             <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "0 0 6px", fontStyle: "italic" }}>Loading flights…</p>
@@ -1313,15 +1364,33 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
           {schedError && (
             <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "6px 0 0", fontStyle: "italic" }}>{schedError}</p>
           )}
-          {schedFlights && schedFlights.length === 0 && (
-            <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "6px 0 0", fontStyle: "italic" }}>No scheduled flights found for this route and date.</p>
-          )}
           {schedFlights && schedFlights.length > 0 && (
             <div style={{ marginTop: "4px", borderTop: `0.5px solid ${GOLD}`, paddingTop: "8px" }}>
-              <p style={{ fontSize: "10.5px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 6px" }}>Available flights · tap to track</p>
-              {schedFlights.map((fl, i) => (
-                <div key={i}
-                  onClick={() => setLockedIdent(fl.ident)}
+              {/* Time-of-day filter pills */}
+              <div style={{ display: "flex", gap: "5px", marginBottom: "8px", flexWrap: "wrap" }}>
+                {["morning", "afternoon", "evening", "all"].map(bucket => {
+                  const cnt = { morning: 0, afternoon: 0, evening: 0 };
+                  schedFlights.forEach(fl => { if (fl.scheduledOut) cnt[hourToBucket(new Date(fl.scheduledOut).getHours())]++; });
+                  const label = bucket === "all" ? `All (${schedFlights.length})`
+                    : bucket === "morning" ? `Morning (${cnt.morning})`
+                    : bucket === "afternoon" ? `Afternoon (${cnt.afternoon})`
+                    : `Evening (${cnt.evening})`;
+                  const active = timeFilter === bucket;
+                  return (
+                    <button key={bucket} onClick={() => setTimeFilter(bucket)}
+                      style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: `0.5px solid ${active ? GOLD : "var(--color-border-secondary)"}`, background: active ? GOLD : "transparent", color: active ? "#0F0F0F" : "var(--color-text-tertiary)", cursor: "pointer", fontWeight: active ? 700 : 400, letterSpacing: "0.04em", textTransform: "capitalize", fontFamily: "inherit" }}>
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              {filteredFlights && filteredFlights.length === 0 && (
+                <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "0 0 6px", fontStyle: "italic" }}>
+                  No {timeFilter} flights · <button onClick={() => setTimeFilter("all")} style={{ background: "none", border: "none", color: GOLD_DARK, cursor: "pointer", fontSize: "11px", fontWeight: 600, padding: 0, fontFamily: "inherit" }}>see all</button>
+                </p>
+              )}
+              {filteredFlights && filteredFlights.map((fl, i) => (
+                <div key={i} onClick={() => setLockedFlight(fl)}
                   style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px", padding: "5px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", cursor: "pointer", background: "var(--color-background-primary)" }}>
                   <span style={{ fontSize: "11.5px", fontWeight: 700, minWidth: 58 }}>{fl.flightNumber}</span>
                   <span style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", flex: 1 }}>
@@ -1333,7 +1402,10 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
               ))}
             </div>
           )}
-          {bookUrl && (
+          {schedFlights && schedFlights.length === 0 && !schedLoading && (
+            <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "6px 0 0", fontStyle: "italic" }}>No scheduled flights found for this route and date.</p>
+          )}
+          {bookUrl && !schedLoading && (
             <a href={bookUrl} target="_blank" rel="noopener noreferrer"
                style={{ display: "inline-block", marginTop: "8px", fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>
               Book · {bookHost}
@@ -1341,7 +1413,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
           )}
         </div>
       )}
-      {(lockedIdent || knownIdent) && isoDate ? <LiveFlightStatus ident={lockedIdent || knownIdent} isoDate={isoDate} userSupplied={!!f._userSuppliedFlightNumber || !!lockedIdent} /> : null}
+      {knownIdent && isoDate ? <LiveFlightStatus ident={knownIdent} isoDate={isoDate} userSupplied={!!f._userSuppliedFlightNumber} /> : null}
       {text && !f.carrier && (
         <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "4px 0 0" }}>{text}</p>
       )}
