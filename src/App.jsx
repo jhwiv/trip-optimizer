@@ -1242,7 +1242,10 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
       const r = await fetch(`/api/flights-search?${params}`);
       const j = await r.json();
       if (j.ok && Array.isArray(j.flights)) {
-        setSchedFlights(j.flights);
+        const filtered = airlineIata
+          ? j.flights.filter(fl => (fl.flightNumber || "").toUpperCase().startsWith(airlineIata))
+          : j.flights;
+        setSchedFlights(filtered.length > 0 ? filtered : j.flights);
       } else {
         setSchedError(j.error || "No flights found");
       }
