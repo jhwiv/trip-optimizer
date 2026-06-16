@@ -1206,6 +1206,52 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
   const knownIdent = parseFlightIdent(f);
   const lookupUrl = buildGoogleFlightsUrl(f.from_airport, f.to_airport, isoDate);
   const lookupLabel = `LOOK UP ACTUAL FLIGHT${f.from_airport && f.to_airport ? ` · ${f.from_airport}→${f.to_airport}` : ""}`;
+  // Schedules lookup state — used when no knownIdent to let user pick a real flight.
+  const [schedFlights, setSchedFlights] = useState(null);
+  const [schedLoading, setSchedLoading] = useState(false);
+  const [schedError, setSchedError] = useState(null);
+  const [lockedIdent, setLockedIdent] = useState(null);
+  const airlineIata = carrierLower.includes("united") ? "UA"
+    : carrierLower.includes("american") ? "AA"
+    : carrierLower.includes("delta") ? "DL"
+    : carrierLower.includes("jetblue") ? "B6"
+    : carrierLower.includes("southwest") ? "WN"
+    : carrierLower.includes("alaska") ? "AS"
+    : carrierLower.includes("frontier") ? "F9"
+    : carrierLower.includes("spirit") ? "NK"
+    : carrierLower.includes("lufthansa") ? "LH"
+    : carrierLower.includes("swiss") ? "LX"
+    : carrierLower.includes("air france") ? "AF"
+    : carrierLower.includes("klm") ? "KL"
+    : carrierLower.includes("british") ? "BA"
+    : carrierLower.includes("iberia") ? "IB"
+    : carrierLower.includes("cathay") ? "CX"
+    : carrierLower.includes("ana") || carrierLower.includes("all nippon") ? "NH"
+    : carrierLower.includes("jal") || carrierLower.includes("japan airlines") ? "JL"
+    : null;
+  async function findFlights() {
+    if (!isoDate) return;
+    setSchedLoading(true);
+    setSchedError(null);
+    setSchedFlights(null);
+    try {
+      const params = new URLSearchParams({ date: isoDate });
+      if (f.from_airport) params.set("origin", f.from_airport);
+      if (f.to_airport) params.set("destination", f.to_airport);
+      if (airlineIata) params.set("airline", airlineIata);
+      const r = await fetch(`/api/flights-search?${params}`);
+      const j = await r.json();
+      if (j.ok && Array.isArray(j.flights)) {
+        setSchedFlights(j.flights);
+      } else {
+        setSchedError(j.error || "No flights found");
+      }
+    } catch {
+      setSchedError("Request failed");
+    } finally {
+      setSchedLoading(false);
+    }
+  }
   return (
     <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
@@ -1255,29 +1301,57 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
       {note && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", lineHeight: 1.5, fontStyle: "italic" }}>{note}</p>
       )}
-      {/* Route-specific Google Flights lookup + book link. Suppressed when
-         we already have a confirmed flight number — the LiveFlightStatus
-         panel below gives the user real AeroAPI data instead. */}
-      {!knownIdent && (
-        <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
-          <a href={lookupUrl} target="_blank" rel="noopener noreferrer"
-             style={{ fontSize: "11px", padding: "8px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: GOLD, color: "#0F0F0F", textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 700, display: "inline-block" }}>
-            {lookupLabel}
-          </a>
-          {bookUrl && (
-            <a href={bookUrl} target="_blank" rel="noopener noreferrer"
-               style={{ fontSize: "11px", padding: "7px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>
-              Or book · {bookHost}
-            </a>
+      {/* Schedules lookup — shows real flights from AeroAPI when no known ident.
+         User taps a flight to lock the ident, which feeds LiveFlightStatus below. */}
+      {!(knownIdent || lockedIdent) && (
+        <div style={{ marginTop: "10px" }}>
+          {!schedFlights && (
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                onClick={findFlights}
+                disabled={schedLoading}
+                style={{ fontSize: "11px", padding: "8px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: GOLD, color: "#0F0F0F", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 700, cursor: schedLoading ? "wait" : "pointer" }}>
+                {schedLoading ? "Finding flights…" : lookupLabel}
+              </button>
+              {bookUrl && (
+                <a href={bookUrl} target="_blank" rel="noopener noreferrer"
+                   style={{ fontSize: "11px", padding: "7px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>
+                  Or book · {bookHost}
+                </a>
+              )}
+            </div>
+          )}
+          {schedError && (
+            <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "6px 0 0", fontStyle: "italic" }}>{schedError}</p>
+          )}
+          {schedFlights && schedFlights.length === 0 && (
+            <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "6px 0 0", fontStyle: "italic" }}>No scheduled flights found for this route and date.</p>
+          )}
+          {schedFlights && schedFlights.length > 0 && (
+            <div style={{ marginTop: "8px", borderTop: `0.5px solid ${GOLD}`, paddingTop: "8px" }}>
+              <p style={{ fontSize: "10.5px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 6px" }}>Select a flight to track</p>
+              {schedFlights.map((fl, i) => (
+                <div key={i}
+                  onClick={() => setLockedIdent(fl.ident)}
+                  style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px", padding: "5px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", cursor: "pointer", background: "var(--color-background-primary)" }}>
+                  <span style={{ fontSize: "11.5px", fontWeight: 700, minWidth: 58 }}>{fl.flightNumber}</span>
+                  <span style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", flex: 1 }}>
+                    {fl.scheduledOut ? new Date(fl.scheduledOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}
+                    {fl.scheduledIn ? ` → ${new Date(fl.scheduledIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+                  </span>
+                  {fl.aircraft && <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)" }}>{fl.aircraft}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {!schedFlights && (
+            <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "6px 0 0", lineHeight: 1.4, letterSpacing: "0.02em", fontStyle: "italic" }}>
+              Times and carrier shown are planning estimates. Always confirm the actual flight number on the live lookup before booking.
+            </p>
           )}
         </div>
       )}
-      {!knownIdent && (
-        <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "6px 0 0", lineHeight: 1.4, letterSpacing: "0.02em", fontStyle: "italic" }}>
-          Times and carrier shown are planning estimates. Always confirm the actual flight number on the live lookup before booking.
-        </p>
-      )}
-      {knownIdent && isoDate ? <LiveFlightStatus ident={knownIdent} isoDate={isoDate} userSupplied={!!f._userSuppliedFlightNumber} /> : null}
+      {(lockedIdent || knownIdent) && isoDate ? <LiveFlightStatus ident={lockedIdent || knownIdent} isoDate={isoDate} userSupplied={!!f._userSuppliedFlightNumber || !!lockedIdent} /> : null}
       {text && !f.carrier && (
         <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "4px 0 0" }}>{text}</p>
       )}
