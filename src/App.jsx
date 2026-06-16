@@ -1165,7 +1165,7 @@ function hourToBucket(h) {
   return "evening";
 }
 
-function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) {
+function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, onFlightConfirmed }) {
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
   const stopLabel = f.nonstop ? "Nonstop" : (f.connection ? `Connect ${f.connection}` : "Connecting");
@@ -1390,7 +1390,10 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel }) 
                 </p>
               )}
               {filteredFlights && filteredFlights.map((fl, i) => (
-                <div key={i} onClick={() => setLockedFlight(fl)}
+                <div key={i} onClick={() => {
+                  setLockedFlight(fl);
+                  if (typeof onFlightConfirmed === "function") onFlightConfirmed(fl);
+                }}
                   style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px", padding: "5px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", cursor: "pointer", background: "var(--color-background-primary)" }}>
                   <span style={{ fontSize: "11.5px", fontWeight: 700, minWidth: 58 }}>{fl.flightNumber}</span>
                   <span style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", flex: 1 }}>
@@ -1514,7 +1517,7 @@ function DayBlock({ day, dayIndex, onOpenMenu }) {
       {sortedItems.map((item, i) => {
         // Structured flight → rich card.
         if (item.type === "Flight" && item.flight) {
-          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} />;
+          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />;
         }
         // Structured hotel → rich card.
         if (item.type === "Hotel" && item.hotel) {
@@ -3800,7 +3803,7 @@ function FlightsView({ data }) {
       {flights.map(({ item, day, dayIndex }, i) => (
         <div key={i} style={{ marginBottom: "10px" }}>
           <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>{dayShort(day, dayIndex)}</p>
-          <FlightCard type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} />
+          <FlightCard type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />
         </div>
       ))}
     </div>
