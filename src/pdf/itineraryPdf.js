@@ -488,6 +488,28 @@ function telUrl(phone) {
   if (!cleaned) return null;
   return "tel:" + cleaned;
 }
+function carrierBookUrl(carrier) {
+  if (!carrier) return null;
+  const c = String(carrier).toLowerCase();
+  if (c.includes("united")) return "https://www.united.com";
+  if (c.includes("american")) return "https://www.aa.com";
+  if (c.includes("delta")) return "https://www.delta.com";
+  if (c.includes("jetblue")) return "https://www.jetblue.com";
+  if (c.includes("southwest")) return "https://www.southwest.com";
+  if (c.includes("alaska")) return "https://www.alaskaair.com";
+  if (c.includes("frontier")) return "https://www.flyfrontier.com";
+  if (c.includes("spirit")) return "https://www.spirit.com";
+  if (c.includes("lufthansa")) return "https://www.lufthansa.com";
+  if (c.includes("swiss")) return "https://www.swiss.com";
+  if (c.includes("air france")) return "https://www.airfrance.com";
+  if (c.includes("klm")) return "https://www.klm.com";
+  if (c.includes("british")) return "https://www.britishairways.com";
+  if (c.includes("iberia")) return "https://www.iberia.com";
+  if (c.includes("cathay")) return "https://www.cathaypacific.com";
+  if (c.includes("ana") || c.includes("all nippon")) return "https://www.ana.co.jp/en/us/";
+  if (c.includes("jal") || c.includes("japan airlines")) return "https://www.jal.com";
+  return null;
+}
 function safe(s) { return s == null ? "" : String(s); }
 function titleCase(s) {
   if (!s) return s;
@@ -1040,10 +1062,14 @@ function renderFlightBlock(cur, fl, x, maxW) {
   if (fl.cabin) renderDetailLine(cur, "Cabin", fl.cabin, x, maxW);
   if (fl.aircraft) renderDetailLine(cur, "Aircraft", fl.aircraft, x, maxW);
   if (fl.confirmation_note) renderDetailLine(cur, "Note", fl.confirmation_note, x, maxW);
+  const bookUrl = carrierBookUrl(fl.carrier);
+  if (bookUrl) renderLinkLine(cur, "Book", bookUrl, bookUrl, x, maxW);
 }
 
 function renderHotelBlock(cur, h, x, maxW) {
   if (h.name) renderDetailLine(cur, "Hotel", h.name, x, maxW);
+  if (h.website) renderLinkLine(cur, "Website", h.website, h.website, x, maxW);
+  if (h.booking_url && h.booking_url !== h.website) renderLinkLine(cur, "Book", h.booking_url, h.booking_url, x, maxW);
   if (h.address) renderLinkLine(cur, "Address", h.address, mapsUrl(h.address), x, maxW);
   if (h.phone) renderLinkLine(cur, "Phone", h.phone, telUrl(h.phone), x, maxW);
   const ci = [h.check_in_time ? `In ${to12h(h.check_in_time)}` : "", h.check_out_time ? `Out ${to12h(h.check_out_time)}` : ""].filter(Boolean).join("  ·  ");
@@ -1162,6 +1188,7 @@ function renderRestaurantBlock(cur, r, x, maxW) {
   if (cuisineBits) renderDetailLine(cur, "Style", cuisineBits, x, maxW);
   const chips = buildReservationChips(r.reservation);
   if (chips.length) renderReservationChips(cur, chips, x, maxW);
+  if (r.contact) renderContactBlock(cur, r.contact, x, maxW);
   if (r.closure_note) renderDetailLine(cur, "Closures", r.closure_note, x, maxW);
   if (r.backup && r.backup.name) {
     renderDetailLine(cur, "Backup", `${r.backup.name}${r.backup.cuisine ? ` · ${r.backup.cuisine}` : ""}`, x, maxW);
@@ -1259,7 +1286,7 @@ function renderReferences(cur, data) {
 
   if (ref.flags.length) {
     sectionHeader(cur, "Flags");
-    ref.flags.forEach(f => cur.bullet(f));
+    ref.flags.forEach(f => bulletWithLinks(cur, f));
   }
 
   if (ref.planb.length) {
@@ -1285,6 +1312,28 @@ function renderReferences(cur, data) {
         pdf.text(asciiSafe(ln), PAGE.marginX + indent, cur.state.y + lineH * 0.78 + j * lineH);
       });
       cur.state.y += lines.length * lineH + 1.5;
+      // Auto-link any URLs embedded in the plan B text
+      const urlRe2 = /https?:\/\/[^\s)>,"]+/g;
+      const telRe2 = /(?<!\d)(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}(?!\d)/g;
+      const seen2 = new Set();
+      const lhLink = (9 * 1.25) / 2.83465;
+      let m2;
+      const pStr = String(p);
+      while ((m2 = urlRe2.exec(pStr)) !== null) {
+        const url = m2[0].replace(/[.,;:]+$/, "");
+        if (seen2.has(url)) continue;
+        seen2.add(url);
+        cur.ensureSpace(lhLink + 0.5);
+        pdf.setFont(FONT.sans, "normal");
+        pdf.setFontSize(9);
+        const display = asciiSafe(url.length > 60 ? url.slice(0, 57) + "..." : url);
+        const baselineY = cur.state.y + lhLink * 0.78;
+        cur.setColor(COLOR.gold);
+        pdf.textWithLink(display, PAGE.marginX + indent + 2, baselineY, { url });
+        pdf.setLineWidth(0.12);
+        pdf.line(PAGE.marginX + indent + 2, baselineY + 0.5, PAGE.marginX + indent + 2 + pdf.getTextWidth(display), baselineY + 0.5);
+        cur.state.y += lhLink;
+      }
     });
   }
 
@@ -1295,6 +1344,52 @@ function renderReferences(cur, data) {
         font: FONT.serif, style: "italic", size: 10.5, color: COLOR.inkSoft, leading: 1.4, space: 1,
       });
     });
+  }
+}
+
+// Render a bullet that auto-detects https:// URLs and phone numbers in the text,
+// appending each as a separate clickable gold link on the line below the bullet.
+function bulletWithLinks(cur, label) {
+  cur.bullet(label);
+  const text = String(label);
+  const urlRe = /https?:\/\/[^\s)>,"]+/g;
+  const telRe = /(?<!\d)(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}(?!\d)/g;
+  const seen = new Set();
+  const { pdf } = cur;
+  const size = 8.5;
+  const indent = 10;
+  const lineH = (size * 1.25) / 2.83465;
+  let m;
+  while ((m = urlRe.exec(text)) !== null) {
+    const url = m[0].replace(/[.,;:]+$/, "");
+    if (seen.has(url)) continue;
+    seen.add(url);
+    cur.ensureSpace(lineH + 0.5);
+    pdf.setFont(FONT.sans, "normal");
+    pdf.setFontSize(size);
+    const display = asciiSafe(url.length > 60 ? url.slice(0, 57) + "..." : url);
+    const baselineY = cur.state.y + lineH * 0.78;
+    cur.setColor(COLOR.gold);
+    pdf.textWithLink(display, PAGE.marginX + indent, baselineY, { url });
+    pdf.setLineWidth(0.12);
+    pdf.line(PAGE.marginX + indent, baselineY + 0.5, PAGE.marginX + indent + pdf.getTextWidth(display), baselineY + 0.5);
+    cur.state.y += lineH;
+  }
+  while ((m = telRe.exec(text)) !== null) {
+    const raw = m[0];
+    const url = telUrl(raw);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    cur.ensureSpace(lineH + 0.5);
+    pdf.setFont(FONT.sans, "normal");
+    pdf.setFontSize(size);
+    const display = asciiSafe(raw.trim());
+    const baselineY = cur.state.y + lineH * 0.78;
+    cur.setColor(COLOR.gold);
+    pdf.textWithLink(display, PAGE.marginX + indent, baselineY, { url });
+    pdf.setLineWidth(0.12);
+    pdf.line(PAGE.marginX + indent, baselineY + 0.5, PAGE.marginX + indent + pdf.getTextWidth(display), baselineY + 0.5);
+    cur.state.y += lineH;
   }
 }
 
