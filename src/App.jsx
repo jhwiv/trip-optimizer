@@ -3,7 +3,7 @@ import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { buildDateTable } from "./dateFacts.js";
-import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames } from "./chunkPlan.js";
+import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -11413,6 +11413,49 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       })();
   };
 
+  // Generate one chunk: stream the per-chunk body and enforce the max_tokens
+  // guard. Shared by the fresh chunked build and the resume path so a re-run
+  // behaves identically. Returns { toolJson, stopReason }.
+  const generateChunk = async ({ body, controller, maxPollMsForTrip, onJob, chunkLabel }) => {
+    const { toolJson, stopReason } = await streamBuildJob(body, {
+      signal: controller.signal,
+      maxPollMs: maxPollMsForTrip,
+      onJob,
+      onDelta: () => {},
+    });
+    // A chunk that ends on max_tokens is truncated regardless of how well its
+    // JSON parses — its tail days/items may be cut off. Fail loudly (surface
+    // the existing cut-off error) rather than stitching a partial segment that
+    // would silently ship an incomplete itinerary.
+    if (stopReason === "max_tokens") {
+      throw new Error(`The plan was cut off while building days ${chunkLabel} (hit the length limit). Try again, or reduce the trip length.`);
+    }
+    return { toolJson, stopReason };
+  };
+
+  // Stitch the day-chunks + wrapper into one canonical plan and hand it to the
+  // SAME downstream path as a single-call build (applyBuiltPlan). Shared by the
+  // fresh and resume paths. stitchPlan throws if the assembled day count !=
+  // expectedDays (a chunk came back short) — we map that to the existing
+  // truncation error rather than shipping a broken plan. Because we only call
+  // this after the loop has a chunkPlan for every chunk, the "wait for the full
+  // set" requirement is enforced by stitchPlan's own day-count check.
+  const finishChunkedBuild = ({ chunkPlans, wrapperParsed, expectedDays, nightsNum }) => {
+    setProgress(1);
+    setProgressLabel("Finalizing…");
+    let stitched;
+    try {
+      stitched = stitchPlan({ dayChunks: chunkPlans, wrapper: wrapperParsed, expectedDays });
+    } catch (stitchErr) {
+      const e = new Error("The plan was cut off before it finished — one of the day chunks came back short. Try again.");
+      e.cause = stitchErr;
+      throw e;
+    }
+    const { plan, warnings } = stitched;
+    if (warnings.length) { try { console.warn("[trip-optimizer] stitchPlan warnings:", warnings); } catch {} }
+    applyBuiltPlan(plan, { nightsNum });
+  };
+
   // Chunked build orchestrator for large trips (see CHUNKED_BUILD_SPEC.md).
   // A maxed single build needs up to 64k output tokens (~17.5 min) which
   // exceeds the 15-min client polling window, so big trips time out. We split
@@ -11454,22 +11497,46 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     const tools = cachedTools([TRIP_PLAN_TOOL]);
     const toolChoice = { type: "tool", name: "submit_trip_plan" };
 
-    // Reconnect bookkeeping: store the array of chunk jobIds. The single-call
-    // resume effect bails when `jobId` is absent, so this shape won't trigger
-    // (or break) the existing single-call reconnect. Full chunked resume is
-    // not wired — see CHUNKED_BUILD_IMPL_NOTES.md.
-    const chunkJobIds = [];
-    const persistJobIds = () => {
+    // Reconnect bookkeeping (version 2). We persist the EXACT per-chunk and
+    // wrapper request bodies plus each chunk's jobId+status so a reopened page
+    // can recover finished chunks from KV and replay only the missing ones
+    // FAITHFULLY (no prompt reconstruction / drift). The single-call resume
+    // effect bails when `jobId` is absent, so this {chunked:true} shape never
+    // triggers (or breaks) it; the chunked branch in the resume effect routes
+    // here. See CHUNKED_RESUME_IMPL_NOTES.md.
+    const destination = basics.destination || (basics.cities?.[0]?.name) || "your trip";
+    const chunkMeta = chunks.map((c) => ({
+      startDay: c.startDay,
+      endDay: c.endDay,
+      cityNames: Array.isArray(c.cityNames) ? c.cityNames : [],
+      maxTokens: chunkMaxTokens(c),
+      jobId: null,
+      status: "pending",
+    }));
+    const chunkBodies = new Array(chunks.length).fill(null);
+    let wrapperBodyForPersist = null;
+    let wrapperJobId = null;
+    // Quota-safe persist: try the full payload (with bodies) first; if
+    // localStorage throws (quota exceeded), retry WITHOUT the bodies so resume
+    // still knows which chunks finished — it just has to re-run the missing
+    // ones from inputs (acceptable degradation).
+    const persist = () => {
+      const base = {
+        chunked: true,
+        version: 2,
+        startedAt,
+        nightsNum,
+        citiesCount,
+        destination,
+        expectedDays,
+        chunks: chunkMeta,
+        wrapperJobId,
+      };
       try {
-        localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({
-          chunked: true,
-          jobIds: chunkJobIds,
-          startedAt,
-          nightsNum,
-          citiesCount,
-          destination: basics.destination || (basics.cities?.[0]?.name) || "your trip",
-        }));
-      } catch {}
+        localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({ ...base, chunkBodies, wrapperBody: wrapperBodyForPersist }));
+      } catch {
+        try { localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify(base)); } catch {}
+      }
     };
 
     try {
@@ -11495,23 +11562,25 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           tools,
           tool_choice: toolChoice,
         };
+        // Store the EXACT body before the call so an interruption mid-chunk can
+        // replay it faithfully on resume.
+        chunkBodies[i] = body;
+        persist();
 
-        const { toolJson, stopReason } = await streamBuildJob(body, {
-          signal: controller.signal,
-          maxPollMs: maxPollMsForTrip,
-          onJob: (id) => { chunkJobIds[i] = id; persistJobIds(); },
-          onDelta: () => {},
+        const { toolJson } = await generateChunk({
+          body,
+          controller,
+          maxPollMsForTrip,
+          chunkLabel: `${c.startDay}–${c.endDay}`,
+          onJob: (id) => { chunkMeta[i].jobId = id; persist(); },
         });
-        // A chunk that ends on max_tokens is truncated regardless of how well
-        // its JSON parses — its tail days/items may be cut off. Fail loudly
-        // (surface the existing cut-off error) rather than stitching a partial
-        // segment that would silently ship an incomplete itinerary.
-        if (stopReason === "max_tokens") {
-          throw new Error(`The plan was cut off while building days ${c.startDay}–${c.endDay} (hit the length limit). Try again, or reduce the trip length.`);
-        }
         const { parsed: chunkPlan } = parseToolJson(toolJson);
         chunkPlans.push(chunkPlan);
         for (const name of collectRestaurantNames(chunkPlan)) usedRestaurants.push(name);
+        // Mark this chunk done so a later interruption recovers it from KV
+        // instead of re-running it.
+        chunkMeta[i].status = "done";
+        persist();
       }
 
       // Wrapper pass — one small call for the non-day fields. We hand it a
@@ -11546,10 +11615,13 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         tools,
         tool_choice: toolChoice,
       };
+      // Persist the wrapper body too so resume can replay it if interrupted.
+      wrapperBodyForPersist = wrapperBody;
+      persist();
       const { toolJson: wrapperJson } = await streamBuildJob(wrapperBody, {
         signal: controller.signal,
         maxPollMs: maxPollMsForTrip,
-        onJob: (id) => { chunkJobIds[chunks.length] = id; persistJobIds(); },
+        onJob: (id) => { wrapperJobId = id; persist(); },
         onDelta: () => {},
       });
       let wrapper = {};
@@ -11562,24 +11634,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         wrapper = {};
       }
 
-      setProgress(1);
-      setProgressLabel("Finalizing…");
-
-      // Stitch throws if the assembled day count != expectedDays. That means a
-      // chunk came back short — surface it as the existing truncation error
-      // rather than shipping a broken plan.
-      let stitched;
-      try {
-        stitched = stitchPlan({ dayChunks: chunkPlans, wrapper, expectedDays });
-      } catch (stitchErr) {
-        const e = new Error("The plan was cut off before it finished — one of the day chunks came back short. Try again.");
-        e.cause = stitchErr;
-        throw e;
-      }
-      const { plan, warnings } = stitched;
-      if (warnings.length) { try { console.warn("[trip-optimizer] stitchPlan warnings:", warnings); } catch {} }
-
-      applyBuiltPlan(plan, { nightsNum });
+      finishChunkedBuild({ chunkPlans, wrapperParsed: wrapper, expectedDays, nightsNum });
     } catch (err) {
       // Mirror runBuildForJob's catch semantics so the chunked path behaves
       // identically: keep ACTIVE_JOB_KEY on a cancel/timeout abort (so the
@@ -11590,6 +11645,214 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         msg = "Build cancelled. The server may still be finishing — reopen the page within a few minutes to resume.";
         // Intentionally DO NOT remove ACTIVE_JOB_KEY here — the chunk jobIds
         // stay persisted for a future resume (see CHUNKED_BUILD_IMPL_NOTES.md).
+      } else if (err?.notFound) {
+        msg = "That build expired or was not found. Tap Build again.";
+        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+      } else {
+        msg = err?.message || "Something went wrong generating the plan. Please try again.";
+        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+      }
+      setError(msg);
+    } finally {
+      clearInterval(elapsedTimer);
+      clearTimeout(hardTimeout);
+      abortRef.current = null;
+      setLoading(false);
+      setLoadingMsg("");
+      setProgress(0);
+      setProgressLabel("");
+      setElapsedSec(0);
+    }
+  };
+
+  // Resume an interrupted chunked build from the version-2 ACTIVE_JOB_KEY
+  // payload persisted by runChunkedBuild. Recovers finished chunks from KV and
+  // re-runs ONLY the missing/errored ones, then the wrapper, then stitches via
+  // the SAME finishChunkedBuild path a fresh build uses. `saved` is the parsed
+  // version-2 object (validated by the caller: chunked, has chunks[], fresh).
+  const resumeChunkedBuild = async (saved) => {
+    setLoading(true);
+    setError("");
+    setProgress(0);
+    setProgressLabel("");
+    setElapsedSec(0);
+
+    const nightsNum = saved.nightsNum || 3;
+    const citiesCount = saved.citiesCount || 1;
+    const expectedDays = saved.expectedDays || nightsNum + 1;
+    const savedChunks = Array.isArray(saved.chunks) ? saved.chunks : [];
+    const startedAt = Date.now();
+    const targetSec = Math.round(90 + (savedChunks.length + 1) * 60 + Math.max(0, citiesCount - 1) * 30);
+
+    const elapsedTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - startedAt) / 1000);
+      setElapsedSec(sec);
+    }, 250);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const hardTimeoutMs = Math.max(600000, targetSec * 1000 * 3);
+    const hardTimeout = setTimeout(() => controller.abort(new Error("Polled too long")), hardTimeoutMs);
+    const maxPollMsForTrip = Math.max(15 * 60 * 1000, Math.round(targetSec * 1000 * 2.5));
+
+    // Re-persist progress as resume advances so a SECOND interruption (during
+    // the resume itself) still knows which chunks are now done. We rewrite the
+    // same version-2 shape, preserving the stored bodies for any chunk we
+    // haven't yet re-run.
+    const chunkMeta = savedChunks.map((c) => ({
+      startDay: c.startDay,
+      endDay: c.endDay,
+      cityNames: Array.isArray(c.cityNames) ? c.cityNames : [],
+      maxTokens: c.maxTokens,
+      jobId: c.jobId || null,
+      status: c.status || "pending",
+    }));
+    const chunkBodies = Array.isArray(saved.chunkBodies)
+      ? saved.chunkBodies.slice()
+      : new Array(savedChunks.length).fill(null);
+    let wrapperBodyForPersist = saved.wrapperBody || null;
+    let wrapperJobId = saved.wrapperJobId || null;
+    const persist = () => {
+      const base = {
+        chunked: true,
+        version: 2,
+        startedAt: saved.startedAt || startedAt,
+        nightsNum,
+        citiesCount,
+        destination: saved.destination,
+        expectedDays,
+        chunks: chunkMeta,
+        wrapperJobId,
+      };
+      try {
+        localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({ ...base, chunkBodies, wrapperBody: wrapperBodyForPersist }));
+      } catch {
+        try { localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify(base)); } catch {}
+      }
+    };
+
+    setStep(2);
+    setLoadingMsg(`Resuming build for ${saved.destination || "your trip"}…`);
+
+    try {
+      const chunkPlans = [];
+      const usedRestaurants = [];
+
+      for (let i = 0; i < savedChunks.length; i++) {
+        const c = savedChunks[i];
+        const chunkLabel = `${c.startDay}–${c.endDay}`;
+        setProgress(Math.max(0.02, i / (savedChunks.length + 1)));
+
+        // Probe KV for this chunk's job (if we have a jobId) and let the pure
+        // classifier decide recover / reattach / rerun.
+        let statusObj = null;
+        const jobId = c.jobId;
+        if (jobId) {
+          try {
+            const r = await fetch(`/api/build/${encodeURIComponent(jobId)}?cursor=0`, { signal: controller.signal });
+            statusObj = r.ok ? await r.json() : { notFound: true };
+          } catch (probeErr) {
+            if (probeErr?.name === "AbortError") throw probeErr;
+            statusObj = null; // network blip → treat as rerun
+          }
+        }
+        const decision = classifyChunkResume(statusObj);
+
+        let chunkPlan;
+        if (decision === "recover") {
+          // The whole tool JSON is already in KV (delta at cursor 0).
+          setLoadingMsg(`Recovering days ${chunkLabel} (chunk ${i + 1}/${savedChunks.length})…`);
+          chunkPlan = parseToolJson(statusObj.delta || "").parsed;
+        } else if (decision === "reattach") {
+          // Job still running — poll it to completion, accumulating the delta.
+          setLoadingMsg(`Finishing days ${chunkLabel} (chunk ${i + 1}/${savedChunks.length})…`);
+          let acc = "";
+          await pollJob({
+            jobId,
+            signal: controller.signal,
+            startCursor: 0,
+            maxPollMs: maxPollMsForTrip,
+            onDelta: (delta) => { acc += delta; },
+          });
+          chunkPlan = parseToolJson(acc).parsed;
+        } else {
+          // rerun — replay the EXACT stored body. Without it we can't faithfully
+          // reproduce the prompt, so refuse rather than drift.
+          setLoadingMsg(`Rebuilding days ${chunkLabel} (chunk ${i + 1}/${savedChunks.length})…`);
+          const body = chunkBodies[i];
+          if (!body) {
+            throw new Error("Cannot resume — saved plan data is incomplete. Tap Build again.");
+          }
+          const { toolJson } = await generateChunk({
+            body,
+            controller,
+            maxPollMsForTrip,
+            chunkLabel,
+            onJob: (id) => { chunkMeta[i].jobId = id; persist(); },
+          });
+          chunkPlan = parseToolJson(toolJson).parsed;
+        }
+
+        chunkPlans.push(chunkPlan);
+        for (const name of collectRestaurantNames(chunkPlan)) usedRestaurants.push(name);
+        chunkMeta[i].status = "done";
+        persist();
+      }
+
+      // Wrapper pass — recover/reattach if its job is in KV, else replay the
+      // stored wrapper body. The wrapper is non-essential: any failure here
+      // soft-fails to {} so the itinerary still ships.
+      setLoadingMsg("Assembling final plan…");
+      setProgress(savedChunks.length / (savedChunks.length + 1));
+      let wrapper = {};
+      try {
+        let wrapperJson = null;
+        let wStatus = null;
+        if (wrapperJobId) {
+          try {
+            const r = await fetch(`/api/build/${encodeURIComponent(wrapperJobId)}?cursor=0`, { signal: controller.signal });
+            wStatus = r.ok ? await r.json() : { notFound: true };
+          } catch (probeErr) {
+            if (probeErr?.name === "AbortError") throw probeErr;
+            wStatus = null;
+          }
+        }
+        const wDecision = classifyChunkResume(wStatus);
+        if (wDecision === "recover") {
+          wrapperJson = wStatus.delta || "";
+        } else if (wDecision === "reattach") {
+          let acc = "";
+          await pollJob({
+            jobId: wrapperJobId,
+            signal: controller.signal,
+            startCursor: 0,
+            maxPollMs: maxPollMsForTrip,
+            onDelta: (delta) => { acc += delta; },
+          });
+          wrapperJson = acc;
+        } else if (wrapperBodyForPersist) {
+          const { toolJson } = await streamBuildJob(wrapperBodyForPersist, {
+            signal: controller.signal,
+            maxPollMs: maxPollMsForTrip,
+            onJob: (id) => { wrapperJobId = id; persist(); },
+            onDelta: () => {},
+          });
+          wrapperJson = toolJson;
+        }
+        wrapper = wrapperJson ? (parseToolJson(wrapperJson).parsed || {}) : {};
+      } catch (wrapErr) {
+        if (wrapErr?.name === "AbortError") throw wrapErr;
+        wrapper = {};
+      }
+
+      finishChunkedBuild({ chunkPlans, wrapperParsed: wrapper, expectedDays, nightsNum });
+    } catch (err) {
+      // Same catch semantics as runChunkedBuild: keep the key on a cancel/
+      // timeout abort so the user can reopen to resume, dedicated copy for an
+      // expired job, clear only on a genuine hard error.
+      let msg;
+      if (err?.name === "AbortError") {
+        msg = "Build cancelled. The server may still be finishing — reopen the page within a few minutes to resume.";
       } else if (err?.notFound) {
         msg = "That build expired or was not found. Tap Build again.";
         try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
@@ -11951,6 +12214,22 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     if (!raw) return;
     let saved;
     try { saved = JSON.parse(raw); } catch { return; }
+    // Chunked builds persist a {chunked:true} payload with NO top-level jobId.
+    // Route those to the sequential chunk-resume path. The single-call branch
+    // below (which requires saved.jobId) stays reachable and unchanged.
+    if (saved?.chunked) {
+      const chunkedAge = Date.now() - (saved.startedAt || 0);
+      if (chunkedAge > 30 * 60 * 1000 || !Array.isArray(saved.chunks) || !saved.chunks.length) {
+        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+        return;
+      }
+      // Defer to a microtask so the resume's synchronous setState calls (step,
+      // loading) run outside the effect body — mirrors how the single-call
+      // branch only flips state inside its async probe `.then`. resumeChunkedBuild
+      // sets step 2 + the resuming message itself.
+      Promise.resolve().then(() => resumeChunkedBuild(saved));
+      return;
+    }
     if (!saved?.jobId) return;
     const age = Date.now() - (saved.startedAt || 0);
     if (age > 30 * 60 * 1000) {
