@@ -1166,6 +1166,76 @@ function hourToBucket(h) {
 }
 
 function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, onFlightConfirmed }) {
+  // Hooks MUST run unconditionally on every render and BEFORE any early
+  // return (React rules-of-hooks). They are hoisted here and use null-safe
+  // reads of `f` so they remain valid even when `f` is absent; the
+  // `if (!f) return null` guard sits immediately after the hook block.
+  const _isoDate = parseDayLabelToISODate(dayLabel);
+  const _knownIdent = parseFlightIdent(f);
+  const _carrierLower = (f?.carrier || "").toLowerCase();
+  const _airlineIata = _carrierLower.includes("united") ? "UA"
+    : _carrierLower.includes("american") ? "AA"
+    : _carrierLower.includes("delta") ? "DL"
+    : _carrierLower.includes("jetblue") ? "B6"
+    : _carrierLower.includes("southwest") ? "WN"
+    : _carrierLower.includes("alaska") ? "AS"
+    : _carrierLower.includes("frontier") ? "F9"
+    : _carrierLower.includes("spirit") ? "NK"
+    : _carrierLower.includes("lufthansa") ? "LH"
+    : _carrierLower.includes("swiss") ? "LX"
+    : _carrierLower.includes("air france") ? "AF"
+    : _carrierLower.includes("klm") ? "KL"
+    : _carrierLower.includes("british") ? "BA"
+    : _carrierLower.includes("iberia") ? "IB"
+    : _carrierLower.includes("cathay") ? "CX"
+    : _carrierLower.includes("ana") || _carrierLower.includes("all nippon") ? "NH"
+    : _carrierLower.includes("jal") || _carrierLower.includes("japan airlines") ? "JL"
+    : null;
+  const [schedFlights, setSchedFlights] = useState(null);
+  const [schedLoading, setSchedLoading] = useState(false);
+  const [schedError, setSchedError] = useState(null);
+  const [lockedFlight, setLockedFlight] = useState(null);
+  const [timeFilter, setTimeFilter] = useState(() => hourToBucket(parseHour(f?.depart_time)));
+  useEffect(() => {
+    if (!f || !_isoDate || _knownIdent || !f.from_airport || !f.to_airport) return;
+    let cancelled = false;
+    const params = new URLSearchParams({ date: _isoDate });
+    params.set("origin", f.from_airport);
+    params.set("destination", f.to_airport);
+    if (_airlineIata) params.set("airline", _airlineIata);
+    // Defer the loading/error state resets off the synchronous effect body
+    // so they don't trigger a cascading render (react-hooks lint rule).
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setSchedLoading(true);
+      setSchedError(null);
+    });
+    fetch(`/api/flights-search?${params}`)
+      .then(r => r.json())
+      .then(j => {
+        if (cancelled) return;
+        if (j.ok && Array.isArray(j.flights)) {
+          const filtered = _airlineIata
+            ? j.flights.filter(fl => (fl.flightNumber || "").toUpperCase().startsWith(_airlineIata))
+            : j.flights;
+          setSchedFlights(filtered.length > 0 ? filtered : j.flights);
+        } else {
+          setSchedError(j.error || "No flights found");
+        }
+      })
+      .catch(() => { if (!cancelled) setSchedError("Request failed"); })
+      .finally(() => { if (!cancelled) setSchedLoading(false); });
+    return () => { cancelled = true; };
+  }, [f, _isoDate, _knownIdent, _airlineIata]);
+  const filteredFlights = useMemo(() => {
+    if (!schedFlights) return null;
+    if (timeFilter === "all") return schedFlights;
+    return schedFlights.filter(fl => {
+      if (!fl.scheduledOut) return false;
+      return hourToBucket(new Date(fl.scheduledOut).getHours()) === timeFilter;
+    });
+  }, [schedFlights, timeFilter]);
+
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
   const stopLabel = f.nonstop ? "Nonstop" : (f.connection ? `Connect ${f.connection}` : "Connecting");
@@ -1221,68 +1291,10 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   // already have a concrete flight number to track live — if parseFlightIdent
   // returns a real ident (e.g. "UA57"), the LiveFlightStatus panel below
   // gives the user authoritative AeroAPI data and the lookup button is
-  // redundant + misleading.
-  const isoDate = parseDayLabelToISODate(dayLabel);
-  const knownIdent = parseFlightIdent(f);
+  // redundant + misleading. These derive from the hoisted hook inputs above.
+  const isoDate = _isoDate;
+  const knownIdent = _knownIdent;
   const lookupUrl = buildGoogleFlightsUrl(f.from_airport, f.to_airport, isoDate);
-  // Schedules lookup state — auto-fetched on mount when no knownIdent.
-  const [schedFlights, setSchedFlights] = useState(null);
-  const [schedLoading, setSchedLoading] = useState(false);
-  const [schedError, setSchedError] = useState(null);
-  const [lockedFlight, setLockedFlight] = useState(null);
-  const [timeFilter, setTimeFilter] = useState(() => hourToBucket(parseHour(f.depart_time)));
-  const airlineIata = carrierLower.includes("united") ? "UA"
-    : carrierLower.includes("american") ? "AA"
-    : carrierLower.includes("delta") ? "DL"
-    : carrierLower.includes("jetblue") ? "B6"
-    : carrierLower.includes("southwest") ? "WN"
-    : carrierLower.includes("alaska") ? "AS"
-    : carrierLower.includes("frontier") ? "F9"
-    : carrierLower.includes("spirit") ? "NK"
-    : carrierLower.includes("lufthansa") ? "LH"
-    : carrierLower.includes("swiss") ? "LX"
-    : carrierLower.includes("air france") ? "AF"
-    : carrierLower.includes("klm") ? "KL"
-    : carrierLower.includes("british") ? "BA"
-    : carrierLower.includes("iberia") ? "IB"
-    : carrierLower.includes("cathay") ? "CX"
-    : carrierLower.includes("ana") || carrierLower.includes("all nippon") ? "NH"
-    : carrierLower.includes("jal") || carrierLower.includes("japan airlines") ? "JL"
-    : null;
-  useEffect(() => {
-    if (!isoDate || knownIdent || !f.from_airport || !f.to_airport) return;
-    let cancelled = false;
-    setSchedLoading(true);
-    setSchedError(null);
-    const params = new URLSearchParams({ date: isoDate });
-    params.set("origin", f.from_airport);
-    params.set("destination", f.to_airport);
-    if (airlineIata) params.set("airline", airlineIata);
-    fetch(`/api/flights-search?${params}`)
-      .then(r => r.json())
-      .then(j => {
-        if (cancelled) return;
-        if (j.ok && Array.isArray(j.flights)) {
-          const filtered = airlineIata
-            ? j.flights.filter(fl => (fl.flightNumber || "").toUpperCase().startsWith(airlineIata))
-            : j.flights;
-          setSchedFlights(filtered.length > 0 ? filtered : j.flights);
-        } else {
-          setSchedError(j.error || "No flights found");
-        }
-      })
-      .catch(() => { if (!cancelled) setSchedError("Request failed"); })
-      .finally(() => { if (!cancelled) setSchedLoading(false); });
-    return () => { cancelled = true; };
-  }, [isoDate, f.from_airport, f.to_airport, airlineIata, knownIdent]);
-  const filteredFlights = useMemo(() => {
-    if (!schedFlights) return null;
-    if (timeFilter === "all") return schedFlights;
-    return schedFlights.filter(fl => {
-      if (!fl.scheduledOut) return false;
-      return hourToBucket(new Date(fl.scheduledOut).getHours()) === timeFilter;
-    });
-  }, [schedFlights, timeFilter]);
   return (
     <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
@@ -9490,7 +9502,7 @@ export default function TripOptimizer() {
   // BLANK = truly empty state. Used on every launch and on "Plan another trip".
   const BLANK = {
     basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: "" },
-    flights: { homeAirport: "EWR", airline: "United", cabin: "", flex: "", noFlight: false },
+    flights: { homeAirport: "EWR", airline: "", cabin: "", flex: "", noFlight: false },
     hotel: { brand: ["Marriott / Bonvoy"], tier: "", mustHave: "" },
     transport: { type: [], company: "Hertz", vehicle: "" },
     dining: { cuisine: "", budget: [] },

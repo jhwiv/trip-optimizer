@@ -19,7 +19,7 @@ export default [
                  console: "readonly", AbortController: "readonly", TextDecoder: "readonly",
                  Promise: "readonly", JSON: "readonly", __BUILD_ID__: "readonly",
                  __API_BASE__: "readonly", encodeURIComponent: "readonly",
-                 FormData: "readonly" },
+                 FormData: "readonly", URLSearchParams: "readonly", URL: "readonly" },
     },
     plugins: { "react-hooks": reactHooks },
     rules: {
