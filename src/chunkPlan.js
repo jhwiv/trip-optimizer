@@ -121,9 +121,27 @@ export function chunkMaxTokens(chunk) {
   return Math.max(8000, days * TOKENS_PER_DAY + CHUNK_CONTINUITY_TOKENS);
 }
 
+// Generic, non-unique meal placeholders that legitimately recur every day
+// (e.g. "Breakfast at hotel"). These are NOT named restaurants and must be
+// excluded from cross-chunk dedupe, or every multi-day trip flags them.
+const GENERIC_MEAL_RE =
+  /^(breakfast|lunch|dinner|brunch)?\s*(at|in|@)?\s*(the\s+)?(hotel|resort|villa|riad|property|room|suite|in[- ]?room|spa|pool|rooftop|terrace|club lounge|lounge)\b|^(hotel|room service|in[- ]?room dining|breakfast|continental breakfast|buffet breakfast|free time|self[- ]?guided|on your own|tbd|to be decided)\b/i;
+
 /**
- * Extract restaurant-ish item names from a plan's days[] for cross-chunk
- * dedupe. Looks at item.name / item.text on Dining/Restaurant items.
+ * Is this item name a generic placeholder rather than a named venue?
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function isGenericMealName(name) {
+  const n = String(name || "").trim();
+  if (!n) return true;
+  return GENERIC_MEAL_RE.test(n);
+}
+
+/**
+ * Extract NAMED restaurant item names from a plan's days[] for cross-chunk
+ * dedupe. Looks at item.name / item.text on Dining/Restaurant items and
+ * skips generic placeholders ("Breakfast at hotel", "Room service", etc.).
  * Defensive about shape.
  * @param {object} planLike  object with days[]
  * @returns {string[]}
@@ -137,8 +155,8 @@ export function collectRestaurantNames(planLike) {
       const kind = String(it?.kind || it?.type || "").toLowerCase();
       const isFood = /dining|restaurant|meal|lunch|dinner|breakfast/.test(kind);
       const name = String(it?.name || it?.place || "").trim();
-      if (isFood && name) out.push(name);
-      else if (!it?.kind && !it?.type && name && /\b(lunch|dinner|breakfast|reservation)\b/i.test(String(it?.text || ""))) {
+      if (isFood && name && !isGenericMealName(name)) out.push(name);
+      else if (!it?.kind && !it?.type && name && !isGenericMealName(name) && /\b(lunch|dinner|breakfast|reservation)\b/i.test(String(it?.text || ""))) {
         out.push(name);
       }
     }
@@ -170,17 +188,20 @@ export function stitchPlan({ dayChunks, wrapper, expectedDays }) {
     );
   }
 
-  // Defensive cross-chunk restaurant dedupe (keep first occurrence).
+  // Defensive cross-chunk restaurant dedupe (keep first occurrence). Only
+  // NAMED venues are checked — generic placeholders like "Breakfast at hotel"
+  // legitimately recur daily and must not be flagged.
   const seen = new Set();
   for (const d of days) {
     const items = d && Array.isArray(d.items) ? d.items : [];
     for (const it of items) {
       const kind = String(it?.kind || it?.type || "").toLowerCase();
       if (!/dining|restaurant|meal|lunch|dinner|breakfast/.test(kind)) continue;
-      const name = String(it?.name || it?.place || "").trim().toLowerCase();
-      if (!name) continue;
+      const rawName = String(it?.name || it?.place || "").trim();
+      if (!rawName || isGenericMealName(rawName)) continue;
+      const name = rawName.toLowerCase();
       if (seen.has(name)) {
-        warnings.push(`Duplicate restaurant across chunks kept as-is: ${it?.name || name}`);
+        warnings.push(`Duplicate restaurant across chunks kept as-is: ${rawName}`);
       } else {
         seen.add(name);
       }

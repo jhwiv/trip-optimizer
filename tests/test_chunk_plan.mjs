@@ -10,6 +10,7 @@ import {
   chunkMaxTokens,
   stitchPlan,
   collectRestaurantNames,
+  isGenericMealName,
   SINGLE_CALL_TOKEN_BUDGET,
   MAX_DAYS_PER_CHUNK,
 } from "../src/chunkPlan.js";
@@ -150,6 +151,42 @@ console.log("\n[10] collectRestaurantNames pulls dining items for cross-chunk co
   const planLike = { days: [{ items: [{ kind: "dining", name: "Le Calandre" }, { kind: "activity", name: "Doge's Palace" }] }] };
   const names = collectRestaurantNames(planLike);
   assert("collects only the dining name", names.length === 1 && names[0] === "Le Calandre", JSON.stringify(names));
+}
+
+console.log("\n[11] isGenericMealName — generic placeholders are NOT treated as named venues");
+{
+  for (const g of ["Breakfast at hotel", "breakfast at the hotel", "Hotel breakfast", "Room service", "In-room dining", "Buffet breakfast", "Breakfast at resort", "Free time", ""]) {
+    assert(`generic: "${g}"`, isGenericMealName(g) === true);
+  }
+  for (const named of ["Le Calandre", "Osteria Alle Testiere", "Restaurant 360", "Pantarul"]) {
+    assert(`named: "${named}"`, isGenericMealName(named) === false);
+  }
+}
+
+console.log("\n[12] dedupe IGNORES generic placeholders (the 'Breakfast at hotel' false positive)");
+{
+  // The exact pattern seen in the live Croatia run: "Breakfast at hotel"
+  // appearing on multiple days across chunks must NOT be flagged.
+  const dayChunks = [
+    { days: [{ label: "Day 1", items: [{ kind: "dining", name: "Breakfast at hotel" }, { kind: "dining", name: "Pantarul" }] }] },
+    { days: [{ label: "Day 2", items: [{ kind: "dining", name: "Breakfast at hotel" }, { kind: "dining", name: "Restaurant 360" }] }] },
+    { days: [{ label: "Day 3", items: [{ kind: "dining", name: "Breakfast at hotel" }] }] },
+  ];
+  const { warnings } = stitchPlan({ dayChunks, wrapper: {}, expectedDays: 3 });
+  assert("no generic-placeholder warnings", warnings.length === 0, JSON.stringify(warnings));
+
+  // But a genuinely duplicated NAMED restaurant is still flagged.
+  const dup = [
+    { days: [{ label: "Day 1", items: [{ kind: "dining", name: "Pantarul" }] }] },
+    { days: [{ label: "Day 2", items: [{ kind: "dining", name: "Pantarul" }] }] },
+  ];
+  const r2 = stitchPlan({ dayChunks: dup, wrapper: {}, expectedDays: 2 });
+  assert("named duplicate still flagged", r2.warnings.some(w => /Pantarul/.test(w)), JSON.stringify(r2.warnings));
+
+  // collectRestaurantNames also skips generics (so they're never passed as
+  // 'already used' to later chunks).
+  const names = collectRestaurantNames({ days: [{ items: [{ kind: "dining", name: "Breakfast at hotel" }, { kind: "dining", name: "Pantarul" }] }] });
+  assert("collectRestaurantNames skips generic", names.length === 1 && names[0] === "Pantarul", JSON.stringify(names));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

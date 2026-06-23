@@ -183,6 +183,10 @@ const CITIES = [
   { name: "Dubrovnik", country: "Croatia" },
   { name: "Split", country: "Croatia" },
   { name: "Hvar", country: "Croatia" },
+  { name: "Rovinj", country: "Croatia" },
+  { name: "Zadar", country: "Croatia" },
+  { name: "Plitvice Lakes", country: "Croatia" },
+  { name: "Korčula", country: "Croatia" },
   { name: "Tokyo", country: "Japan" },
   { name: "Kyoto", country: "Japan" },
   { name: "Osaka", country: "Japan" },
@@ -11478,7 +11482,10 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         setProgress(Math.max(0.02, i / (chunks.length + 1)));
 
         const usedList = usedRestaurants.length ? usedRestaurants.join(", ") : "(none yet)";
-        const chunkConstraint = `\n\nCHUNK MODE — GENERATE ONLY Day ${c.startDay}–Day ${c.endDay}.\nReturn days[] containing ONLY those days (in order). Do NOT include any other day. Omit logistics/weather_window/pack/flags/planb/snobs/tonight in chunk mode (a final pass produces them). Still copy the weekday stamps from the COMPUTED DATE TABLE.\nRestaurants already used on earlier days (do NOT reuse): ${usedList}.`;
+        const cityHint = Array.isArray(c.cityNames) && c.cityNames.length
+          ? ` These days belong to: ${c.cityNames.join(" / ")}. Set each day's "city" field to its city name (use "From→To" only on an actual inter-city transit day).`
+          : "";
+        const chunkConstraint = `\n\nCHUNK MODE — GENERATE ONLY Day ${c.startDay}–Day ${c.endDay}.\nReturn days[] containing ONLY those days (in order). Do NOT include any other day. Omit logistics/weather_window/pack/flags/planb/snobs/tonight in chunk mode (a final pass produces them). Still copy the weekday stamps from the COMPUTED DATE TABLE.\nIMPORTANT: every day in this chunk MUST set its "city" field.${cityHint}\nRestaurants already used on earlier days (do NOT reuse): ${usedList}.`;
 
         const body = {
           model: "claude-sonnet-4-5",
@@ -11489,12 +11496,19 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           tool_choice: toolChoice,
         };
 
-        const { toolJson } = await streamBuildJob(body, {
+        const { toolJson, stopReason } = await streamBuildJob(body, {
           signal: controller.signal,
           maxPollMs: maxPollMsForTrip,
           onJob: (id) => { chunkJobIds[i] = id; persistJobIds(); },
           onDelta: () => {},
         });
+        // A chunk that ends on max_tokens is truncated regardless of how well
+        // its JSON parses — its tail days/items may be cut off. Fail loudly
+        // (surface the existing cut-off error) rather than stitching a partial
+        // segment that would silently ship an incomplete itinerary.
+        if (stopReason === "max_tokens") {
+          throw new Error(`The plan was cut off while building days ${c.startDay}–${c.endDay} (hit the length limit). Try again, or reduce the trip length.`);
+        }
         const { parsed: chunkPlan } = parseToolJson(toolJson);
         chunkPlans.push(chunkPlan);
         for (const name of collectRestaurantNames(chunkPlan)) usedRestaurants.push(name);
@@ -11567,13 +11581,22 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
       applyBuiltPlan(plan, { nightsNum });
     } catch (err) {
+      // Mirror runBuildForJob's catch semantics so the chunked path behaves
+      // identically: keep ACTIVE_JOB_KEY on a cancel/timeout abort (so the
+      // user can reopen to resume), use the dedicated copy for an expired job,
+      // and only clear the key on a genuine hard error.
       let msg;
       if (err?.name === "AbortError") {
         msg = "Build cancelled. The server may still be finishing — reopen the page within a few minutes to resume.";
+        // Intentionally DO NOT remove ACTIVE_JOB_KEY here — the chunk jobIds
+        // stay persisted for a future resume (see CHUNKED_BUILD_IMPL_NOTES.md).
+      } else if (err?.notFound) {
+        msg = "That build expired or was not found. Tap Build again.";
+        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
       } else {
         msg = err?.message || "Something went wrong generating the plan. Please try again.";
+        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
       }
-      try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
       setError(msg);
     } finally {
       clearInterval(elapsedTimer);
