@@ -3,6 +3,7 @@ import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { buildDateTable } from "./dateFacts.js";
+import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames } from "./chunkPlan.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -11187,6 +11188,41 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         parsed._truncationCause = "max_tokens";
       }
 
+      applyBuiltPlan(parsed, { nightsNum });
+    } catch (err) {
+      let msg;
+      if (err?.name === "AbortError") {
+        msg = "Build cancelled. The server may still be finishing — reopen the page within a few minutes to resume.";
+      } else if (err?.notFound) {
+        msg = "That build expired or was not found. Tap Build again.";
+        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+      } else {
+        msg = err?.message || "Something went wrong generating the plan. Please try again.";
+        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+      }
+      setError(msg);
+    } finally {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      try { if (wakeLock) await wakeLock.release(); } catch {}
+      clearInterval(phaseTimer);
+      clearInterval(elapsedTimer);
+      clearTimeout(hardTimeout);
+      clearTimeout(slowNotice);
+      abortRef.current = null;
+      setLoading(false);
+      setLoadingMsg("");
+      setProgress(0);
+      setProgressLabel("");
+      setElapsedSec(0);
+    }
+  };
+
+  // Post-parse downstream shared by the single-call build and the chunked
+  // build: validate day count, swap in the new plan, then fire the
+  // background grounding passes (booking confirmation + Places verification +
+  // pacing). Both paths converge here so a chunked plan renders and verifies
+  // exactly like a single-call one.
+  const applyBuiltPlan = (parsed, { nightsNum }) => {
       const expectedDays = nightsNum + 1;
       const gotDays = Array.isArray(parsed?.days) ? parsed.days.length : 0;
       if (gotDays === 0) {
@@ -11371,25 +11407,177 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
              user just doesn't get the Places-verified overlay. */
         }
       })();
+  };
+
+  // Chunked build orchestrator for large trips (see CHUNKED_BUILD_SPEC.md).
+  // A maxed single build needs up to 64k output tokens (~17.5 min) which
+  // exceeds the 15-min client polling window, so big trips time out. We split
+  // the itinerary into day-range chunks, generate each well under the ceiling,
+  // run a small wrapper pass for the non-day fields, then stitch one canonical
+  // plan identical in shape to the single-call output and feed it through the
+  // SAME downstream path (applyBuiltPlan). Chunks run sequentially so each can
+  // be told the prior chunks' restaurants for cross-chunk dedupe.
+  const runChunkedBuild = async ({ nightsNum, citiesCount, chunks, staticRules, dynamicPreamble, userPromptForBuild }) => {
+    setLoading(true);
+    setError("");
+    setProgress(0);
+    setProgressLabel("");
+    setElapsedSec(0);
+
+    const expectedDays = nightsNum + 1;
+    const startedAt = Date.now();
+    // Total wall-clock scales with the number of chunks (+ wrapper). Each chunk
+    // is short, so this is far more generous per chunk than a single maxed call.
+    const targetSec = Math.round(90 + (chunks.length + 1) * 60 + Math.max(0, citiesCount - 1) * 30);
+
+    const elapsedTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - startedAt) / 1000);
+      setElapsedSec(sec);
+    }, 250);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const hardTimeoutMs = Math.max(600000, targetSec * 1000 * 3);
+    const hardTimeout = setTimeout(() => controller.abort(new Error("Polled too long")), hardTimeoutMs);
+    // Per-chunk poll ceiling. Each chunk is small (<=6 days) so it finishes
+    // well inside this, but we keep a generous floor so a momentary stall
+    // doesn't guillotine an in-flight chunk.
+    const maxPollMsForTrip = Math.max(15 * 60 * 1000, Math.round(targetSec * 1000 * 2.5));
+
+    // Reuse the SAME cached system blocks + tools across every chunk and the
+    // wrapper so the static rulebook stays the cached prefix (prompt caching).
+    const systemBlocks = cachedSystemBlocks(staticRules, dynamicPreamble);
+    const tools = cachedTools([TRIP_PLAN_TOOL]);
+    const toolChoice = { type: "tool", name: "submit_trip_plan" };
+
+    // Reconnect bookkeeping: store the array of chunk jobIds. The single-call
+    // resume effect bails when `jobId` is absent, so this shape won't trigger
+    // (or break) the existing single-call reconnect. Full chunked resume is
+    // not wired — see CHUNKED_BUILD_IMPL_NOTES.md.
+    const chunkJobIds = [];
+    const persistJobIds = () => {
+      try {
+        localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({
+          chunked: true,
+          jobIds: chunkJobIds,
+          startedAt,
+          nightsNum,
+          citiesCount,
+          destination: basics.destination || (basics.cities?.[0]?.name) || "your trip",
+        }));
+      } catch {}
+    };
+
+    try {
+      const chunkPlans = [];
+      const usedRestaurants = [];
+
+      for (let i = 0; i < chunks.length; i++) {
+        const c = chunks[i];
+        setLoadingMsg(`Building days ${c.startDay}–${c.endDay} (chunk ${i + 1}/${chunks.length})…`);
+        setProgress(Math.max(0.02, i / (chunks.length + 1)));
+
+        const usedList = usedRestaurants.length ? usedRestaurants.join(", ") : "(none yet)";
+        const chunkConstraint = `\n\nCHUNK MODE — GENERATE ONLY Day ${c.startDay}–Day ${c.endDay}.\nReturn days[] containing ONLY those days (in order). Do NOT include any other day. Omit logistics/weather_window/pack/flags/planb/snobs/tonight in chunk mode (a final pass produces them). Still copy the weekday stamps from the COMPUTED DATE TABLE.\nRestaurants already used on earlier days (do NOT reuse): ${usedList}.`;
+
+        const body = {
+          model: "claude-sonnet-4-5",
+          max_tokens: chunkMaxTokens(c),
+          system: systemBlocks,
+          messages: [{ role: "user", content: userPromptForBuild + chunkConstraint }],
+          tools,
+          tool_choice: toolChoice,
+        };
+
+        const { toolJson } = await streamBuildJob(body, {
+          signal: controller.signal,
+          maxPollMs: maxPollMsForTrip,
+          onJob: (id) => { chunkJobIds[i] = id; persistJobIds(); },
+          onDelta: () => {},
+        });
+        const { parsed: chunkPlan } = parseToolJson(toolJson);
+        chunkPlans.push(chunkPlan);
+        for (const name of collectRestaurantNames(chunkPlan)) usedRestaurants.push(name);
+      }
+
+      // Wrapper pass — one small call for the non-day fields. We hand it a
+      // compact summary of the assembled days (label + city + a couple key
+      // item names) so it can write a coherent intro / Plan B / snobs guide
+      // WITHOUT regenerating the (token-dominant) itinerary.
+      setLoadingMsg("Assembling final plan…");
+      setProgress(chunks.length / (chunks.length + 1));
+
+      const assembledDays = [];
+      for (const cp of chunkPlans) {
+        for (const d of (Array.isArray(cp?.days) ? cp.days : [])) assembledDays.push(d);
+      }
+      const summaryLines = assembledDays.map((d, idx) => {
+        const items = Array.isArray(d?.items) ? d.items : [];
+        const keyNames = items
+          .map((it) => String(it?.name || it?.place || "").trim())
+          .filter(Boolean)
+          .slice(0, 2)
+          .join(", ");
+        const label = String(d?.label || `Day ${idx + 1}`).trim();
+        const city = d?.city ? ` (${d.city})` : "";
+        return `${label}${city}: ${keyNames || "—"}`;
+      });
+      const wrapperConstraint = `\n\nASSEMBLED ITINERARY (for reference — do NOT regenerate days):\n${summaryLines.join("\n")}\n\nWRAPPER MODE — GENERATE ONLY the wrapper fields: destination, meta, cities[], logistics, weather_window, pack, flags, planb (>=5 entries), snobs, tonight. Return an EMPTY days[] array. Do NOT regenerate the day-by-day itinerary — it is already built above.`;
+
+      const wrapperBody = {
+        model: "claude-sonnet-4-5",
+        max_tokens: 6000,
+        system: systemBlocks,
+        messages: [{ role: "user", content: userPromptForBuild + wrapperConstraint }],
+        tools,
+        tool_choice: toolChoice,
+      };
+      const { toolJson: wrapperJson } = await streamBuildJob(wrapperBody, {
+        signal: controller.signal,
+        maxPollMs: maxPollMsForTrip,
+        onJob: (id) => { chunkJobIds[chunks.length] = id; persistJobIds(); },
+        onDelta: () => {},
+      });
+      let wrapper = {};
+      try {
+        wrapper = parseToolJson(wrapperJson).parsed || {};
+      } catch {
+        // Wrapper is non-essential — the itinerary is the product. If it
+        // comes back unparseable, ship the days with empty wrapper fields
+        // rather than failing the whole build.
+        wrapper = {};
+      }
+
+      setProgress(1);
+      setProgressLabel("Finalizing…");
+
+      // Stitch throws if the assembled day count != expectedDays. That means a
+      // chunk came back short — surface it as the existing truncation error
+      // rather than shipping a broken plan.
+      let stitched;
+      try {
+        stitched = stitchPlan({ dayChunks: chunkPlans, wrapper, expectedDays });
+      } catch (stitchErr) {
+        const e = new Error("The plan was cut off before it finished — one of the day chunks came back short. Try again.");
+        e.cause = stitchErr;
+        throw e;
+      }
+      const { plan, warnings } = stitched;
+      if (warnings.length) { try { console.warn("[trip-optimizer] stitchPlan warnings:", warnings); } catch {} }
+
+      applyBuiltPlan(plan, { nightsNum });
     } catch (err) {
       let msg;
       if (err?.name === "AbortError") {
         msg = "Build cancelled. The server may still be finishing — reopen the page within a few minutes to resume.";
-      } else if (err?.notFound) {
-        msg = "That build expired or was not found. Tap Build again.";
-        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
       } else {
         msg = err?.message || "Something went wrong generating the plan. Please try again.";
-        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
       }
+      try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
       setError(msg);
     } finally {
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      try { if (wakeLock) await wakeLock.release(); } catch {}
-      clearInterval(phaseTimer);
       clearInterval(elapsedTimer);
       clearTimeout(hardTimeout);
-      clearTimeout(slowNotice);
       abortRef.current = null;
       setLoading(false);
       setLoadingMsg("");
@@ -11559,6 +11747,18 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         // we ship the build without the snippets — plan still gets made.
         try { console.warn("[trip-optimizer] local-knowledge retrieval skipped:", retrieveErr?.message || retrieveErr); } catch {}
       }
+    }
+
+    // Large trips would need a single max_tokens budget past the model's
+    // output ceiling and the client polling window, so they time out. When the
+    // single-call estimate exceeds the safe budget, split the build into
+    // day-range chunks + a wrapper pass and stitch the result. Small/medium
+    // trips (at/below the threshold) keep the EXISTING single-call path below,
+    // byte-for-byte unchanged.
+    if (shouldChunk({ nights: nightsNum, citiesCount })) {
+      const chunks = planDayChunks({ nights: nightsNum, cities: isMultiCity ? cities : null });
+      await runChunkedBuild({ nightsNum, citiesCount, chunks, staticRules, dynamicPreamble, userPromptForBuild });
+      return;
     }
 
     const body = {
