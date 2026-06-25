@@ -143,3 +143,5 @@ if (saved?.chunked) {
 - `npm run build` → succeeds.
 - `npm test` → 828 passed, 0 failed across 23 suites, including
   `test_chunk_plan.mjs` (44) and `test_chunk_resume.mjs` (10).
+
+<!-- preview rebuild trigger 2026-06-25T09:50Z to pick up Preview-scope ANTHROPIC_API_KEY -->
