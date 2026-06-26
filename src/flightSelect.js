@@ -7,6 +7,85 @@
 // already filtered to the leg's route + carrier; this module only chooses
 // WHICH real scheduled flight best matches the planned departure time.
 
+// Airline name → IATA code. Matched case-insensitively on word boundaries (see
+// resolveAirlineIata) so it tolerates the full names the build emits ("United",
+// "United Airlines") without short keys ("ana", "sas") colliding inside longer
+// words. This is the single source of truth for carrier→IATA resolution;
+// FlightCard and the live-status path both go through resolveAirlineIata().
+const CARRIER_NAME_TO_IATA = {
+  united: "UA", delta: "DL", american: "AA", jetblue: "B6", southwest: "WN",
+  alaska: "AS", frontier: "F9", spirit: "NK", hawaiian: "HA",
+  "sun country": "SY", allegiant: "G4", avelo: "XP", breeze: "MX",
+  "air canada": "AC", westjet: "WS", aeromexico: "AM",
+  lufthansa: "LH", swiss: "LX", austrian: "OS",
+  "air france": "AF", klm: "KL", "british airways": "BA", virgin: "VS",
+  iberia: "IB", "aer lingus": "EI", "tap air": "TP", "tap portugal": "TP",
+  sas: "SK", scandinavian: "SK", finnair: "AY", norse: "N0",
+  icelandair: "FI", ryanair: "FR", easyjet: "U2", "ita airways": "AZ",
+  emirates: "EK", qatar: "QR", etihad: "EY", turkish: "TK",
+  "singapore airlines": "SQ", cathay: "CX",
+  "japan airlines": "JL", jal: "JL", ana: "NH", "all nippon": "NH",
+  "korean air": "KE", asiana: "OZ", qantas: "QF", "air new zealand": "NZ",
+};
+
+// True when the carrier string names more than one airline ("United or Delta",
+// "SAS / Delta", "United, Lufthansa"). We must NOT auto-pick one carrier's
+// number for an ambiguous string — that would risk presenting it as the other.
+function isMultiCarrier(s) {
+  return / or | \/ |,|\//.test(String(s));
+}
+
+// Resolve a carrier string to a 2-letter IATA code, or null when it can't be
+// resolved unambiguously.
+//
+// Honesty contract (CLAUDE.md): the returned code is used to filter schedule
+// rows to a single carrier before auto-surfacing a flight number. A wrong or
+// over-eager resolution would let us label another carrier's real flight under
+// this card. So we resolve ONLY when we're confident:
+//   - a known airline name substring ("United" → "UA"), or
+//   - a bare 2-character IATA/IATA-like code the build emitted directly
+//     ("UA", "B6", "U2").
+// Multi-carrier strings ("United or Delta") resolve to null so the caller falls
+// back to an unattributed schedule display rather than claiming one carrier.
+export function resolveAirlineIata(carrier) {
+  if (!carrier) return null;
+  const raw = String(carrier).trim();
+  if (!raw) return null;
+  if (isMultiCarrier(raw)) return null;
+  const lower = raw.toLowerCase();
+  // Word-boundary match (not raw includes) so short keys like "ana" or "sas"
+  // don't collide inside longer words ("Canada" contains "ana", "Asiana" too).
+  for (const [name, code] of Object.entries(CARRIER_NAME_TO_IATA)) {
+    if (new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(lower)) return code;
+  }
+  // Bare 2-char code emitted directly as the carrier ("UA", "B6", "U2").
+  // Require it to be the WHOLE string so we don't pull two letters out of a
+  // longer unknown name.
+  if (/^[A-Z][A-Z0-9]$/.test(raw.toUpperCase())) return raw.toUpperCase();
+  return null;
+}
+
+// Extract a clean 3-letter IATA airport code from a build field, or null.
+//
+// The build schema asks for bare IATA codes ("EWR"), but the model occasionally
+// decorates them ("Newark (EWR)", "EWR – Newark Liberty", lowercase). The
+// schedule fetch passes this value straight to the API as origin/destination,
+// so a decorated value silently breaks the lookup (and therefore the whole
+// auto-surface). Normalize before using it as a query param.
+export function normalizeAirportCode(v) {
+  if (!v) return null;
+  const up = String(v).trim().toUpperCase();
+  const paren = up.match(/\(([A-Z]{3})\)/);
+  if (paren) return paren[1];
+  if (/^[A-Z]{3}$/.test(up)) return up;
+  // "EWR - Newark", "EWR / Newark Liberty": a leading 3-letter code followed by
+  // a separator. We require a real separator (not just a space) so prose like
+  // "SEE ITINERARY" or "NEW YORK" doesn't get mistaken for a code.
+  const lead = up.match(/^([A-Z]{3})\s*[-–—/(·,|]/);
+  if (lead) return lead[1];
+  return null;
+}
+
 // Minutes-of-day (0..1439) for an ISO timestamp, or null. Uses the local
 // Date reading so it lines up with the time-of-day buckets the card renders
 // elsewhere (hourToBucket also reads local hours).

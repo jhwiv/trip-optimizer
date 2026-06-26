@@ -13,6 +13,8 @@ import {
   isoToMinutes,
   parseClockToMinutes,
   pickScheduledFlight,
+  resolveAirlineIata,
+  normalizeAirportCode,
 } from "../src/flightSelect.js";
 
 let passed = 0, failed = 0;
@@ -117,6 +119,74 @@ assert(
 assert(
   "no airlineIata → unchanged behavior (closest overall)",
   pickScheduledFlight(mixedMatch, 580).flightNumber === "SK501",
+);
+
+console.log("=== resolveAirlineIata: known names ===");
+assert("United → UA", resolveAirlineIata("United") === "UA");
+assert("United Airlines → UA", resolveAirlineIata("United Airlines") === "UA");
+assert("Delta → DL", resolveAirlineIata("Delta") === "DL");
+assert("JetBlue → B6", resolveAirlineIata("JetBlue") === "B6");
+assert("case-insensitive (jetblue) → B6", resolveAirlineIata("jetblue") === "B6");
+// Carriers PR #59's hardcoded 17-name map did NOT cover — the gap that left
+// real flights unsurfaced. These must resolve now.
+assert("Hawaiian → HA (was uncovered)", resolveAirlineIata("Hawaiian Airlines") === "HA");
+assert("Air Canada → AC (was uncovered)", resolveAirlineIata("Air Canada") === "AC");
+assert("Avelo → XP (was uncovered)", resolveAirlineIata("Avelo") === "XP");
+assert("TAP Air Portugal → TP (was uncovered)", resolveAirlineIata("TAP Air Portugal") === "TP");
+assert("Emirates → EK (was uncovered)", resolveAirlineIata("Emirates") === "EK");
+
+console.log("=== resolveAirlineIata: direct IATA codes ===");
+assert("bare code UA → UA", resolveAirlineIata("UA") === "UA");
+assert("bare code B6 → B6", resolveAirlineIata("B6") === "B6");
+assert("bare code U2 (easyJet) → U2", resolveAirlineIata("U2") === "U2");
+assert("lowercase bare code ua → UA", resolveAirlineIata("ua") === "UA");
+
+console.log("=== resolveAirlineIata: honesty / unresolved → null ===");
+assert("empty → null", resolveAirlineIata("") === null);
+assert("null → null", resolveAirlineIata(null) === null);
+assert("'Carrier TBD' → null", resolveAirlineIata("Carrier TBD") === null);
+assert("unknown name → null", resolveAirlineIata("Some Regional Air") === null);
+// Multi-carrier strings MUST NOT resolve to one carrier — picking, say, UA for
+// "United or Delta" then surfacing a UA number under a card the model labeled
+// ambiguously would imply a specificity we don't have.
+assert("'United or Delta' → null (ambiguous)", resolveAirlineIata("United or Delta") === null);
+assert("'SAS / Delta' → null (ambiguous)", resolveAirlineIata("SAS / Delta") === null);
+assert("'United, Lufthansa' → null (ambiguous)", resolveAirlineIata("United, Lufthansa") === null);
+
+console.log("=== normalizeAirportCode: build item from/to → IATA ===");
+assert("EWR → EWR", normalizeAirportCode("EWR") === "EWR");
+assert("lowercase ewr → EWR", normalizeAirportCode("ewr") === "EWR");
+assert("trims whitespace ' DEN ' → DEN", normalizeAirportCode(" DEN ") === "DEN");
+assert("decorated 'Newark (EWR)' → EWR", normalizeAirportCode("Newark (EWR)") === "EWR");
+assert("leading-code 'EWR - Newark Liberty' → EWR", normalizeAirportCode("EWR - Newark Liberty") === "EWR");
+assert("null → null", normalizeAirportCode(null) === null);
+assert("empty → null", normalizeAirportCode("") === null);
+assert("no code present → null", normalizeAirportCode("see itinerary") === null);
+
+console.log("=== unresolved carrier: surface a real flight, never mislabel ===");
+// The route returned BOTH a marketing codeshare (TP) and the operating carrier
+// (UA) at the same time — the real-world EWR→DEN case. With carrier unresolved
+// (airlineIata=null) we must still surface a REAL entry (not show nothing)…
+const codeshare = [
+  { flightNumber: "TP8470", scheduledOut: "2027-08-25T00:59:00Z" },
+  { flightNumber: "UA1792", scheduledOut: "2027-08-25T00:59:00Z" },
+];
+assert(
+  "unresolved carrier + real rows → returns a real entry (not null)",
+  codeshare.includes(pickScheduledFlight(codeshare, 59, null)),
+);
+assert(
+  "…and the entry is one of the actual schedule rows (no invented number)",
+  ["TP8470", "UA1792"].includes(pickScheduledFlight(codeshare, 59, null).flightNumber),
+);
+// …but a RESOLVED carrier must never be paired with the other carrier's row.
+assert(
+  "resolved UA filters to the UA row even when a same-time TP codeshare exists",
+  pickScheduledFlight(codeshare, 59, "UA").flightNumber === "UA1792",
+);
+assert(
+  "resolved TP filters to the TP row (no UA leak)",
+  pickScheduledFlight(codeshare, 59, "TP").flightNumber === "TP8470",
 );
 
 console.log(`\n${passed} passed, ${failed} failed`);
