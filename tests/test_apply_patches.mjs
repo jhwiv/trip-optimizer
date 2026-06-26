@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 const src = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf-8");
 
 // Find the function (greedy through its closing brace at the end of the
-// recursive walk). The function ends with `return { plan: next, appliedCount, skipped };\n}`.
-const match = src.match(/function applyPatchesToPlan\(plan, patches\) \{[\s\S]*?return \{ plan: next, appliedCount, skipped \};\n\}/);
+// recursive walk). The function ends with a `return { plan: next, appliedCount, skipped, ... };\n}`.
+const match = src.match(/function applyPatchesToPlan\(plan, patches\) \{[\s\S]*?return \{ plan: next, appliedCount, skipped, appliedFindingIds: Array\.from\(appliedFindingIds\) \};\n\}/);
 if (!match) throw new Error("applyPatchesToPlan not found");
 // eslint-disable-next-line no-eval
 eval(`${match[0]}; globalThis.applyPatchesToPlan = applyPatchesToPlan;`);
@@ -127,6 +127,45 @@ console.log("\n[10] replace_planb_entry happy + out-of-range");
     { op: "replace_planb_entry", planb_index: 5, new_text: "X", rationale: "x" },
   ]);
   assert("out-of-range planb skipped", c2 === 0 && s2[0]?.includes("out-of-range"));
+}
+
+console.log("\n[11] appliedFindingIds — records finding_id only for patches that applied");
+{
+  const { appliedCount, skipped, appliedFindingIds } = applyPatchesToPlan(samplePlan(), [
+    { op: "replace_item", finding_id: "f1", day_index: 0, item_index: 0, new_item: { type: "Activity", name: "Hike" }, rationale: "x" },
+    { op: "replace_item", finding_id: "f2", day_index: 99, item_index: 0, new_item: { type: "Activity", name: "Bad" }, rationale: "x" },
+  ]);
+  assert("appliedCount = 1", appliedCount === 1, `got ${appliedCount}`);
+  assert("skipped non-empty", skipped.length === 1);
+  assert("only f1 recorded as applied", appliedFindingIds.length === 1 && appliedFindingIds[0] === "f1");
+  assert("f2 NOT recorded as applied", !appliedFindingIds.includes("f2"));
+}
+
+console.log("\n[12] appliedFindingIds — empty when patches carry no finding_id");
+{
+  const { appliedCount, appliedFindingIds } = applyPatchesToPlan(samplePlan(), [
+    { op: "add_flag", new_text: "Closed Mondays", rationale: "x" },
+  ]);
+  assert("appliedCount = 1", appliedCount === 1);
+  assert("no finding ids recorded", appliedFindingIds.length === 0);
+}
+
+console.log("\n[13] Honesty logic — partial batch must not mark the unsupported finding as applied");
+{
+  // Simulates the handleApply attribution: a batch with one applicable op and
+  // one unsupported op. Only the finding whose patch landed may be recorded.
+  const selected = [{ id: "f1" }, { id: "f2" }];
+  const { appliedCount, skipped, appliedFindingIds } = applyPatchesToPlan(samplePlan(), [
+    { op: "replace_item", finding_id: "f1", day_index: 0, item_index: 1, new_item: { type: "Dinner", name: "Coyote Cafe" }, rationale: "x" },
+    { op: "delete_item", finding_id: "f2", day_index: 0, item_index: 0, rationale: "x" },
+  ]);
+  assert("appliedCount = 1", appliedCount === 1, `got ${appliedCount}`);
+  assert("skipped non-empty", skipped.length >= 1);
+  const appliedSet = new Set(appliedFindingIds);
+  const appliedFindings = selected.filter(f => appliedSet.has(f.id));
+  const unappliedFindings = selected.filter(f => !appliedSet.has(f.id));
+  assert("f1 marked applied", appliedFindings.length === 1 && appliedFindings[0].id === "f1");
+  assert("f2 left un-applied", unappliedFindings.length === 1 && unappliedFindings[0].id === "f2");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
