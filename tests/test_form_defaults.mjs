@@ -68,5 +68,31 @@ assert("cabin default still empty string", fieldDefault(flightsBody, "cabin") ==
 assert("flex default still empty string", fieldDefault(flightsBody, "flex") === '""', `got: ${fieldDefault(flightsBody, "flex")}`);
 assert("noFlight default still false", fieldDefault(flightsBody, "noFlight") === "false", `got: ${fieldDefault(flightsBody, "noFlight")}`);
 
+// --- Output sections default shape ----------------------------------------
+// The `outputs` useState initializer must default ONLY the day-by-day
+// itinerary ON; every add-on section defaults OFF so the user opts in on the
+// choices panel before building. The same literal also appears in the trip-open
+// reset (setOut(i.outputs || { ... })); both must agree, so we assert on every
+// matching literal in the source.
+console.log("\n[outputs defaults — itinerary on, add-ons off]");
+
+const OUTPUT_KEYS = ["itinerary","weather","navigation","logistics","tonight","menus","flags","planb","snobs","practical","badges","pronunciation"];
+
+function outputDefault(body, key) {
+  const m = body.match(new RegExp(`\\b${key}\\s*:\\s*(true|false)`));
+  return m ? m[1] : undefined;
+}
+
+// Every outputs literal carries all 12 keys starting with `itinerary:`.
+const outputLiterals = SRC.match(/\bitinerary:\s*true,\s*weather:\s*(?:true|false)[^}]*\bpronunciation:\s*(?:true|false)/g) || [];
+assert("found outputs default literal(s) in App.jsx", outputLiterals.length >= 2, `found ${outputLiterals.length}`);
+
+outputLiterals.forEach((body, idx) => {
+  assert(`literal #${idx + 1}: itinerary defaults true`, outputDefault(body, "itinerary") === "true", `got: ${outputDefault(body, "itinerary")}`);
+  for (const key of OUTPUT_KEYS.filter(k => k !== "itinerary")) {
+    assert(`literal #${idx + 1}: ${key} defaults false`, outputDefault(body, key) === "false", `got: ${outputDefault(body, key)}`);
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

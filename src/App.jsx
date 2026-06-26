@@ -7580,14 +7580,14 @@ function TagInput({ placeholder, tags, setTags, suggestions = [] }) {
   );
 }
 
-function Toggle({ label, desc, checked, onChange }) {
+function Toggle({ label, desc, checked, onChange, disabled }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: "0.5px solid var(--color-border-tertiary)", gap: "12px" }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: "13px", color: "var(--color-text-primary)" }}>{label}</div>
+        <div style={{ fontSize: "13px", color: "var(--color-text-primary)" }}>{label}{disabled && <span style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginLeft: "8px", fontStyle: "italic" }}>always included</span>}</div>
         {desc && <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{desc}</div>}
       </div>
-      <input type="checkbox" checked={checked} onChange={onChange} style={{ accentColor: GOLD, width: "15px", height: "15px", cursor: "pointer", flexShrink: 0 }} />
+      <input type="checkbox" checked={checked} onChange={onChange} disabled={disabled} style={{ accentColor: GOLD, width: "15px", height: "15px", cursor: disabled ? "not-allowed" : "pointer", flexShrink: 0 }} />
     </div>
   );
 }
@@ -9798,7 +9798,7 @@ export default function TripOptimizer() {
     setInt(i.interests || DEFAULTS.interests);
     setNarrative(typeof i.narrative === "string" ? i.narrative : DEFAULTS.narrative);
     setGuidelines(typeof i.guidelines === "string" ? i.guidelines : DEFAULTS.guidelines);
-    setOut(i.outputs || { itinerary: true, weather: true, navigation: true, logistics: true, tonight: true, menus: true, flags: true, planb: true, snobs: true, practical: false, badges: false, pronunciation: false });
+    setOut(i.outputs || { itinerary: true, weather: false, navigation: false, logistics: false, tonight: false, menus: false, flags: false, planb: false, snobs: false, practical: false, badges: false, pronunciation: false });
     // Cancel any in-flight generation and clear transient UI state.
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
     setLoading(false);
@@ -9940,15 +9940,19 @@ export default function TripOptimizer() {
     }, 400);
     return () => clearTimeout(t);
   }, [result, step, currentSavedTripId, reviewState, basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative]);
-  const [outputs, setOut] = useState({ itinerary: true, weather: true, navigation: true, logistics: true, tonight: true, menus: true, flags: true, planb: true, snobs: true, practical: false, badges: false, pronunciation: false });
-  // Step 1 has a collapsible Output Sections panel so users can pick which
-  // sections to include BEFORE clicking 'Build now with essentials only' —
-  // which bypasses Step 2 entirely. Default collapsed to keep Step 1 visually
-  // calm; expanded by user choice. Same outputs state as Step 2's panel — the
-  // two cards share one source of truth.
+  // The day-by-day itinerary is ALWAYS on — a plan with no days is meaningless,
+  // so its toggle is rendered checked-and-locked. Every add-on section defaults
+  // OFF; the user opts into the ones they want on the Step 2 choices panel
+  // before building. Keep the key set identical to outputDefs.
+  const [outputs, setOut] = useState({ itinerary: true, weather: false, navigation: false, logistics: false, tonight: false, menus: false, flags: false, planb: false, snobs: false, practical: false, badges: false, pronunciation: false });
+  // Step 1 has a collapsible Output Sections panel so users can preview and
+  // pick which add-on sections to include before continuing to Step 2. Default
+  // collapsed to keep Step 1 visually calm; expanded by user choice. Same
+  // outputs state as Step 2's panel — the two cards share one source of truth.
   const [step1OutputsOpen, setStep1OutputsOpen] = useState(false);
 
-  const togOut = k => setOut(o => ({ ...o, [k]: !o[k] }));
+  // Itinerary is locked on; never let it be toggled into an empty build.
+  const togOut = k => { if (k === "itinerary") return; setOut(o => ({ ...o, [k]: !o[k] })); };
 
   // Multi-city helpers. cities[] is the source of truth when length > 1.
   // For single-city, basics.destination/nights are authoritative for back-compat.
@@ -12508,9 +12512,8 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             </div>
 
             {/* Output Sections — collapsible, available on Step 1 so users can
-                trim sections BEFORE clicking 'Build now with essentials only',
-                which bypasses Step 2 entirely. Same outputs state as Step 2's
-                Output Sections card. */}
+                preview and trim add-on sections before continuing. Same outputs
+                state as Step 2's Output Sections card. */}
             <div style={cardStyle}>
               <button
                 type="button"
@@ -12531,7 +12534,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               </button>
               {step1OutputsOpen && (
                 <div style={{ marginTop: "10px" }}>
-                  {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} />)}
+                  {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} disabled={k === "itinerary"} />)}
                 </div>
               )}
             </div>
@@ -12543,11 +12546,6 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "8px", textAlign: "center", minHeight: "16px", fontStyle: "italic" }}>
               {!ready ? `Still needed: ${missing.join(", ")}` : ""}
             </p>
-            {ready && (
-              <button onClick={() => { setStep(2); handleBuild(); }} style={{ color: GOLD, fontSize: "12px", cursor: "pointer", background: "none", border: "none", padding: 0, textDecoration: "underline", marginTop: "4px", display: "block", textAlign: "center", fontFamily: "inherit", fontStyle: "italic", width: "100%" }}>
-                Build now with essentials only →
-              </button>
-            )}
           </div>
         )}
 
@@ -12684,7 +12682,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
             <div style={cardStyle}>
               <p style={ctStyle}>{`Output sections  ·  ${activeCount} of 12 active`}</p>
-              {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} />)}
+              {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} disabled={k === "itinerary"} />)}
             </div>
 
             <div style={{ display: "flex", gap: "10px", marginTop: "0.5rem" }}>
