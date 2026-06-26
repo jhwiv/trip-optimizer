@@ -9922,6 +9922,9 @@ export default function TripOptimizer() {
     setLoadingMsg("Reading your narrative…");
     setProgress(0);
     setProgressLabel("");
+    // The "Build from this" shortcut commits straight to a build, so it lands
+    // on the Outputs screen where the progress panel renders.
+    setOutputsStep(true);
     setStep(2);
     try { window.scrollTo({ top: 0, behavior: "instant" }); } catch {}
     try {
@@ -9939,6 +9942,7 @@ export default function TripOptimizer() {
         setLoadingMsg("");
         // Bounce back to step 1 so the inline error under the 'Build from
         // this' button is the thing the user sees.
+        setOutputsStep(false);
         setStep(1);
         return;
       }
@@ -10023,6 +10027,7 @@ export default function TripOptimizer() {
     } catch (err) {
       setError(`Couldn't process guidelines: ${String(err?.message || err)}. Try filling the form manually.`);
       setLoadingMsg("");
+      setOutputsStep(false);
       setStep(1);
     } finally {
       setExtractingFromGuidelines(false);
@@ -10297,6 +10302,12 @@ export default function TripOptimizer() {
   // collapsed to keep Step 1 visually calm; expanded by user choice. Same
   // outputs state as Step 2's panel — the two cards share one source of truth.
   const [step1OutputsOpen, setStep1OutputsOpen] = useState(false);
+
+  // Step 2 is a two-screen flow: the Details form (false) and the
+  // output-section selection screen (true). The build trigger + progress panel
+  // live ONLY on the outputs screen, so reaching the details form — or even the
+  // outputs screen — never starts a build until the user taps "Build itinerary".
+  const [outputsStep, setOutputsStep] = useState(false);
 
   // Itinerary is locked on; never let it be toggled into an empty build.
   const togOut = k => { if (k === "itinerary") return; setOut(o => ({ ...o, [k]: !o[k] })); };
@@ -11083,7 +11094,9 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // builds; 180s gives real model pauses room while still catching truly
     // dead jobs.
     const MAX_STALL_MS = 180 * 1000;
+    // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
     const pollStart = Date.now();
+    // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
     let lastProgressAt = Date.now();
     while (true) {
       if (signal?.aborted) {
@@ -11091,9 +11104,11 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         err.name = "AbortError";
         throw err;
       }
+      // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
       if (Date.now() - pollStart > MAX_POLL_MS) {
         throw new Error("Build is taking longer than expected. Tap Build again to retry.");
       }
+      // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
       if (Date.now() - lastProgressAt > MAX_STALL_MS) {
         throw new Error("Build stalled — no new content for 3 minutes. The live stream likely dropped and KV mirroring is unavailable. Tap Build again to retry.");
       }
@@ -11143,6 +11158,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
       if (data.delta) {
         cursor = data.cursor;
+        // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
         lastProgressAt = Date.now();
         onDelta(data.delta, cursor);
       }
@@ -11716,6 +11732,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     setElapsedSec(0);
 
     const expectedDays = nightsNum + 1;
+    // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
     const startedAt = Date.now();
     // Total wall-clock scales with the number of chunks (+ wrapper). Each chunk
     // is short, so this is far more generous per chunk than a single maxed call.
@@ -11925,6 +11942,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     const citiesCount = saved.citiesCount || 1;
     const expectedDays = saved.expectedDays || nightsNum + 1;
     const savedChunks = Array.isArray(saved.chunks) ? saved.chunks : [];
+    // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
     const startedAt = Date.now();
     const targetSec = Math.round(90 + (savedChunks.length + 1) * 60 + Math.max(0, citiesCount - 1) * 30);
 
@@ -11975,6 +11993,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       }
     };
 
+    setOutputsStep(true);
     setStep(2);
     setLoadingMsg(`Resuming build for ${saved.destination || "your trip"}…`);
 
@@ -12349,6 +12368,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       // Implementation chosen for simplicity: read the body ourselves in
       // streamBuildResponse() from inside runBuildForJob and use the
       // onJob callback to capture the jobId.
+      // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
       startedAt = Date.now();
     } catch (err) {
       setError(cleanErrorMessage(err?.message, "Could not start build. Please try again."));
@@ -12430,10 +12450,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         setPendingBuildFromGuidelines(false);
         setLoadingMsg("");
         setError("Couldn't pick a destination out of your narrative. Add a city or region name and try again, or fill the form below.");
+        setOutputsStep(false);
         setStep(1);
         return;
       }
       setPendingBuildFromGuidelines(false);
+      setOutputsStep(true);
       setStep(2);
       handleBuild();
     }, 0);
@@ -12461,6 +12483,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // Route those to the sequential chunk-resume path. The single-call branch
     // below (which requires saved.jobId) stays reachable and unchanged.
     if (saved?.chunked) {
+      // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
       const chunkedAge = Date.now() - (saved.startedAt || 0);
       if (chunkedAge > 30 * 60 * 1000 || !Array.isArray(saved.chunks) || !saved.chunks.length) {
         try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
@@ -12474,6 +12497,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       return;
     }
     if (!saved?.jobId) return;
+    // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
     const age = Date.now() - (saved.startedAt || 0);
     if (age > 30 * 60 * 1000) {
       try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
@@ -12491,6 +12515,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
           return;
         }
+        setOutputsStep(true);
         setStep(2);
         setLoadingMsg(`Resuming build for ${saved.destination || "your trip"}…`);
         runBuildForJob({
@@ -12555,10 +12580,26 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     }
   };
 
+  // Phones can't fit the 2- and 3-column form grids without overflowing a
+  // ~390px viewport, so collapse them to a single column on mobile. Desktop
+  // and tablet keep the multi-column layout via the shared g2/g3 consts.
+  const g2r = vp.isMobile ? { ...g2, gridTemplateColumns: "1fr", gap: "14px" } : g2;
+  const g3r = vp.isMobile ? { ...g3, gridTemplateColumns: "1fr", gap: "14px" } : g3;
+  // Trim the card's horizontal padding on phones so nested fields keep more
+  // usable width inside a ~390px viewport.
+  const cardStyleR = vp.isMobile ? { ...cardStyle, padding: "1rem 1.1rem" } : cardStyle;
+
+  // Shared centered-column width for the wizard. The header band and the body
+  // both center their content to this width so the brand/mode-toggle line up
+  // with the form cards instead of the header hugging the far-left gutter on
+  // wide desktops while the cards sit in a centered column.
+  const colMaxWidth = vp.isMobile ? "100%" : vp.isTablet ? "720px" : vp.isDesktop ? "960px" : "1180px";
+
   return (
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)" }}>
 
-      <div style={{ padding: "2rem 1.75rem 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}>
+      <div style={{ padding: vp.isMobile ? "1.5rem 0 1.25rem" : "2rem 0 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}>
+        <div style={{ maxWidth: colMaxWidth, margin: "0 auto", padding: vp.isMobile ? "0 1rem" : "0 1.5rem" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
           <div style={{ minWidth: 0, flex: 1 }}>
             <p style={{ fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 8px", color: "var(--color-text-secondary)" }}>Travel planning</p>
@@ -12621,6 +12662,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             </span>
           </button>
         </div>
+        </div>
       </div>
 
       {findOnly ? (
@@ -12639,7 +12681,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           the wizard is fundamentally a single-column form — a 1600px-wide
           form is harder to scan, not easier. */
       <div style={{
-        maxWidth: vp.isMobile ? "100%" : vp.isTablet ? "720px" : vp.isDesktop ? "960px" : "1180px",
+        maxWidth: colMaxWidth,
         margin: "0 auto",
         padding: vp.isMobile ? "1.5rem 1rem 2.5rem" : "1.75rem 1.5rem 2.5rem",
       }}>
@@ -12662,6 +12704,9 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               : (step > targetStep || isNavigable ? "var(--color-text-primary)" : "var(--color-text-tertiary)");
             const navHandler = () => {
               if (!isNavigable) return;
+              // Re-entering Details via the step nav always lands on the Details
+              // screen, not the Outputs screen, so the build trigger stays gated.
+              if (targetStep === 2) setOutputsStep(false);
               setStep(targetStep);
               try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
             };
@@ -12740,7 +12785,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 budget posture, anchor rhythm), narrative is the SPECIFICS
                 (confirmation numbers, named guides, exact hotels). Both flow
                 into the prompt; guidelines render first. */}
-            <div style={{ ...cardStyle, borderLeft: `2px solid ${GOLD}`, marginBottom: "1.25rem" }}>
+            <div style={{ ...cardStyleR, borderLeft: `2px solid ${GOLD}`, marginBottom: "1.25rem" }}>
               <p style={ctStyle}>Trip guidelines</p>
               <Field label="Tell the planner everything you already know about this trip" hint="Type or dictate. Dump anything that matters: booked flights with numbers and times, hotel names, restaurants with reservation times, named drivers or guides, anniversary or kids' ages, mobility notes, pacing preferences, things to avoid. The planner reads this as the source of truth — every named flight, hotel, and restaurant is used EXACTLY, not substituted.">
                 <NarrativeBox
@@ -12795,9 +12840,9 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
             <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Four essentials to start. Refine the details after, or build immediately.</p>
 
-            <div style={cardStyle}>
+            <div style={cardStyleR}>
               <p style={ctStyle}>Where & when</p>
-              <div style={g2}>
+              <div style={g2r}>
                 {/* When multi-city, Trip Route needs the full row width or the city
                     input collapses to zero. Span both grid columns; Home airport
                     wraps to the next row below. */}
@@ -12852,7 +12897,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                   onRangeChange={handleDateRangeChange}
                 />
               </Field>
-              <div style={g2}>
+              <div style={g2r}>
                 <Field label={isMultiCity ? "Total nights" : "Nights"} hint={isMultiCity ? "Auto-summed from cities" : (basics.startDate && basics.endDate ? "Synced with dates" : null)}>
                   <Inp value={isMultiCity ? String(totalNightsFromCities) : basics.nights} onChange={e => { if (isMultiCity) return; handleNightsChange(e.target.value); }} placeholder="7" />
                 </Field>
@@ -12868,7 +12913,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             {/* Output Sections — collapsible, available on Step 1 so users can
                 preview and trim add-on sections before continuing. Same outputs
                 state as Step 2's Output Sections card. */}
-            <div style={cardStyle}>
+            <div style={cardStyleR}>
               <button
                 type="button"
                 onClick={() => setStep1OutputsOpen(!step1OutputsOpen)}
@@ -12893,7 +12938,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               )}
             </div>
 
-            <button disabled={!ready} onClick={() => ready && setStep(2)}
+            <button disabled={!ready} onClick={() => { if (ready) { setOutputsStep(false); setStep(2); } }}
               style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: ready ? "pointer" : "not-allowed", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: ready ? "var(--color-text-primary)" : "var(--color-border-secondary)", color: "var(--color-background-primary)", opacity: ready ? 1 : 0.5 }}>
               Continue — Add Details →
             </button>
@@ -12960,12 +13005,19 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               </button>
             </div>
             <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={dismissStale} />
+
+            {/* Step 2 is a two-screen flow. The Details screen collects the
+                structured inputs + the written description; the build trigger
+                and progress panel live ONLY on the Outputs screen below, so
+                nothing here can start a build. */}
+            {!outputsStep ? (
+            <>
             <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Fill in what you know. Leave anything blank and the planner will suggest.</p>
 
-            <div style={cardStyle}>
+            <div style={cardStyleR}>
               <p style={ctStyle}>Trip style</p>
               <Field label="Style" hint="Tap one or more"><Sel multi value={basics.style} onChange={e => setB({ ...basics, style: e.target.value })} opts={["Cultural / sightseeing","Golf / sport","Food & wine","Beach / relaxation","Adventure / outdoor","Mixed"]} /></Field>
-              <div style={{ ...g2, marginTop: "16px" }}>
+              <div style={{ ...g2r, marginTop: "16px" }}>
                 <Field label="Pace"><Sel value={basics.pace} onChange={e => setB({ ...basics, pace: e.target.value })} opts={["Relaxed (1–2 things/day)","Moderate (2–3 things/day)","Full (3–4 things/day)"]} /></Field>
                 <Field label="Budget"><Sel value={basics.budget} onChange={e => setB({ ...basics, budget: e.target.value })} opts={["$$ — value","$$$ — mid range","$$$$ — luxury","$$$$$ — ultra high end"]} /></Field>
               </div>
@@ -12976,7 +13028,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 as the highest-priority directive. Sits high in the form
                 (right after basics) so it's the first thing users see when
                 they have specifics in mind. */}
-            <div style={cardStyle}>
+            <div style={cardStyleR}>
               <p style={ctStyle}>Tell me about the trip</p>
               <Field label="Anything else" hint="Type or dictate. Mention specific hotels with confirmation numbers, flight legs, named guides or drivers, kids’ ages, anniversaries, dietary needs, days you want quiet, anchor reservations — anything the form above didn’t capture. The planner treats this as the source of truth.">
                 <NarrativeBox
@@ -12988,9 +13040,9 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             </div>
 
             {!flights.noFlight && (
-              <div style={cardStyle}>
+              <div style={cardStyleR}>
                 <p style={ctStyle}>Flights</p>
-                <div style={g3}>
+                <div style={g3r}>
                   <Field label="Preferred airline"><AirlineAutocomplete value={flights.airline} onChange={e => setF({ ...flights, airline: e.target.value })} placeholder="Click to see airlines…" homeAirport={flights.homeAirport} destination={basics.destination} /></Field>
                   <Field label="Cabin"><Sel value={flights.cabin} onChange={e => setF({ ...flights, cabin: e.target.value })} opts={["Business / Polaris","Premium economy","Economy"]} /></Field>
                   <Field label="Date flexibility"><Sel value={flights.flex} onChange={e => setF({ ...flights, flex: e.target.value })} opts={["Exact date only","± 1 day","± 2 days"]} /></Field>
@@ -12998,7 +13050,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               </div>
             )}
 
-            <div style={cardStyle}>
+            <div style={cardStyleR}>
               <p style={ctStyle}>Hotel</p>
               <Field label="Brand family" hint="Tap one or more"><Sel multi value={hotel.brand} onChange={e => setH({ ...hotel, brand: e.target.value })} opts={["Marriott / Bonvoy","Hilton Honors","Hyatt","IHG","Four Seasons","Ritz-Carlton","Aman","Independent / boutique"]} /></Field>
               <div style={{ marginTop: "16px" }}>
@@ -13007,40 +13059,52 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               <Field label="Must-haves"><HotelMustHaveAutocomplete value={hotel.mustHave} onChange={e => setH({ ...hotel, mustHave: e.target.value })} placeholder="e.g. pool, walkable to dining" /></Field>
             </div>
 
-            <div style={cardStyle}>
+            <div style={cardStyleR}>
               <p style={ctStyle}>Ground transport</p>
               <Field label="Type" hint="Tap one or more"><Sel multi value={transport.type} onChange={e => setT({ ...transport, type: e.target.value })} opts={["Rental car","Private driver","Rideshare / taxi","Train / rail","No car needed"]} /></Field>
-              <div style={{ ...g2, marginTop: "16px" }}>
+              <div style={{ ...g2r, marginTop: "16px" }}>
                 <Field label="Preferred company"><RentalCompanyAutocomplete value={transport.company} onChange={e => setT({ ...transport, company: e.target.value })} placeholder="e.g. Hertz, Sixt" airport={flights.homeAirport} /></Field>
                 <Field label="Vehicle type"><VehicleAutocomplete value={transport.vehicle} onChange={e => setT({ ...transport, vehicle: e.target.value })} placeholder="e.g. SUV, sedan" /></Field>
               </div>
             </div>
 
-            <div style={cardStyle}>
+            <div style={cardStyleR}>
               <p style={ctStyle}>Dining</p>
-              <div style={g2}>
+              <div style={g2r}>
                 <Field label="Cuisine preferences"><CuisineAutocomplete value={dining.cuisine} onChange={e => setD({ ...dining, cuisine: e.target.value })} placeholder="e.g. local, seafood, wine-focused" /></Field>
                 <Field label="Per-dinner budget" hint="Tap one or more"><Sel multi value={dining.budget} onChange={e => setD({ ...dining, budget: e.target.value })} opts={["$$ — casual ($30–60pp)","$$$ — mid ($60–120pp)","$$$$ — fine dining ($120pp+)"]} /></Field>
               </div>
               <TagInput placeholder="Add a restaurant or dining type" tags={restaurants} setTags={setRest} suggestions={getRestaurantSuggestions(basics.destination)} />
             </div>
 
-            <div style={cardStyle}>
+            <div style={cardStyleR}>
               <p style={ctStyle}>Activities</p>
-              <div style={g2}>
+              <div style={g2r}>
                 <Field label="Physical level"><Sel value={interests.level} onChange={e => setInt({ ...interests, level: e.target.value })} opts={["Easy — mostly walking","Moderate — some hiking","Active — full days on feet"]} /></Field>
                 <Field label="Interests"><InterestsAutocomplete value={interests.text} onChange={e => setInt({ ...interests, text: e.target.value })} placeholder="e.g. art, wine, architecture, golf" /></Field>
               </div>
               <TagInput placeholder="Add a specific activity" tags={activities} setTags={setActs} suggestions={getActivitySuggestions(basics.destination)} />
             </div>
 
-            <div style={cardStyle}>
+            {/* Primary CTA off the Details screen — pure navigation to the
+                Outputs screen. It does NOT start a build (see Issue 1). */}
+            <button onClick={() => { setOutputsStep(true); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }}
+              style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
+              Jump to select outputs →
+            </button>
+            </>
+            ) : (
+            <>
+            {/* OUTPUTS SCREEN — the output-section choices plus the single build
+                trigger. The progress panel only mounts here, and only once
+                `loading` is true from an explicit "Build itinerary" tap. */}
+            <div style={cardStyleR}>
               <p style={ctStyle}>{`Output sections  ·  ${activeCount} of 12 active`}</p>
               {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} disabled={k === "itinerary"} />)}
             </div>
 
             <div style={{ display: "flex", gap: "10px", marginTop: "0.5rem" }}>
-              <button onClick={() => setStep(1)} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>← Back</button>
+              <button onClick={() => { setOutputsStep(false); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }} disabled={loading} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", opacity: loading ? 0.5 : 1 }}>← Back</button>
               {loading ? (
                 <button onClick={handleCancel}
                   style={{ flex: 1, border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}>
@@ -13057,7 +13121,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               ) : (
                 <button onClick={handleBuild} disabled={loading}
                   style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
-                  Build Trip Plan →
+                  Build itinerary
                 </button>
               )}
             </div>
@@ -13184,6 +13248,8 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             )}
             {error && <p style={{ fontSize: "12px", color: "var(--color-text-danger, #c0392b)", marginTop: "8px", textAlign: "center" }}>{error}</p>}
             <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>{isMultiCity && cities.length >= 3 ? "Typical 3‑city plan: 5–7 minutes. Stays building if you switch tabs." : isMultiCity ? "Typical multi‑city plan: 3–5 minutes. Stays building if you switch tabs." : "Typical plan: 2–3 minutes. Stays building if you switch tabs."}</p>
+            </>
+            )}
           </div>
         )}
 
