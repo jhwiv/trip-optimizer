@@ -3,6 +3,7 @@ import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { buildDateTable } from "./dateFacts.js";
+import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames } from "./chunkPlan.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -182,6 +183,10 @@ const CITIES = [
   { name: "Dubrovnik", country: "Croatia" },
   { name: "Split", country: "Croatia" },
   { name: "Hvar", country: "Croatia" },
+  { name: "Rovinj", country: "Croatia" },
+  { name: "Zadar", country: "Croatia" },
+  { name: "Plitvice Lakes", country: "Croatia" },
+  { name: "Korčula", country: "Croatia" },
   { name: "Tokyo", country: "Japan" },
   { name: "Kyoto", country: "Japan" },
   { name: "Osaka", country: "Japan" },
@@ -1166,6 +1171,76 @@ function hourToBucket(h) {
 }
 
 function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, onFlightConfirmed }) {
+  // Hooks MUST run unconditionally on every render and BEFORE any early
+  // return (React rules-of-hooks). They are hoisted here and use null-safe
+  // reads of `f` so they remain valid even when `f` is absent; the
+  // `if (!f) return null` guard sits immediately after the hook block.
+  const _isoDate = parseDayLabelToISODate(dayLabel);
+  const _knownIdent = parseFlightIdent(f);
+  const _carrierLower = (f?.carrier || "").toLowerCase();
+  const _airlineIata = _carrierLower.includes("united") ? "UA"
+    : _carrierLower.includes("american") ? "AA"
+    : _carrierLower.includes("delta") ? "DL"
+    : _carrierLower.includes("jetblue") ? "B6"
+    : _carrierLower.includes("southwest") ? "WN"
+    : _carrierLower.includes("alaska") ? "AS"
+    : _carrierLower.includes("frontier") ? "F9"
+    : _carrierLower.includes("spirit") ? "NK"
+    : _carrierLower.includes("lufthansa") ? "LH"
+    : _carrierLower.includes("swiss") ? "LX"
+    : _carrierLower.includes("air france") ? "AF"
+    : _carrierLower.includes("klm") ? "KL"
+    : _carrierLower.includes("british") ? "BA"
+    : _carrierLower.includes("iberia") ? "IB"
+    : _carrierLower.includes("cathay") ? "CX"
+    : _carrierLower.includes("ana") || _carrierLower.includes("all nippon") ? "NH"
+    : _carrierLower.includes("jal") || _carrierLower.includes("japan airlines") ? "JL"
+    : null;
+  const [schedFlights, setSchedFlights] = useState(null);
+  const [schedLoading, setSchedLoading] = useState(false);
+  const [schedError, setSchedError] = useState(null);
+  const [lockedFlight, setLockedFlight] = useState(null);
+  const [timeFilter, setTimeFilter] = useState(() => hourToBucket(parseHour(f?.depart_time)));
+  useEffect(() => {
+    if (!f || !_isoDate || _knownIdent || !f.from_airport || !f.to_airport) return;
+    let cancelled = false;
+    const params = new URLSearchParams({ date: _isoDate });
+    params.set("origin", f.from_airport);
+    params.set("destination", f.to_airport);
+    if (_airlineIata) params.set("airline", _airlineIata);
+    // Defer the loading/error state resets off the synchronous effect body
+    // so they don't trigger a cascading render (react-hooks lint rule).
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setSchedLoading(true);
+      setSchedError(null);
+    });
+    fetch(`/api/flights-search?${params}`)
+      .then(r => r.json())
+      .then(j => {
+        if (cancelled) return;
+        if (j.ok && Array.isArray(j.flights)) {
+          const filtered = _airlineIata
+            ? j.flights.filter(fl => (fl.flightNumber || "").toUpperCase().startsWith(_airlineIata))
+            : j.flights;
+          setSchedFlights(filtered.length > 0 ? filtered : j.flights);
+        } else {
+          setSchedError(j.error || "No flights found");
+        }
+      })
+      .catch(() => { if (!cancelled) setSchedError("Request failed"); })
+      .finally(() => { if (!cancelled) setSchedLoading(false); });
+    return () => { cancelled = true; };
+  }, [f, _isoDate, _knownIdent, _airlineIata]);
+  const filteredFlights = useMemo(() => {
+    if (!schedFlights) return null;
+    if (timeFilter === "all") return schedFlights;
+    return schedFlights.filter(fl => {
+      if (!fl.scheduledOut) return false;
+      return hourToBucket(new Date(fl.scheduledOut).getHours()) === timeFilter;
+    });
+  }, [schedFlights, timeFilter]);
+
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
   const stopLabel = f.nonstop ? "Nonstop" : (f.connection ? `Connect ${f.connection}` : "Connecting");
@@ -1221,68 +1296,10 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   // already have a concrete flight number to track live — if parseFlightIdent
   // returns a real ident (e.g. "UA57"), the LiveFlightStatus panel below
   // gives the user authoritative AeroAPI data and the lookup button is
-  // redundant + misleading.
-  const isoDate = parseDayLabelToISODate(dayLabel);
-  const knownIdent = parseFlightIdent(f);
+  // redundant + misleading. These derive from the hoisted hook inputs above.
+  const isoDate = _isoDate;
+  const knownIdent = _knownIdent;
   const lookupUrl = buildGoogleFlightsUrl(f.from_airport, f.to_airport, isoDate);
-  // Schedules lookup state — auto-fetched on mount when no knownIdent.
-  const [schedFlights, setSchedFlights] = useState(null);
-  const [schedLoading, setSchedLoading] = useState(false);
-  const [schedError, setSchedError] = useState(null);
-  const [lockedFlight, setLockedFlight] = useState(null);
-  const [timeFilter, setTimeFilter] = useState(() => hourToBucket(parseHour(f.depart_time)));
-  const airlineIata = carrierLower.includes("united") ? "UA"
-    : carrierLower.includes("american") ? "AA"
-    : carrierLower.includes("delta") ? "DL"
-    : carrierLower.includes("jetblue") ? "B6"
-    : carrierLower.includes("southwest") ? "WN"
-    : carrierLower.includes("alaska") ? "AS"
-    : carrierLower.includes("frontier") ? "F9"
-    : carrierLower.includes("spirit") ? "NK"
-    : carrierLower.includes("lufthansa") ? "LH"
-    : carrierLower.includes("swiss") ? "LX"
-    : carrierLower.includes("air france") ? "AF"
-    : carrierLower.includes("klm") ? "KL"
-    : carrierLower.includes("british") ? "BA"
-    : carrierLower.includes("iberia") ? "IB"
-    : carrierLower.includes("cathay") ? "CX"
-    : carrierLower.includes("ana") || carrierLower.includes("all nippon") ? "NH"
-    : carrierLower.includes("jal") || carrierLower.includes("japan airlines") ? "JL"
-    : null;
-  useEffect(() => {
-    if (!isoDate || knownIdent || !f.from_airport || !f.to_airport) return;
-    let cancelled = false;
-    setSchedLoading(true);
-    setSchedError(null);
-    const params = new URLSearchParams({ date: isoDate });
-    params.set("origin", f.from_airport);
-    params.set("destination", f.to_airport);
-    if (airlineIata) params.set("airline", airlineIata);
-    fetch(`/api/flights-search?${params}`)
-      .then(r => r.json())
-      .then(j => {
-        if (cancelled) return;
-        if (j.ok && Array.isArray(j.flights)) {
-          const filtered = airlineIata
-            ? j.flights.filter(fl => (fl.flightNumber || "").toUpperCase().startsWith(airlineIata))
-            : j.flights;
-          setSchedFlights(filtered.length > 0 ? filtered : j.flights);
-        } else {
-          setSchedError(j.error || "No flights found");
-        }
-      })
-      .catch(() => { if (!cancelled) setSchedError("Request failed"); })
-      .finally(() => { if (!cancelled) setSchedLoading(false); });
-    return () => { cancelled = true; };
-  }, [isoDate, f.from_airport, f.to_airport, airlineIata, knownIdent]);
-  const filteredFlights = useMemo(() => {
-    if (!schedFlights) return null;
-    if (timeFilter === "all") return schedFlights;
-    return schedFlights.filter(fl => {
-      if (!fl.scheduledOut) return false;
-      return hourToBucket(new Date(fl.scheduledOut).getHours()) === timeFilter;
-    });
-  }, [schedFlights, timeFilter]);
   return (
     <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
@@ -9490,7 +9507,7 @@ export default function TripOptimizer() {
   // BLANK = truly empty state. Used on every launch and on "Plan another trip".
   const BLANK = {
     basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: "" },
-    flights: { homeAirport: "EWR", airline: "United", cabin: "", flex: "", noFlight: false },
+    flights: { homeAirport: "EWR", airline: "", cabin: "", flex: "", noFlight: false },
     hotel: { brand: ["Marriott / Bonvoy"], tier: "", mustHave: "" },
     transport: { type: [], company: "Hertz", vehicle: "" },
     dining: { cuisine: "", budget: [] },
@@ -11175,6 +11192,41 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         parsed._truncationCause = "max_tokens";
       }
 
+      applyBuiltPlan(parsed, { nightsNum });
+    } catch (err) {
+      let msg;
+      if (err?.name === "AbortError") {
+        msg = "Build cancelled. The server may still be finishing — reopen the page within a few minutes to resume.";
+      } else if (err?.notFound) {
+        msg = "That build expired or was not found. Tap Build again.";
+        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+      } else {
+        msg = err?.message || "Something went wrong generating the plan. Please try again.";
+        try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+      }
+      setError(msg);
+    } finally {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      try { if (wakeLock) await wakeLock.release(); } catch {}
+      clearInterval(phaseTimer);
+      clearInterval(elapsedTimer);
+      clearTimeout(hardTimeout);
+      clearTimeout(slowNotice);
+      abortRef.current = null;
+      setLoading(false);
+      setLoadingMsg("");
+      setProgress(0);
+      setProgressLabel("");
+      setElapsedSec(0);
+    }
+  };
+
+  // Post-parse downstream shared by the single-call build and the chunked
+  // build: validate day count, swap in the new plan, then fire the
+  // background grounding passes (booking confirmation + Places verification +
+  // pacing). Both paths converge here so a chunked plan renders and verifies
+  // exactly like a single-call one.
+  const applyBuiltPlan = (parsed, { nightsNum }) => {
       const expectedDays = nightsNum + 1;
       const gotDays = Array.isArray(parsed?.days) ? parsed.days.length : 0;
       if (gotDays === 0) {
@@ -11359,10 +11411,185 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
              user just doesn't get the Places-verified overlay. */
         }
       })();
+  };
+
+  // Chunked build orchestrator for large trips (see CHUNKED_BUILD_SPEC.md).
+  // A maxed single build needs up to 64k output tokens (~17.5 min) which
+  // exceeds the 15-min client polling window, so big trips time out. We split
+  // the itinerary into day-range chunks, generate each well under the ceiling,
+  // run a small wrapper pass for the non-day fields, then stitch one canonical
+  // plan identical in shape to the single-call output and feed it through the
+  // SAME downstream path (applyBuiltPlan). Chunks run sequentially so each can
+  // be told the prior chunks' restaurants for cross-chunk dedupe.
+  const runChunkedBuild = async ({ nightsNum, citiesCount, chunks, staticRules, dynamicPreamble, userPromptForBuild }) => {
+    setLoading(true);
+    setError("");
+    setProgress(0);
+    setProgressLabel("");
+    setElapsedSec(0);
+
+    const expectedDays = nightsNum + 1;
+    const startedAt = Date.now();
+    // Total wall-clock scales with the number of chunks (+ wrapper). Each chunk
+    // is short, so this is far more generous per chunk than a single maxed call.
+    const targetSec = Math.round(90 + (chunks.length + 1) * 60 + Math.max(0, citiesCount - 1) * 30);
+
+    const elapsedTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - startedAt) / 1000);
+      setElapsedSec(sec);
+    }, 250);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const hardTimeoutMs = Math.max(600000, targetSec * 1000 * 3);
+    const hardTimeout = setTimeout(() => controller.abort(new Error("Polled too long")), hardTimeoutMs);
+    // Per-chunk poll ceiling. Each chunk is small (<=6 days) so it finishes
+    // well inside this, but we keep a generous floor so a momentary stall
+    // doesn't guillotine an in-flight chunk.
+    const maxPollMsForTrip = Math.max(15 * 60 * 1000, Math.round(targetSec * 1000 * 2.5));
+
+    // Reuse the SAME cached system blocks + tools across every chunk and the
+    // wrapper so the static rulebook stays the cached prefix (prompt caching).
+    const systemBlocks = cachedSystemBlocks(staticRules, dynamicPreamble);
+    const tools = cachedTools([TRIP_PLAN_TOOL]);
+    const toolChoice = { type: "tool", name: "submit_trip_plan" };
+
+    // Reconnect bookkeeping: store the array of chunk jobIds. The single-call
+    // resume effect bails when `jobId` is absent, so this shape won't trigger
+    // (or break) the existing single-call reconnect. Full chunked resume is
+    // not wired — see CHUNKED_BUILD_IMPL_NOTES.md.
+    const chunkJobIds = [];
+    const persistJobIds = () => {
+      try {
+        localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({
+          chunked: true,
+          jobIds: chunkJobIds,
+          startedAt,
+          nightsNum,
+          citiesCount,
+          destination: basics.destination || (basics.cities?.[0]?.name) || "your trip",
+        }));
+      } catch {}
+    };
+
+    try {
+      const chunkPlans = [];
+      const usedRestaurants = [];
+
+      for (let i = 0; i < chunks.length; i++) {
+        const c = chunks[i];
+        setLoadingMsg(`Building days ${c.startDay}–${c.endDay} (chunk ${i + 1}/${chunks.length})…`);
+        setProgress(Math.max(0.02, i / (chunks.length + 1)));
+
+        const usedList = usedRestaurants.length ? usedRestaurants.join(", ") : "(none yet)";
+        const cityHint = Array.isArray(c.cityNames) && c.cityNames.length
+          ? ` These days belong to: ${c.cityNames.join(" / ")}. Set each day's "city" field to its city name (use "From→To" only on an actual inter-city transit day).`
+          : "";
+        const chunkConstraint = `\n\nCHUNK MODE — GENERATE ONLY Day ${c.startDay}–Day ${c.endDay}.\nReturn days[] containing ONLY those days (in order). Do NOT include any other day. Omit logistics/weather_window/pack/flags/planb/snobs/tonight in chunk mode (a final pass produces them). Still copy the weekday stamps from the COMPUTED DATE TABLE.\nIMPORTANT: every day in this chunk MUST set its "city" field.${cityHint}\nRestaurants already used on earlier days (do NOT reuse): ${usedList}.`;
+
+        const body = {
+          model: "claude-sonnet-4-5",
+          max_tokens: chunkMaxTokens(c),
+          system: systemBlocks,
+          messages: [{ role: "user", content: userPromptForBuild + chunkConstraint }],
+          tools,
+          tool_choice: toolChoice,
+        };
+
+        const { toolJson, stopReason } = await streamBuildJob(body, {
+          signal: controller.signal,
+          maxPollMs: maxPollMsForTrip,
+          onJob: (id) => { chunkJobIds[i] = id; persistJobIds(); },
+          onDelta: () => {},
+        });
+        // A chunk that ends on max_tokens is truncated regardless of how well
+        // its JSON parses — its tail days/items may be cut off. Fail loudly
+        // (surface the existing cut-off error) rather than stitching a partial
+        // segment that would silently ship an incomplete itinerary.
+        if (stopReason === "max_tokens") {
+          throw new Error(`The plan was cut off while building days ${c.startDay}–${c.endDay} (hit the length limit). Try again, or reduce the trip length.`);
+        }
+        const { parsed: chunkPlan } = parseToolJson(toolJson);
+        chunkPlans.push(chunkPlan);
+        for (const name of collectRestaurantNames(chunkPlan)) usedRestaurants.push(name);
+      }
+
+      // Wrapper pass — one small call for the non-day fields. We hand it a
+      // compact summary of the assembled days (label + city + a couple key
+      // item names) so it can write a coherent intro / Plan B / snobs guide
+      // WITHOUT regenerating the (token-dominant) itinerary.
+      setLoadingMsg("Assembling final plan…");
+      setProgress(chunks.length / (chunks.length + 1));
+
+      const assembledDays = [];
+      for (const cp of chunkPlans) {
+        for (const d of (Array.isArray(cp?.days) ? cp.days : [])) assembledDays.push(d);
+      }
+      const summaryLines = assembledDays.map((d, idx) => {
+        const items = Array.isArray(d?.items) ? d.items : [];
+        const keyNames = items
+          .map((it) => String(it?.name || it?.place || "").trim())
+          .filter(Boolean)
+          .slice(0, 2)
+          .join(", ");
+        const label = String(d?.label || `Day ${idx + 1}`).trim();
+        const city = d?.city ? ` (${d.city})` : "";
+        return `${label}${city}: ${keyNames || "—"}`;
+      });
+      const wrapperConstraint = `\n\nASSEMBLED ITINERARY (for reference — do NOT regenerate days):\n${summaryLines.join("\n")}\n\nWRAPPER MODE — GENERATE ONLY the wrapper fields: destination, meta, cities[], logistics, weather_window, pack, flags, planb (>=5 entries), snobs, tonight. Return an EMPTY days[] array. Do NOT regenerate the day-by-day itinerary — it is already built above.`;
+
+      const wrapperBody = {
+        model: "claude-sonnet-4-5",
+        max_tokens: 6000,
+        system: systemBlocks,
+        messages: [{ role: "user", content: userPromptForBuild + wrapperConstraint }],
+        tools,
+        tool_choice: toolChoice,
+      };
+      const { toolJson: wrapperJson } = await streamBuildJob(wrapperBody, {
+        signal: controller.signal,
+        maxPollMs: maxPollMsForTrip,
+        onJob: (id) => { chunkJobIds[chunks.length] = id; persistJobIds(); },
+        onDelta: () => {},
+      });
+      let wrapper = {};
+      try {
+        wrapper = parseToolJson(wrapperJson).parsed || {};
+      } catch {
+        // Wrapper is non-essential — the itinerary is the product. If it
+        // comes back unparseable, ship the days with empty wrapper fields
+        // rather than failing the whole build.
+        wrapper = {};
+      }
+
+      setProgress(1);
+      setProgressLabel("Finalizing…");
+
+      // Stitch throws if the assembled day count != expectedDays. That means a
+      // chunk came back short — surface it as the existing truncation error
+      // rather than shipping a broken plan.
+      let stitched;
+      try {
+        stitched = stitchPlan({ dayChunks: chunkPlans, wrapper, expectedDays });
+      } catch (stitchErr) {
+        const e = new Error("The plan was cut off before it finished — one of the day chunks came back short. Try again.");
+        e.cause = stitchErr;
+        throw e;
+      }
+      const { plan, warnings } = stitched;
+      if (warnings.length) { try { console.warn("[trip-optimizer] stitchPlan warnings:", warnings); } catch {} }
+
+      applyBuiltPlan(plan, { nightsNum });
     } catch (err) {
+      // Mirror runBuildForJob's catch semantics so the chunked path behaves
+      // identically: keep ACTIVE_JOB_KEY on a cancel/timeout abort (so the
+      // user can reopen to resume), use the dedicated copy for an expired job,
+      // and only clear the key on a genuine hard error.
       let msg;
       if (err?.name === "AbortError") {
         msg = "Build cancelled. The server may still be finishing — reopen the page within a few minutes to resume.";
+        // Intentionally DO NOT remove ACTIVE_JOB_KEY here — the chunk jobIds
+        // stay persisted for a future resume (see CHUNKED_BUILD_IMPL_NOTES.md).
       } else if (err?.notFound) {
         msg = "That build expired or was not found. Tap Build again.";
         try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
@@ -11372,12 +11599,8 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       }
       setError(msg);
     } finally {
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      try { if (wakeLock) await wakeLock.release(); } catch {}
-      clearInterval(phaseTimer);
       clearInterval(elapsedTimer);
       clearTimeout(hardTimeout);
-      clearTimeout(slowNotice);
       abortRef.current = null;
       setLoading(false);
       setLoadingMsg("");
@@ -11547,6 +11770,18 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         // we ship the build without the snippets — plan still gets made.
         try { console.warn("[trip-optimizer] local-knowledge retrieval skipped:", retrieveErr?.message || retrieveErr); } catch {}
       }
+    }
+
+    // Large trips would need a single max_tokens budget past the model's
+    // output ceiling and the client polling window, so they time out. When the
+    // single-call estimate exceeds the safe budget, split the build into
+    // day-range chunks + a wrapper pass and stitch the result. Small/medium
+    // trips (at/below the threshold) keep the EXISTING single-call path below,
+    // byte-for-byte unchanged.
+    if (shouldChunk({ nights: nightsNum, citiesCount })) {
+      const chunks = planDayChunks({ nights: nightsNum, cities: isMultiCity ? cities : null });
+      await runChunkedBuild({ nightsNum, citiesCount, chunks, staticRules, dynamicPreamble, userPromptForBuild });
+      return;
     }
 
     const body = {
