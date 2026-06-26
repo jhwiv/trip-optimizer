@@ -4,6 +4,7 @@ import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, find
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { buildDateTable } from "./dateFacts.js";
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
+import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, activityHeadName, itemVenueName } from "./swapAlternatives.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -1472,7 +1473,13 @@ function HotelCard({ type, time, end_time, hotel: h, text }) {
   );
 }
 
-function DayBlock({ day, dayIndex, onOpenMenu }) {
+function DayBlock({ day, dayIndex, onOpenMenu, legCity, onSwapItem }) {
+  const sameDayItems = day?.items || [];
+  // Build the "Find another …" control for a card, when swapping is enabled.
+  const swapControlFor = (item, kind) =>
+    onSwapItem
+      ? <FindAnotherControl key={`swap-${itemVenueName(item, kind)}`} kind={kind} city={legCity} currentItem={item} sameDayItems={sameDayItems} onSwap={(chosen) => onSwapItem(dayIndex, item, kind, chosen)} />
+      : null;
   // Sort items chronologically by `time`. Items without a time keep their
   // original order and sink to the end. Index is the stable tiebreaker.
   const sortedItems = (day?.items || [])
@@ -1522,7 +1529,7 @@ function DayBlock({ day, dayIndex, onOpenMenu }) {
         }
         // Activity items: rich card whenever there's contact info or a why blurb.
         if (item.type === "Activity" && (item.contact || item.why)) {
-          return <ActivityCard key={i} time={item.time} end_time={item.end_time} item={item} />;
+          return <ActivityCard key={i} time={item.time} end_time={item.end_time} item={item} swapControl={swapControlFor(item, "activity")} />;
         }
         // Dining items with a structured restaurant payload render as a rich card with a time pill.
         if (item.restaurant && (item.type === "Dinner" || item.type === "Lunch" || item.type === "Breakfast" || item.type === "Brunch" || item.type === "Dining")) {
@@ -1533,7 +1540,7 @@ function DayBlock({ day, dayIndex, onOpenMenu }) {
                   <TimePill time={item.time} end_time={item.end_time} />
                 </div>
               )}
-              <RestaurantCard type={item.type} restaurant={item.restaurant} onOpenMenu={onOpenMenu} />
+              <RestaurantCard type={item.type} restaurant={item.restaurant} onOpenMenu={onOpenMenu} swapControl={swapControlFor(item, "restaurant")} />
             </div>
           );
         }
@@ -1718,11 +1725,140 @@ function ContactBlock({ contact, name }) {
   );
 }
 
+// "Find another restaurant / activity" — inline picker rendered on itinerary
+// cards. On open it fetches real, currently-operating alternatives from the
+// SAME engine that powers FindView (POST /api/find), filters out lodging and
+// anything already on the day / in the slot, and lets the user swap one in.
+// The actual plan mutation + persistence happens in the parent via onSwap
+// (replace_item patch → onPlanRevised); this component only handles fetch,
+// selection and the picker UI.
+function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [alts, setAlts] = useState(null);
+  const fetchedRef = useRef(false);
+  const isRestaurant = kind === "restaurant";
+  const label = isRestaurant ? "Find another restaurant" : "Find another activity";
+
+  const fetchAlternatives = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/find", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: city,
+          category: isRestaurant ? "restaurants" : "activities",
+          guidelines: "",
+          mode: "standard",
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(json?.error?.message || `Couldn't load alternatives (${res.status}).`);
+        return;
+      }
+      const pool = (isRestaurant ? json?.results?.restaurants : json?.results?.activities) || [];
+      const filtered = pool.filter(findIsNotLodging);
+      const picks = selectAlternatives(filtered, { currentItem, sameDayItems, kind, max: 3 });
+      if (picks.length === 0) {
+        setError("No fresh alternatives came back for this spot. Try again later or keep the current pick.");
+      } else {
+        setAlts(picks);
+      }
+    } catch (err) {
+      setError(`Couldn't reach the search service. ${String(err?.message || err).slice(0, 80)}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleToggle = () => {
+    if (open) { setOpen(false); return; }
+    setOpen(true);
+    if (!fetchedRef.current) {
+      fetchedRef.current = true;
+      if (!city) {
+        setError("Couldn't determine the city for this day, so we can't search for alternatives.");
+      } else {
+        fetchAlternatives();
+      }
+    }
+  };
+
+  const handleUse = (chosen) => {
+    onSwap(chosen);
+    setOpen(false);
+  };
+
+  return (
+    <div className="no-print" style={{ marginTop: "10px", paddingTop: "10px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
+      <button
+        type="button"
+        onClick={handleToggle}
+        aria-expanded={open}
+        style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: open ? GOLD : "transparent", color: open ? "#0F0F0F" : GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}
+      >{open ? "Close" : `↻ ${label}`}</button>
+      {open && (
+        <div style={{ marginTop: "10px" }}>
+          {loading && (
+            <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", fontStyle: "italic", margin: 0 }}>
+              <span style={{ display: "inline-block", width: "10px", height: "10px", marginRight: "7px", border: `2px solid ${GOLD}`, borderTopColor: "transparent", borderRadius: "50%", animation: "swap-spin 0.7s linear infinite", verticalAlign: "middle" }} />
+              Finding {isRestaurant ? "restaurants" : "activities"} in {city}…
+              <style>{"@keyframes swap-spin { to { transform: rotate(360deg); } }"}</style>
+            </p>
+          )}
+          {error && !loading && (
+            <p role="alert" style={{ fontSize: "12px", color: "#8C1F1F", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", padding: "8px 12px", margin: 0 }}>{error}</p>
+          )}
+          {alts && !loading && !error && (
+            <div>
+              <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, margin: "0 0 8px" }}>
+                {alts.length === 3 ? "3 alternatives" : `${alts.length} alternative${alts.length === 1 ? "" : "s"} (only ${alts.length} available)`} · pick one to swap in
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {alts.map((a, i) => {
+                  const name = isRestaurant ? a.name : activityHeadName(a.text);
+                  const sub = isRestaurant
+                    ? [a.neighborhood, a.cuisine, a.price_range].filter(Boolean).join("  ·  ")
+                    : [a.type, a.duration, a.location].filter(Boolean).join("  ·  ");
+                  const why = isRestaurant ? a.why : (a.text && a.text.indexOf(" — ") > 0 ? a.text.slice(a.text.indexOf(" — ") + 3) : a.why);
+                  return (
+                    <div key={`${name}-${i}`} style={{ border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 12px", background: "var(--color-background-secondary)" }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: "10px", flexWrap: "wrap" }}>
+                        <div style={{ flex: 1, minWidth: "160px" }}>
+                          <p style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 3px", lineHeight: 1.3 }}>{name}</p>
+                          {sub && <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 3px", letterSpacing: "0.02em" }}>{sub}</p>}
+                          {why && <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.45 }}>{why}</p>}
+                          {(a.verify_status === "verify_before_booking") && (
+                            <p style={{ fontSize: "10.5px", color: "#8A6500", margin: "4px 0 0", fontStyle: "italic" }}>⚠︎ Verify status before booking.</p>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleUse(a)}
+                          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: GOLD, color: "#0F0F0F", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap" }}
+                        >Use this</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Activity card: rich treatment matching restaurant/hotel cards. Triggered
 // whenever an Activity item has contact info or a why blurb — otherwise we
 // fall back to the plain text-row rendering. Includes day badge for use in
 // the Activities tab (where items are pulled out of day context).
-function ActivityCard({ time, end_time, item, dayLabel }) {
+function ActivityCard({ time, end_time, item, dayLabel, swapControl }) {
   if (!item) return null;
   const contact = item.contact;
   const why = item.why;
@@ -1750,11 +1886,12 @@ function ActivityCard({ time, end_time, item, dayLabel }) {
       )}
       {why && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "4px 0 6px", lineHeight: 1.5 }}>{why}</p>}
       <ContactBlock contact={contact} name={head} />
+      {swapControl}
     </div>
   );
 }
 
-function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
+function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
   const resv = reservationLink(r);
   const platformLabel = resv ? ({
     opentable: "OpenTable", resy: "Resy", tock: "Tock", yelp: "Yelp", phone: "Call",
@@ -1881,6 +2018,7 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu }) {
           </div>
         </div>
       )}
+      {swapControl}
     </div>
   );
 }
@@ -5800,6 +5938,24 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   // Multi-city: track which day starts a new leg so we can render a divider.
   const cityByDay = (data.days || []).map(d => d.city || null);
   const isMultiCityPlan = Array.isArray(data.cities) && data.cities.length > 1;
+  const legCities = useMemo(() => collectPlanLegCities(rawData), [rawData]);
+
+  // "Find another restaurant / activity" swap. Alternatives come from the live
+  // /api/find engine (real, currently-operating only). We locate the item in
+  // the RAW plan (the rendered plan is quality-layered and may have items
+  // dropped/reordered), build a same-shape replacement that carries the
+  // alternative's verify_status/verify_url through untouched, then reuse the
+  // existing replace_item patch path and lift the revised plan so it persists.
+  const handleSwapItem = (dayIndex, item, kind, chosen) => {
+    if (!chosen || typeof onPlanRevised !== "function") return;
+    const itemIndex = findRawItemIndex(rawData, dayIndex, item, kind);
+    if (itemIndex < 0) return;
+    const newItem = buildSwapItem(rawData.days[dayIndex].items[itemIndex], chosen, kind);
+    const { plan: nextPlan, appliedCount } = applyPatchesToPlan(rawData, [
+      { op: "replace_item", day_index: dayIndex, item_index: itemIndex, new_item: newItem },
+    ]);
+    if (appliedCount > 0) onPlanRevised(nextPlan);
+  };
 
   // Collect every vendor URL in the plan (activities / transport / etc.) so we
   // can ask the server to verify they're reachable. Memoized so we only POST
@@ -5941,7 +6097,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
                     <span style={{ fontSize: "15px", fontFamily: "var(--font-serif)", fontStyle: "italic", letterSpacing: "-0.2px" }}>{d.city}</span>
                   </div>
                 )}
-                <DayBlock day={d} dayIndex={i} onOpenMenu={openMenu} />
+                <DayBlock day={d} dayIndex={i} onOpenMenu={openMenu} legCity={resolveLegCity(rawData, i, legCities)} onSwapItem={handleSwapItem} />
               </div>
             );
           })}
