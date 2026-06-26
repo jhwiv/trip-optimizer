@@ -165,6 +165,28 @@ export function collectRestaurantNames(planLike) {
 }
 
 /**
+ * Decide what to do with a persisted chunk job at resume time, given the
+ * result of probing GET /api/build/<jobId>?cursor=0 (or null if no jobId /
+ * the probe failed). Pure so it can be unit-tested.
+ *
+ *   null / notFound / non-object        -> "rerun"   (replay the stored body)
+ *   status === "done"                    -> "recover" (parse the returned text)
+ *   status === "running"                 -> "reattach" (pollJob to finish)
+ *   status === "error" / anything else   -> "rerun"
+ *
+ * @param {object|null} statusObj  parsed GET response, or null
+ * @returns {"recover"|"reattach"|"rerun"}
+ */
+export function classifyChunkResume(statusObj) {
+  if (!statusObj || typeof statusObj !== "object") return "rerun";
+  if (statusObj.notFound) return "rerun";
+  const s = statusObj.status;
+  if (s === "done") return "recover";
+  if (s === "running") return "reattach";
+  return "rerun"; // "error" or any unexpected state
+}
+
+/**
  * Stitch chunked day-segments + a wrapper pass into one canonical plan.
  *
  * @param {object} p
