@@ -184,24 +184,6 @@ function asciiSafe(s) {
 // box (## headers, **bold**, [text](url), -----, leading dashes for bullets)
 // down to clean prose with paragraph breaks. The PDF can't render the
 // markup, so left as-is it looked like a wall of code on the cover.
-function markdownToProse(s) {
-  if (!s) return "";
-  let t = String(s);
-  // Remove markdown link wrappers, keep the visible label: [text](url) -> text
-  t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
-  // Remove ATX headers but keep the title text on its own line.
-  t = t.replace(/^#{1,6}\s*/gm, "");
-  // Remove emphasis markers (** *** _italic_ etc.) without dropping content.
-  t = t.replace(/\*{1,3}([^*\n]+)\*{1,3}/g, "$1");
-  t = t.replace(/_{1,2}([^_\n]+)_{1,2}/g, "$1");
-  // Convert horizontal rules to blank lines.
-  t = t.replace(/^\s*-{3,}\s*$/gm, "");
-  // Leading bullets: "- item" -> "• item" (the bullet char is in CP1252).
-  t = t.replace(/^\s*[-*]\s+/gm, "\u2022 ");
-  // Collapse runs of >2 blank lines to a single blank line.
-  t = t.replace(/\n{3,}/g, "\n\n");
-  return t.trim();
-}
 
 // -----------------------------------------------------------------------------
 // PdfCursor — a tiny stateful helper for layout. Tracks current Y, page count,
@@ -1314,7 +1296,6 @@ function renderReferences(cur, data) {
       cur.state.y += lines.length * lineH + 1.5;
       // Auto-link any URLs embedded in the plan B text
       const urlRe2 = /https?:\/\/[^\s)>,"]+/g;
-      const telRe2 = /(?<!\d)(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}(?!\d)/g;
       const seen2 = new Set();
       const lhLink = (9 * 1.25) / 2.83465;
       let m2;
@@ -1455,7 +1436,7 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
       subject: safe(data?.meta) || "Travel itinerary",
       creator: "Trip Optimizer",
     });
-  } catch (_) { /* setProperties not critical */ }
+  } catch { /* setProperties not critical */ }
 
   const cur = makeCursor(pdf);
 

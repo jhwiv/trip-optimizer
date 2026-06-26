@@ -745,12 +745,6 @@ function destinationKey(destination) {
 // Given an array of currently-added chips and the previous destination key,
 // return which chips came from THAT destination's specific list and are NOT
 // in the new destination's specific list (i.e. stale picks worth flagging).
-function findStaleChips(chips, prevKey, newKey, byDestMap) {
-  if (!prevKey || prevKey === newKey || !Array.isArray(chips) || chips.length === 0) return [];
-  const prevList = byDestMap[prevKey] || [];
-  const newList = newKey ? (byDestMap[newKey] || []) : [];
-  return chips.filter(c => prevList.includes(c) && !newList.includes(c));
-}
 
 // Find chips that belong to SOME destination bucket other than the current
 // destination's bucket. Returns { staleChips, sourceKey } where sourceKey is
@@ -969,18 +963,6 @@ function parseDayLabelToISODate(label) {
 
 // Build a Google Flights deep-link for the route + date. Falls back to the
 // generic flights search if airports or date are missing.
-function buildGoogleFlightsUrl(fromIata, toIata, isoDate) {
-  if (!fromIata || !toIata) return "https://www.google.com/travel/flights";
-  const from = String(fromIata).toUpperCase();
-  const to = String(toIata).toUpperCase();
-  if (isoDate) {
-    // Google Flights text-search URL: works reliably without their opaque tfs token.
-    const q = encodeURIComponent(`Flights from ${from} to ${to} on ${isoDate}`);
-    return `https://www.google.com/travel/flights?q=${q}`;
-  }
-  const q = encodeURIComponent(`Flights from ${from} to ${to}`);
-  return `https://www.google.com/travel/flights?q=${q}`;
-}
 
 // Live flight status via the shared FlightAware-backed Worker that powers
 // santafejune.com. Worker contract:
@@ -1245,7 +1227,6 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
   const stopLabel = f.nonstop ? "Nonstop" : (f.connection ? `Connect ${f.connection}` : "Connecting");
   const note = f.confirmation_note || "";
-  const hasVerify = /verify/i.test(note);
   const carrierLower = (f.carrier || "").toLowerCase();
   // Multi-carrier strings like "SAS or Delta" — don't pick a single booking host;
   // user needs to pick the carrier first.
@@ -1299,7 +1280,6 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   // redundant + misleading. These derive from the hoisted hook inputs above.
   const isoDate = _isoDate;
   const knownIdent = _knownIdent;
-  const lookupUrl = buildGoogleFlightsUrl(f.from_airport, f.to_airport, isoDate);
   return (
     <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
@@ -3330,13 +3310,13 @@ async function clearShellCaches() {
       const regs = await navigator.serviceWorker.getRegistrations();
       await Promise.all(regs.map((r) => r.unregister()));
     }
-  } catch (_) { /* ignore */ }
+  } catch { /* ignore */ }
   try {
     if ('caches' in window) {
       const keys = await window.caches.keys();
       await Promise.all(keys.map((k) => window.caches.delete(k)));
     }
-  } catch (_) { /* ignore */ }
+  } catch { /* ignore */ }
 }
 function hardReloadNow() {
   const url = new window.URL(window.location.href);
@@ -3524,7 +3504,7 @@ function PrintRidesButton({ data, inputs }) {
     document.body.classList.add("printing-rides");
     // Defer print() to next tick so the class transition + repaint settles.
     setTimeout(() => {
-      try { window.print(); } catch (_e) {}
+      try { window.print(); } catch {}
       // Remove the class on the next idle so the regular itinerary view returns.
       setTimeout(() => document.body.classList.remove("printing-rides"), 100);
     }, 50);
@@ -3765,22 +3745,6 @@ function TripHero({ data }) {
   );
 }
 
-function DayNav({ days }) {
-  if (!days || days.length < 2) return null;
-  return (
-    <div style={{ position: "sticky", top: 0, zIndex: 5, background: "var(--color-background-primary)", paddingTop: "6px", paddingBottom: "8px", marginBottom: "10px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-      <div style={{ display: "flex", gap: "6px", overflowX: "auto", scrollbarWidth: "none", WebkitOverflowScrolling: "touch" }}>
-        {days.map((d, i) => {
-          const parts = (d.label || "").split(" · ");
-          const short = parts[1] || `Day ${i + 1}`;
-          return (
-            <a key={i} href={`#day-${i + 1}`} style={{ flex: "0 0 auto", fontSize: "10.5px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600, color: "var(--color-text-secondary)", padding: "5px 9px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", textDecoration: "none", whiteSpace: "nowrap", background: "var(--color-background-primary)" }}>{i + 1} · {short}</a>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 
 // ============================================================================
@@ -4306,7 +4270,7 @@ function EssentialsView({ data }) {
 // Tabbed shell. Row 1 of the sticky nav is the day-tab strip (Overview only,
 // now an interactive filter — click to focus a single day, "All" to see them
 // all). Row 2 is the section/reference strip. Default tab is "Overview".
-function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, onOpenMenu }) {
+function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, onOpenMenu: _onOpenMenu }) {
   const days = data.days || [];
   // Compute counts so we can show e.g. "Dining · 12" inline.
   const counts = useMemo(() => {
@@ -4567,7 +4531,6 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       } catch (retrieveErr) {
         // Aborted by user → propagate. Anything else → swallow and fall back.
         if (retrieveErr?.name === "AbortError") throw retrieveErr;
-        // eslint-disable-next-line no-console
         console.warn("[review-retrieve] live sources unavailable, falling back", retrieveErr);
       }
 
@@ -5738,7 +5701,7 @@ function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
   );
 }
 
-function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId, onPlanRevised, onReviewChange, initialReview }) {
+function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId: _savedTripId, onPlanRevised, onReviewChange, initialReview }) {
   // --- Menu modal state (lazy-fetch via /api/menu) ---
   // For large multi-city trips the build prompt now OMITS per-restaurant
   // menu data to keep the streaming response small (was 10-15k tokens of
@@ -6088,7 +6051,6 @@ function useURLVerification(urls) {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing local verify-status cache with url-set prop
     if (!key) { setStatus(new Map()); setIsReady(true); return; }
     let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting verify-status cache for new url-set
     setStatus(new Map());
     setIsReady(false);
     (async () => {
@@ -6108,7 +6070,7 @@ function useURLVerification(urls) {
         }
         setStatus(next);
         setIsReady(true);
-      } catch (_err) {
+      } catch {
         if (cancelled) return;
         // If verify endpoint fails, fall back to treating every URL as ok
         // (no swap). This keeps the existing behavior — we'd rather render a
@@ -6467,29 +6429,6 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
   );
 }
 
-function DateInput({ value, onChange }) {
-  // Native date input opens the OS calendar picker on click/tap.
-  return (
-    <input
-      type="date"
-      value={value}
-      onChange={onChange}
-      style={{
-        fontSize: "14px",
-        padding: "9px 0",
-        border: "none",
-        borderBottom: "0.5px solid var(--color-border-primary)",
-        background: "transparent",
-        color: value ? "var(--color-text-primary)" : "var(--color-text-tertiary)",
-        width: "100%",
-        boxSizing: "border-box",
-        outline: "none",
-        fontFamily: "inherit",
-        lineHeight: "1.4",
-      }}
-    />
-  );
-}
 
 // Pick BOTH start + return on a single calendar. First click sets start,
 // second click sets end. Clicking a date earlier than the current start
@@ -6957,7 +6896,6 @@ function CityAutocomplete({ value, onChange, placeholder }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- debounced typeahead reset
     setErrored(false);
     if (q.length < 2) { setRemote([]); setLoading(false); return; }
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- debounced typeahead reset
     setLoading(true);
     timerRef.current = setTimeout(async () => {
       const ctl = new AbortController();
@@ -8058,13 +7996,6 @@ const CARD_TARGETED_HINTS = new Set([
   "add_flag",
   "add_tonight",
 ]);
-const STRUCTURAL_HINTS = new Set([
-  "adjust_pacing",
-  "change_neighborhood",
-  "restructure_day",
-  "rebalance_legs",
-  "change_hotel_brand_tier",
-]);
 
 // Format a finding.target ({day, time, item} | string) into a short chip label.
 function formatFindingTarget(t) {
@@ -9155,7 +9086,6 @@ function FindView() {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time URL-param hydration
       runSearch(params.q, params.c, params.g);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function onSubmit(e) {
@@ -10075,44 +10005,6 @@ export default function TripOptimizer() {
   // When the user changes the start date, slide the end date forward by the
   // same number of nights they already had (if any) so the trip length stays
   // constant. When the user changes the end date, recompute nights to match.
-  const handleStartDateChange = (newStart) => {
-  const currentNights = parseInt(basics.nights, 10) || 0;
-    if (newStart && currentNights > 0) {
-      const newEnd = addDaysISO(newStart, currentNights);
-      setB({ ...basics, startDate: newStart, endDate: newEnd });
-    } else if (newStart && basics.endDate) {
-      const nights = diffDaysISO(newStart, basics.endDate);
-      const nextNights = nights && nights > 0 ? String(nights) : basics.nights;
-      setB({
-        ...basics,
-        startDate: newStart,
-        nights: nextNights,
-        cities: (basics.cities && basics.cities.length > 0)
-          ? basics.cities.map((c, i) => i === 0 ? { ...c, nights: nextNights } : c)
-          : [{ name: basics.destination || "", nights: nextNights, focus: "" }],
-      });
-    } else {
-      setB({ ...basics, startDate: newStart });
-    }
-  };
-  const handleEndDateChange = (newEnd) => {
-    if (newEnd && basics.startDate) {
-      const nights = diffDaysISO(basics.startDate, newEnd);
-      if (nights !== null && nights > 0) {
-        const v = String(nights);
-        setB({
-          ...basics,
-          endDate: newEnd,
-          nights: v,
-          cities: (basics.cities && basics.cities.length > 0)
-            ? basics.cities.map((c, i) => i === 0 ? { ...c, nights: v } : c)
-            : [{ name: basics.destination || "", nights: v, focus: "" }],
-        });
-        return;
-      }
-    }
-    setB({ ...basics, endDate: newEnd });
-  };
   // Unified range setter used by the single-popover DateRangeInput. Sets both
   // start + end (and synced Nights / cities[0].nights) in ONE state write so we
   // never trip the stale-state bug that two back-to-back setB() calls cause.
@@ -12081,7 +11973,6 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // capture the jobId, persist it for resume, and then hand the same
     // open response to runBuildForJob which reads the remaining deltas.
     let streamResp;
-    let jobId;
     let startedAt;
     try {
       streamResp = await fetch("/api/build", {

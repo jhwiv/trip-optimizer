@@ -141,7 +141,7 @@ function itemName(item) {
 //
 // Caller posts the pairs to /api/routes-verify and feeds the response
 // to applyPacingFlags() below.
-export function collectPacingPairs(plan, opts = {}) {
+export function collectPacingPairs(plan, _opts = {}) {
   if (!plan || !Array.isArray(plan.days)) return [];
   const pairs = [];
   for (let dayIdx = 0; dayIdx < plan.days.length; dayIdx++) {
