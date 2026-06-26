@@ -3,7 +3,7 @@ import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { buildDateTable } from "./dateFacts.js";
-import { pickScheduledFlight, parseClockToMinutes } from "./flightSelect.js";
+import { pickScheduledFlight, parseClockToMinutes, resolveAirlineIata, normalizeAirportCode } from "./flightSelect.js";
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
 import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, activityHeadName, itemVenueName } from "./swapAlternatives.js";
 
@@ -986,29 +986,31 @@ const FLIGHT_STATUS_WORKER = "https://flight-status.jhwiv-online.workers.dev/";
 // for an explicit flight number like "UA 57" or "#1234".
 function parseFlightIdent(f) {
   if (!f) return null;
-  // 1. Direct: f.flight_number sometimes survives (e.g. "UA 57").
-  // 2. Otherwise scan confirmation_note for an airline-code+digits pattern.
-  const sources = [f.flight_number, f.confirmation_note, f.text].filter(Boolean).map(String);
-  for (const s of sources) {
-    // Common shapes: "UA 57", "UA57", "AA 3006", "AA3006", "Flight UA 57".
-    const m = s.match(/\b([A-Z]{2})\s*0*(\d{1,4})\b/);
-    if (m) return `${m[1]}${m[2]}`;
+  // HONESTY: only ever resolve an ident from the dedicated flight_number field
+  // or an EXPLICIT flight reference in prose ("flight UA57", "flt #1234"). We
+  // deliberately do NOT scrape arbitrary numbers out of confirmation_note/text:
+  // those fields routinely carry unrelated digits (seat rows, bag counts,
+  // terminals, prices), and treating "Economy Plus seats 7-15" as flight "UA7"
+  // produces a phantom ident. A phantom ident is doubly harmful — it suppresses
+  // the schedule fetch + picker (gated on !_knownIdent) AND routes to the live
+  // panel, which renders nothing for a non-user-supplied number. The net effect
+  // is a flight card with no number and no times, which is exactly the reported
+  // bug. So model flights (number already stripped) fall through to the
+  // schedule-fetch auto-surface path instead.
+  const fn = f.flight_number != null ? String(f.flight_number) : "";
+  // 1. Direct carrier-code + digits in flight_number (e.g. "UA 57", "AA3006").
+  const direct = fn.match(/\b([A-Z]{2})\s*0*(\d{1,4})\b/);
+  if (direct) return `${direct[1]}${direct[2]}`;
+  // 2. Explicit flight reference in prose only ("flight UA 57", "flt #1234").
+  for (const s of [f.confirmation_note, f.text].filter(Boolean).map(String)) {
+    const explicit = s.match(/\b(?:flight|flt)\s*#?\s*([A-Z]{2})\s*0*(\d{1,4})\b/i);
+    if (explicit) return `${explicit[1].toUpperCase()}${explicit[2]}`;
   }
-  // 3. Compose from carrier name + any standalone number.
-  const carrierToIata = {
-    united: "UA", delta: "DL", american: "AA", jetblue: "B6", southwest: "WN",
-    alaska: "AS", "air france": "AF", klm: "KL", lufthansa: "LH", swiss: "LX",
-    "british airways": "BA", virgin: "VS", iberia: "IB", ana: "NH",
-    "japan airlines": "JL", jal: "JL", cathay: "CX", korean: "KE",
-    "aer lingus": "EI", ita: "AZ", sas: "SK", scandinavian: "SK", norse: "N0",
-  };
-  const carrier = String(f.carrier || "").toLowerCase();
-  const iata = Object.entries(carrierToIata).find(([k]) => carrier.includes(k))?.[1];
+  // 3. Compose from carrier name + a standalone number in flight_number only.
+  const iata = resolveAirlineIata(f.carrier);
   if (iata) {
-    for (const s of sources) {
-      const m = String(s).match(/\b0*(\d{1,4})\b/);
-      if (m) return `${iata}${m[1]}`;
-    }
+    const m = fn.match(/\b0*(\d{1,4})\b/);
+    if (m) return `${iata}${m[1]}`;
   }
   // 4. LAST RESORT for user-supplied flight numbers: when the user gave us
   // a number but no carrier (and the model also failed to infer one), pass
@@ -1161,36 +1163,28 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   // `if (!f) return null` guard sits immediately after the hook block.
   const _isoDate = parseDayLabelToISODate(dayLabel);
   const _knownIdent = parseFlightIdent(f);
-  const _carrierLower = (f?.carrier || "").toLowerCase();
-  const _airlineIata = _carrierLower.includes("united") ? "UA"
-    : _carrierLower.includes("american") ? "AA"
-    : _carrierLower.includes("delta") ? "DL"
-    : _carrierLower.includes("jetblue") ? "B6"
-    : _carrierLower.includes("southwest") ? "WN"
-    : _carrierLower.includes("alaska") ? "AS"
-    : _carrierLower.includes("frontier") ? "F9"
-    : _carrierLower.includes("spirit") ? "NK"
-    : _carrierLower.includes("lufthansa") ? "LH"
-    : _carrierLower.includes("swiss") ? "LX"
-    : _carrierLower.includes("air france") ? "AF"
-    : _carrierLower.includes("klm") ? "KL"
-    : _carrierLower.includes("british") ? "BA"
-    : _carrierLower.includes("iberia") ? "IB"
-    : _carrierLower.includes("cathay") ? "CX"
-    : _carrierLower.includes("ana") || _carrierLower.includes("all nippon") ? "NH"
-    : _carrierLower.includes("jal") || _carrierLower.includes("japan airlines") ? "JL"
-    : null;
+  // Carrier → IATA via the shared, broadened resolver. Returns null for
+  // carriers we can't pin to a single code (unknown name, "Carrier TBD",
+  // multi-carrier strings). null does NOT mean "show nothing" anymore — it
+  // means "we can't attribute a schedule row to a specific carrier", which the
+  // autoFlight memo handles with an honest, unattributed fallback below.
+  const _airlineIata = resolveAirlineIata(f?.carrier);
+  // Normalize the build's airport fields to clean IATA codes before they ever
+  // reach the schedule API. A decorated value ("Newark (EWR)") would 404 the
+  // lookup and silently kill the whole auto-surface.
+  const _fromCode = normalizeAirportCode(f?.from_airport);
+  const _toCode = normalizeAirportCode(f?.to_airport);
   const [schedFlights, setSchedFlights] = useState(null);
   const [schedLoading, setSchedLoading] = useState(false);
   const [schedError, setSchedError] = useState(null);
   const [lockedFlight, setLockedFlight] = useState(null);
   const [timeFilter, setTimeFilter] = useState(() => hourToBucket(parseHour(f?.depart_time)));
   useEffect(() => {
-    if (!f || !_isoDate || _knownIdent || !f.from_airport || !f.to_airport) return;
+    if (!f || !_isoDate || _knownIdent || !_fromCode || !_toCode) return;
     let cancelled = false;
     const params = new URLSearchParams({ date: _isoDate });
-    params.set("origin", f.from_airport);
-    params.set("destination", f.to_airport);
+    params.set("origin", _fromCode);
+    params.set("destination", _toCode);
     if (_airlineIata) params.set("airline", _airlineIata);
     // Defer the loading/error state resets off the synchronous effect body
     // so they don't trigger a cascading render (react-hooks lint rule).
@@ -1215,7 +1209,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
       .catch(() => { if (!cancelled) setSchedError("Request failed"); })
       .finally(() => { if (!cancelled) setSchedLoading(false); });
     return () => { cancelled = true; };
-  }, [f, _isoDate, _knownIdent, _airlineIata]);
+  }, [f, _isoDate, _knownIdent, _airlineIata, _fromCode, _toCode]);
   const filteredFlights = useMemo(() => {
     if (!schedFlights) return null;
     if (timeFilter === "all") return schedFlights;
@@ -1233,15 +1227,26 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   const autoFlight = useMemo(() => {
     const hasUserFn = !!(f && f._userSuppliedFlightNumber && f.flight_number);
     if (hasUserFn || lockedFlight) return null;
-    // Honesty guard: only auto-surface a number we can attribute to THIS
-    // card's carrier. Without a known IATA code we can't prove the schedule
-    // row belongs to f.carrier, so we show nothing. With one, pickScheduledFlight
-    // filters to matching-prefix rows and returns null if none match — never a
-    // different airline's real flight number shown under this carrier.
-    if (!_airlineIata) return null;
     if (!schedFlights || schedFlights.length === 0) return null;
-    return pickScheduledFlight(schedFlights, parseClockToMinutes(f?.depart_time), _airlineIata);
+    const approx = parseClockToMinutes(f?.depart_time);
+    if (_airlineIata) {
+      // Carrier resolved: prefix-gate to THIS carrier's rows. If none match,
+      // pickScheduledFlight returns null and we surface nothing — we must never
+      // show another carrier's real number under a named carrier (PR #59
+      // honesty guarantee preserved).
+      return pickScheduledFlight(schedFlights, approx, _airlineIata);
+    }
+    // Carrier unresolved: we have real schedule rows for the route but can't
+    // attribute them to a specific carrier. Rather than show nothing, surface
+    // the closest real flight WITHOUT a carrier claim. The flightNumber carries
+    // its own operating-carrier prefix (e.g. "UA1792"), so it is self-labeled
+    // and honest; the card never pairs it with a different carrier name.
+    return pickScheduledFlight(schedFlights, approx, null);
   }, [f, lockedFlight, schedFlights, _airlineIata]);
+  // Whether the surfaced auto flight is attributed to the card's resolved
+  // carrier. When false, the schedule strip labels it as an operating-carrier
+  // match rather than implying it belongs to f.carrier.
+  const autoFlightAttributed = !!_airlineIata;
 
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
@@ -1364,16 +1369,16 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
           user override with a different scheduled flight. */}
       {autoFlight && (
         <div style={{ marginTop: "10px", borderTop: "0.5px dashed var(--color-border-tertiary)", paddingTop: "8px" }}>
-          <p style={{ fontSize: "10px", fontWeight: 700, color: "var(--color-text-tertiary)", letterSpacing: "0.1em", textTransform: "uppercase", margin: "0 0 6px" }}>From airline schedule</p>
+          <p style={{ fontSize: "10px", fontWeight: 700, color: "var(--color-text-tertiary)", letterSpacing: "0.1em", textTransform: "uppercase", margin: "0 0 6px" }}>{autoFlightAttributed ? "From airline schedule" : "Operating flight · from schedule"}</p>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "15px", fontWeight: 800, color: "var(--color-text-primary)", letterSpacing: "0.02em" }}>{autoFlight.flightNumber}</span>
             <span style={{ fontSize: "13.5px", color: "var(--color-text-secondary)" }}>
-              {autoFlight.scheduledOut ? new Date(autoFlight.scheduledOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}
-              {autoFlight.scheduledIn ? ` → ${new Date(autoFlight.scheduledIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+              {autoFlight.scheduledOut ? new Date(autoFlight.scheduledOut).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : ""}
+              {autoFlight.scheduledIn ? ` → ${new Date(autoFlight.scheduledIn).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true })}` : ""}
             </span>
             {autoFlight.aircraft && <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>{autoFlight.aircraft}</span>}
           </div>
-          <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", margin: "5px 0 0", fontStyle: "italic" }}>Auto-matched to your approximate departure · tap a flight below to change</p>
+          <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", margin: "5px 0 0", fontStyle: "italic" }}>{autoFlightAttributed ? "Auto-matched to your approximate departure · tap a flight below to change" : "Carrier unconfirmed — number shown is the scheduled operating flight · tap a flight below to change"}</p>
         </div>
       )}
       {/* Confirmed flight — shown after user taps a row from the picker */}
