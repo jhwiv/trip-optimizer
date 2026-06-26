@@ -42,6 +42,12 @@ export function parseClockToMinutes(t) {
 //                  ALREADY filtered to the leg's route + carrier by the caller.
 //   approxMinutes  minutes-of-day of the plan item's approximate departure,
 //                  or null when the plan carries no time hint.
+//   airlineIata    optional 2-letter IATA code (e.g. "UA"). When provided, an
+//                  entry is only eligible if its flightNumber starts with this
+//                  code (case-insensitive). This is the HONESTY guard: it stops
+//                  us auto-surfacing another carrier's real flight number under
+//                  this card's carrier. If no entry matches, returns null rather
+//                  than falling back to a different airline.
 //
 // Rules (deliberately simple, documented for honesty / traceability):
 //   1. Only entries with a real `flightNumber` are eligible — a returned
@@ -53,9 +59,13 @@ export function parseClockToMinutes(t) {
 //      a parseable time, fall back to the first eligible entry.
 // Returns the chosen entry object (a reference into `flights`), or null when
 // nothing is eligible.
-export function pickScheduledFlight(flights, approxMinutes = null) {
+export function pickScheduledFlight(flights, approxMinutes = null, airlineIata = null) {
   if (!Array.isArray(flights)) return null;
-  const eligible = flights.filter((f) => f && f.flightNumber);
+  let eligible = flights.filter((f) => f && f.flightNumber);
+  if (airlineIata) {
+    const prefix = String(airlineIata).toUpperCase();
+    eligible = eligible.filter((f) => String(f.flightNumber).toUpperCase().startsWith(prefix));
+  }
   if (eligible.length === 0) return null;
 
   if (approxMinutes === null || approxMinutes === undefined) {

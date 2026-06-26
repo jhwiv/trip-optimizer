@@ -1232,9 +1232,15 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   const autoFlight = useMemo(() => {
     const hasUserFn = !!(f && f._userSuppliedFlightNumber && f.flight_number);
     if (hasUserFn || lockedFlight) return null;
+    // Honesty guard: only auto-surface a number we can attribute to THIS
+    // card's carrier. Without a known IATA code we can't prove the schedule
+    // row belongs to f.carrier, so we show nothing. With one, pickScheduledFlight
+    // filters to matching-prefix rows and returns null if none match — never a
+    // different airline's real flight number shown under this carrier.
+    if (!_airlineIata) return null;
     if (!schedFlights || schedFlights.length === 0) return null;
-    return pickScheduledFlight(schedFlights, parseClockToMinutes(f?.depart_time));
-  }, [f, lockedFlight, schedFlights]);
+    return pickScheduledFlight(schedFlights, parseClockToMinutes(f?.depart_time), _airlineIata);
+  }, [f, lockedFlight, schedFlights, _airlineIata]);
 
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
@@ -1273,15 +1279,19 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   // the traveler immediately sees the right number on the card. Otherwise the
   // number was stripped (model guess) and the title shows carrier · route only.
   const userFn = f._userSuppliedFlightNumber && f.flight_number ? String(f.flight_number).trim() : null;
-  // Compose a carrier-prefixed flight ident when we have both pieces, e.g.
-  // "United 1040" → title fragment "UA 1040" or "United 1040". We use the
-  // full carrier string the model produced so the user sees what they typed.
-  // Precedence: (1) user-supplied/confirmed number, (2) auto-selected
-  // schedule flight (real number from schedFlights), (3) carrier · route.
+  // Compose the title flight ident. For a user-supplied number we keep the
+  // full carrier string the model produced so the user sees what they typed
+  // ("United 1040"). For an auto-selected schedule flight, the schedule
+  // flightNumber already carries the IATA prefix ("UA1040") and is guaranteed
+  // (by the autoFlight memo's _airlineIata gate) to belong to this carrier, so
+  // we show the ident alone — prepending f.carrier would double-prefix it
+  // ("United UA1040"). Precedence: (1) user-supplied/confirmed number,
+  // (2) auto-selected schedule flight (real number from schedFlights),
+  // (3) carrier · route.
   const titleLine = userFn
     ? `${f.carrier || ""} ${userFn}`.trim() + ` · ${route}`
     : autoFlight
-    ? `${f.carrier || ""} ${autoFlight.flightNumber}`.trim() + ` · ${route}`
+    ? `${autoFlight.flightNumber} · ${route}`
     : `${f.carrier || "Carrier TBD"} · ${route}`;
   // Banner copy: priority is carrier-correction → airport suggestion → generic look-up.
   const overrideBanner = f._carrierOverride

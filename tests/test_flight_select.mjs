@@ -83,5 +83,41 @@ const noTimes = [
 assert("no parseable times, with hint → first eligible", pickScheduledFlight(noTimes, 600).flightNumber === "UA111");
 assert("no parseable times, no hint → first eligible", pickScheduledFlight(noTimes, null).flightNumber === "UA111");
 
+console.log("=== pickScheduledFlight: airlineIata carrier guard (honesty) ===");
+// Mixed-carrier schedule list, as the fetch can return when the IATA filter
+// yields zero matches and the caller falls back to the full result set.
+const mixed = [
+  { flightNumber: "BA810", scheduledOut: "2027-08-25T09:30:00Z" }, // 570
+  { flightNumber: "BA920", scheduledOut: "2027-08-25T10:00:00Z" }, // 600
+];
+assert(
+  "requested SK but only BA flights present → null (no foreign carrier surfaced)",
+  pickScheduledFlight(mixed, 580, "SK") === null,
+);
+assert(
+  "requested SK, prefix mismatch → never returns a BA flight",
+  (() => {
+    const r = pickScheduledFlight(mixed, 580, "SK");
+    return r === null; // must NOT be mixed[0] (BA810) — that would be "SAS BA810"
+  })(),
+);
+const mixedMatch = [
+  { flightNumber: "BA810", scheduledOut: "2027-08-25T09:30:00Z" },
+  { flightNumber: "SK501", scheduledOut: "2027-08-25T09:40:00Z" }, // 580
+  { flightNumber: "SK777", scheduledOut: "2027-08-25T18:00:00Z" },
+];
+assert(
+  "requested SK, an SK flight exists → picks the SK flight closest to time",
+  pickScheduledFlight(mixedMatch, 580, "SK").flightNumber === "SK501",
+);
+assert(
+  "case-insensitive prefix match (sk)",
+  pickScheduledFlight(mixedMatch, 580, "sk").flightNumber === "SK501",
+);
+assert(
+  "no airlineIata → unchanged behavior (closest overall)",
+  pickScheduledFlight(mixedMatch, 580).flightNumber === "SK501",
+);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
