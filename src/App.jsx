@@ -3,6 +3,7 @@ import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { buildDateTable } from "./dateFacts.js";
+import { pickScheduledFlight, parseClockToMinutes } from "./flightSelect.js";
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
@@ -1222,6 +1223,18 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
       return hourToBucket(new Date(fl.scheduledOut).getHours()) === timeFilter;
     });
   }, [schedFlights, timeFilter]);
+  // Auto-surface a REAL scheduled flight number without a manual pill tap.
+  // Precedence: a user-supplied/confirmed number always wins, so only pick
+  // an auto flight when the user hasn't typed one (_userSuppliedFlightNumber)
+  // and hasn't tapped a row (lockedFlight). schedFlights is already
+  // route+carrier filtered; pickScheduledFlight returns a real entry from it
+  // (closest to the plan's approx departure) or null — it never invents one.
+  const autoFlight = useMemo(() => {
+    const hasUserFn = !!(f && f._userSuppliedFlightNumber && f.flight_number);
+    if (hasUserFn || lockedFlight) return null;
+    if (!schedFlights || schedFlights.length === 0) return null;
+    return pickScheduledFlight(schedFlights, parseClockToMinutes(f?.depart_time));
+  }, [f, lockedFlight, schedFlights]);
 
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
@@ -1263,8 +1276,12 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   // Compose a carrier-prefixed flight ident when we have both pieces, e.g.
   // "United 1040" → title fragment "UA 1040" or "United 1040". We use the
   // full carrier string the model produced so the user sees what they typed.
+  // Precedence: (1) user-supplied/confirmed number, (2) auto-selected
+  // schedule flight (real number from schedFlights), (3) carrier · route.
   const titleLine = userFn
     ? `${f.carrier || ""} ${userFn}`.trim() + ` · ${route}`
+    : autoFlight
+    ? `${f.carrier || ""} ${autoFlight.flightNumber}`.trim() + ` · ${route}`
     : `${f.carrier || "Carrier TBD"} · ${route}`;
   // Banner copy: priority is carrier-correction → airport suggestion → generic look-up.
   const overrideBanner = f._carrierOverride
@@ -1328,6 +1345,25 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
       )}
       {note && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", lineHeight: 1.5, fontStyle: "italic" }}>{note}</p>
+      )}
+      {/* Auto-surfaced flight — best schedule match, no tap required. Honesty:
+          this number comes straight from schedFlights (the live schedule API),
+          is clearly labelled as schedule-sourced, and is superseded by a
+          user-supplied number or a tapped row. The picker below still lets the
+          user override with a different scheduled flight. */}
+      {autoFlight && (
+        <div style={{ marginTop: "10px", borderTop: "0.5px dashed var(--color-border-tertiary)", paddingTop: "8px" }}>
+          <p style={{ fontSize: "10px", fontWeight: 700, color: "var(--color-text-tertiary)", letterSpacing: "0.1em", textTransform: "uppercase", margin: "0 0 6px" }}>From airline schedule</p>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "15px", fontWeight: 800, color: "var(--color-text-primary)", letterSpacing: "0.02em" }}>{autoFlight.flightNumber}</span>
+            <span style={{ fontSize: "13.5px", color: "var(--color-text-secondary)" }}>
+              {autoFlight.scheduledOut ? new Date(autoFlight.scheduledOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}
+              {autoFlight.scheduledIn ? ` → ${new Date(autoFlight.scheduledIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+            </span>
+            {autoFlight.aircraft && <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>{autoFlight.aircraft}</span>}
+          </div>
+          <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", margin: "5px 0 0", fontStyle: "italic" }}>Auto-matched to your approximate departure · tap a flight below to change</p>
+        </div>
       )}
       {/* Confirmed flight — shown after user taps a row from the picker */}
       {lockedFlight && (
