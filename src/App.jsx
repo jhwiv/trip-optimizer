@@ -1336,8 +1336,8 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "8px" }}>
             <span style={{ fontSize: "15px", fontWeight: 800, color: "var(--color-text-primary)", letterSpacing: "0.02em" }}>{lockedFlight.flightNumber}</span>
             <span style={{ fontSize: "13.5px", color: "var(--color-text-secondary)" }}>
-              {lockedFlight.scheduledOut ? new Date(lockedFlight.scheduledOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}
-              {lockedFlight.scheduledIn ? ` → ${new Date(lockedFlight.scheduledIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+              {lockedFlight.scheduledOut ? new Date(lockedFlight.scheduledOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: true }) : ""}
+              {lockedFlight.scheduledIn ? ` → ${new Date(lockedFlight.scheduledIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: true })}` : ""}
             </span>
             {lockedFlight.aircraft && <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>{lockedFlight.aircraft}</span>}
           </div>
@@ -1394,8 +1394,8 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
                   style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px", padding: "5px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", cursor: "pointer", background: "var(--color-background-primary)" }}>
                   <span style={{ fontSize: "11.5px", fontWeight: 700, minWidth: 58 }}>{fl.flightNumber}</span>
                   <span style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", flex: 1 }}>
-                    {fl.scheduledOut ? new Date(fl.scheduledOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}
-                    {fl.scheduledIn ? ` → ${new Date(fl.scheduledIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+                    {fl.scheduledOut ? new Date(fl.scheduledOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: true }) : ""}
+                    {fl.scheduledIn ? ` → ${new Date(fl.scheduledIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: true })}` : ""}
                   </span>
                   {fl.aircraft && <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)" }}>{fl.aircraft}</span>}
                 </div>
@@ -1514,7 +1514,7 @@ function DayBlock({ day, dayIndex, onOpenMenu }) {
       {sortedItems.map((item, i) => {
         // Structured flight → rich card.
         if (item.type === "Flight" && item.flight) {
-          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />;
+          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />;
         }
         // Structured hotel → rich card.
         if (item.type === "Hotel" && item.hotel) {
@@ -3784,7 +3784,7 @@ function FlightsView({ data }) {
       {flights.map(({ item, day, dayIndex }, i) => (
         <div key={i} style={{ marginBottom: "10px" }}>
           <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>{dayShort(day, dayIndex)}</p>
-          <FlightCard type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />
+          <FlightCard type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />
         </div>
       ))}
     </div>
@@ -8323,6 +8323,7 @@ REVIEW DISCIPLINE — STRICT:
 • Nice-to-have = polish (timing nudge, micro-substitution, small flag worth adding).
 • Cap critical at 3. Cap total at 8. Pick the highest-impact issues only — quality over quantity.
 • Set default_apply = true for ALL critical findings, false for ALL nice findings, and use your judgment for suggested.
+• TIME FORMAT: Write every clock time in your findings (summary, action, any recommended/arrival time) in 12-hour AM/PM format (e.g. "7:00 PM", never "19:00"). Never use 24-hour/military time.
 
 BUDGET DISCIPLINE — CRITICAL:
 • The user's stated budget, style, pace, AND guidelines are HARD CONSTRAINTS. You do NOT push the trip up-market.
@@ -8389,6 +8390,7 @@ PATCH RULES:
 • For add_flag / add_tonight: provide new_text only.
 • Keep replacement choices consistent with the original budget, style, and the user's guidelines above. The user's stated price tier and guidelines are hard constraints — do not push the trip up-market beyond what they asked for. If the user said "moderate" excursions or "family-friendly" or any other tier-specific instruction, the replacement must respect that.
 • Rationale: one short sentence per patch, plain language.
+• TIME FORMAT IN PROSE: The structured "time" field stays 24h as noted above. But in any prose you write (rationale, new_item text/notes), write clock times in 12-hour AM/PM format (e.g. "7:00 PM", never "19:00"). Never use 24-hour/military time in prose.
 
 PLAN TO PATCH (JSON):
 ${planForPrompt(plan)}`;
@@ -8442,6 +8444,7 @@ REVISION RULES:
 • days[] must contain exactly ${totalDays} entries.
 • VARIETY: no restaurant repeats across days. Each unique name appears at most once across the whole plan.
 • EVERY item in items[] MUST have a "time" field (24h local time).
+• TIME FORMAT IN PROSE: The structured "time" field stays 24h. But in all human-readable prose (headlines, why-blurbs, notes, confirmation_notes, flags, tonight), write clock times in 12-hour AM/PM format (e.g. "7:00 PM", never "19:00"). Never use 24-hour/military time in prose.
 • If a finding's mode_hint is 'change_hotel_brand_tier', change the hotel item AND update any related fields (transport_in if hotel moved across town, neighborhood references in headlines, etc.) — keep the plan internally consistent.
 
 ORIGINAL PLAN (use as starting point — change only what the findings require):
@@ -10426,6 +10429,7 @@ TRIP REQUIREMENTS:
 • Each day's items[] needs at least 3 items — a typical full day is: morning Activity, midday Activity, evening Dinner. Arrival/departure days also include Flight + Hotel.
 • EVERY item in items[] MUST have a "time" field (24h local time, e.g. '08:30', '14:00', '19:30'). Items should appear in chronological order within each day. This is what turns the day into a real time-based itinerary instead of a vague list.
 • Use realistic times: dinner 19:00–20:30, breakfast 07:30–09:00, lunch 12:00–13:30 (only when explicitly asked — see MEAL POLICY below). Activities sized to their duration (museum 2h, hike 3–4h, gallery walk 90min). Add end_time when helpful.
+• TIME FORMAT IN PROSE: The structured "time"/"end_time" fields stay 24h as specified above — the app converts them for display. But in all human-readable prose you write (headlines, why-blurbs, notes, confirmation_notes, flags, tonight, and any recommended/arrival/pickup time mentioned in text), write clock times in 12-hour AM/PM format (e.g. "7:00 PM", never "19:00"). Never use 24-hour/military time in prose.
 
 MEAL POLICY — STRICT, OPT-IN ONLY FOR BREAKFAST & LUNCH (POST-PROCESSED):
 *** CRITICAL: LUNCH IS A HARD EXCLUSION BY DEFAULT. Same severity as breakfast.
