@@ -4180,6 +4180,21 @@ function EssentialsSectionHeading({ children }) {
   );
 }
 
+// Does the plan carry any non-itinerary reference content (Tonight, Weather &
+// pack, Heads up, Plan B, Snob's guide)? Used to decide whether to surface the
+// always-visible "Trip reference" footer on Overview without rendering an empty
+// shell when every output toggle was off at build time.
+function hasEssentialsContent(data) {
+  return (
+    (Array.isArray(data.tonight) && data.tonight.length > 0) ||
+    !!data.weather_window ||
+    (Array.isArray(data.pack) && data.pack.length > 0) ||
+    (Array.isArray(data.flags) && data.flags.length > 0) ||
+    (Array.isArray(data.planb) && data.planb.length > 0) ||
+    (Array.isArray(data.snobs) && data.snobs.length > 0)
+  );
+}
+
 function EssentialsView({ data }) {
   const sortedTonight = Array.isArray(data.tonight)
     ? [...data.tonight].map((t, i) => ({ t, i, p: tonightPriority(t) })).sort((a, b) => a.p.rank - b.p.rank || a.i - b.i)
@@ -5945,6 +5960,20 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
               </div>
             );
           })}
+        </Section>
+      )}
+
+      {/* Trip reference footer — surfaces the non-itinerary blocks (Tonight,
+          Weather & pack, Heads up, Plan B, Snob's guide) inline on Overview so
+          they're visible right after the day-by-day instead of being hidden
+          behind the secondary Essentials tab. Reuses EssentialsView verbatim
+          (same content as the tab and the PDF's reference sections). Only shown
+          on Overview, and only when such content actually exists in the plan —
+          dayFilter focuses a single day, so suppress it then to keep that view
+          scoped to one day. */}
+      {data.days && data.days.length > 0 && tab === "overview" && dayFilter < 0 && hasEssentialsContent(data) && (
+        <Section title="Trip reference">
+          <EssentialsView data={data} />
         </Section>
       )}
 
