@@ -8837,7 +8837,12 @@ function FindActivityCard({ activity, onOpenDetails }) {
   );
 }
 
-function FindView() {
+function FindView({ embedded = false } = {}) {
+  // `embedded` is set when FindView is rendered inline inside the wizard
+  // surface (the landing "Find local info only" toggle) rather than as the
+  // standalone /find route. When embedded, the brand/back-link header band is
+  // suppressed because the host already renders the brand header + mode
+  // toggle above us.
   // Viewport awareness for responsive container widths and search-result grid
   // density. Same rationale as in TripOptimizer.
   const vp = useViewport();
@@ -9230,17 +9235,21 @@ function FindView() {
         fontFamily: "var(--font-sans)",
         color: "var(--color-text-primary)",
         padding: vp.isMobile ? "0 0.875rem" : "0 1.25rem",
+        paddingTop: embedded ? (vp.isMobile ? "1.5rem" : "1.75rem") : undefined,
         maxWidth: vp.isMobile ? "100%" : vp.isTablet ? "780px" : vp.isDesktop ? "1040px" : "1200px",
         margin: "0 auto",
       }}>
-        {/* Header band */}
-        <div style={{ paddingTop: "1.25rem", paddingBottom: "1rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
-          <div>
-            <p style={{ fontSize: "10px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Trip Optimizer</p>
-            <p style={{ fontSize: "22px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "2px 0 0", color: "var(--color-text-primary)" }}>Find</p>
+        {/* Header band — only when standalone (/find route). When embedded in
+            the wizard surface the host renders the brand header + mode toggle. */}
+        {!embedded && (
+          <div style={{ paddingTop: "1.25rem", paddingBottom: "1rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+            <div>
+              <p style={{ fontSize: "10px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Trip Optimizer</p>
+              <p style={{ fontSize: "22px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "2px 0 0", color: "var(--color-text-primary)" }}>Find</p>
+            </div>
+            <a href="/" style={{ fontSize: "11px", color: GOLD, textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", padding: "10px 14px", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", display: "inline-flex", alignItems: "center", minHeight: "40px" }}>← Trip Builder</a>
           </div>
-          <a href="/" style={{ fontSize: "11px", color: GOLD, textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", padding: "10px 14px", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", display: "inline-flex", alignItems: "center", minHeight: "40px" }}>← Trip Builder</a>
-        </div>
+        )}
 
         {/* Headline */}
         <div style={{ marginBottom: "1.25rem" }}>
@@ -9607,6 +9616,12 @@ export default function TripOptimizer() {
   const [recovered] = useState(() => loadSession());
 
   const [step, setStep] = useState(recovered?.step || 1);
+  // Landing-level mode switch. When true, the whole surface flips to the
+  // find-only experience (the standalone FindView, rendered inline) instead
+  // of the full-trip wizard. Lives outside the wizard module so it can swap
+  // the body without navigating to /find. Not persisted — every launch
+  // starts in full-trip mode.
+  const [findOnly, setFindOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [progress, setProgress] = useState(0);          // 0–1 estimated fraction
@@ -12339,63 +12354,69 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         </div>
         <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "14px 0 18px" }} />
 
-        {/* Two-path picker — makes the choice between full itinerary build
-            and quick restaurants+activities search visible BEFORE the user
-            starts filling in the wizard form. The card marked 'You're here'
-            is the current path (wizard build); the other card jumps to /find. */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "10px" }}>
-          <div
-            style={{
-              padding: "14px 16px",
-              border: `1px solid ${GOLD}`,
-              borderRadius: "var(--border-radius-md)",
-              background: GOLD_LIGHT,
-              boxShadow: "0 1px 0 rgba(0,0,0,0.02)",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
-              <span style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, color: GOLD_DARK }}>You're here</span>
-              <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>·</span>
-              <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>Full itinerary build</span>
-            </div>
-            <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.3 }}>Build a full trip plan</p>
-            <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.45 }}>Day-by-day itinerary with hotels, restaurants, activities, transport. 3 to 15 minutes depending on trip size.</p>
+        {/* Single primary surface (full trip build) with a mode toggle for
+            find-only. The toggle lives here — outside the wizard module — so
+            flipping it swaps the whole body to the inline FindView without
+            navigating to /find. The intro copy tracks the active mode so the
+            header never reads as an orphaned card. */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px", flexWrap: "wrap" }}>
+          <div style={{ minWidth: 0, flex: "1 1 280px" }}>
+            <p style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, color: GOLD_DARK, margin: "0 0 6px" }}>
+              {findOnly ? "Find local info only" : "Full itinerary build"}
+            </p>
+            <p style={{ fontSize: "16px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.3 }}>
+              {findOnly ? "Find places in a location" : "Build a full trip plan"}
+            </p>
+            <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.45, maxWidth: "52ch" }}>
+              {findOnly
+                ? "Skip the wizard. Type a city, get hand-picked restaurants and activities in about a minute, with locals' picks auto-added."
+                : "Day-by-day itinerary with hotels, restaurants, activities, transport. 3 to 15 minutes depending on trip size."}
+            </p>
           </div>
-          <a
-            href="/find"
-            aria-label="Find restaurants and activities by location"
-            title="Quick search — just restaurants and activities, no full itinerary"
+          <button
+            type="button"
+            role="switch"
+            aria-checked={findOnly}
+            aria-label="Find local info only"
+            title="Toggle find-only mode — restaurants and activities, no full itinerary"
+            onClick={() => setFindOnly(v => !v)}
             style={{
-              padding: "14px 16px",
-              border: "1px solid var(--color-border-secondary)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "10px",
+              padding: "10px 14px",
+              border: `1px solid ${findOnly ? GOLD : "var(--color-border-secondary)"}`,
               borderRadius: "var(--border-radius-md)",
-              background: "var(--color-background-primary)",
-              textDecoration: "none",
-              color: "inherit",
-              display: "block",
+              background: findOnly ? GOLD_LIGHT : "var(--color-background-primary)",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              minHeight: "44px",
+              flexShrink: 0,
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = GOLD; }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--color-border-secondary)"; }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
-              <span style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, color: GOLD }}>Quick search</span>
-              <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>·</span>
-              <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>Restaurants &amp; activities only</span>
-            </div>
-            <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.3 }}>Find places in a location <span style={{ color: GOLD, fontWeight: 400 }}>→</span></p>
-            <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.45 }}>Skip the wizard. Type a city, get hand-picked restaurants and activities in about a minute, with locals' picks auto-added.</p>
-          </a>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-primary)", letterSpacing: "0.02em", whiteSpace: "nowrap" }}>Find local info only</span>
+            <span aria-hidden="true" style={{ width: "34px", height: "20px", borderRadius: "999px", background: findOnly ? GOLD : "var(--color-border-secondary)", position: "relative", transition: "background 0.15s", flexShrink: 0 }}>
+              <span style={{ position: "absolute", top: "2px", left: findOnly ? "16px" : "2px", width: "16px", height: "16px", borderRadius: "50%", background: "#fff", transition: "left 0.15s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)" }} />
+            </span>
+          </button>
         </div>
       </div>
 
-      {/* Wizard body container. The 100% → 720 → 960 → 1180 progression
+      {findOnly ? (
+        // Find-only mode reuses the standalone FindView verbatim, rendered
+        // inline. `embedded` suppresses FindView's own brand/back-link header
+        // band because this surface already shows the brand header above with
+        // the mode toggle; the toggle is the way back to the wizard.
+        <FindView embedded />
+      ) : (
+      /* Wizard body container. The 100% → 720 → 960 → 1180 progression
           gives mobile full bleed for tappability, tablet a comfortable
           centered column, desktop room to breathe, and wide screens
           (1280px+ external monitors / Windows desktops at 1536+) enough
           width that the page no longer looks like a mobile site stranded
           in a sea of grey. We still cap at 1180 even on 4K screens because
           the wizard is fundamentally a single-column form — a 1600px-wide
-          form is harder to scan, not easier. */}
+          form is harder to scan, not easier. */
       <div style={{
         maxWidth: vp.isMobile ? "100%" : vp.isTablet ? "720px" : vp.isDesktop ? "960px" : "1180px",
         margin: "0 auto",
@@ -13030,6 +13051,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         </div>
 
       </div>
+      )}
     </div>
   );
 }
