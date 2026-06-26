@@ -4436,6 +4436,12 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   const [applyState, setApplyState] = useState({}); // findingId -> bool
   const [appliedIds, setAppliedIds] = useState(() => initialReview?.applied_ids || []);
   const [error, setError] = useState("");
+  // Honest partial-apply surface: when a surgical revision applies SOME but
+  // not all selected findings, we never claim full success. `notice` carries
+  // the "Applied N of M…" message; `pendingRetryIds` holds the still-unapplied
+  // finding ids so the user can one-click re-plan to apply the rest.
+  const [notice, setNotice] = useState("");
+  const [pendingRetryIds, setPendingRetryIds] = useState([]);
   const [progress, setProgress] = useState(0);
   const [progressLabel, setProgressLabel] = useState("");
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -4598,16 +4604,22 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} }
   };
 
-  const handleApply = async () => {
-    if (selectedForApply.length === 0) { setError("Pick at least one change to apply."); return; }
+  const handleApply = async ({ findingsOverride, forceMode } = {}) => {
+    // findingsOverride / forceMode let the "Re-plan to apply the rest" button
+    // retry the still-unapplied findings via a full re-plan without depending
+    // on async applyState updates. Default path uses the live selection.
+    const applyFindings = findingsOverride || selectedForApply;
+    const applyMode = forceMode || revisionMode;
+    if (applyFindings.length === 0) { setError("Pick at least one change to apply."); return; }
     setStatus("applying");
     setError("");
+    setNotice("");
     setProgress(0);
-    setProgressLabel(revisionMode === "surgical" ? "Applying changes…" : "Applying changes (detailed revision, ~2 min)…");
+    setProgressLabel(applyMode === "surgical" ? "Applying changes…" : "Applying changes (detailed revision, ~2 min)…");
     setElapsedSec(0);
     // eslint-disable-next-line react-hooks/purity -- inside async event handler
     const startedAt = Date.now();
-    const targetSec = revisionMode === "surgical" ? 35 : 160;
+    const targetSec = applyMode === "surgical" ? 35 : 160;
     let lastTokFrac = 0;
 
     const elapsedTimer = setInterval(() => {
@@ -4622,11 +4634,11 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
     const hardTimeout = setTimeout(() => controller.abort(), 300000);
 
     try {
-      const body = revisionMode === "surgical"
+      const body = applyMode === "surgical"
         ? {
             model: "claude-sonnet-4-5",
             max_tokens: 8000,
-            system: cachedSystem(buildRevisionSystemPromptSurgical(plan, selectedForApply, inputs)),
+            system: cachedSystem(buildRevisionSystemPromptSurgical(plan, applyFindings, inputs)),
             messages: [{ role: "user", content: buildRevisionUserPromptSurgical() }],
             tools: cachedTools([REVISION_TOOL_SURGICAL]),
             tool_choice: { type: "tool", name: "submit_revision_patches" },
@@ -4634,7 +4646,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
         : {
             model: "claude-sonnet-4-5",
             max_tokens: 32000,
-            system: cachedSystem(buildRevisionSystemPromptFull(plan, selectedForApply, inputs)),
+            system: cachedSystem(buildRevisionSystemPromptFull(plan, applyFindings, inputs)),
             messages: [{ role: "user", content: buildRevisionUserPromptFull() }],
             tools: cachedTools([REVISION_TOOL_FULL]),
             tool_choice: { type: "tool", name: "submit_trip_plan" },
@@ -4645,10 +4657,10 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
         onDelta: (delta, totalLen) => {
           toolJson += delta;
           const estTokens = totalLen / 3.5;
-          const tokFrac = Math.min(0.95, estTokens / (revisionMode === "surgical" ? 1500 : 7000));
+          const tokFrac = Math.min(0.95, estTokens / (applyMode === "surgical" ? 1500 : 7000));
           lastTokFrac = tokFrac;
           setProgress(prev => Math.max(prev, tokFrac));
-          if (revisionMode === "surgical") {
+          if (applyMode === "surgical") {
             const pm = toolJson.match(/"op"\s*:/g) || [];
             setProgressLabel(pm.length ? `Applying patch ${pm.length}…` : "Reading plan…");
           } else {
@@ -4662,7 +4674,14 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       setProgressLabel("Finalizing…");
       const { parsed } = parseToolJson(toolJson);
       let newPlan;
-      if (revisionMode === "surgical") {
+      // Which of the findings we just submitted genuinely landed in the plan.
+      // Full re-plan regenerates the whole plan, so every submitted finding is
+      // addressed. Surgical mode is patch-by-patch, so only the findings whose
+      // patch actually applied count — the rest stay un-applied (still selectable).
+      let appliedFindings = applyFindings;
+      let unappliedFindings = [];
+      let partialReasons = [];
+      if (applyMode === "surgical") {
         if (!parsed || !Array.isArray(parsed.patches)) throw new Error("Revision returned no patches.");
         const applyResult = applyPatchesToPlan(plan, parsed.patches);
         if (applyResult.appliedCount === 0) {
@@ -4672,21 +4691,51 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           throw new Error(`Revision returned ${parsed.patches.length} patch${parsed.patches.length === 1 ? "" : "es"} but none could be applied. Try a full re-plan instead.`);
         }
         newPlan = applyResult.plan;
+        partialReasons = applyResult.skipped;
+        if (applyResult.appliedFindingIds.length > 0) {
+          // Normal path: the model copies finding_id onto each patch (required
+          // by the tool schema), so attribute precisely — a selected finding is
+          // "applied" only if one of its patches genuinely landed. This catches
+          // BOTH dropped-by-skip and never-patched findings; never over-claim.
+          const appliedSet = new Set(applyResult.appliedFindingIds);
+          appliedFindings = applyFindings.filter(f => appliedSet.has(f.id));
+          unappliedFindings = applyFindings.filter(f => !appliedSet.has(f.id));
+        } else if (applyResult.skipped.length > 0) {
+          // No attribution data AND some patches failed — can't safely claim any
+          // specific finding landed, so mark none and offer a full re-plan.
+          appliedFindings = [];
+          unappliedFindings = applyFindings;
+        }
+        // else: no finding_ids returned and nothing skipped → every patch
+        // landed; preserve the historical happy path (all selected applied).
       } else {
         if (!parsed || !Array.isArray(parsed.days) || parsed.days.length === 0) throw new Error("Revision returned no plan.");
         newPlan = parsed;
       }
-      const newAppliedIds = Array.from(new Set([...appliedIds, ...selectedForApply.map(f => f.id)]));
+      // Record ONLY truly-applied findings — never the full selected set when
+      // some were skipped. This is the honesty-critical line.
+      const newAppliedIds = Array.from(new Set([...appliedIds, ...appliedFindings.map(f => f.id)]));
       setAppliedIds(newAppliedIds);
       // Clear the apply toggles for findings we just applied so the same
-      // ones don't sit checked indefinitely.
+      // ones don't sit checked indefinitely. Leave un-applied findings checked
+      // so the user can retry them.
       setApplyState(prev => {
         const next = { ...prev };
-        for (const f of selectedForApply) next[f.id] = false;
+        for (const f of appliedFindings) next[f.id] = false;
         return next;
       });
-      setStatus("applied");
-      setTimeout(() => setStatus("done"), 2500);
+      if (unappliedFindings.length > 0) {
+        // Honest partial-apply: keep the changes that landed, but tell the user
+        // exactly what didn't and offer a one-click full re-plan for the rest.
+        const reasonText = partialReasons.slice(0, 3).join("; ");
+        setPendingRetryIds(unappliedFindings.map(f => f.id));
+        setNotice(`Applied ${appliedFindings.length} of ${applyFindings.length} change${applyFindings.length === 1 ? "" : "s"}. ${unappliedFindings.length} couldn't be applied automatically${reasonText ? ` (${reasonText})` : ""}. Use "Re-plan to apply the rest" below.`);
+        setStatus("done");
+      } else {
+        setPendingRetryIds([]);
+        setStatus("applied");
+        setTimeout(() => setStatus("done"), 2500);
+      }
       if (typeof onPlanRevised === "function") {
         onPlanRevised(newPlan);
       }
@@ -4696,7 +4745,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           review,
           applied_ids: newAppliedIds,
           generatedAt: new Date().toISOString(),
-          last_mode: revisionMode,
+          last_mode: applyMode,
         });
       }
     } catch (err) {
@@ -4722,6 +4771,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
     // attempt) so it doesn't sit under the queued-changes button next to
     // fresh selections, which looks like the current selection is failing.
     if (error) setError("");
+    if (notice) setNotice("");
   };
 
   // ----- shared styles ---------------------------------------------------
@@ -4931,6 +4981,25 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           )}
           {status === "applied" && (
             <p style={{ marginTop: "10px", fontSize: "12px", color: GOLD, textAlign: "center", fontWeight: 600 }}>✓ Changes applied to your plan.</p>
+          )}
+          {notice && status !== "applying" && (
+            <div style={{ marginTop: "10px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
+              <p style={{ fontSize: "11.5px", color: "var(--color-text-primary)", margin: 0, lineHeight: 1.45 }}>{notice}</p>
+              {pendingRetryIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const retry = findings.filter(f => pendingRetryIds.includes(f.id));
+                    if (retry.length === 0) return;
+                    setNotice("");
+                    handleApply({ findingsOverride: retry, forceMode: "full" });
+                  }}
+                  style={{ marginTop: "8px", width: "100%", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "10px 14px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}
+                >
+                  {`↻ Re-plan to apply the rest (${pendingRetryIds.length})`}
+                </button>
+              )}
+            </div>
           )}
           {error && <p style={{ fontSize: "11.5px", color: "#c0392b", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
 
@@ -8074,6 +8143,7 @@ const REVISION_TOOL_SURGICAL = {
           type: "object",
           properties: {
             op: { type: "string", enum: ["replace_item", "replace_hotel", "replace_planb_entry", "add_flag", "add_tonight"], description: "What kind of patch. replace_item swaps one day's item (restaurant/activity/transport). replace_hotel swaps the hotel item for a day. replace_planb_entry replaces one Plan B entry by index. add_flag / add_tonight append a new string." },
+            finding_id: { type: "string", description: "The bracketed [id] of the finding this patch addresses (e.g. 'f2'), copied verbatim from FINDINGS TO ADDRESS. Lets the client confirm exactly which findings were applied." },
             day_index: { type: "integer", description: "0-based day index. Required for replace_item and replace_hotel." },
             item_index: { type: "integer", description: "0-based item index within day.items[]. Required for replace_item." },
             planb_index: { type: "integer", description: "0-based index into planb[]. Required for replace_planb_entry." },
@@ -8081,7 +8151,7 @@ const REVISION_TOOL_SURGICAL = {
             new_text: { type: "string", description: "The replacement text. Required for replace_planb_entry / add_flag / add_tonight." },
             rationale: { type: "string", description: "One short sentence (≤18 words) explaining why this patch addresses the finding." },
           },
-          required: ["op", "rationale"],
+          required: ["op", "finding_id", "rationale"],
         },
         maxItems: 5,
       },
@@ -8309,6 +8379,7 @@ ${findingsBlock}
 
 PATCH RULES:
 • Emit ONE patch per finding above (in the same order). Skip a finding only if it genuinely cannot be card-patched.
+• On every patch, set finding_id to the bracketed [id] of the finding it addresses (copy it verbatim, e.g. 'f2'). This lets the client confirm which findings actually landed.
 • Identify the right day_index and item_index by reading the plan JSON below. Days are 0-indexed; items[] within a day are 0-indexed.
 • IMPORTANT: The day hint in the finding target (e.g. "day: 2") is a STARTING POINT, not authoritative. The user may have picked the wrong day, or the item they want to change (e.g. "remove the Dry Tortugas trip") may actually live on a different day in the plan. ALWAYS search the entire plan JSON below to find the item the user is describing. Use name, description, location, and item type to locate it — then patch the day/item index where it actually exists. If the request describes a multi-item excursion that spans more than one card or day, skip surgical patching for that finding (the system will retry as a full re-plan).
 • If after a thorough search you cannot identify a clear single card to swap, emit zero patches for that finding. The system will detect the empty result and auto-fall-through to a full re-plan.
@@ -8404,8 +8475,13 @@ function applyPatchesToPlan(plan, patches) {
 
   let appliedCount = 0;
   const skipped = [];
+  // Track WHICH findings genuinely landed, keyed by the finding_id the model
+  // copies onto each patch. The caller uses this to mark only truly-applied
+  // findings as done — never the full selected set when some were skipped.
+  const appliedFindingIds = new Set();
   for (const p of patches) {
     if (!p || !p.op) { skipped.push("missing-op"); continue; }
+    const before = appliedCount;
     try {
       if (p.op === "replace_item" && typeof p.day_index === "number" && typeof p.item_index === "number" && p.new_item) {
         const day = next.days[p.day_index];
@@ -8446,8 +8522,11 @@ function applyPatchesToPlan(plan, patches) {
       skipped.push(`exception (op=${p.op}): ${String(err?.message || err).slice(0, 80)}`);
       // Continue — we'd rather apply 4-of-5 patches than abort.
     }
+    if (appliedCount > before && typeof p.finding_id === "string" && p.finding_id) {
+      appliedFindingIds.add(p.finding_id);
+    }
   }
-  return { plan: next, appliedCount, skipped };
+  return { plan: next, appliedCount, skipped, appliedFindingIds: Array.from(appliedFindingIds) };
 }
 
 
