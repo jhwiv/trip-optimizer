@@ -72,6 +72,24 @@ console.log("\n=== selectAlternatives (activities, fewer than 3) ===");
 console.log("\n=== selectAlternatives defensive ===");
 assert("non-array pool → []", Array.isArray(selectAlternatives(null, { kind: "restaurant" })) && selectAlternatives(null, { kind: "restaurant" }).length === 0);
 
+console.log("\n=== selectAlternatives excludes closed candidates ===");
+{
+  const pool = [
+    { name: "Closed One", verify_status: "permanently_closed" },
+    { name: "Closed Alias", verify_status: "closed_permanently" },
+    { name: "Gone", verify_status: "not_found" },
+    { name: "Verify Me", verify_status: "verify_before_booking" }, // allowed
+    { name: "Open Spot", verify_status: "" },
+  ];
+  const picks = selectAlternatives(pool, { kind: "restaurant", max: 5 });
+  assert("drops permanently_closed", !picks.some(p => p.name === "Closed One"));
+  assert("drops closed_permanently alias", !picks.some(p => p.name === "Closed Alias"));
+  assert("drops not_found", !picks.some(p => p.name === "Gone"));
+  assert("keeps verify_before_booking", picks.some(p => p.name === "Verify Me"));
+  assert("keeps open", picks.some(p => p.name === "Open Spot"));
+  assert("only the 2 operating survive", picks.length === 2);
+}
+
 console.log("\n=== buildSwapItem (restaurant) ===");
 {
   const original = { type: "Dinner", time: "19:30", end_time: "21:00", restaurant: { name: "Geronimo", backup: { name: "Old Backup" } } };
@@ -116,6 +134,37 @@ console.log("\n=== buildSwapItem (activity, sparse alternative clears stale fiel
   assert("why blanked", item.why === "");
 }
 
+console.log("\n=== buildSwapItem strips stale provenance/coords/flags (restaurant) ===");
+{
+  const original = {
+    type: "Dinner", time: "19:30", restaurant: { name: "Geronimo" },
+    _verified: true, place_id: "OLD_PID", lat: 35.6, lng: -105.9,
+    flags: [{ code: "OUTSIDE_HOURS", severity: "warn" }],
+  };
+  const chosen = { name: "Coyote Cafe", lat: 35.0, lng: -106.0, verify_status: "verify_before_booking" };
+  const item = buildSwapItem(original, chosen, "restaurant");
+  assert("strips old _verified", item._verified === undefined);
+  assert("strips old place_id", item.place_id === undefined);
+  assert("strips old flags", item.flags === undefined);
+  assert("carries NEW coords (not old)", item.lat === 35.0 && item.lng === -106.0);
+  assert("verify_status carried on restaurant", item.restaurant.verify_status === "verify_before_booking");
+}
+
+console.log("\n=== buildSwapItem strips stale provenance/coords/flags (activity) ===");
+{
+  const original = {
+    type: "Activity", time: "10:00", text: "Old — gone",
+    _verified: true, place_id: "OLD_PID", lat: 35.6, lng: -105.9,
+    flags: [{ code: "PACING_CONFLICT", severity: "warn" }],
+  };
+  const chosen = { text: "Meow Wolf — art" }; // no coords
+  const item = buildSwapItem(original, chosen, "activity");
+  assert("strips old _verified", item._verified === undefined);
+  assert("strips old place_id", item.place_id === undefined);
+  assert("strips old flags", item.flags === undefined);
+  assert("clears old coords when none on alt", item.lat === undefined && item.lng === undefined);
+}
+
 console.log("\n=== findRawItemIndex ===");
 {
   const rawPlan = {
@@ -136,6 +185,44 @@ console.log("\n=== findRawItemIndex ===");
   assert("activity matched (idx 0)", findRawItemIndex(rawPlan, 0, renderedActivity, "activity") === 0);
   assert("no match → -1", findRawItemIndex(rawPlan, 0, { restaurant: { name: "Nowhere" } }, "restaurant") === -1);
   assert("bad day → -1", findRawItemIndex(rawPlan, 9, renderedActivity, "activity") === -1);
+}
+
+console.log("\n=== findRawItemIndex resolves quality-layer-renamed backup ===");
+{
+  // The closure gate promoted "Coyote Cafe" (the backup) over closed "Geronimo",
+  // so the rendered card shows "Coyote Cafe" — which has NO primary-name match
+  // in the raw plan. Must still resolve via the backup slot (+time).
+  const rawPlan = { days: [{ items: [
+    { type: "Activity", text: "Plaza walk — morning" },
+    { type: "Dinner", time: "19:30", restaurant: { name: "Geronimo", backup: { name: "Coyote Cafe" } } },
+  ] }] };
+  const renderedPromoted = { type: "Dinner", time: "19:30", restaurant: { name: "Coyote Cafe" } };
+  assert("matches via backup name (idx 1)", findRawItemIndex(rawPlan, 0, renderedPromoted, "restaurant") === 1);
+}
+
+console.log("\n=== findRawItemIndex falls back to unique time when name changed ===");
+{
+  // Name changed and no backup slot carries it, but the scheduled time is
+  // unique within the kind — resolve positionally by time rather than no-op.
+  const rawPlan = { days: [{ items: [
+    { type: "Activity", text: "Plaza walk — morning" },
+    { type: "Dinner", time: "19:30", restaurant: { name: "Geronimo" } },
+  ] }] };
+  const renamed = { type: "Dinner", time: "19:30", restaurant: { name: "Totally Different" } };
+  assert("matches by unique time (idx 1)", findRawItemIndex(rawPlan, 0, renamed, "restaurant") === 1);
+}
+
+console.log("\n=== findRawItemIndex refuses ambiguous time match (handled error path) ===");
+{
+  // Two same-kind restaurants share the time and neither name nor backup
+  // matches the renamed card — refuse rather than guess, so handleSwapItem
+  // surfaces an honest error instead of swapping the wrong slot.
+  const rawPlan = { days: [{ items: [
+    { type: "Dinner", time: "19:30", restaurant: { name: "Alpha" } },
+    { type: "Dinner", time: "19:30", restaurant: { name: "Beta" } },
+  ] }] };
+  const renamed = { type: "Dinner", time: "19:30", restaurant: { name: "Renamed Backup" } };
+  assert("ambiguous time → -1 (handled error)", findRawItemIndex(rawPlan, 0, renamed, "restaurant") === -1);
 }
 
 console.log("\n=== findRawItemIndex disambiguates by time ===");

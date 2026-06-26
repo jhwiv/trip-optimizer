@@ -32,6 +32,16 @@ function altName(entry, kind) {
   return activityHeadName(entry.text || entry.name || "").toLowerCase();
 }
 
+// verify_status values that mean the place is not currently operating. Offering
+// these as "alternatives" would violate the CLAUDE.md hard rule, so they're
+// dropped from the picker entirely. verify_before_booking is NOT closed — it's
+// allowed (just flagged for the traveler to confirm).
+const CLOSED_VERIFY_STATUSES = new Set(["permanently_closed", "closed_permanently", "not_found"]);
+function isClosedAlt(entry) {
+  const s = (entry?.verify_status || "").trim().toLowerCase();
+  return CLOSED_VERIFY_STATUSES.has(s);
+}
+
 // Pick up to `max` alternatives from a /api/find result pool, excluding:
 //   - the item currently in the slot,
 //   - anything already scheduled the same day (by name, same kind),
@@ -50,6 +60,7 @@ export function selectAlternatives(pool, { currentItem, sameDayItems = [], kind,
   const seen = new Set();
   const out = [];
   for (const entry of pool) {
+    if (isClosedAlt(entry)) continue;
     const name = altName(entry, kind);
     if (!name) continue;
     if (excluded.has(name) || seen.has(name)) continue;
@@ -67,9 +78,15 @@ export function selectAlternatives(pool, { currentItem, sameDayItems = [], kind,
 // verification pipeline + UI surface them — we never mark a swapped venue as
 // confirmed.
 export function buildSwapItem(originalItem, chosen, kind) {
-  const base = originalItem && typeof originalItem === "object" ? originalItem : {};
+  // Strip the removed venue's provenance/verification/coordinate/flag fields so
+  // the swapped-in venue never inherits stale truth. _verified, place_id, lat,
+  // lng and item-level flags all describe the OLD venue; verify/pacing don't
+  // re-run synchronously on swap, so carrying them would surface wrong
+  // coordinates or stale warn flags on the NEW venue. We only carry the NEW
+  // find result's coords (and verify_status/verify_url) below.
+  const base = strippedBase(originalItem);
+  const c = chosen && typeof chosen === "object" ? chosen : {};
   if (kind === "restaurant") {
-    const c = chosen && typeof chosen === "object" ? chosen : {};
     const restaurant = { name: (c.name || "").trim() };
     if (c.cuisine) restaurant.cuisine = c.cuisine;
     if (c.neighborhood) restaurant.neighborhood = c.neighborhood;
@@ -81,16 +98,18 @@ export function buildSwapItem(originalItem, chosen, kind) {
     if (c.verify_url) restaurant.verify_url = c.verify_url;
     // Keep scheduling + meal type; drop the old venue's backup (it belonged
     // to the removed recommendation, not this one).
-    return {
+    const item = {
       ...base,
       type: base.type || "Dining",
       restaurant,
     };
+    if (typeof c.lat === "number") item.lat = c.lat;
+    if (typeof c.lng === "number") item.lng = c.lng;
+    return item;
   }
   // Activity. Keep scheduling fields; replace all content fields so no stale
   // detail from the removed activity leaks through. Force type "Activity" so
   // the rich ActivityCard renders (DayBlock only upgrades type === "Activity").
-  const c = chosen && typeof chosen === "object" ? chosen : {};
   const next = {
     ...base,
     type: "Activity",
@@ -100,6 +119,21 @@ export function buildSwapItem(originalItem, chosen, kind) {
   if (c.duration) next.duration = c.duration; else delete next.duration;
   next.why = c.why || "";
   if (c.contact) next.contact = c.contact; else delete next.contact;
+  if (typeof c.lat === "number") next.lat = c.lat;
+  if (typeof c.lng === "number") next.lng = c.lng;
+  return next;
+}
+
+// Copy an itinerary item without the removed venue's provenance/verification/
+// coordinate/flag fields. These describe the OLD venue and must not be carried
+// onto a swapped-in replacement (see buildSwapItem).
+function strippedBase(originalItem) {
+  const next = originalItem && typeof originalItem === "object" ? { ...originalItem } : {};
+  delete next._verified;
+  delete next.place_id;
+  delete next.lat;
+  delete next.lng;
+  delete next.flags;
   return next;
 }
 
@@ -112,24 +146,63 @@ export function buildSwapItem(originalItem, chosen, kind) {
 export function findRawItemIndex(rawPlan, dayIndex, item, kind) {
   const day = rawPlan?.days?.[dayIndex];
   if (!day || !Array.isArray(day.items) || !item) return -1;
+  const items = day.items;
   const wantName = itemVenueName(item, kind);
-  if (!wantName) return -1;
   const wantTime = typeof item.time === "string" ? item.time : null;
-  let fallback = -1;
-  for (let i = 0; i < day.items.length; i++) {
-    const it = day.items[i];
-    if (!it) continue;
-    if (kind === "restaurant" && !it.restaurant) continue;
-    if (kind === "activity" && it.type !== "Activity") continue;
-    if (itemVenueName(it, kind) !== wantName) continue;
-    if (wantTime && typeof it.time === "string") {
-      if (it.time === wantTime) return i;
-      if (fallback === -1) fallback = i;
-      continue;
+  const ofKind = (it) =>
+    !!it && (kind === "restaurant" ? !!it.restaurant : it.type === "Activity");
+
+  // Walk candidate slots, returning the first whose `nameOf` matches wantName,
+  // disambiguating by time when the rendered item carries one. Returns the
+  // first name-only match as a fallback if no time-exact match is found.
+  const matchByName = (nameOf) => {
+    let fallback = -1;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (!ofKind(it)) continue;
+      if (nameOf(it) !== wantName) continue;
+      if (wantTime && typeof it.time === "string") {
+        if (it.time === wantTime) return i;
+        if (fallback === -1) fallback = i;
+        continue;
+      }
+      return i;
     }
-    return i;
+    return fallback;
+  };
+
+  if (wantName) {
+    // Pass 1: the displayed venue name matches the raw venue name.
+    const direct = matchByName((it) => itemVenueName(it, kind));
+    if (direct !== -1) return direct;
+
+    // Pass 2 (restaurants): the quality layer's closure gate promotes a backup
+    // over a permanently-closed primary, RENAMING the card to the backup's
+    // name. The raw item still carries the original primary name, so the
+    // displayed name only matches the raw item's backup slot — match on that
+    // so swap works in exactly the closed-venue case the user most wants.
+    if (kind === "restaurant") {
+      const viaBackup = matchByName((it) => (it.restaurant?.backup?.name || "").trim().toLowerCase());
+      if (viaBackup !== -1) return viaBackup;
+    }
   }
-  return fallback;
+
+  // Pass 3: positional time match within the same kind. The quality layer can
+  // drop/reorder items but preserves scheduled times, so a UNIQUE time within
+  // the kind reliably identifies the slot even when the name was changed. If
+  // two same-kind items share the time we refuse rather than guess.
+  if (wantTime) {
+    let timeMatch = -1;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (!ofKind(it) || typeof it.time !== "string" || it.time !== wantTime) continue;
+      if (timeMatch !== -1) return -1;
+      timeMatch = i;
+    }
+    if (timeMatch !== -1) return timeMatch;
+  }
+
+  return -1;
 }
 
 // Resolve the city to search for alternatives on a given day. Multi-city trips

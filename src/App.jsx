@@ -1789,7 +1789,14 @@ function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
   };
 
   const handleUse = (chosen) => {
-    onSwap(chosen);
+    // onSwap returns false when the item couldn't be located in the raw plan
+    // (e.g. a backup the quality layer renamed) or the patch didn't apply.
+    // Never close on a silent no-op — show an honest error so the user knows
+    // nothing changed.
+    if (onSwap(chosen) === false) {
+      setError("Couldn't locate this item to swap — try again.");
+      return;
+    }
     setOpen(false);
   };
 
@@ -5946,15 +5953,22 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   // dropped/reordered), build a same-shape replacement that carries the
   // alternative's verify_status/verify_url through untouched, then reuse the
   // existing replace_item patch path and lift the revised plan so it persists.
+  // Returns true on a successful swap, false if the item couldn't be located
+  // or the patch didn't apply, so the picker can surface an honest error
+  // instead of closing on a silent no-op.
   const handleSwapItem = (dayIndex, item, kind, chosen) => {
-    if (!chosen || typeof onPlanRevised !== "function") return;
+    if (!chosen || typeof onPlanRevised !== "function") return false;
     const itemIndex = findRawItemIndex(rawData, dayIndex, item, kind);
-    if (itemIndex < 0) return;
+    if (itemIndex < 0) return false;
     const newItem = buildSwapItem(rawData.days[dayIndex].items[itemIndex], chosen, kind);
     const { plan: nextPlan, appliedCount } = applyPatchesToPlan(rawData, [
       { op: "replace_item", day_index: dayIndex, item_index: itemIndex, new_item: newItem },
     ]);
-    if (appliedCount > 0) onPlanRevised(nextPlan);
+    if (appliedCount > 0) {
+      onPlanRevised(nextPlan);
+      return true;
+    }
+    return false;
   };
 
   // Collect every vendor URL in the plan (activities / transport / etc.) so we
