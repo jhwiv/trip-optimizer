@@ -12584,10 +12584,17 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   // usable width inside a ~390px viewport.
   const cardStyleR = vp.isMobile ? { ...cardStyle, padding: "1rem 1.1rem" } : cardStyle;
 
+  // Shared centered-column width for the wizard. The header band and the body
+  // both center their content to this width so the brand/mode-toggle line up
+  // with the form cards instead of the header hugging the far-left gutter on
+  // wide desktops while the cards sit in a centered column.
+  const colMaxWidth = vp.isMobile ? "100%" : vp.isTablet ? "720px" : vp.isDesktop ? "960px" : "1180px";
+
   return (
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)" }}>
 
-      <div style={{ padding: vp.isMobile ? "1.5rem 1rem 1.25rem" : "2rem 1.75rem 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}>
+      <div style={{ padding: vp.isMobile ? "1.5rem 0 1.25rem" : "2rem 0 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}>
+        <div style={{ maxWidth: colMaxWidth, margin: "0 auto", padding: vp.isMobile ? "0 1rem" : "0 1.5rem" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
           <div style={{ minWidth: 0, flex: 1 }}>
             <p style={{ fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 8px", color: "var(--color-text-secondary)" }}>Travel planning</p>
@@ -12650,6 +12657,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             </span>
           </button>
         </div>
+        </div>
       </div>
 
       {findOnly ? (
@@ -12668,7 +12676,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           the wizard is fundamentally a single-column form — a 1600px-wide
           form is harder to scan, not easier. */
       <div style={{
-        maxWidth: vp.isMobile ? "100%" : vp.isTablet ? "720px" : vp.isDesktop ? "960px" : "1180px",
+        maxWidth: colMaxWidth,
         margin: "0 auto",
         padding: vp.isMobile ? "1.5rem 1rem 2.5rem" : "1.75rem 1.5rem 2.5rem",
       }}>
