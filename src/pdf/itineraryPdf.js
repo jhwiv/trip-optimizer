@@ -27,6 +27,8 @@
 // via pdf.textWithLink().
 // =============================================================================
 
+import { groupItemsByCategory } from "../categoryGroups.js";
+
 const COLOR = {
   ink: [17, 17, 17],          // body text
   inkSoft: [85, 85, 85],      // secondary
@@ -1188,6 +1190,89 @@ function renderContactBlock(cur, c, x, maxW) {
 }
 
 // -----------------------------------------------------------------------------
+// BY CATEGORY — the same plan items as the day-by-day, regrouped into category
+// buckets (flights / lodging / ground transport / activities / dining) via the
+// shared groupItemsByCategory helper so this section and the on-screen "By
+// category" tab can never drift. A tight, scannable back-of-book reference; it
+// reuses the same detail-line / block renderers as the day pages and invents
+// nothing — every value is carried through from the (already-verified) plan.
+// -----------------------------------------------------------------------------
+
+// Cap per category so a sprawling trip can't balloon this reference section.
+// The uncapped day-by-day remains the authoritative full listing.
+const CATEGORY_PDF_CAP = 40;
+
+// "Day 2 · Fri Jun 5 · 9:00 AM" — day number + the day-label's weekday/date
+// segment (when present) + the item's 12-hour start time.
+function categoryEntryContext(entry) {
+  const weekday = String(entry.dayLabel || "").split(" · ")[1] || "";
+  return [`Day ${entry.dayIndex + 1}`, weekday, to12h(safe(entry.time))]
+    .filter(Boolean).join("  ·  ");
+}
+
+function renderCategoryEntry(cur, entry, category, x, maxW) {
+  const { pdf } = cur;
+  // Keep the context line + a couple of detail rows together on one page.
+  cur.ensureSpace(16);
+  cur.space(1.2);
+
+  // Context line — small gold uppercase tag (Day / weekday / time).
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(7.5);
+  pdf.setCharSpace(0.5);
+  cur.setColor(COLOR.gold);
+  pdf.text(asciiSafe(categoryEntryContext(entry).toUpperCase()), x, cur.state.y + 3);
+  pdf.setCharSpace(0);
+  cur.state.y += 5;
+
+  const item = entry.item || {};
+  if (category === "flights" && item.flight) {
+    renderFlightBlock(cur, item.flight, x, maxW);
+  } else if (category === "lodging" && item.hotel) {
+    renderHotelBlock(cur, item.hotel, x, maxW);
+  } else if (category === "dining" && item.restaurant) {
+    renderRestaurantBlock(cur, item.restaurant, x, maxW);
+  } else if (category === "transport") {
+    if (item.text) renderDetailLine(cur, "Detail", item.text, x, maxW);
+    if (item.location) renderDetailLine(cur, "Where", item.location, x, maxW);
+    if (item.duration) renderDetailLine(cur, "Duration", item.duration, x, maxW);
+    if (item.contact) renderContactBlock(cur, item.contact, x, maxW);
+  } else {
+    // activities (and any other card-bearing item)
+    if (item.text) renderDetailLine(cur, "Activity", item.text, x, maxW);
+    if (item.why) renderDetailLine(cur, "Why", item.why, x, maxW);
+    if (item.location && !item.contact?.address) renderDetailLine(cur, "Where", item.location, x, maxW);
+    if (item.contact) renderContactBlock(cur, item.contact, x, maxW);
+  }
+}
+
+function renderByCategory(cur, data) {
+  const groups = groupItemsByCategory(data);
+  if (!groups.length) return;
+
+  // Start on a fresh page so it reads like a back-of-book reference.
+  cur.newPage();
+  cur.space(2);
+  cur.text("By Category", { font: FONT.serif, style: "italic", size: 22, color: COLOR.ink });
+  cur.space(2);
+  cur.accentRule(48);
+
+  const x = PAGE.marginX + 3;
+  const maxW = PAGE.width - PAGE.marginX - x;
+  for (const group of groups) {
+    sectionHeader(cur, `${group.label} (${group.items.length})`);
+    const shown = group.items.slice(0, CATEGORY_PDF_CAP);
+    shown.forEach((entry) => renderCategoryEntry(cur, entry, group.category, x, maxW));
+    if (group.items.length > shown.length) {
+      cur.space(1);
+      cur.text(`+ ${group.items.length - shown.length} more in the day-by-day`, {
+        font: FONT.sans, style: "italic", size: 9, color: COLOR.inkFaint, x,
+      });
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
 // REFERENCE SECTIONS — logistics, weather, pack, planb, flags, snobs, tonight.
 // -----------------------------------------------------------------------------
 function sectionHeader(cur, title) {
@@ -1471,10 +1556,15 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
     days.forEach((d, i) => renderDay(cur, d, i));
   }
 
-  // 4. References
+  // 4. By category — same items as the day-by-day, regrouped (flights /
+  // lodging / transport / activities / dining). Sits after the chronological
+  // plan and before the trip reference back-matter.
+  renderByCategory(cur, data);
+
+  // 5. References
   renderReferences(cur, data);
 
-  // 5. Footers (after everything else so page count is final)
+  // 6. Footers (after everything else so page count is final)
   renderFooters(pdf, { buildId, introPageIndex });
 
   return pdf;

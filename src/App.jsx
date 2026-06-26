@@ -6,6 +6,7 @@ import { buildDateTable } from "./dateFacts.js";
 import { pickScheduledFlight, parseClockToMinutes, resolveAirlineIata, normalizeAirportCode } from "./flightSelect.js";
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
 import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, activityHeadName, itemVenueName } from "./swapAlternatives.js";
+import { groupItemsByCategory } from "./categoryGroups.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -4363,6 +4364,69 @@ function ActivitiesView({ data }) {
   );
 }
 
+// "By category" view — the SAME plan items the day-by-day shows, re-projected
+// into category groups (flights / lodging / ground transport / activities /
+// dining) via the shared groupItemsByCategory helper so the on-screen tab and
+// the PDF section can never drift. Reuses the existing card renderers verbatim
+// (FlightCard / HotelCard / RestaurantCard / ActivityCard + the transport
+// block) — no new card markup — and prefixes each with a "Day N · weekday ·
+// time" context line so an item stays useful once it's pulled out of its day.
+// Renders nothing it didn't already verify; it's a pure regrouping.
+function CategoryView({ data, onOpenMenu }) {
+  const groups = useMemo(() => groupItemsByCategory(data), [data]);
+  if (groups.length === 0) {
+    return (
+      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "20px 0", textAlign: "center" }}>
+        Nothing to group yet — add flights, lodging, transport, activities, or dining.
+      </p>
+    );
+  }
+  // "Day 2 · Fri Jun 5 · 9:00 AM" — day number + the day-label's weekday/date
+  // segment (when present) + the item's 12-hour start time.
+  const contextLabel = (entry) => {
+    const weekday = (entry.dayLabel || "").split(" · ")[1] || "";
+    return [`Day ${entry.dayIndex + 1}`, weekday, formatTime(entry.time)].filter(Boolean).join(" · ");
+  };
+  return (
+    <div>
+      {groups.map((group) => (
+        <div key={group.category} style={{ marginBottom: "22px" }}>
+          <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px", paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{group.label} · {group.items.length}</p>
+          {group.items.map((entry, i) => (
+            <div key={i} style={{ marginBottom: "10px" }}>
+              <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>{contextLabel(entry)}</p>
+              {group.category === "flights" && (
+                <FlightCard type={entry.item.type} time={entry.item.time} end_time={entry.item.end_time} flight={entry.item.flight} text={entry.item.text} flags={entry.item.flags} dayLabel={entry.dayLabel} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(entry.item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />
+              )}
+              {group.category === "lodging" && (
+                <HotelCard type={entry.item.type} time={entry.item.time} end_time={entry.item.end_time} hotel={entry.item.hotel} text={entry.item.text} />
+              )}
+              {group.category === "transport" && (
+                <div style={{ border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+                    {entry.item.time && <TimePill time={entry.item.time} end_time={entry.item.end_time} />}
+                    <Badge type="Transport" />
+                  </div>
+                  <p style={{ fontSize: "13.5px", color: "var(--color-text-primary)", margin: "0 0 6px", lineHeight: 1.5 }}>{entry.item.text}</p>
+                  {entry.item.location && <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: "0 0 6px" }}>{entry.item.location}</p>}
+                  {entry.item.duration && <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "0 0 6px" }}>⏱ {entry.item.duration}</p>}
+                  <ContactBlock contact={entry.item.contact} name={entry.item.text} />
+                </div>
+              )}
+              {group.category === "activities" && (
+                <ActivityCard time={entry.item.time} end_time={entry.item.end_time} item={entry.item} />
+              )}
+              {group.category === "dining" && (
+                <RestaurantCard type={entry.item.type} restaurant={entry.item.restaurant} onOpenMenu={onOpenMenu} />
+              )}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Essentials view — pulls every non-itinerary block (Tonight, Weather & pack,
 // Heads up, Plan B, Snob's guide) into one focused tab. This frees Overview
 // from being a kitchen-sink view and gives a single "things to know" surface.
@@ -4513,6 +4577,7 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, onOpen
     counts.transport > 0 && { id: "transport", label: `Transport · ${counts.transport}` },
     counts.dining > 0 && { id: "dining", label: `Dining · ${counts.dining}` },
     counts.activities > 0 && { id: "activities", label: `Activities · ${counts.activities}` },
+    (counts.flights + counts.hotels + counts.transport + counts.dining + counts.activities) > 0 && { id: "category", label: "By category" },
     counts.essentials > 0 && { id: "essentials", label: `Essentials · ${counts.essentials}` },
   ].filter(Boolean);
   return (
@@ -4593,6 +4658,7 @@ function TripSectionView({ tab, data, inputs, onOpenMenu }) {
   if (tab === "transport") return <TransportView data={data} />;
   if (tab === "dining") return <DiningView data={data} inputs={inputs} onOpenMenu={onOpenMenu} />;
   if (tab === "activities") return <ActivitiesView data={data} />;
+  if (tab === "category") return <CategoryView data={data} onOpenMenu={onOpenMenu} />;
   if (tab === "essentials") return <EssentialsView data={data} />;
   return null;
 }
@@ -6224,7 +6290,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       )}
 
       {data.days && data.days.length > 0 && tab !== "overview" && (
-        <Section title={({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities", essentials: "Essentials" }[tab] || "")}>
+        <Section title={({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities", category: "By category", essentials: "Essentials" }[tab] || "")}>
           <TripSectionView tab={tab} data={data} inputs={inputs} onOpenMenu={openMenu} />
         </Section>
       )}
