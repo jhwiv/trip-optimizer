@@ -10,6 +10,7 @@ import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll } from "./replanControl.js";
+import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, hasIntroduction } from "./introduction.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -6155,6 +6156,16 @@ OTHER RULES:
 OUTPUT EXACTLY two paragraphs separated by a single blank line. No labels, no headers, no preamble — just the prose.`;
 }
 
+// Stable signature for a built plan so the auto-generate effect fires once
+// per distinct build (and after a failed auto-attempt, doesn't retry in a
+// loop). Cheap fields only — destination, day count, first/last day labels.
+function introPlanSignature(plan) {
+  const days = Array.isArray(plan?.days) ? plan.days : [];
+  const first = days[0]?.label || "";
+  const last = days[days.length - 1]?.label || "";
+  return `${plan?.destination || ""}|${days.length}|${first}|${last}`;
+}
+
 function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
   const existing = plan && plan.introduction;
   const [open, setOpen] = useState(false);
@@ -6162,6 +6173,72 @@ function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
   const [diff, setDiff] = useState(existing?.differentiators || "");
   const [savedFlash, setSavedFlash] = useState(false);
   const [copiedFlash, setCopiedFlash] = useState(false);
+  // Auto-generation state. "idle" | "loading" | "error".
+  const [genState, setGenState] = useState("idle");
+  const [genError, setGenError] = useState("");
+  // Tracks the plan signature we've already auto-attempted so the effect
+  // fires once per build and never auto-retries a failure (manual retry only).
+  const autoAttemptedRef = useRef("");
+
+  // Generate the introduction via the lightweight /api/introduction endpoint
+  // and persist it through the SAME onPlanRevised lift the paste box uses.
+  // `force` (explicit Generate / Regenerate click) overwrites any existing
+  // introduction; the passive auto-run leaves force false so a user-pasted /
+  // edited intro is never clobbered (guard lives in applyGeneratedIntroduction).
+  const generateIntro = useCallback(
+    async ({ force }) => {
+      if (!plan?.days || plan.days.length === 0) return;
+      setGenState("loading");
+      setGenError("");
+      try {
+        const payload = shapeIntroRequest(plan, inputs);
+        const res = await fetch("/api/introduction", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setGenError(data?.error?.message || `Couldn't generate the introduction (${res.status}).`);
+          setGenState("error");
+          return;
+        }
+        const next = applyGeneratedIntroduction(plan, data, { force });
+        if (next === plan) {
+          // No write happened. If there's still no intro, the response was
+          // unusable — surface an honest error. If an intro already exists,
+          // the no-clobber guard fired on a passive run; that's a quiet no-op.
+          if (!hasIntroduction(plan)) {
+            setGenError("The introduction service returned an empty result. Try again.");
+            setGenState("error");
+            return;
+          }
+          setGenState("idle");
+          return;
+        }
+        setArc(next.introduction.arc);
+        setDiff(next.introduction.differentiators);
+        onPlanRevised(next);
+        setGenState("idle");
+      } catch (err) {
+        setGenError(`Couldn't reach the introduction service. ${String(err?.message || err).slice(0, 80)}`);
+        setGenState("error");
+      }
+    },
+    [plan, inputs, onPlanRevised],
+  );
+
+  // Auto-generate once after a build completes, only when the plan carries no
+  // introduction yet. A failure is recorded against the signature so it won't
+  // loop; the user retries via the explicit button. Resilient by design — a
+  // failure here never touches the itinerary.
+  useEffect(() => {
+    if (!shouldAutoGenerateIntroduction(plan)) return;
+    const sig = introPlanSignature(plan);
+    if (autoAttemptedRef.current === sig) return;
+    autoAttemptedRef.current = sig;
+    generateIntro({ force: false });
+  }, [plan, generateIntro]);
 
   if (!plan?.days || plan.days.length === 0) return null;
 
@@ -6216,6 +6293,12 @@ function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
   //   1) Copy prompt button (so user can hand the prompt to their external AI)
   //   2) Click anywhere else to expand into the paste composer
   if (!open) {
+    const loading = genState === "loading";
+    const teaserSubtext = loading
+      ? "Writing your introduction from the day-by-day routing…"
+      : hasExisting
+      ? "This intro will appear as page 2 of the PDF. Click to edit or replace it."
+      : "Generated automatically from your itinerary, or paste your own. The intro lands on page 2 of the PDF.";
     return (
       <div style={cardStyle}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
@@ -6223,12 +6306,15 @@ function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
             onClick={() => setOpen(true)}
             style={{ flex: 1, border: "none", background: "transparent", padding: "4px 0", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
           >
-            <span style={labelStyle}>{hasExisting ? "Introduction · saved" : "Paste an introduction"}</span>
+            <span style={labelStyle}>{loading ? "Introduction · generating" : hasExisting ? "Introduction · saved" : "Introduction"}</span>
             <span style={{ display: "block", fontSize: "12.5px", color: "var(--color-text-secondary)", marginTop: "2px" }}>
-              {hasExisting
-                ? "This intro will appear as page 2 of the PDF. Click to edit or replace it."
-                : "Hand the prompt to your AI, paste the two paragraphs back here, and the intro lands on page 2 of the PDF."}
+              {teaserSubtext}
             </span>
+            {genState === "error" && (
+              <span style={{ display: "block", fontSize: "11.5px", color: "#8C1F1F", marginTop: "4px" }}>
+                {genError || "Couldn't generate the introduction."} You can retry, paste your own, or just export without it.
+              </span>
+            )}
             {savedFlash && (
               <span style={{ display: "block", fontSize: "11.5px", color: GOLD, marginTop: "4px" }}>✓ Saved — included on next PDF export.</span>
             )}
@@ -6236,13 +6322,23 @@ function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
               <span style={{ display: "block", fontSize: "11.5px", color: GOLD, marginTop: "4px" }}>✓ Prompt copied — paste it into your AI now.</span>
             )}
           </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); handleCopyPrompt(); }}
-            title="Copy a ready-made prompt for your external AI with all trip facts already filled in."
-            style={{ flex: "0 0 auto", border: `1px solid ${GOLD}`, background: "transparent", color: GOLD, padding: "7px 12px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "11.5px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", whiteSpace: "nowrap" }}
-          >
-            Copy AI prompt
-          </button>
+          <div style={{ flex: "0 0 auto", display: "flex", gap: "8px" }}>
+            <button
+              onClick={(e) => { e.stopPropagation(); generateIntro({ force: true }); }}
+              disabled={loading}
+              title="Generate the introduction in-app from this itinerary's day-by-day routing."
+              style={{ border: `1px solid ${GOLD}`, background: GOLD, color: "#fff", padding: "7px 12px", borderRadius: "6px", cursor: loading ? "default" : "pointer", opacity: loading ? 0.6 : 1, fontFamily: "inherit", fontSize: "11.5px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", whiteSpace: "nowrap" }}
+            >
+              {loading ? "Generating…" : hasExisting || genState === "error" ? "Regenerate" : "Generate"}
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleCopyPrompt(); }}
+              title="Copy a ready-made prompt for your external AI with all trip facts already filled in."
+              style={{ border: `1px solid ${GOLD}`, background: "transparent", color: GOLD, padding: "7px 12px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "11.5px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", whiteSpace: "nowrap" }}
+            >
+              Copy AI prompt
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -6536,10 +6632,12 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       <TripHero data={data} />
       <QualityBadge qc={qc} />
 
-      {/* Introduction paste box — externally-generated intro lands here and
-          renders as page 2 of the PDF (see renderIntroduction). The planner
-          itself no longer generates the introduction (PR #20). Inputs are
-          passed so the "Copy AI prompt" button can include trip facts. */}
+      {/* Introduction card — auto-generates the intro after build via the
+          separate lightweight /api/introduction call (the streaming planner
+          still does NOT generate it; removed in PR #20 for cost). The result
+          renders as page 2 of the PDF (see renderIntroduction). The manual
+          paste box stays as an override; inputs are passed so generation and
+          the "Copy AI prompt" button can include trip facts. */}
       <IntroductionPasteCard plan={rawData} inputs={inputs} onPlanRevised={onPlanRevised} />
 
       {/* Professional review surface — user-initiated, sits between hero and the day-by-day content. */}
