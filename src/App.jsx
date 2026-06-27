@@ -10,7 +10,7 @@ import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll } from "./replanControl.js";
-import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction } from "./introduction.js";
+import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, isPdfDownloadReady } from "./introduction.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -3525,7 +3525,7 @@ function hardReloadNow() {
   window.location.replace(url.toString());
 }
 
-function PrintButton({ data, inputs, providers }) {
+function PrintButton({ data, inputs, providers, plan, introIsGenerating }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -3533,8 +3533,19 @@ function PrintButton({ data, inputs, providers }) {
   // refresh prompt instead of auto-reloading (which would lose unsaved work).
   const [stale, setStale] = useState(false);
 
+  // Closes the PR #69 race: when the headless IntroductionAutoGenerator is
+  // mid-flight, disable Save as PDF (with a clear "Preparing introduction…"
+  // label) so the user can't ship a PDF with no intro page. Falls open the
+  // moment the intro is populated OR the generator finishes/fails — a silent
+  // /api/introduction failure must never permanently block the PDF.
+  // `plan` is the source-of-truth rawData (introduction lives there via
+  // onPlanRevised); falling back to `data` keeps any caller that doesn't
+  // pass `plan` from regressing.
+  const gate = isPdfDownloadReady({ plan: plan || data, isGenerating: introIsGenerating });
+  const disabledForIntro = !gate.ready;
+
   const handleClick = async () => {
-    if (busy) return;
+    if (busy || disabledForIntro) return;
     setBusy(true); setError(""); setStatus("Starting…");
     try {
       // The PDF's Local-providers section needs the data, but fetching is now
@@ -3571,7 +3582,7 @@ function PrintButton({ data, inputs, providers }) {
     <div className="no-print" style={{ display: "inline-flex", flexDirection: "column", gap: "4px" }}>
       <button
         onClick={handleClick}
-        disabled={busy}
+        disabled={busy || disabledForIntro}
         style={{
           background: "var(--color-text-primary)",
           color: "var(--color-background-primary)",
@@ -3581,17 +3592,18 @@ function PrintButton({ data, inputs, providers }) {
           fontSize: "11px",
           letterSpacing: "0.08em",
           textTransform: "uppercase",
-          cursor: busy ? "wait" : "pointer",
+          cursor: (busy || disabledForIntro) ? "wait" : "pointer",
           fontFamily: "inherit",
           fontWeight: 600,
           display: "inline-flex",
           alignItems: "center",
           gap: "8px",
-          opacity: busy ? 0.7 : 1,
+          opacity: (busy || disabledForIntro) ? 0.7 : 1,
         }}
-        aria-label="Save itinerary as PDF"
+        aria-label={disabledForIntro ? gate.label : "Save itinerary as PDF"}
+        aria-busy={disabledForIntro ? "true" : undefined}
       >
-        <span aria-hidden="true">⤓</span> {busy ? (status || "Working…") : "Save as PDF"}
+        <span aria-hidden="true">⤓</span> {busy ? (status || "Working…") : (disabledForIntro ? gate.label : "Save as PDF")}
       </button>
       {error && (
         <span style={{ fontSize: "11px", color: "#B85C00" }}>{error}</span>
@@ -6085,10 +6097,22 @@ function introPlanSignature(plan) {
   return `${plan?.destination || ""}|${days.length}|${first}|${last}`;
 }
 
-function IntroductionAutoGenerator({ plan, inputs, onPlanRevised }) {
+function IntroductionAutoGenerator({ plan, inputs, onPlanRevised, onGeneratingChange }) {
   // Tracks the plan signature we've already auto-attempted so the effect fires
   // once per build and never auto-retries a failure.
   const autoAttemptedRef = useRef("");
+
+  // Lift the in-flight state out to the parent (ItineraryView) so the PDF
+  // download button can gate on it. We KEEP a local mirror so this component
+  // stays self-contained when no callback is provided (existing tests / any
+  // other mount site keep working). The parent reads it via onGeneratingChange.
+  // Failure flips it back to false the same as success — a silent server
+  // error must never leave the gate permanently closed.
+  const [isGenerating, setIsGenerating] = useState(false);
+  const reportGeneratingChange = useCallback((value) => {
+    setIsGenerating(value);
+    if (typeof onGeneratingChange === "function") onGeneratingChange(value);
+  }, [onGeneratingChange]);
 
   // Generate the introduction via the lightweight /api/introduction endpoint
   // and persist it through onPlanRevised, only when the plan carries no
@@ -6101,6 +6125,7 @@ function IntroductionAutoGenerator({ plan, inputs, onPlanRevised }) {
     if (autoAttemptedRef.current === sig) return;
     autoAttemptedRef.current = sig;
     let cancelled = false;
+    reportGeneratingChange(true);
     (async () => {
       try {
         const payload = shapeIntroRequest(plan, inputs);
@@ -6116,15 +6141,33 @@ function IntroductionAutoGenerator({ plan, inputs, onPlanRevised }) {
         if (!cancelled && next !== plan) onPlanRevised(next);
       } catch {
         // Swallow — a failed intro must never break the itinerary view.
+      } finally {
+        // Release the gate on BOTH success and failure paths. If the component
+        // unmounted mid-flight we still flip our own state safely (setState
+        // on unmounted is a noop in React 18 strict mode) and skip the parent
+        // callback to avoid touching a stale parent.
+        if (!cancelled) reportGeneratingChange(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [plan, inputs, onPlanRevised]);
+  }, [plan, inputs, onPlanRevised, reportGeneratingChange]);
+
+  // Suppress unused-var warning — isGenerating is exposed via callback above
+  // and kept locally so consumers without a callback still get correct state.
+  void isGenerating;
 
   return null;
 }
 
 function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId: _savedTripId, onPlanRevised, onReviewChange, initialReview }) {
+  // Whether IntroductionAutoGenerator's headless POST /api/introduction call
+  // is in flight. Lifted here so PrintButton can disable Save as PDF until
+  // the intro is either populated on the plan or the generator finishes/fails
+  // — closes the PR #69 race where a fast user gets a PDF with no intro page.
+  // The generator flips this back to false on both success and failure paths,
+  // so a silent /api/introduction error never permanently blocks the button.
+  const [introIsGenerating, setIntroIsGenerating] = useState(false);
+
   // --- Menu modal state (lazy-fetch via /api/menu) ---
   // For large multi-city trips the build prompt now OMITS per-restaurant
   // menu data to keep the streaming response small (was 10-15k tokens of
@@ -6343,7 +6386,12 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           renderIntroduction). Renders nothing on screen by design: the intro is
           a PDF-only artifact. inputs are passed so generation can include trip
           facts. */}
-      <IntroductionAutoGenerator plan={rawData} inputs={inputs} onPlanRevised={onPlanRevised} />
+      <IntroductionAutoGenerator
+        plan={rawData}
+        inputs={inputs}
+        onPlanRevised={onPlanRevised}
+        onGeneratingChange={setIntroIsGenerating}
+      />
 
       {/* Professional review surface — user-initiated, sits between hero and the day-by-day content. */}
       <ReviewPanel
@@ -6431,7 +6479,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           title="Go back to the input form. Your trip details stay filled in."
         >← Back to inputs</button>
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
-        <PrintButton data={data} inputs={inputs} providers={providers} />
+        <PrintButton data={data} inputs={inputs} providers={providers} plan={rawData} introIsGenerating={introIsGenerating} />
         <PrintRidesButton data={data} inputs={inputs} />
         {/* Reset — surfaced here on Step 3 (results) so users don't have to
             navigate Home + scroll Step 1 to find it. Styled as a clear but
