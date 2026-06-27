@@ -9,6 +9,7 @@ import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, ac
 import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
+import { freshAbortController, replanTimeoutMs, classifyApplyError } from "./replanControl.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -5168,9 +5169,15 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       setProgress(prev => Math.max(prev, Math.max(lastTokFrac, timeFrac)));
     }, 250);
 
-    const controller = new AbortController();
+    // Fresh, never-reused controller per invocation. The hard-timeout is only
+    // a BACKSTOP above streamBuildJob's own 15-min poll ceiling / 180s stall
+    // guard — a fixed 300s here was shorter than that budget, so a long full
+    // re-plan could be aborted mid-stream and surface as a bare "Load failed"
+    // (Safari/iOS reports an aborted fetch as TypeError "Load failed").
+    const controller = freshAbortController();
     abortRef.current = controller;
-    const hardTimeout = setTimeout(() => controller.abort(), 300000);
+    let timedOut = false;
+    const hardTimeout = setTimeout(() => { timedOut = true; controller.abort(); }, replanTimeoutMs(applyMode));
 
     try {
       const body = applyMode === "surgical"
@@ -5288,7 +5295,9 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
         });
       }
     } catch (err) {
-      if (err?.name === "AbortError") setError("Apply cancelled.");
+      const cls = classifyApplyError(err, { aborted: controller.signal.aborted, timedOut });
+      if (cls.kind === "cancelled") setError("Apply cancelled.");
+      else if (cls.message) setError(cls.message);
       else setError(cleanErrorMessage(err?.message, "Apply failed."));
       setStatus("done");
     } finally {
@@ -5656,9 +5665,12 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
       setProgress(prev => Math.max(prev, Math.max(lastTokFrac, timeFrac)));
     }, 250);
 
-    const controller = new AbortController();
+    // Fresh controller per invocation; hard-timeout is a backstop above
+    // streamBuildJob's own budget (see handleApply / replanControl.js).
+    const controller = freshAbortController();
     abortRef.current = controller;
-    const hardTimeout = setTimeout(() => controller.abort(), 300000);
+    let timedOut = false;
+    const hardTimeout = setTimeout(() => { timedOut = true; controller.abort(); }, replanTimeoutMs(target.mode));
 
     try {
       // Synthesize a finding-shaped object so we can reuse the existing
@@ -5782,7 +5794,9 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
       setText("");
       setTimeout(() => { setStatus("idle"); setOpen(false); }, 2500);
     } catch (err) {
-      if (err?.name === "AbortError") setError("Change cancelled.");
+      const cls = classifyApplyError(err, { aborted: controller.signal.aborted, timedOut });
+      if (cls.kind === "cancelled") setError("Change cancelled.");
+      else if (cls.message) setError(cls.message);
       else setError(cleanErrorMessage(err?.message, "Change failed."));
       setStatus("error");
     } finally {
