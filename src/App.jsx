@@ -9,7 +9,7 @@ import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, ac
 import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
-import { freshAbortController, replanTimeoutMs, classifyApplyError } from "./replanControl.js";
+import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll } from "./replanControl.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -7721,7 +7721,21 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
         err.name = "AbortError";
         throw err;
       }
-      const { value, done } = await reader.read();
+      let value, done;
+      try {
+        ({ value, done } = await reader.read());
+      } catch (readErr) {
+        // The live POST stream dropped mid-flight. Without this catch the
+        // reject propagated straight out of streamBuildJob, past the KV-poll
+        // fallback below (which only ran on a clean `done` break) — so a
+        // dropped surgical-revision stream was a hard failure even though the
+        // server job kept running and mirroring to KV. If we already have a
+        // jobId and the drop is a recognized transport error, fall through to
+        // resume via polling instead of failing. See shouldResumeViaPoll.
+        if (readErr?.name === "AbortError") throw readErr;
+        if (shouldResumeViaPoll(readErr, { jobId, doneSeen })) break;
+        throw readErr;
+      }
       if (done) break;
       buf += decoder.decode(value, { stream: true });
       let nl;
@@ -7758,8 +7772,10 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
     try { reader.releaseLock(); } catch {}
   }
 
-  // Stream ended without `done`. If we know the jobId, fall back to KV polling
-  // so we can still finish reading whatever the server produced.
+  // Stream ended without `done` — either a clean EOF or a mid-stream transport
+  // drop that broke out of the read loop above (see shouldResumeViaPoll). If we
+  // know the jobId, fall back to KV polling so we can still finish reading
+  // whatever the server produced and resume the job to completion.
   //
   // Bounded by two signals so the UI never spins forever:
   //   - MAX_POLL_MS:    absolute ceiling on total polling time (10 minutes)

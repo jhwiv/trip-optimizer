@@ -15,6 +15,7 @@ import {
   classifyApplyError,
   isAbortLikeError,
   isNetworkLoadError,
+  shouldResumeViaPoll,
 } from "../src/replanControl.js";
 
 let passed = 0, failed = 0;
@@ -85,6 +86,45 @@ console.log("=== classifyApplyError ===");
   // Anything else falls through so the caller can run cleanErrorMessage().
   const o = classifyApplyError(new Error("Revision returned no patches."), {});
   assert("other errors fall through (kind 'other', null message)", o.kind === "other" && o.message === null);
+}
+
+console.log("=== shouldResumeViaPoll (surgical-apply connection-drop recovery) ===");
+{
+  const drop = new TypeError("Load failed"); // Safari/iOS mid-stream drop
+
+  // The bug: a mid-stream drop with a known jobId must resume via KV poll,
+  // not hard-fail. The server job keeps running and mirroring to KV.
+  assert("transport drop WITH a jobId and no `done` → resume via poll",
+    shouldResumeViaPoll(drop, { jobId: "abc123", doneSeen: false }) === true);
+  assert("Chromium 'Failed to fetch' drop with a jobId also resumes",
+    shouldResumeViaPoll(new TypeError("Failed to fetch"), { jobId: "abc123" }) === true);
+
+  // Not resumable: drop happened before the server sent the jobId, so there's
+  // nothing in KV to poll. Honest hard error is correct here.
+  assert("drop BEFORE jobId arrived → NOT resumable (no job to poll)",
+    shouldResumeViaPoll(drop, { jobId: null, doneSeen: false }) === false);
+
+  // Not resumable: an abort we caused (user cancel or hard-timeout). Resuming
+  // would defeat the cancel and re-surface the cancelled work.
+  const domAbort = Object.assign(new Error("aborted"), { name: "AbortError" });
+  assert("abort we caused is NOT resumed (respects cancel/timeout)",
+    shouldResumeViaPoll(domAbort, { jobId: "abc123" }) === false);
+
+  // Not resumable: stream already completed — nothing left to poll for.
+  assert("a completed stream (doneSeen) is not resumed",
+    shouldResumeViaPoll(drop, { jobId: "abc123", doneSeen: true }) === false);
+
+  // Not resumable: a non-transport application error (e.g. a parse failure)
+  // is a real failure, not a recoverable drop.
+  assert("ordinary application error is NOT treated as a resumable drop",
+    shouldResumeViaPoll(new Error("Revision returned no patches."), { jobId: "abc123" }) === false);
+
+  // After resume is exhausted, classification stays honest: an unsolicited
+  // transport drop that could NOT be resumed surfaces the honest network
+  // message, never the bare engine string.
+  const afterExhausted = classifyApplyError(drop, { aborted: false, timedOut: false });
+  assert("drop that can't resume still classifies as honest network error",
+    afterExhausted.kind === "network" && !/load failed/i.test(afterExhausted.message));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
