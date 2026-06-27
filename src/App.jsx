@@ -7,6 +7,7 @@ import { pickScheduledFlight, parseClockToMinutes, resolveAirlineIata, normalize
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
 import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, activityHeadName, itemVenueName } from "./swapAlternatives.js";
 import { groupItemsByCategory } from "./categoryGroups.js";
+import { resolveOutputs } from "./outputsState.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -9955,6 +9956,16 @@ export default function TripOptimizer() {
   const [narrative, setNarrative] = useState(_ri?.narrative || BLANK.narrative);
   // Hero-level trip guidelines — meta-rules above all other inputs.
   const [guidelines, setGuidelines] = useState(_ri?.guidelines || BLANK.guidelines);
+  // Build "output sections" selection. The day-by-day itinerary is ALWAYS on
+  // (a plan with no days is meaningless, so its toggle renders locked-on);
+  // every add-on section defaults OFF and the user opts in on the Step 2
+  // choices panel before building. Restored from the recovered session
+  // snapshot so a remount mid-flow (PWA update, mobile tab discard, self-heal
+  // reload) keeps the user's picks instead of silently resetting to defaults —
+  // the cause of the "sections cleared to flight + hotel only" report.
+  // Declared here (with the other input buckets, before the snapshot effect
+  // that reads it) so the key set stays identical to outputDefs.
+  const [outputs, setOut] = useState(() => resolveOutputs(recovered?.inputs?.outputs));
   // Pending state for the "Build from this" shortcut. extractingFromGuidelines
   // shows the spinner on the shortcut button; pendingBuildFromGuidelines fires
   // handleBuild on the NEXT render after setState flushes — we cannot call
@@ -10216,7 +10227,7 @@ export default function TripOptimizer() {
     setInt(i.interests || DEFAULTS.interests);
     setNarrative(typeof i.narrative === "string" ? i.narrative : DEFAULTS.narrative);
     setGuidelines(typeof i.guidelines === "string" ? i.guidelines : DEFAULTS.guidelines);
-    setOut(i.outputs || { itinerary: true, weather: false, navigation: false, logistics: false, tonight: false, menus: false, flags: false, planb: false, snobs: false, practical: false, badges: false, pronunciation: false });
+    setOut(resolveOutputs(i.outputs));
     // Cancel any in-flight generation and clear transient UI state.
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
     setLoading(false);
@@ -10332,7 +10343,7 @@ export default function TripOptimizer() {
         step,
         currentSavedTripId,
         reviewState,
-        inputs: { basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative },
+        inputs: { basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative, outputs },
       };
       const writeOrDegrade = () => {
         try {
@@ -10357,12 +10368,7 @@ export default function TripOptimizer() {
       writeOrDegrade();
     }, 400);
     return () => clearTimeout(t);
-  }, [result, step, currentSavedTripId, reviewState, basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative]);
-  // The day-by-day itinerary is ALWAYS on — a plan with no days is meaningless,
-  // so its toggle is rendered checked-and-locked. Every add-on section defaults
-  // OFF; the user opts into the ones they want on the Step 2 choices panel
-  // before building. Keep the key set identical to outputDefs.
-  const [outputs, setOut] = useState({ itinerary: true, weather: false, navigation: false, logistics: false, tonight: false, menus: false, flags: false, planb: false, snobs: false, practical: false, badges: false, pronunciation: false });
+  }, [result, step, currentSavedTripId, reviewState, basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative, outputs]);
   // Step 1 has a collapsible Output Sections panel so users can preview and
   // pick which add-on sections to include before continuing to Step 2. Default
   // collapsed to keep Step 1 visually calm; expanded by user choice. Same
@@ -11071,6 +11077,20 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     let buf = "";
     let totalLen = 0;
     let stopReason = null;
+    // Stall watchdog. The POST /api/build fetch is NOT bound to an abort
+    // signal, so neither the hard-timeout nor the Cancel button can interrupt
+    // a blocked reader.read(): the loop only re-checks signal.aborted AFTER a
+    // read resolves. If the live SSE stalls without sending bytes (no deltas,
+    // no pings) and without closing, reader.read() never resolves and the UI
+    // spins forever with no error — the reported "still running after 14 min".
+    // Unlike pollJob, this streamer had no stall guard of its own. Race each
+    // read against a stall deadline; on stall, cancel the reader and return a
+    // soft EOF so the caller falls through to the bounded KV poll fallback
+    // (which itself enforces a poll ceiling + emits an honest error). The
+    // server sends periodic pings, so a full STREAM_STALL_MS gap with zero
+    // bytes genuinely means the live stream is dead. Matches pollJob's
+    // MAX_STALL_MS so both transports give up at the same threshold.
+    const STREAM_STALL_MS = 180 * 1000;
     try {
       while (true) {
         if (signal?.aborted) {
@@ -11079,7 +11099,30 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           err.name = "AbortError";
           throw err;
         }
-        const { value, done } = await reader.read();
+        let stallTimer = null;
+        let readOut;
+        try {
+          readOut = await Promise.race([
+            reader.read(),
+            new Promise((_, reject) => {
+              stallTimer = setTimeout(() => {
+                const e = new Error("Live stream stalled");
+                e._streamStall = true;
+                reject(e);
+              }, STREAM_STALL_MS);
+            }),
+          ]);
+        } catch (raceErr) {
+          if (raceErr && raceErr._streamStall) {
+            // Dead live stream — hand off to the bounded KV poll fallback.
+            try { await reader.cancel(); } catch {}
+            return { len: totalLen, softEnd: true, stopReason };
+          }
+          throw raceErr;
+        } finally {
+          if (stallTimer) clearTimeout(stallTimer);
+        }
+        const { value, done } = readOut;
         if (done) break;
         buf += decoder.decode(value, { stream: true });
         // NDJSON: each event is a single line terminated with \n.
