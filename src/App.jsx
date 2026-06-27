@@ -10,7 +10,7 @@ import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll } from "./replanControl.js";
-import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, hasIntroduction } from "./introduction.js";
+import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction } from "./introduction.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -6057,104 +6057,23 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
 }
 
 // --------------------------------------------------------------------------
-// IntroductionPasteCard
+// IntroductionAutoGenerator (headless)
 //
-// Paste box on the result page for an externally-generated introduction. The
-// PDF renderer (renderIntroduction in itineraryPdf.js) reads two fields off
-// the plan:
+// Generates the trip introduction after a build via the lightweight
+// /api/introduction endpoint and persists it onto data.introduction through
+// onPlanRevised, so the PDF renderer (renderIntroduction in itineraryPdf.js)
+// can show it as the intro page. The PDF reads two fields off the plan:
 //   data.introduction.arc             — Part 1, The Arc of the Journey
 //   data.introduction.differentiators — Part 2, What Makes This Itinerary Different
 // or treats data.introduction.differentiators === 'NONE_FLAGGED' as the
 // honest-no-differentiators state.
 //
-// We removed the planner-side generation (PR #20) because adding ~600 output
-// tokens to the build was contributing to max_tokens truncations on big
-// trips. The intro is now produced by an external AI tool and pasted here.
-//
-// The card lifts state via onPlanRevised so the introduction persists with
-// the rest of the plan (auto-save, session recovery, saved trips). Same
-// lift idiom as ChangeRequestCard.
+// This component renders NOTHING on screen — the introduction is a PDF-only
+// artifact. (It previously also rendered as an on-screen paste/edit card on
+// the result page; that visible UI was removed by request — intro now appears
+// only at the top of the PDF.) Generation runs once per distinct build and
+// never clobbers an existing intro (guard lives in applyGeneratedIntroduction).
 // --------------------------------------------------------------------------
-// Build a ready-to-paste prompt for an external AI to generate the intro.
-// Includes trip facts (destination, dates, route, traveler count, style) plus
-// a per-day one-liner summary so the AI has enough context to write specific,
-// non-generic copy. Wraps everything in the user's spec language so the
-// output matches the format the paste card and PDF renderer expect.
-function buildIntroPromptForExternalAI(plan, inputs) {
-  const dest = (plan?.destination || "").toString().trim();
-  const cities = Array.isArray(plan?.cities) ? plan.cities : [];
-  const route = cities.length >= 2
-    ? cities.map(c => (c?.name || "").toString().trim()).filter(Boolean).join(" → ")
-    : "";
-  const startDate = (inputs?.basics?.startDate || "").toString().trim();
-  const endDate = (inputs?.basics?.endDate || "").toString().trim();
-  const nights = (inputs?.basics?.nights || "").toString().trim();
-  const travelers = (inputs?.basics?.travelers || "").toString().trim();
-  const style = Array.isArray(inputs?.basics?.style) ? inputs.basics.style.filter(Boolean).join(", ") : "";
-  const pace = (inputs?.basics?.pace || "").toString().trim();
-  const budget = (inputs?.basics?.budget || "").toString().trim();
-
-  const factLines = [
-    dest && `Destination: ${dest}`,
-    route && `Route: ${route}`,
-    nights && `Nights: ${nights}`,
-    startDate && endDate ? `Dates: ${startDate} — ${endDate}` : (startDate && `Start date: ${startDate}`),
-    travelers && `Travelers: ${travelers}`,
-    style && `Style: ${style}`,
-    pace && `Pace: ${pace}`,
-    budget && `Budget tier: ${budget}`,
-  ].filter(Boolean);
-
-  // Per-day one-liner: "Day 3 · Rovinj → Plitvice: Plitvice Lakes lower trails + Roxanich winery (Wed Aug 26)"
-  const days = Array.isArray(plan?.days) ? plan.days : [];
-  const dayLines = days.map((d, i) => {
-    const label = (d?.label || `Day ${i + 1}`).toString().trim();
-    const headline = (d?.headline || "").toString().trim();
-    // Pull the top 2-3 named items so the AI knows what's actually scheduled.
-    const items = Array.isArray(d?.items) ? d.items : [];
-    const namedItems = items
-      .filter(it => it && (it.type === "Activity" || it.type === "Dinner" || it.type === "Hotel"))
-      .map(it => (it.text || it.name || "").toString().trim())
-      .filter(Boolean)
-      .slice(0, 3)
-      .join("; ");
-    const tail = [headline, namedItems].filter(Boolean).join(" — ");
-    return `• ${label}${tail ? ": " + tail : ""}`;
-  });
-
-  const flagsLine = Array.isArray(plan?.flags) && plan.flags.length
-    ? `\nKey flags from the build: ${plan.flags.slice(0, 4).map(f => (f || "").toString().trim()).filter(Boolean).join(" | ")}`
-    : "";
-
-  return `Write a two-part Introduction page for the trip below. The output will be pasted into a trip itinerary PDF as page 2.
-
-TRIP FACTS:
-${factLines.join("\n")}
-
-ITINERARY (one line per day so you know what's actually scheduled — reference these specifically; do not invent new stops):
-${dayLines.join("\n")}${flagsLine}
-
-FORMAT (strict):
-
-Part 1 — The Arc of the Journey
-3–4 sentences, ~80–120 words. Explain why THIS specific route is sequenced the way it is and what the traveler moves through geographically, culturally, and atmospherically from first day to last. Build anticipation by giving the reader a mental map of the trip's shape. NOT a destination description, NOT a list of stops — a narrative arc grounded in the actual day-by-day routing above.
-
-Part 2 — What Makes This Itinerary Different
-ONE compact paragraph (not a bullet list), ~150–250 words. Weave 5–8 SPECIFIC moments, off-the-beaten-path stops, insider access, or sequencing choices a generic itinerary would miss. Name each one specifically using the actual restaurant / winery / hidden site / contact / sequencing decision from the itinerary above. Do not invent. Do not generalize. If the itinerary has no genuinely distinctive off-path elements, write exactly the literal string NONE_FLAGGED for Part 2 instead of fabricating distinction.
-
-TOTAL LENGTH: 350–450 words combined.
-
-VOICE: Second person ("you", "your group") or third person using traveler names. NEVER first person.
-
-BANNED phrases (do not use any of these): world-class, once-in-a-lifetime, breathtaking, incredible, amazing, unforgettable, magical, journey of a lifetime, hidden gem (as a phrase), bucket list. Use specific concrete language instead.
-
-OTHER RULES:
-• No passive voice. No bullet points. No bold markdown. No headers between the two parts — they sit as two paragraphs.
-• Tone: warm, confident, specific. Write as if a well-traveled friend who knows this destination deeply is telling another sophisticated traveler what makes this particular trip worth doing.
-• The travelers are sophisticated adults who appreciate knowing WHY each decision was made.
-
-OUTPUT EXACTLY two paragraphs separated by a single blank line. No labels, no headers, no preamble — just the prose.`;
-}
 
 // Stable signature for a built plan so the auto-generate effect fires once
 // per distinct build (and after a failed auto-attempt, doesn't retry in a
@@ -6166,30 +6085,23 @@ function introPlanSignature(plan) {
   return `${plan?.destination || ""}|${days.length}|${first}|${last}`;
 }
 
-function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
-  const existing = plan && plan.introduction;
-  const [open, setOpen] = useState(false);
-  const [arc, setArc] = useState(existing?.arc || "");
-  const [diff, setDiff] = useState(existing?.differentiators || "");
-  const [savedFlash, setSavedFlash] = useState(false);
-  const [copiedFlash, setCopiedFlash] = useState(false);
-  // Auto-generation state. "idle" | "loading" | "error".
-  const [genState, setGenState] = useState("idle");
-  const [genError, setGenError] = useState("");
-  // Tracks the plan signature we've already auto-attempted so the effect
-  // fires once per build and never auto-retries a failure (manual retry only).
+function IntroductionAutoGenerator({ plan, inputs, onPlanRevised }) {
+  // Tracks the plan signature we've already auto-attempted so the effect fires
+  // once per build and never auto-retries a failure.
   const autoAttemptedRef = useRef("");
 
   // Generate the introduction via the lightweight /api/introduction endpoint
-  // and persist it through the SAME onPlanRevised lift the paste box uses.
-  // `force` (explicit Generate / Regenerate click) overwrites any existing
-  // introduction; the passive auto-run leaves force false so a user-pasted /
-  // edited intro is never clobbered (guard lives in applyGeneratedIntroduction).
-  const generateIntro = useCallback(
-    async ({ force }) => {
-      if (!plan?.days || plan.days.length === 0) return;
-      setGenState("loading");
-      setGenError("");
+  // and persist it through onPlanRevised, only when the plan carries no
+  // introduction yet. Runs once per distinct build. Resilient by design — a
+  // failure here is silent and never touches the itinerary; the PDF simply
+  // renders without an intro.
+  useEffect(() => {
+    if (!shouldAutoGenerateIntroduction(plan)) return;
+    const sig = introPlanSignature(plan);
+    if (autoAttemptedRef.current === sig) return;
+    autoAttemptedRef.current = sig;
+    let cancelled = false;
+    (async () => {
       try {
         const payload = shapeIntroRequest(plan, inputs);
         const res = await fetch("/api/introduction", {
@@ -6197,226 +6109,19 @@ function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
+        if (!res.ok) return;
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          setGenError(data?.error?.message || `Couldn't generate the introduction (${res.status}).`);
-          setGenState("error");
-          return;
-        }
-        const next = applyGeneratedIntroduction(plan, data, { force });
-        if (next === plan) {
-          // No write happened. If there's still no intro, the response was
-          // unusable — surface an honest error. If an intro already exists,
-          // the no-clobber guard fired on a passive run; that's a quiet no-op.
-          if (!hasIntroduction(plan)) {
-            setGenError("The introduction service returned an empty result. Try again.");
-            setGenState("error");
-            return;
-          }
-          setGenState("idle");
-          return;
-        }
-        setArc(next.introduction.arc);
-        setDiff(next.introduction.differentiators);
-        onPlanRevised(next);
-        setGenState("idle");
-      } catch (err) {
-        setGenError(`Couldn't reach the introduction service. ${String(err?.message || err).slice(0, 80)}`);
-        setGenState("error");
+        // force:false — never clobber an existing (e.g. recovered) intro.
+        const next = applyGeneratedIntroduction(plan, data, { force: false });
+        if (!cancelled && next !== plan) onPlanRevised(next);
+      } catch {
+        // Swallow — a failed intro must never break the itinerary view.
       }
-    },
-    [plan, inputs, onPlanRevised],
-  );
+    })();
+    return () => { cancelled = true; };
+  }, [plan, inputs, onPlanRevised]);
 
-  // Auto-generate once after a build completes, only when the plan carries no
-  // introduction yet. A failure is recorded against the signature so it won't
-  // loop; the user retries via the explicit button. Resilient by design — a
-  // failure here never touches the itinerary.
-  useEffect(() => {
-    if (!shouldAutoGenerateIntroduction(plan)) return;
-    const sig = introPlanSignature(plan);
-    if (autoAttemptedRef.current === sig) return;
-    autoAttemptedRef.current = sig;
-    generateIntro({ force: false });
-  }, [plan, generateIntro]);
-
-  if (!plan?.days || plan.days.length === 0) return null;
-
-  const handleCopyPrompt = async () => {
-    const prompt = buildIntroPromptForExternalAI(plan, inputs);
-    try {
-      await navigator.clipboard.writeText(prompt);
-      setCopiedFlash(true);
-      setTimeout(() => setCopiedFlash(false), 2200);
-    } catch {
-      // Fallback for browsers that block clipboard API (insecure context,
-      // older Safari, etc.). Open a new tab with the prompt selected so the
-      // user can still Cmd+A / Cmd+C it manually.
-      const w = window.open("", "_blank");
-      if (w) {
-        w.document.write(`<pre style="white-space:pre-wrap;font-family:system-ui;padding:24px;max-width:800px;margin:0 auto">${prompt.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</pre>`);
-        w.document.close();
-      }
-    }
-  };
-
-  const hasExisting = !!(existing && (existing.arc || existing.differentiators));
-  const cardStyle = {
-    border: `0.5px dashed ${GOLD}`,
-    borderRadius: "var(--border-radius-md)",
-    padding: "14px 16px",
-    marginBottom: "1.25rem",
-    background: "var(--color-background-primary)",
-  };
-  const labelStyle = { fontSize: "10.5px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" };
-
-  const handleSave = () => {
-    const arcTrim = arc.trim();
-    const diffTrim = diff.trim();
-    // Empty save = clear the introduction.
-    if (!arcTrim && !diffTrim) {
-      const next = { ...plan };
-      delete next.introduction;
-      onPlanRevised(next);
-    } else {
-      onPlanRevised({
-        ...plan,
-        introduction: { arc: arcTrim, differentiators: diffTrim },
-      });
-    }
-    setSavedFlash(true);
-    setTimeout(() => setSavedFlash(false), 1800);
-    setOpen(false);
-  };
-
-  // Collapsed teaser — two stacked affordances:
-  //   1) Copy prompt button (so user can hand the prompt to their external AI)
-  //   2) Click anywhere else to expand into the paste composer
-  if (!open) {
-    const loading = genState === "loading";
-    const teaserSubtext = loading
-      ? "Writing your introduction from the day-by-day routing…"
-      : hasExisting
-      ? "This intro will appear as page 2 of the PDF. Click to edit or replace it."
-      : "Generated automatically from your itinerary, or paste your own. The intro lands on page 2 of the PDF.";
-    return (
-      <div style={cardStyle}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
-          <button
-            onClick={() => setOpen(true)}
-            style={{ flex: 1, border: "none", background: "transparent", padding: "4px 0", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
-          >
-            <span style={labelStyle}>{loading ? "Introduction · generating" : hasExisting ? "Introduction · saved" : "Introduction"}</span>
-            <span style={{ display: "block", fontSize: "12.5px", color: "var(--color-text-secondary)", marginTop: "2px" }}>
-              {teaserSubtext}
-            </span>
-            {genState === "error" && (
-              <span style={{ display: "block", fontSize: "11.5px", color: "#8C1F1F", marginTop: "4px" }}>
-                {genError || "Couldn't generate the introduction."} You can retry, paste your own, or just export without it.
-              </span>
-            )}
-            {savedFlash && (
-              <span style={{ display: "block", fontSize: "11.5px", color: GOLD, marginTop: "4px" }}>✓ Saved — included on next PDF export.</span>
-            )}
-            {copiedFlash && (
-              <span style={{ display: "block", fontSize: "11.5px", color: GOLD, marginTop: "4px" }}>✓ Prompt copied — paste it into your AI now.</span>
-            )}
-          </button>
-          <div style={{ flex: "0 0 auto", display: "flex", gap: "8px" }}>
-            <button
-              onClick={(e) => { e.stopPropagation(); generateIntro({ force: true }); }}
-              disabled={loading}
-              title="Generate the introduction in-app from this itinerary's day-by-day routing."
-              style={{ border: `1px solid ${GOLD}`, background: GOLD, color: "#fff", padding: "7px 12px", borderRadius: "6px", cursor: loading ? "default" : "pointer", opacity: loading ? 0.6 : 1, fontFamily: "inherit", fontSize: "11.5px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", whiteSpace: "nowrap" }}
-            >
-              {loading ? "Generating…" : hasExisting || genState === "error" ? "Regenerate" : "Generate"}
-            </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); handleCopyPrompt(); }}
-              title="Copy a ready-made prompt for your external AI with all trip facts already filled in."
-              style={{ border: `1px solid ${GOLD}`, background: "transparent", color: GOLD, padding: "7px 12px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "11.5px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", whiteSpace: "nowrap" }}
-            >
-              Copy AI prompt
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Open composer
-  const textAreaStyle = {
-    width: "100%",
-    boxSizing: "border-box",
-    border: "1px solid var(--color-border-tertiary, #e3e3e3)",
-    borderRadius: "6px",
-    padding: "10px 12px",
-    fontFamily: "inherit",
-    fontSize: "13px",
-    lineHeight: "1.45",
-    color: "var(--color-text-primary)",
-    background: "var(--color-background-primary)",
-    resize: "vertical",
-  };
-
-  return (
-    <div style={cardStyle}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "10px", gap: "12px" }}>
-        <span style={labelStyle}>Paste introduction</span>
-        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-          <button
-            onClick={handleCopyPrompt}
-            title="Copy a ready-made prompt for your external AI with all trip facts already filled in."
-            style={{ border: `1px solid ${GOLD}`, background: "transparent", color: GOLD, padding: "5px 10px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" }}
-          >
-            Copy AI prompt
-          </button>
-          <button onClick={() => setOpen(false)} style={{ border: "none", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontSize: "12px" }}>× close</button>
-        </div>
-      </div>
-      {copiedFlash && (
-        <p style={{ fontSize: "11.5px", color: GOLD, margin: "0 0 8px" }}>✓ Prompt copied — paste it into your AI, then paste the two paragraphs back below.</p>
-      )}
-      <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 12px" }}>
-        Two flowing-prose paragraphs. Part 1 · Arc of the Journey (3–4 sentences, ~80–120 words). Part 2 · What Makes This Itinerary Different (one paragraph, ~150–250 words). 350–450 words total. No bullets, no superlatives. Leave Part 2 empty (or paste the literal word NONE_FLAGGED) to render an honest “no differentiators” note instead of fabricated content.
-      </p>
-      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 6px" }}>Part 1 · The Arc of the Journey</label>
-      <textarea
-        value={arc}
-        onChange={(e) => setArc(e.target.value)}
-        rows={4}
-        placeholder={"3–4 sentences explaining why this route is sequenced the way it is, what the traveler moves through from first day to last…"}
-        style={{ ...textAreaStyle, marginBottom: "12px" }}
-      />
-      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 6px" }}>Part 2 · What Makes This Itinerary Different</label>
-      <textarea
-        value={diff}
-        onChange={(e) => setDiff(e.target.value)}
-        rows={8}
-        placeholder={"One paragraph weaving in 5–8 specific moments, off-the-beaten-path stops, insider access, or sequencing choices that a generic itinerary would miss. Name each one specifically. Or paste NONE_FLAGGED."}
-        style={{ ...textAreaStyle, marginBottom: "12px" }}
-      />
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px" }}>
-        <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>
-          {(arc.trim().split(/\s+/).filter(Boolean).length + diff.trim().split(/\s+/).filter(Boolean).length)} words · target 350–450
-        </span>
-        <div style={{ display: "flex", gap: "8px" }}>
-          <button
-            onClick={() => { setArc(""); setDiff(""); }}
-            style={{ border: "1px solid var(--color-border-secondary)", background: "transparent", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", color: "var(--color-text-secondary)" }}
-          >
-            Clear
-          </button>
-          <button
-            onClick={handleSave}
-            style={{ border: `1px solid ${GOLD}`, background: GOLD, color: "#fff", padding: "6px 14px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", fontWeight: 600 }}
-          >
-            Save introduction
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+  return null;
 }
 
 function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId: _savedTripId, onPlanRevised, onReviewChange, initialReview }) {
@@ -6632,13 +6337,13 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       <TripHero data={data} />
       <QualityBadge qc={qc} />
 
-      {/* Introduction card — auto-generates the intro after build via the
-          separate lightweight /api/introduction call (the streaming planner
-          still does NOT generate it; removed in PR #20 for cost). The result
-          renders as page 2 of the PDF (see renderIntroduction). The manual
-          paste box stays as an override; inputs are passed so generation and
-          the "Copy AI prompt" button can include trip facts. */}
-      <IntroductionPasteCard plan={rawData} inputs={inputs} onPlanRevised={onPlanRevised} />
+      {/* Headless introduction generator — auto-generates the intro after build
+          via the separate lightweight /api/introduction call and persists it to
+          data.introduction so it renders at the top of the PDF (see
+          renderIntroduction). Renders nothing on screen by design: the intro is
+          a PDF-only artifact. inputs are passed so generation can include trip
+          facts. */}
+      <IntroductionAutoGenerator plan={rawData} inputs={inputs} onPlanRevised={onPlanRevised} />
 
       {/* Professional review surface — user-initiated, sits between hero and the day-by-day content. */}
       <ReviewPanel
