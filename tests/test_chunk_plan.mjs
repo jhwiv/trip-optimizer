@@ -54,6 +54,12 @@ console.log("\n[2] shouldChunk threshold boundary");
   //  => n+1 >= 11  => n >= 10. So 9n stays single-call, 10n+ chunks.
   //  9n  -> 5000 + 10*2200 = 27000 <= 28000  (single-call)
   // 10n  -> 5000 + 11*2200 = 29200 >  28000  (chunk)
+  // Regression: a small 4-day single-city trip (the reported Sedona case,
+  // 3 nights = arrival + 3 nights) must NOT enter the chunked-build path. It
+  // estimates 5000 + 4*2200 = 13800 tokens, well under the 28000 budget, so it
+  // builds in one normal single streaming pass — never the slow chunk loop.
+  assert("3n/1c (4-day Sedona) stays single-call (13800 <= 28000)", shouldChunk({ nights: 3, citiesCount: 1 }) === false, `est ${estimateSingleCallTokens({nights:3,citiesCount:1})}`);
+  assert("4n/1c stays single-call", shouldChunk({ nights: 4, citiesCount: 1 }) === false, `est ${estimateSingleCallTokens({nights:4,citiesCount:1})}`);
   assert("9n/1c stays single-call (27000 <= 28000)", shouldChunk({ nights: 9, citiesCount: 1 }) === false, `est ${estimateSingleCallTokens({nights:9,citiesCount:1})}`);
   assert("10n/1c chunks (29200 > 28000)", shouldChunk({ nights: 10, citiesCount: 1 }) === true, `est ${estimateSingleCallTokens({nights:10,citiesCount:1})}`);
   assert("11n/1c chunks (31400 > 28000)", shouldChunk({ nights: 11, citiesCount: 1 }) === true);

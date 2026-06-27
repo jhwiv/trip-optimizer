@@ -69,11 +69,12 @@ assert("flex default still empty string", fieldDefault(flightsBody, "flex") === 
 assert("noFlight default still false", fieldDefault(flightsBody, "noFlight") === "false", `got: ${fieldDefault(flightsBody, "noFlight")}`);
 
 // --- Output sections default shape ----------------------------------------
-// The `outputs` useState initializer must default ONLY the day-by-day
-// itinerary ON; every add-on section defaults OFF so the user opts in on the
-// choices panel before building. The same literal also appears in the trip-open
-// reset (setOut(i.outputs || { ... })); both must agree, so we assert on every
-// matching literal in the source.
+// The default output selection must enable ONLY the day-by-day itinerary;
+// every add-on section defaults OFF so the user opts in on the choices panel
+// before building (PR #57 invariant). The default literal was centralized into
+// src/outputsState.js (DEFAULT_OUTPUTS) so the session-restore path can reuse
+// it and a remount no longer silently drops the user's picks — so we assert on
+// that source of truth rather than the old inline App.jsx literals.
 console.log("\n[outputs defaults — itinerary on, add-ons off]");
 
 const OUTPUT_KEYS = ["itinerary","weather","navigation","logistics","tonight","menus","flags","planb","snobs","practical","badges","pronunciation"];
@@ -83,16 +84,20 @@ function outputDefault(body, key) {
   return m ? m[1] : undefined;
 }
 
-// Every outputs literal carries all 12 keys starting with `itinerary:`.
-const outputLiterals = SRC.match(/\bitinerary:\s*true,\s*weather:\s*(?:true|false)[^}]*\bpronunciation:\s*(?:true|false)/g) || [];
-assert("found outputs default literal(s) in App.jsx", outputLiterals.length >= 2, `found ${outputLiterals.length}`);
-
-outputLiterals.forEach((body, idx) => {
-  assert(`literal #${idx + 1}: itinerary defaults true`, outputDefault(body, "itinerary") === "true", `got: ${outputDefault(body, "itinerary")}`);
-  for (const key of OUTPUT_KEYS.filter(k => k !== "itinerary")) {
-    assert(`literal #${idx + 1}: ${key} defaults false`, outputDefault(body, key) === "false", `got: ${outputDefault(body, key)}`);
-  }
-});
+const OUTPUTS_SRC = readFileSync(join(HERE, "..", "src", "outputsState.js"), "utf8");
+// Isolate the DEFAULT_OUTPUTS object literal.
+const defaultOutputsMatch = OUTPUTS_SRC.match(/DEFAULT_OUTPUTS\s*=\s*Object\.freeze\(\{([^}]*)\}/);
+assert("DEFAULT_OUTPUTS literal found in outputsState.js", !!defaultOutputsMatch, "could not locate DEFAULT_OUTPUTS");
+const defaultsBody = defaultOutputsMatch ? defaultOutputsMatch[1] : "";
+assert("DEFAULT_OUTPUTS: itinerary defaults true", outputDefault(defaultsBody, "itinerary") === "true", `got: ${outputDefault(defaultsBody, "itinerary")}`);
+for (const key of OUTPUT_KEYS.filter(k => k !== "itinerary")) {
+  assert(`DEFAULT_OUTPUTS: ${key} defaults false`, outputDefault(defaultsBody, key) === "false", `got: ${outputDefault(defaultsBody, key)}`);
+}
+// App.jsx must restore outputs from the recovered snapshot (not hardcode them)
+// so a remount keeps the user's selection — guard against a regression back to
+// an inline defaults literal at the useState initializer.
+assert("App.jsx restores outputs via resolveOutputs(recovered…)", /useState\(\(\)\s*=>\s*resolveOutputs\(recovered/.test(SRC), "expected resolveOutputs(recovered?.inputs?.outputs) initializer");
+assert("App.jsx persists outputs in the session snapshot", /inputs:\s*\{[^}]*\boutputs\b[^}]*\}/.test(SRC), "expected `outputs` inside the snapshot inputs object");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
