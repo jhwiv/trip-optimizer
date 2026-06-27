@@ -6142,14 +6142,32 @@ function IntroductionAutoGenerator({ plan, inputs, onPlanRevised, onGeneratingCh
       } catch {
         // Swallow — a failed intro must never break the itinerary view.
       } finally {
-        // Release the gate on BOTH success and failure paths. If the component
-        // unmounted mid-flight we still flip our own state safely (setState
-        // on unmounted is a noop in React 18 strict mode) and skip the parent
-        // callback to avoid touching a stale parent.
-        if (!cancelled) reportGeneratingChange(false);
+        // ALWAYS release the gate — success, failure, AND cancellation. An
+        // earlier version skipped this on `cancelled` and that produced the
+        // PR #70 regression: if a ReviewPanel or ChangeRequestCard revision
+        // landed while /api/introduction was in flight, React's dep-change
+        // cleanup set cancelled=true, the gate-release was skipped, and the
+        // signature-deduped new run never flipped it either — leaving the
+        // parent's introIsGenerating permanently true and Save as PDF
+        // permanently disabled with "Preparing introduction…". setState on
+        // an unmounted child is a React 18 no-op; the parent setter is safe
+        // to call as long as the parent itself is still mounted (it is —
+        // only this child's effect re-ran).
+        reportGeneratingChange(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // Clear the signature attempt-ref so a cancelled run can be retried
+      // against the revised plan. Without this, when a ReviewPanel /
+      // ChangeRequestCard revision lands mid-flight, the new plan's effect
+      // run early-returns on the still-matching signature (revisions rarely
+      // change destination / day count / first / last label) and the
+      // revised itinerary ships with no introduction at all. Pair with the
+      // always-release-gate fix above so a cancelled run leaves the
+      // generator in a clean state, ready to re-attempt.
+      autoAttemptedRef.current = "";
+    };
   }, [plan, inputs, onPlanRevised, reportGeneratingChange]);
 
   // Suppress unused-var warning — isGenerating is exposed via callback above
@@ -6180,6 +6198,13 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   const [menuLoading, setMenuLoading] = useState(false);
   const [menuError, setMenuError] = useState("");
   const menuCacheRef = useRef(new Map());
+  // Request-id guard for openMenu — a fast user tapping View Menu on
+  // restaurant A then restaurant B before A's /api/menu resolves would
+  // otherwise see A's late payload land on B's modal (last-write-wins).
+  // Every openMenu / closeMenu call increments this; every async state
+  // write checks the captured id matches before mutating. Same pattern
+  // useLocalProviders already uses (reqRef on line 4631).
+  const menuReqRef = useRef(0);
   const destinationForMenu =
     inputs?.basics?.destination ||
     (Array.isArray(inputs?.basics?.cities) ? inputs.basics.cities.map(c => c?.name).filter(Boolean).join(" ") : "") ||
@@ -6187,6 +6212,10 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
     "";
   const openMenu = async (restaurant) => {
     if (!restaurant) return;
+    // Bump the request-id BEFORE any state writes so prior in-flight fetches
+    // (and any cached / model-supplied early returns from an earlier tap) can
+    // no longer mutate the current modal state.
+    const reqId = ++menuReqRef.current;
     setMenuRestaurant(restaurant);
     setMenuError("");
     // If the model already shipped a menu, no fetch needed.
@@ -6214,18 +6243,30 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         body: JSON.stringify({ name: restaurant.name, location: destinationForMenu, cuisine: restaurant.cuisine || "" }),
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) setMenuError(json?.error?.message || `Couldn't load the menu (${res.status}).`);
-      else if (json?.menu) {
+      // Always cache a successful response (even if a newer request has
+      // superseded this one) so future taps for the same restaurant hit the
+      // cache. But ONLY mutate the visible modal state when this fetch is
+      // still the current request.
+      if (res.ok && json?.menu) {
         menuCacheRef.current.set(cacheKey, { menu: json.menu });
-        setMenuData({ menu: json.menu });
-      } else setMenuError("Couldn't load the menu.");
+      }
+      if (menuReqRef.current !== reqId) return;
+      if (!res.ok) setMenuError(json?.error?.message || `Couldn't load the menu (${res.status}).`);
+      else if (json?.menu) setMenuData({ menu: json.menu });
+      else setMenuError("Couldn't load the menu.");
     } catch (err) {
+      if (menuReqRef.current !== reqId) return;
       setMenuError(`Couldn't reach the menu service. ${String(err?.message || err).slice(0, 80)}`);
     } finally {
-      setMenuLoading(false);
+      // Only clear the loading spinner if this is still the active request —
+      // a superseded fetch resolving must not flip a newer request's spinner.
+      if (menuReqRef.current === reqId) setMenuLoading(false);
     }
   };
   const closeMenu = () => {
+    // Bump the request-id so any in-flight /api/menu can no longer write
+    // back into the (now-dismissed) modal state.
+    menuReqRef.current++;
     setMenuRestaurant(null);
     setMenuData(null);
     setMenuError("");
