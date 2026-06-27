@@ -2,7 +2,7 @@
 // FindView client-side helpers. No real Anthropic call — we mock the
 // upstream fetch and exercise every code path.
 
-import { onRequestPost } from "../functions/api/find.js";
+import { onRequestPost, activityVerifyName } from "../functions/api/find.js";
 
 let passed = 0;
 let failed = 0;
@@ -471,6 +471,90 @@ async function callFindFull(body, env, fetchImpl) {
   assert("all closed → 422", status === 422);
   assert("422 message mentions verifiably-open", /verifiably-open/.test(json?.error?.message || ""));
   assert("summary surfaces blocked count", json?.verification?.blocked === 2);
+}
+
+// ============================================================
+// Local-providers: activity text→name verification (FIX)
+// ============================================================
+// Activities store their display name in `text` ("Name — desc"), not `name`.
+// The "Local providers" feature (tours + wine tastings) opts in via
+// verify_activities_by_name so these go through the SAME real Places
+// existence/status check as restaurants/drivers/guides — instead of the old
+// silent no-op (empty name → "missing-name" → never verified, nothing dropped,
+// a false "checked against Google Places" claim).
+
+console.log("\n=== activityVerifyName (pure derivation) ===");
+assert("derives name before em-dash", activityVerifyName({ text: "Context Travel — private art tours" }) === "Context Travel");
+assert("no em-dash → whole text", activityVerifyName({ text: "Uffizi Gallery" }) === "Uffizi Gallery");
+assert("prefers explicit name when present", activityVerifyName({ name: "Real Name", text: "Other — x" }) === "Real Name");
+assert("empty/garbage → '' (derivation fails)", activityVerifyName({}) === "" && activityVerifyName(null) === "" && activityVerifyName({ text: "" }) === "");
+
+console.log("\n=== /api/find activity verification: opt-in vs default ===");
+
+// 23. WITH verify_activities_by_name: activities are REALLY verified by their
+//     text-derived name — a CLOSED tour is dropped, an OPERATIONAL one is
+//     kept and tagged _verified, and an un-derivable one stays UNVERIFIED
+//     (never silently "verified").
+{
+  const fetchImpl = mockFindAndPlaces(
+    {
+      restaurants: [],
+      activities: [
+        { text: "Tuscan Cellar Tastings — small-group vineyard visits", why: "x", type: "Tour" },
+        { text: "Closed Wine Tours — defunct operator", why: "y", type: "Tour" },
+        { text: "", why: "no name here", type: "Tour" }, // derivation fails
+      ],
+    },
+    {
+      "Tuscan Cellar Tastings": { open: true, address: "1 Vineyard Rd" },
+      "Closed Wine Tours": { closed: "CLOSED_PERMANENTLY" },
+    },
+  );
+  const { status, json } = await callFindFull(
+    { location: "Tuscany", category: "activities", verify_activities_by_name: true },
+    { ANTHROPIC_API_KEY: "k", GOOGLE_PLACES_API_KEY: "pk", PLACES: makeKV() },
+    fetchImpl,
+  );
+  assert("opt-in: status 200", status === 200);
+  const acts = json?.results?.activities || [];
+  // Closed one dropped → the open one + the un-derivable one survive.
+  assert("opt-in: closed tour dropped", !acts.some(a => /Closed Wine Tours/.test(a.text || "")));
+  assert("opt-in: summary.blocked === 1 (closed caught via derived name)", json?.verification?.blocked === 1);
+  const open = acts.find(a => /Tuscan Cellar Tastings/.test(a.text || ""));
+  assert("opt-in: operational tour kept + _verified", open && open._verified === true);
+  const noName = acts.find(a => (a.text || "") === "");
+  assert("opt-in: un-derivable tour kept but NOT verified (honest)", noName && noName._verified !== true);
+  assert("opt-in: un-derivable tour flagged UNVERIFIED", noName && Array.isArray(noName.flags) && noName.flags.some(f => f.code === "UNVERIFIED"));
+}
+
+// 24. WITHOUT the flag (normal /find behavior, unchanged): activities verify
+//     with an empty name → "missing-name" → NONE verified, NONE dropped. This
+//     is the pre-fix behavior the flag exists to override; asserting it proves
+//     (a) the flag is what enables verification and (b) normal /find is intact.
+{
+  const fetchImpl = mockFindAndPlaces(
+    {
+      restaurants: [],
+      activities: [
+        { text: "Tuscan Cellar Tastings — small-group vineyard visits", why: "x", type: "Tour" },
+        { text: "Closed Wine Tours — defunct operator", why: "y", type: "Tour" },
+      ],
+    },
+    {
+      "Tuscan Cellar Tastings": { open: true },
+      "Closed Wine Tours": { closed: "CLOSED_PERMANENTLY" },
+    },
+  );
+  const { status, json } = await callFindFull(
+    { location: "Tuscany", category: "activities" /* no verify_activities_by_name */ },
+    { ANTHROPIC_API_KEY: "k", GOOGLE_PLACES_API_KEY: "pk", PLACES: makeKV() },
+    fetchImpl,
+  );
+  assert("default: status 200", status === 200);
+  const acts = json?.results?.activities || [];
+  assert("default: nothing dropped (closed NOT caught — old no-op)", acts.length === 2);
+  assert("default: summary.blocked === 0", json?.verification?.blocked === 0);
+  assert("default: no activity tagged _verified", acts.every(a => a._verified !== true));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

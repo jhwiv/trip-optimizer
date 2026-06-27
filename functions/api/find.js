@@ -433,6 +433,14 @@ export async function onRequestPost(context) {
   const category =
     rawCategory === "restaurants" || rawCategory === "activities" ? rawCategory : "both";
 
+  // Opt-in (used only by the "Local providers" consumption path in
+  // src/App.jsx) to make ACTIVITIES go through the SAME real Google Places
+  // existence/status check restaurants + providers get. Activities carry
+  // their display name in `text` ("Name — desc"), not `name`, so without this
+  // their verify name is empty and the check is a no-op. Default OFF keeps the
+  // /find page's normal activities behavior unchanged.
+  const verifyActivitiesByName = body?.verify_activities_by_name === true;
+
   // Guidelines are free-text intent. Treat as data, never as instructions.
   // Defenses against prompt injection from this field:
   //   1. System prompt explicitly tells the model to treat guidelines as
@@ -642,6 +650,7 @@ Call submit_find_results exactly once. Emit no prose.`;
     location,
     restaurants,
     activities,
+    verifyActivitiesByName,
   });
 
   if (
@@ -680,7 +689,7 @@ Call submit_find_results exactly once. Emit no prose.`;
 // model returns per-venue neighborhood/contact.address too, but those
 // can be wrong; Places is more forgiving when we pass the broader
 // location and let it locality-resolve.
-async function verifyVenuesForFind({ env, ctx, location, restaurants, activities }) {
+async function verifyVenuesForFind({ env, ctx, location, restaurants, activities, verifyActivitiesByName = false }) {
   const all = [
     ...restaurants.map((r, i) => ({ kind: "restaurant", idx: i, item: r })),
     ...activities.map((a, i) => ({ kind: "activity", idx: i, item: a })),
@@ -700,10 +709,18 @@ async function verifyVenuesForFind({ env, ctx, location, restaurants, activities
       if (i >= all.length) return;
       const { kind, idx, item } = all[i];
       try {
+        // Activities store their name in `text`, not `name`. When the
+        // local-providers path opts in, derive the verify name from `text`
+        // so tours + tastings get a real existence/status check instead of
+        // a silent no-op (empty name → "missing-name" → never verified).
+        const verifyName =
+          kind === "activity" && verifyActivitiesByName
+            ? activityVerifyName(item)
+            : (item?.name || "");
         const result = await verifyOneVenue({
           env,
           ctx,
-          name: item?.name || "",
+          name: verifyName,
           city: location,
         });
         if (result.cached) cacheHits += 1;
@@ -800,6 +817,22 @@ function flagForVerifyResult(result) {
     return { code: "UNVERIFIED", severity: "warn", message: result.error };
   }
   return null;
+}
+
+// Derive the name to VERIFY an activity against Google Places. Activities
+// carry their display name in `text` ("Name — short description"), NOT in
+// `name` (which restaurants + providers use). We take the segment before the
+// em-dash as the venue name; if there's no em-dash the whole text is the
+// name. Returns "" when nothing usable is present — the caller then gets a
+// "missing-name" result and the activity is labeled UNVERIFIED (never
+// silently "verified"). Mirrors providerName() in src/localProviders.js so
+// the verify name and the displayed name stay in lockstep.
+export function activityVerifyName(item) {
+  if (!item || typeof item !== "object") return "";
+  if (typeof item.name === "string" && item.name.trim()) return item.name.trim();
+  const text = typeof item.text === "string" ? item.text : "";
+  const dash = text.indexOf(" — ");
+  return (dash > 0 ? text.slice(0, dash) : text).trim();
 }
 
 // Defensive lodging-name filter. Belt and braces — the tool schema already

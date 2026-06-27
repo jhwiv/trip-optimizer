@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment, createContext, useContext } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, Fragment, createContext, useContext } from "react";
 import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
@@ -7,6 +7,7 @@ import { pickScheduledFlight, parseClockToMinutes, resolveAirlineIata, normalize
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
 import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, activityHeadName, itemVenueName } from "./swapAlternatives.js";
 import { groupItemsByCategory } from "./categoryGroups.js";
+import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
@@ -3365,7 +3366,7 @@ function pdfFilename(data) {
 // page breaks, and a clean editorial layout. The legacy DOM-screenshot path
 // is preserved below as a fallback for the unlikely case the new builder
 // throws on malformed data.
-async function saveItineraryAsPDF(filename, setStatus, { data, inputs } = {}) {
+async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers } = {}) {
   setStatus("Preparing…");
   // Pre-export gate — see CLAUDE.md "VENUE VERIFICATION — HARD RULE".
   // Block PDF generation if any venue still carries a severity:'block'
@@ -3393,7 +3394,7 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs } = {}) {
     try {
       const { buildItineraryPdf } = await import("./pdf/itineraryPdf.js");
       const buildId = (typeof __BUILD_ID__ !== "undefined" && __BUILD_ID__) ? String(__BUILD_ID__) : "";
-      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId });
+      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers });
       setStatus("Saving…");
       pdf.save(filename);
       return;
@@ -3522,7 +3523,7 @@ function hardReloadNow() {
   window.location.replace(url.toString());
 }
 
-function PrintButton({ data, inputs }) {
+function PrintButton({ data, inputs, providers }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -3534,7 +3535,15 @@ function PrintButton({ data, inputs }) {
     if (busy) return;
     setBusy(true); setError(""); setStatus("Starting…");
     try {
-      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs });
+      // The PDF's Local-providers section needs the data, but fetching is now
+      // gated on tab-open — so force a load here (no-op if already loaded) and
+      // hand the freshly-loaded results to the builder.
+      let providersForPdf = providers;
+      if (providers && typeof providers.ensureLoaded === "function") {
+        const loaded = await providers.ensureLoaded();
+        providersForPdf = { ...providers, byCategory: loaded || providers.byCategory };
+      }
+      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers: providersForPdf });
     } catch (err) {
       console.error("PDF save failed", err);
       if (isStaleChunkError(err)) {
@@ -4543,10 +4552,260 @@ function EssentialsView({ data }) {
   );
 }
 
+// ============================================================================
+// Local providers — fetch hook + on-screen view.
+// ----------------------------------------------------------------------------
+// Surfaces REAL, verified local service providers (private drivers, private
+// guides, tours, wine tastings) for the trip. Every provider flows through the
+// existing real-source + Google Places verification pipeline:
+//   • tours + tastings  → POST /api/find   { category:"activities", guidelines }
+//   • drivers + guides  → POST /api/find-providers { kind }
+// Both endpoints DROP closed/not-found venues and tag the rest verified /
+// verify-before-booking. This layer never invents a provider — if a category
+// returns nothing verifiable we render an honest empty state. Pure shaping,
+// dedupe and label-mapping live in src/localProviders.js (unit-tested); only
+// the network lives here.
+//
+// We fetch per relevant category per leg city (multi-city trips), tag each raw
+// record with _city for display + dedupe, and aggregate. State is lifted into
+// ItineraryView so BOTH this tab and the PDF section read the same results.
+function useLocalProviders(plan, inputs, legCities, active) {
+  const relevantIds = useMemo(
+    () => relevantProviderCategories(plan, inputs),
+    [plan, inputs],
+  );
+
+  // Stable city list: the deduped leg cities, falling back to the plan
+  // destination so single-city trips still query once.
+  const cities = useMemo(() => {
+    const list = Array.isArray(legCities) ? legCities.filter(Boolean) : [];
+    if (list.length > 0) return list.slice(0, 6);
+    const dest = String(plan?.destination || "").trim();
+    return dest ? [dest] : [];
+  }, [legCities, plan]);
+
+  const [byCategory, setByCategory] = useState({});
+  const [status, setStatus] = useState("idle");
+  // Honest error surface (FIX): a transport/server failure must be
+  // distinguishable from a legitimate "nothing found". `error` is a top-level
+  // message; `errorIds` lists categories that failed to load AND returned
+  // nothing, so the view can say "couldn't load" instead of "we won't guess".
+  const [error, setError] = useState("");
+  const [errorIds, setErrorIds] = useState([]);
+  // Latches true once the user opens the tab or export forces a load, so we
+  // never re-fetch on tab switches and the cost is paid at most once.
+  const [activated, setActivated] = useState(false);
+
+  // Guard against overlapping fetches + stale writes on rapid plan changes.
+  const reqRef = useRef(0);
+  // Signature of the (relevantIds, cities) currently loaded/loading, plus the
+  // in-flight promise — so repeat triggers (tab re-open, export) reuse the
+  // same fetch instead of firing fresh network calls.
+  const loadKeyRef = useRef("");
+  const loadPromiseRef = useRef(null);
+  const sig = `${relevantIds.join(",")}|${cities.join(",")}`;
+
+  const startLoad = useCallback(() => {
+    if (relevantIds.length === 0 || cities.length === 0) {
+      return Promise.resolve({});
+    }
+    // Same trip + cities already loaded/loading — reuse, never re-fetch.
+    if (loadKeyRef.current === sig && loadPromiseRef.current) {
+      return loadPromiseRef.current;
+    }
+    loadKeyRef.current = sig;
+    const reqId = ++reqRef.current;
+    setStatus("loading");
+    setError("");
+    setErrorIds([]);
+
+    const fetchOne = async (cat, city) => {
+      const meta = providerCategoryMeta(cat);
+      if (!meta) return { records: [], ok: true };
+      try {
+        let res, jsonResp, pool;
+        if (meta.source === "providers") {
+          res = await fetch("/api/find-providers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ location: city, kind: meta.kind }),
+          });
+          jsonResp = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            // 422 = "no providers found / nothing verifiable" — a legitimate
+            // empty result, NOT a transport error. Anything else is a failure.
+            return { records: [], ok: res.status === 422 };
+          }
+          pool = jsonResp?.results?.providers || [];
+        } else {
+          res = await fetch("/api/find", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              location: city,
+              category: "activities",
+              guidelines: meta.guidelines || "",
+              mode: "standard",
+              // Make tours + tastings go through the SAME real Google Places
+              // existence/status check as drivers/guides (activities store
+              // their name in `text`, so the server must derive it).
+              verify_activities_by_name: true,
+            }),
+          });
+          jsonResp = await res.json().catch(() => ({}));
+          if (!res.ok) return { records: [], ok: res.status === 422 };
+          pool = jsonResp?.results?.activities || [];
+        }
+        // Tag each record with the leg city for per-leg display + dedupe.
+        const records = (Array.isArray(pool) ? pool : []).map((p) =>
+          p && typeof p === "object" ? { ...p, _city: city } : p,
+        );
+        return { records, ok: true };
+      } catch {
+        return { records: [], ok: false };
+      }
+    };
+
+    const p = (async () => {
+      const jobs = [];
+      for (const cat of relevantIds) {
+        for (const city of cities) jobs.push({ cat, city });
+      }
+      const results = await Promise.all(jobs.map((j) => fetchOne(j.cat, j.city)));
+      const next = {};
+      const erroredCat = {};
+      for (const id of relevantIds) { next[id] = []; erroredCat[id] = false; }
+      results.forEach((r, i) => {
+        const { cat } = jobs[i];
+        if (!r.ok) erroredCat[cat] = true;
+        if (Array.isArray(r.records) && r.records.length) next[cat].push(...r.records);
+      });
+      // A category "failed" only if it returned nothing AND a fetch errored —
+      // otherwise an empty result is a genuine "nothing found".
+      const failedIds = relevantIds.filter((id) => next[id].length === 0 && erroredCat[id]);
+      if (reqRef.current === reqId) {
+        setByCategory(next);
+        setErrorIds(failedIds);
+        setError(failedIds.length > 0 ? "Couldn't load local providers right now — try again." : "");
+        setStatus("done");
+      }
+      return next;
+    })();
+    loadPromiseRef.current = p;
+    return p;
+  }, [relevantIds, cities, sig]);
+
+  // Fetch only when the tab is open (active) or export latched us on. Plain
+  // itinerary render does NOT fetch — this avoids ~24 paid calls for users who
+  // never open the tab.
+  const shouldFetch = active === true || activated;
+  useEffect(() => {
+    if (!shouldFetch) return;
+    startLoad();
+  }, [shouldFetch, startLoad]);
+
+  // Imperative trigger for PDF export: ensure providers are loaded even if the
+  // tab was never opened, and resolve with the loaded byCategory so the caller
+  // can hand fresh data to the PDF builder.
+  const ensureLoaded = useCallback(() => {
+    setActivated(true);
+    return startLoad();
+  }, [startLoad]);
+
+  return { relevantIds, byCategory, status, error, errorIds, ensureLoaded };
+}
+
+// One provider card. Reuses the gold verify-chip visual language from the
+// restaurant cards. The verify label is computed in localProviders.js from the
+// pipeline's real verification state — we never upgrade it here.
+function ProviderCard({ item }) {
+  const verified = item.verifyLabel === "verified";
+  return (
+    <div style={{ border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap", marginBottom: "4px" }}>
+        <span style={{ fontSize: "13.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "-0.1px" }}>{item.name}</span>
+        {item.city && <span style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", letterSpacing: "0.04em" }}>{item.city}</span>}
+        {verified ? (
+          <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "#1F6B3B", background: "#EAF6EE", border: "0.5px solid #BFE3CB", borderRadius: "10px", padding: "2px 8px" }}>✓ Verified</span>
+        ) : (
+          <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "#8A6500", background: "#FFF8EC", border: "0.5px solid #E8C063", borderRadius: "10px", padding: "2px 8px" }}>Verify before booking</span>
+        )}
+      </div>
+      {item.descriptor && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{item.descriptor}</p>}
+      {(item.url || item.verifyUrl) && (
+        <a
+          href={item.url || item.verifyUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ fontSize: "11px", color: GOLD, textDecoration: "underline", fontWeight: 500 }}
+        >{item.url ? "Visit website →" : "Check listing →"}</a>
+      )}
+    </div>
+  );
+}
+
+// "Local providers" tab body. Renders one section per relevant category with a
+// tight set of verified options (cap PROVIDER_UI_CAP). Honest loading / empty /
+// error states — never a fabricated name.
+function LocalProvidersView({ providers }) {
+  const { relevantIds, byCategory, status, error, errorIds } = providers || {};
+  const failedIds = Array.isArray(errorIds) ? errorIds : [];
+  const groups = useMemo(
+    () => bucketProviders(relevantIds || [], byCategory || {}),
+    [relevantIds, byCategory],
+  );
+
+  if (!relevantIds || relevantIds.length === 0) {
+    return (
+      <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
+        This trip doesn't call for private drivers, guides, tours, or wine tastings, so there's nothing to surface here.
+      </p>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "22px" }}>
+      <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", lineHeight: 1.6, margin: 0 }}>
+        Real local operators checked against Google Places. Anything we couldn't confirm is labeled “verify before booking” — we don't guess.
+      </p>
+      {error && (
+        <p role="alert" style={{ fontSize: "12px", color: "#B85C00", margin: 0 }}>
+          {error}
+        </p>
+      )}
+      {groups.map((g) => (
+        <div key={g.id}>
+          <h3 style={{ fontSize: "13px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700, color: "var(--color-text-primary)", margin: "0 0 10px" }}>
+            {g.label}{g.total > 0 ? ` · ${g.total}` : ""}
+          </h3>
+          {g.items.length > 0 ? (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "10px" }}>
+              {g.items.map((item, i) => <ProviderCard key={`${item.name}-${i}`} item={item} />)}
+              {g.total > g.items.length && (
+                <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "2px 0 0" }}>
+                  +{g.total - g.items.length} more found
+                </p>
+              )}
+            </div>
+          ) : (
+            <p style={{ fontSize: "12px", color: failedIds.includes(g.id) ? "#B85C00" : "var(--color-text-secondary)", fontStyle: "italic", margin: 0 }}>
+              {status !== "done"
+                ? `Finding ${g.noun}s…`
+                : failedIds.includes(g.id)
+                ? `Couldn't load ${g.noun}s right now — try again.`
+                : `No vetted ${g.noun} found for this trip — we won't guess.`}
+            </p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Tabbed shell. Row 1 of the sticky nav is the day-tab strip (Overview only,
 // now an interactive filter — click to focus a single day, "All" to see them
 // all). Row 2 is the section/reference strip. Default tab is "Overview".
-function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, onOpenMenu: _onOpenMenu }) {
+function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showProviders, onOpenMenu: _onOpenMenu }) {
   const days = data.days || [];
   // Compute counts so we can show e.g. "Dining · 12" inline.
   const counts = useMemo(() => {
@@ -4579,6 +4838,7 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, onOpen
     counts.dining > 0 && { id: "dining", label: `Dining · ${counts.dining}` },
     counts.activities > 0 && { id: "activities", label: `Activities · ${counts.activities}` },
     (counts.flights + counts.hotels + counts.transport + counts.dining + counts.activities) > 0 && { id: "category", label: "By category" },
+    showProviders && { id: "providers", label: "Local providers" },
     counts.essentials > 0 && { id: "essentials", label: `Essentials · ${counts.essentials}` },
   ].filter(Boolean);
   return (
@@ -4653,13 +4913,14 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, onOpen
 
 // Section content router for non-overview tabs. Rendered by the parent below the
 // hero/review area so the nav stays at the top of the page.
-function TripSectionView({ tab, data, inputs, onOpenMenu }) {
+function TripSectionView({ tab, data, inputs, onOpenMenu, providers }) {
   if (tab === "flights") return <FlightsView data={data} />;
   if (tab === "lodging") return <LodgingView data={data} />;
   if (tab === "transport") return <TransportView data={data} />;
   if (tab === "dining") return <DiningView data={data} inputs={inputs} onOpenMenu={onOpenMenu} />;
   if (tab === "activities") return <ActivitiesView data={data} />;
   if (tab === "category") return <CategoryView data={data} onOpenMenu={onOpenMenu} />;
+  if (tab === "providers") return <LocalProvidersView providers={providers} />;
   if (tab === "essentials") return <EssentialsView data={data} />;
   return null;
 }
@@ -6149,6 +6410,11 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   const isMultiCityPlan = Array.isArray(data.cities) && data.cities.length > 1;
   const legCities = useMemo(() => collectPlanLegCities(rawData), [rawData]);
 
+  // Local providers (private drivers/guides/tours/tastings). Lifted here so
+  // both the "Local providers" tab and the PDF export read the same verified
+  // results. Fetches lazily off relevance; empty when no category applies.
+  const providers = useLocalProviders(rawData, inputs, legCities, tab === "providers");
+
   // "Find another restaurant / activity" swap. Alternatives come from the live
   // /api/find engine (real, currently-operating only). We locate the item in
   // the RAW plan (the rendered plan is quality-layered and may have items
@@ -6250,7 +6516,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       {/* Sticky two-row tab nav lives ABOVE the hero so the hero stays compact and every
          tab is reachable at a glance — modeled after zurich-weekend.com / maritimesgrandloop.com. */}
       {data.days && data.days.length > 0 && (
-        <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} onOpenMenu={openMenu} />
+        <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} showProviders={providers.relevantIds.length > 0} onOpenMenu={openMenu} />
       )}
 
       <TripHero data={data} />
@@ -6291,8 +6557,8 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       )}
 
       {data.days && data.days.length > 0 && tab !== "overview" && (
-        <Section title={({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities", category: "By category", essentials: "Essentials" }[tab] || "")}>
-          <TripSectionView tab={tab} data={data} inputs={inputs} onOpenMenu={openMenu} />
+        <Section title={({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities", category: "By category", providers: "Local providers", essentials: "Essentials" }[tab] || "")}>
+          <TripSectionView tab={tab} data={data} inputs={inputs} onOpenMenu={openMenu} providers={providers} />
         </Section>
       )}
 
@@ -6348,7 +6614,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           title="Go back to the input form. Your trip details stay filled in."
         >← Back to inputs</button>
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
-        <PrintButton data={data} inputs={inputs} />
+        <PrintButton data={data} inputs={inputs} providers={providers} />
         <PrintRidesButton data={data} inputs={inputs} />
         {/* Reset — surfaced here on Step 3 (results) so users don't have to
             navigate Home + scroll Step 1 to find it. Styled as a clear but
