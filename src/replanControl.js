@@ -72,6 +72,33 @@ export function isNetworkLoadError(err) {
   );
 }
 
+// Decide whether a thrown LIVE-STREAM read error is recoverable by resuming
+// the job via KV polling instead of hard-failing.
+//
+// Background — the surgical-apply "connection dropped" report (persists after
+// PR #66): streamBuildJob reads the open POST /api/build NDJSON stream. When
+// the connection drops mid-stream (mobile sleep, iOS Safari backgrounding, a
+// CDN idle-kill on a ~2-min surgical revision), reader.read() REJECTS with a
+// transport TypeError — Safari/iOS "Load failed", Chromium "Failed to fetch".
+// PR #66 only fixed the messaging (relabeling that reject) and the premature
+// 300s abort; the drop itself was still a hard failure because streamBuildJob's
+// KV-poll fallback only ran on a CLEAN stream end (a `done` break), never on a
+// thrown read. But the server job keeps running and mirroring to KV, so as long
+// as we already captured a jobId we can poll it to completion — exactly what
+// the fresh-build path (runBuildForJob → pollJob) already does.
+//
+// Resumable ONLY when:
+//   - we have a jobId (the server told us which job to poll), AND
+//   - the stream hadn't already completed (no `done` seen), AND
+//   - the error is a recognized transport drop (not an abort we caused, not an
+//     explicit server `{type:"error"}` event).
+// A drop BEFORE the jobId arrived, or an abort we triggered, is NOT resumable.
+export function shouldResumeViaPoll(err, { jobId, doneSeen = false } = {}) {
+  if (!jobId || doneSeen) return false;
+  if (isAbortLikeError(err)) return false;
+  return isNetworkLoadError(err);
+}
+
 // Map a thrown error from an Apply / re-plan fetch to an honest, specific
 // user-facing classification. `aborted` is controller.signal.aborted (did WE
 // abort?) and `timedOut` is set by the hard-timeout callback. We classify by
