@@ -28,6 +28,7 @@
 // =============================================================================
 
 import { groupItemsByCategory } from "../categoryGroups.js";
+import { bucketProviders, PROVIDER_PDF_CAP } from "../localProviders.js";
 
 const COLOR = {
   ink: [17, 17, 17],          // body text
@@ -1273,6 +1274,71 @@ function renderByCategory(cur, data) {
 }
 
 // -----------------------------------------------------------------------------
+// LOCAL PROVIDERS — real, verified private drivers / guides / tours / wine
+// tastings surfaced for the trip. Reads the SAME results the on-screen "Local
+// providers" tab fetched (passed in via options.providers) and runs them
+// through the SAME shared bucketProviders() helper, so the two views can't
+// drift. Every provider already cleared the find / find-providers verification
+// pipeline; this renderer invents nothing and carries the honest verify label
+// through. Skipped entirely when no relevant category produced results.
+// -----------------------------------------------------------------------------
+function renderProviderEntry(cur, item, x, maxW) {
+  const { pdf } = cur;
+  cur.ensureSpace(16);
+  cur.space(1.2);
+
+  // Name + verify label on the context line (gold uppercase tag).
+  const tag = item.verifyLabel === "verified" ? "VERIFIED" : "VERIFY BEFORE BOOKING";
+  const ctx = [item.name, item.city, tag].filter(Boolean).join("  ·  ");
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(7.5);
+  pdf.setCharSpace(0.5);
+  cur.setColor(COLOR.gold);
+  pdf.text(asciiSafe(ctx.toUpperCase()), x, cur.state.y + 3);
+  pdf.setCharSpace(0);
+  cur.state.y += 5;
+
+  if (item.descriptor) renderDetailLine(cur, "About", item.descriptor, x, maxW);
+  const url = item.url || item.verifyUrl;
+  if (url) renderLinkLine(cur, item.url ? "Website" : "Listing", url, url, x, maxW);
+}
+
+function renderLocalProviders(cur, providers) {
+  if (!providers || typeof providers !== "object") return;
+  const relevantIds = Array.isArray(providers.relevantIds) ? providers.relevantIds : [];
+  const byCategory = providers.byCategory && typeof providers.byCategory === "object" ? providers.byCategory : {};
+  if (relevantIds.length === 0) return;
+
+  const groups = bucketProviders(relevantIds, byCategory, { cap: PROVIDER_PDF_CAP })
+    .filter((g) => g.items.length > 0);
+  if (groups.length === 0) return;
+
+  cur.newPage();
+  cur.space(2);
+  cur.text("Local Providers", { font: FONT.serif, style: "italic", size: 22, color: COLOR.ink });
+  cur.space(2);
+  cur.accentRule(48);
+  cur.space(1.5);
+  cur.text(
+    "Real local operators checked against Google Places. Anything we couldn't confirm is labeled verify before booking.",
+    { font: FONT.sans, style: "italic", size: 9, color: COLOR.inkFaint },
+  );
+
+  const x = PAGE.marginX + 3;
+  const maxW = PAGE.width - PAGE.marginX - x;
+  for (const group of groups) {
+    sectionHeader(cur, `${group.label} (${group.total})`);
+    group.items.forEach((item) => renderProviderEntry(cur, item, x, maxW));
+    if (group.total > group.items.length) {
+      cur.space(1);
+      cur.text(`+ ${group.total - group.items.length} more found`, {
+        font: FONT.sans, style: "italic", size: 9, color: COLOR.inkFaint, x,
+      });
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
 // REFERENCE SECTIONS — logistics, weather, pack, planb, flags, snobs, tonight.
 // -----------------------------------------------------------------------------
 function sectionHeader(cur, title) {
@@ -1504,7 +1570,7 @@ function renderFooters(pdf, opts) {
 // PUBLIC ENTRYPOINT
 // -----------------------------------------------------------------------------
 export async function buildItineraryPdf(data, inputs, options = {}) {
-  const { setStatus, buildId } = options;
+  const { setStatus, buildId, providers } = options;
   if (setStatus) setStatus("Loading PDF engine…");
 
   const jsPDFModule = await import("jspdf");
@@ -1561,10 +1627,14 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
   // plan and before the trip reference back-matter.
   renderByCategory(cur, data);
 
-  // 5. References
+  // 5. Local providers — verified private drivers / guides / tours / tastings
+  // (only when the trip surfaced any). Reuses the on-screen tab's results.
+  renderLocalProviders(cur, providers);
+
+  // 6. References
   renderReferences(cur, data);
 
-  // 6. Footers (after everything else so page count is final)
+  // 7. Footers (after everything else so page count is final)
   renderFooters(pdf, { buildId, introPageIndex });
 
   return pdf;
