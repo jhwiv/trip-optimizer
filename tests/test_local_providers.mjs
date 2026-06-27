@@ -15,6 +15,7 @@ import {
   providerCategoryMeta,
   PROVIDER_UI_CAP,
 } from "../src/localProviders.js";
+import { activityVerifyName } from "../functions/api/find.js";
 
 let passed = 0, failed = 0;
 function assert(name, cond, detail = "") {
@@ -35,6 +36,11 @@ assert("chauffeur -> drivers", relevantProviderCategories(null, { narrative: "we
 assert("private guide -> guides", relevantProviderCategories(null, { interests: { text: "a licensed private guide for the old town" } }).includes("guides"));
 assert("wine tasting -> tastings", relevantProviderCategories(null, { activities: "wine tasting in the valley" }).includes("tastings"));
 assert("walking tour -> tours", relevantProviderCategories(null, { guidelines: "a food tour and a walking tour" }).includes("tours"));
+// FIX: the singular regex missed the plural "tours" (\btour\b can't match
+// inside "tours"). Both forms must match now.
+assert("plural 'tours' -> tours", relevantProviderCategories(null, { activities: "book some tours" }).includes("tours"));
+assert("singular 'tour' still -> tours", relevantProviderCategories(null, { activities: "a private tour" }).includes("tours"));
+assert("'tour'/'tours' regex doesn't over-match 'detour'/'tournament'", relevantProviderCategories(null, { narrative: "a long detour past the tournament" }).length === 0);
 
 console.log("=== relevance: detect from plan items ===");
 const plan = {
@@ -71,6 +77,20 @@ assert("not verified when _verified missing", providerVerifyLabel({ verify_statu
 assert("verify_before_booking status wins over _verified", providerVerifyLabel({ _verified: true, verify_status: "verify_before_booking" }) === "verify_before_booking");
 assert("permanently_closed never verified", providerVerifyLabel({ _verified: true, verify_status: "permanently_closed" }) === "verify_before_booking");
 assert("null -> verify_before_booking", providerVerifyLabel(null) === "verify_before_booking");
+
+console.log("=== activity text->name verification (tours/tastings honesty) ===");
+// Activities (tours/tastings) carry their name in `text`, not `name`. The
+// server derives a verify name from `text` so they get a REAL Places check
+// (same fn the find.js verification pass calls). Proven here: derivation works
+// for the activity shape, and when it FAILS the item can never be labeled
+// "verified" — it falls back to verify_before_booking, never a false claim.
+assert("activity-shaped (text only) yields a derived name", activityVerifyName({ text: "Tuscan Cellar Tastings — vineyard visits" }) === "Tuscan Cellar Tastings");
+assert("activity with no derivable name -> '' (will be UNVERIFIED, not verified)", activityVerifyName({ why: "no name" }) === "");
+// An activity whose name couldn't be derived is never verified server-side
+// (_verified stays falsy) → the UI label must be verify_before_booking.
+assert("derivation-failed activity -> verify_before_booking (never 'verified')", providerVerifyLabel({ text: "", why: "x" }) === "verify_before_booking");
+// A genuinely Places-verified activity (server set _verified) -> "verified".
+assert("server-verified activity -> verified", providerVerifyLabel({ _verified: true, text: "Real Winery — tastings" }) === "verified");
 
 console.log("=== normalize: providers shape (drivers/guides) ===");
 const driver = normalizeProvider({ name: "High Mountain Limo", type: "Limo service", descriptor: "Black-car airport runs.", contact: { website: "https://hml.example" }, _verified: true, _city: "Sedona" }, "drivers");

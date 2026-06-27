@@ -76,7 +76,7 @@ export function providerCategoryMeta(id) {
 const RELEVANCE_PATTERNS = {
   drivers: /\b(private driver|chauffeur|car service|black car|driver day trip|driver[- ]guide|town car|limo|limousine)\b/i,
   guides: /\b(private guide|licensed guide|local guide|art[- ]historian guide|guided private|private .{0,24}\b(guide|tour)|driver[- ]guide)\b/i,
-  tours: /\b(tour|guided tour|walking tour|food tour|sightseeing|excursion|day trip)\b/i,
+  tours: /\b(tours?|guided tours?|walking tours?|food tours?|sightseeing|excursion|day trip)\b/i,
   tastings: /\b(wine tasting|wine[- ]tour|winery|wineries|vineyard|tasting room|sommelier|cellar door)\b/i,
 };
 

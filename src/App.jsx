@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, Fragment, createContext, useContext } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, Fragment, createContext, useContext } from "react";
 import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
@@ -3535,7 +3535,15 @@ function PrintButton({ data, inputs, providers }) {
     if (busy) return;
     setBusy(true); setError(""); setStatus("Starting…");
     try {
-      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers });
+      // The PDF's Local-providers section needs the data, but fetching is now
+      // gated on tab-open — so force a load here (no-op if already loaded) and
+      // hand the freshly-loaded results to the builder.
+      let providersForPdf = providers;
+      if (providers && typeof providers.ensureLoaded === "function") {
+        const loaded = await providers.ensureLoaded();
+        providersForPdf = { ...providers, byCategory: loaded || providers.byCategory };
+      }
+      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers: providersForPdf });
     } catch (err) {
       console.error("PDF save failed", err);
       if (isStaleChunkError(err)) {
@@ -4561,7 +4569,7 @@ function EssentialsView({ data }) {
 // We fetch per relevant category per leg city (multi-city trips), tag each raw
 // record with _city for display + dedupe, and aggregate. State is lifted into
 // ItineraryView so BOTH this tab and the PDF section read the same results.
-function useLocalProviders(plan, inputs, legCities) {
+function useLocalProviders(plan, inputs, legCities, active) {
   const relevantIds = useMemo(
     () => relevantProviderCategories(plan, inputs),
     [plan, inputs],
@@ -4578,33 +4586,57 @@ function useLocalProviders(plan, inputs, legCities) {
 
   const [byCategory, setByCategory] = useState({});
   const [status, setStatus] = useState("idle");
+  // Honest error surface (FIX): a transport/server failure must be
+  // distinguishable from a legitimate "nothing found". `error` is a top-level
+  // message; `errorIds` lists categories that failed to load AND returned
+  // nothing, so the view can say "couldn't load" instead of "we won't guess".
   const [error, setError] = useState("");
+  const [errorIds, setErrorIds] = useState([]);
+  // Latches true once the user opens the tab or export forces a load, so we
+  // never re-fetch on tab switches and the cost is paid at most once.
+  const [activated, setActivated] = useState(false);
+
   // Guard against overlapping fetches + stale writes on rapid plan changes.
   const reqRef = useRef(0);
+  // Signature of the (relevantIds, cities) currently loaded/loading, plus the
+  // in-flight promise — so repeat triggers (tab re-open, export) reuse the
+  // same fetch instead of firing fresh network calls.
+  const loadKeyRef = useRef("");
+  const loadPromiseRef = useRef(null);
+  const sig = `${relevantIds.join(",")}|${cities.join(",")}`;
 
-  useEffect(() => {
-    // No relevant category (or no city to search) — nothing to fetch. We don't
-    // reset state here: consumers gate on relevantIds.length, so any stale
-    // byCategory is never read, and skipping the setState keeps this effect
-    // free of synchronous state writes.
-    if (relevantIds.length === 0 || cities.length === 0) return;
+  const startLoad = useCallback(() => {
+    if (relevantIds.length === 0 || cities.length === 0) {
+      return Promise.resolve({});
+    }
+    // Same trip + cities already loaded/loading — reuse, never re-fetch.
+    if (loadKeyRef.current === sig && loadPromiseRef.current) {
+      return loadPromiseRef.current;
+    }
+    loadKeyRef.current = sig;
     const reqId = ++reqRef.current;
-    let cancelled = false;
+    setStatus("loading");
+    setError("");
+    setErrorIds([]);
 
     const fetchOne = async (cat, city) => {
       const meta = providerCategoryMeta(cat);
-      if (!meta) return [];
+      if (!meta) return { records: [], ok: true };
       try {
-        let res, json, pool;
+        let res, jsonResp, pool;
         if (meta.source === "providers") {
           res = await fetch("/api/find-providers", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ location: city, kind: meta.kind }),
           });
-          json = await res.json().catch(() => ({}));
-          if (!res.ok) return [];
-          pool = json?.results?.providers || [];
+          jsonResp = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            // 422 = "no providers found / nothing verifiable" — a legitimate
+            // empty result, NOT a transport error. Anything else is a failure.
+            return { records: [], ok: res.status === 422 };
+          }
+          pool = jsonResp?.results?.providers || [];
         } else {
           res = await fetch("/api/find", {
             method: "POST",
@@ -4614,44 +4646,73 @@ function useLocalProviders(plan, inputs, legCities) {
               category: "activities",
               guidelines: meta.guidelines || "",
               mode: "standard",
+              // Make tours + tastings go through the SAME real Google Places
+              // existence/status check as drivers/guides (activities store
+              // their name in `text`, so the server must derive it).
+              verify_activities_by_name: true,
             }),
           });
-          json = await res.json().catch(() => ({}));
-          if (!res.ok) return [];
-          pool = json?.results?.activities || [];
+          jsonResp = await res.json().catch(() => ({}));
+          if (!res.ok) return { records: [], ok: res.status === 422 };
+          pool = jsonResp?.results?.activities || [];
         }
         // Tag each record with the leg city for per-leg display + dedupe.
-        return (Array.isArray(pool) ? pool : []).map((p) =>
+        const records = (Array.isArray(pool) ? pool : []).map((p) =>
           p && typeof p === "object" ? { ...p, _city: city } : p,
         );
+        return { records, ok: true };
       } catch {
-        return [];
+        return { records: [], ok: false };
       }
     };
 
-    (async () => {
-      setStatus("loading");
-      setError("");
+    const p = (async () => {
       const jobs = [];
       for (const cat of relevantIds) {
         for (const city of cities) jobs.push({ cat, city });
       }
       const results = await Promise.all(jobs.map((j) => fetchOne(j.cat, j.city)));
-      if (cancelled || reqRef.current !== reqId) return;
       const next = {};
-      for (const id of relevantIds) next[id] = [];
-      results.forEach((arr, i) => {
+      const erroredCat = {};
+      for (const id of relevantIds) { next[id] = []; erroredCat[id] = false; }
+      results.forEach((r, i) => {
         const { cat } = jobs[i];
-        if (Array.isArray(arr) && arr.length) next[cat].push(...arr);
+        if (!r.ok) erroredCat[cat] = true;
+        if (Array.isArray(r.records) && r.records.length) next[cat].push(...r.records);
       });
-      setByCategory(next);
-      setStatus("done");
+      // A category "failed" only if it returned nothing AND a fetch errored —
+      // otherwise an empty result is a genuine "nothing found".
+      const failedIds = relevantIds.filter((id) => next[id].length === 0 && erroredCat[id]);
+      if (reqRef.current === reqId) {
+        setByCategory(next);
+        setErrorIds(failedIds);
+        setError(failedIds.length > 0 ? "Couldn't load local providers right now — try again." : "");
+        setStatus("done");
+      }
+      return next;
     })();
+    loadPromiseRef.current = p;
+    return p;
+  }, [relevantIds, cities, sig]);
 
-    return () => { cancelled = true; };
-  }, [relevantIds, cities]);
+  // Fetch only when the tab is open (active) or export latched us on. Plain
+  // itinerary render does NOT fetch — this avoids ~24 paid calls for users who
+  // never open the tab.
+  const shouldFetch = active === true || activated;
+  useEffect(() => {
+    if (!shouldFetch) return;
+    startLoad();
+  }, [shouldFetch, startLoad]);
 
-  return { relevantIds, byCategory, status, error };
+  // Imperative trigger for PDF export: ensure providers are loaded even if the
+  // tab was never opened, and resolve with the loaded byCategory so the caller
+  // can hand fresh data to the PDF builder.
+  const ensureLoaded = useCallback(() => {
+    setActivated(true);
+    return startLoad();
+  }, [startLoad]);
+
+  return { relevantIds, byCategory, status, error, errorIds, ensureLoaded };
 }
 
 // One provider card. Reuses the gold verify-chip visual language from the
@@ -4687,7 +4748,8 @@ function ProviderCard({ item }) {
 // tight set of verified options (cap PROVIDER_UI_CAP). Honest loading / empty /
 // error states — never a fabricated name.
 function LocalProvidersView({ providers }) {
-  const { relevantIds, byCategory, status } = providers || {};
+  const { relevantIds, byCategory, status, error, errorIds } = providers || {};
+  const failedIds = Array.isArray(errorIds) ? errorIds : [];
   const groups = useMemo(
     () => bucketProviders(relevantIds || [], byCategory || {}),
     [relevantIds, byCategory],
@@ -4706,6 +4768,11 @@ function LocalProvidersView({ providers }) {
       <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", lineHeight: 1.6, margin: 0 }}>
         Real local operators checked against Google Places. Anything we couldn't confirm is labeled “verify before booking” — we don't guess.
       </p>
+      {error && (
+        <p role="alert" style={{ fontSize: "12px", color: "#B85C00", margin: 0 }}>
+          {error}
+        </p>
+      )}
       {groups.map((g) => (
         <div key={g.id}>
           <h3 style={{ fontSize: "13px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700, color: "var(--color-text-primary)", margin: "0 0 10px" }}>
@@ -4721,9 +4788,11 @@ function LocalProvidersView({ providers }) {
               )}
             </div>
           ) : (
-            <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", fontStyle: "italic", margin: 0 }}>
+            <p style={{ fontSize: "12px", color: failedIds.includes(g.id) ? "#B85C00" : "var(--color-text-secondary)", fontStyle: "italic", margin: 0 }}>
               {status !== "done"
                 ? `Finding ${g.noun}s…`
+                : failedIds.includes(g.id)
+                ? `Couldn't load ${g.noun}s right now — try again.`
                 : `No vetted ${g.noun} found for this trip — we won't guess.`}
             </p>
           )}
@@ -6344,7 +6413,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   // Local providers (private drivers/guides/tours/tastings). Lifted here so
   // both the "Local providers" tab and the PDF export read the same verified
   // results. Fetches lazily off relevance; empty when no category applies.
-  const providers = useLocalProviders(rawData, inputs, legCities);
+  const providers = useLocalProviders(rawData, inputs, legCities, tab === "providers");
 
   // "Find another restaurant / activity" swap. Alternatives come from the live
   // /api/find engine (real, currently-operating only). We locate the item in
