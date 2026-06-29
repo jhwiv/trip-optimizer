@@ -31,10 +31,22 @@ User supplied a 15-item update list (item 16 blank). Working in waves, one focus
 | 11 | Overview vs cards → tabbed view (Overview / Flights / Hotels / Activities) | ⬜ Not started | — |
 | 15 | Toggle: narrate build request vs manual dropdowns | ⬜ Not started | — |
 
-**Score: 8 of 15 merged & verified live. 7 remaining.**
+### Added after the original 15 (surfaced by live testing)
+| 16 | Build/narrative button navy-on-navy (invisible) | ✅ Merged + verified live | #86, #87 |
+| 17 | In-build caption hardcoded "2–3 min" vs dynamic hero estimate | ✅ Merged + verified live | #86 |
+| 18 | "2 activities" trip-TOTAL gave 9 (extends #14 to whole-trip) | ⬜ Not started (prompt fix) | — |
+| 19 | Live flight-status panel CORS-blocked (shared worker allowlist) | ✅ Merged + verified (proxy 200, no CORS; panel-render not re-tested) | #88 |
 
-Verified-live done: #13, #1, #2, #3, #4, #5, #14, #12.
-Remaining: expert-review cluster (#8 → #6 → #10), then #7, #9, #11, #15.
+**TRUE Score: 11 of 19 merged. 8 remaining.**
+
+Done & verified live: #1, #2, #3, #4, #5, #12, #13, #14, #16, #17, #19.
+Remaining: **#8 (NEXT — investigated, wiring mapped)** → #6 → #10 (expert-review cluster), #18 (prompt), then #7, #9, #11, #15.
+
+### #8 wiring (build from this — already investigated)
+Much exists: `REVIEWER_SOURCES` (~8710), `REVIEWER_LENSES` (~8793), region default selection (~5097). `ReviewPanel` (~5070) = self-contained state machine with picker + `handleRunReview` (~5153), mounted POST-build (~6654). A PRE-build pass already fires `/api/review-retrieve` in `handleBuild` (~12771) using hardcoded `defaultSourceIds` (~12797). Build completes ~12047. So #8 = (1) lift source selection to wizard state pre-build, (2) feed picked IDs into the ~12797 pass, (3) auto-fire review at completion (guard once; mirror IntroductionAutoGenerator/FlightNumberAutoResolver). Apply-mode toggle ("both, user toggles") is the only net-new piece.
+
+### #19 process lesson (verification rigor)
+#12's flight NUMBER tested fine, but the live-status panel (different path, shared worker CORS allowlist = santafejune.com only) was broken and a single happy-path test missed it. "Verified live" = the path I tested works, stated per item — NOT exhaustive coverage.
 
 ### #14 verification detail (2026-06-29)
 Live build on www.routesmith.ai (bundle `index-De_bnJup.js`), narrative: "only ONE activity on Day 3, keep it light; other days normal." Result per day — D1: 1 activity (arrival), D2: 3, **D3: 1 + dinner (as requested)**, D4: 3, D5: 1 (departure). Day-scope honored, did NOT propagate, other days kept full pacing. Fix was prompt-only (2 lines in `App.jsx`): a DAY-SCOPED REQUESTS rule + reframing the activities list as a pool. `build.js` (streaming proxy) and `chunkPlan.js` (token chunking) were not involved.
