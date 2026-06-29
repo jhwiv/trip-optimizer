@@ -13092,11 +13092,14 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 />
               </Field>
               {/* "Build from this →" shortcut. Appears when the box has enough
-                  text to be worth extracting from (~80 chars). Click → extract
-                  fields from narrative → jump straight to build. The full
-                  guidelines text still flows through to the build prompt as
-                  SOURCE OF TRUTH, so nothing is lost in translation. */}
-              {(guidelines || "").trim().length >= 80 && (
+                  text to be worth extracting from (~40 chars — enough for a
+                  short prompt like "Three nights in Saratoga in October high
+                  end hotel and restaurant" to surface the button, but still
+                  filters out accidental one- or two-word scribbles). Click →
+                  extract fields from narrative → jump straight to build. The
+                  full guidelines text still flows through to the build prompt
+                  as SOURCE OF TRUTH, so nothing is lost in translation. */}
+              {(guidelines || "").trim().length >= 40 && (
                 <div style={{ marginTop: "14px", display: "flex", flexDirection: "column", alignItems: "stretch", gap: "6px" }}>
                   <button
                     type="button"
