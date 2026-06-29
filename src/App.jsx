@@ -5499,7 +5499,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "0 0 12px", fontStyle: "italic" }}>
             Why these? They cover taste (CN Traveler), food (Michelin), pacing (NYT 36 Hours), and ground-truth (Reddit + locals){hyperlocalRegion ? ", plus destination-specific local papers and the tourism board" : ""}. Add more for hotel-specific or scene-specific feedback.
           </p>
-          <button onClick={handleRunReview} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: GOLD }}>
+          <button onClick={handleRunReview} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_NAVY }}>
             Run review (~45 sec)
           </button>
           {error && <p style={{ fontSize: "11.5px", color: "var(--color-text-danger)", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
@@ -5641,7 +5641,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                   ~{revisionMode === "surgical" ? "30 sec" : "2 min"}
                 </span>
               </p>
-              <button onClick={handleApply} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "14px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: GOLD }}>
+              <button onClick={handleApply} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "14px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_NAVY }}>
                 {`→ Apply ${selectedForApply.length} change${selectedForApply.length === 1 ? "" : "s"}`}
               </button>
             </div>
@@ -5670,7 +5670,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                     setNotice("");
                     handleApply({ findingsOverride: retry, forceMode: "full" });
                   }}
-                  style={{ marginTop: "8px", width: "100%", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "10px 14px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: GOLD }}
+                  style={{ marginTop: "8px", width: "100%", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "10px 14px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_NAVY }}
                 >
                   {`↻ Re-plan to apply the rest (${pendingRetryIds.length})`}
                 </button>
@@ -7123,8 +7123,10 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
             height: isCompact ? "26px" : "32px",
             border: "none",
             borderRadius: "50%",
+            // #16/contrast: navy glyph on navy (uploading) or mid-slate fill was
+            // invisible / 2.5:1. Use a LIGHT glyph on the dark circle in both states.
             background: uploading ? GOLD : "var(--color-border-primary)",
-            color: uploading ? "var(--color-text-primary)" : "var(--color-text-primary)",
+            color: "var(--color-background-primary)",
             cursor: uploading ? "wait" : "pointer",
             display: "flex",
             alignItems: "center",
@@ -7150,8 +7152,10 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
               height: isCompact ? "26px" : "32px",
               border: "none",
               borderRadius: "50%",
+              // #16/contrast: navy glyph on the mid-slate border-primary fill was
+              // only 2.5:1. Keep the slate circle but use a LIGHT glyph (~4.7:1).
               background: listening ? "var(--color-text-danger)" : "var(--color-border-primary)",
-              color: listening ? "var(--color-background-primary)" : "var(--color-text-primary)",
+              color: "var(--color-background-primary)",
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
@@ -13530,7 +13534,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             </div>
 
             <button disabled={!ready} onClick={() => { if (ready) { setOutputsStep(false); setStep(2); /* #2: always land at the top of Details (Trip style) on every viewport. Without this, mobile kept the prior scroll offset and opened partway down at Flights while desktop showed the top. */ try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } } }}
-              style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: ready ? "pointer" : "not-allowed", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: ready ? "var(--color-text-primary)" : "var(--color-border-secondary)", color: "var(--color-background-primary)", opacity: ready ? 1 : 0.5 }}>
+              style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: ready ? "pointer" : "not-allowed", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: ready ? "var(--color-text-primary)" : "var(--color-surface-offset)", color: ready ? "var(--color-background-primary)" : "var(--color-text-tertiary)", opacity: ready ? 1 : 0.7 }}>
               Continue — Add Details →
             </button>
             <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "8px", textAlign: "center", minHeight: "16px", fontStyle: "italic" }}>
