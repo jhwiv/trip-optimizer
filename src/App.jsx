@@ -5076,7 +5076,7 @@ function TripSectionView({ tab, data, inputs, onOpenMenu, providers }) {
 // All result/state writes go up through onPlanRevised / onReviewChange so the
 // parent (TripOptimizer) can persist them into saved trips.
 // ============================================================================
-function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview }) {
+function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false }) {
   // --- review state ------------------------------------------------------
   // 'idle' — banner card with picker
   // 'running' — review in flight
@@ -5276,6 +5276,28 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       setElapsedSec(0);
     }
   };
+
+  // #8 Auto-run the expert review once a build completes, without waiting for a
+  // manual 'Run review' click. Guarded so it fires exactly once per distinct
+  // plan and never on a restored review (status already 'done') or while one is
+  // running. Uses the region-aware default sources already selected above. The
+  // manual button still works for re-runs / source changes. Mirrors the
+  // once-per-build guard pattern used by IntroductionAutoGenerator.
+  const autoRunSigRef = useRef("");
+  useEffect(() => {
+    if (!autoRun) return;
+    if (status !== "idle") return;            // don't fire over a restored/in-flight review
+    if (initialReview) return;                 // a recovered review is not a fresh build
+    if (!plan || !Array.isArray(plan.days) || plan.days.length === 0) return;
+    if (selectedSources.length === 0) return;
+    const sig = introPlanSignature(plan);      // stable per build (destination|days|first|last)
+    if (autoRunSigRef.current === sig) return; // already auto-ran for this build
+    autoRunSigRef.current = sig;
+    handleRunReview();
+    // handleRunReview is a stable closure recreated each render; we intentionally
+    // depend only on the trigger inputs, guarded by the signature ref above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRun, status, plan, initialReview, selectedSources.length]);
 
   const handleCancelReview = () => {
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} }
@@ -6408,6 +6430,13 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   // so a silent /api/introduction error never permanently blocks the button.
   const [introIsGenerating, setIntroIsGenerating] = useState(false);
 
+  // #8 Auto-run the expert review when a FRESH build lands. Per the chosen flow
+  // ("pre-build picker, then full auto"), a brand-new plan kicks off the review
+  // automatically; a RESTORED saved trip (initialReview present) does not — its
+  // review already ran and the user is just viewing it. ReviewPanel guards the
+  // actual fire once-per-build, so this is just the on/off intent.
+  const autoReview = !initialReview;
+
   // --- Menu modal state (lazy-fetch via /api/menu) ---
   // For large multi-city trips the build prompt now OMITS per-restaurant
   // menu data to keep the streaming response small (was 10-15k tokens of
@@ -6666,6 +6695,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         onPlanRevised={onPlanRevised}
         onReviewChange={onReviewChange}
         initialReview={initialReview}
+        autoRun={autoReview}
       />
 
       {/* Always-visible traveler change request — same revision pipeline as
