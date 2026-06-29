@@ -11102,6 +11102,7 @@ TRIP REQUIREMENTS:
 • The exact required day count for this trip is given in the per-trip preamble below. Use the COMPUTED DATE TABLE for every day's weekday and date — do not compute weekdays yourself.
 • Each day MUST include: label, headline (the one-line "if you only do one thing" call), weather (seasonal expectation, NOT a live forecast), and items[].
 • Each day's items[] needs at least 3 items — a typical full day is: morning Activity, midday Activity, evening Dinner. Arrival/departure days also include Flight + Hotel.
+• DAY-SCOPED REQUESTS — HONOR LITERALLY (overrides the pacing default for the named day only): If the traveler specifies how many activities a SPECIFIC day should have (e.g. "one activity on Tuesday", "just one thing on Day 3", "keep the 14th light", "only golf on Saturday"), that count applies to THAT DAY ALONE. Do NOT propagate it to other days and do NOT back-fill the rest of the trip to match it. Days the traveler did not constrain keep the normal pacing for the stated Pace setting. On a day the traveler asked to keep light, the "at least 3 items" guideline YIELDS: that day may legitimately be just one Activity + Dinner (and Flight/Hotel on arrival/departure days). Never inflate a deliberately light day back up to hit the item minimum, and never spread one day's requested activity across every day.
 • EVERY item in items[] MUST have a "time" field (24h local time, e.g. '08:30', '14:00', '19:30'). Items should appear in chronological order within each day. This is what turns the day into a real time-based itinerary instead of a vague list.
 • Use realistic times: dinner 19:00–20:30, breakfast 07:30–09:00, lunch 12:00–13:30 (only when explicitly asked — see MEAL POLICY below). Activities sized to their duration (museum 2h, hike 3–4h, gallery walk 90min). Add end_time when helpful.
 • TIME FORMAT IN PROSE: The structured "time"/"end_time" fields stay 24h as specified above — the app converts them for display. But in all human-readable prose you write (headlines, why-blurbs, notes, confirmation_notes, flags, tonight, and any recommended/arrival/pickup time mentioned in text), write clock times in 12-hour AM/PM format (e.g. "7:00 PM", never "19:00"). Never use 24-hour/military time in prose.
@@ -11350,7 +11351,7 @@ Hotel brand: ${prefToText(hotel.brand)}${hotel.tier ? ` · ${hotel.tier}` : ""} 
 Transport: ${prefToText(transport.type)}${transport.company ? ` · ${transport.company}` : ""}
 Cuisine: ${dining.cuisine || "local"} · Dinner budget: ${prefToText(dining.budget)}
 Restaurants requested: ${restaurants.length ? restaurants.join(", ") : "suggest"}
-Activities requested: ${activities.length ? activities.join(", ") : "suggest based on style"}
+Activities requested${activities.length ? " (this is a POOL to draw from — place each on the SINGLE most appropriate day; do NOT schedule the same activity on multiple days, and do NOT treat this list as a per-day quota)" : ""}: ${activities.length ? activities.join(", ") : "suggest based on style"}
 Interests: ${interests.text || "not specified"} · Level: ${interests.level || "No preference"}
 Include sections: ${active}
 ${guidelines && guidelines.trim() ? `
