@@ -1,0 +1,14 @@
+[
+  {
+    "fg": "--color-text-tertiary",
+    "bg": "--color-background-primary",
+    "ratio": 2.51,
+    "note": "BID-aligned 'text-faint' role is decorative-only by design. Scheduled for PR-2 consumer migration to --color-text-secondary where used as body text."
+  },
+  {
+    "fg": "--color-text-tertiary",
+    "bg": "--color-background-secondary",
+    "ratio": 2.43,
+    "note": "Same BID-aligned 'text-faint' role over the cream secondary surface. Decorative-only by design; deferred to PR-2 consumer migration."
+  }
+]
