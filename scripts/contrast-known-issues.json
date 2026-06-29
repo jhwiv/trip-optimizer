@@ -1,0 +1,4 @@
+{
+  "_comment": "Text/surface pairs (by CSS custom-property name) that are below WCAG AA 4.5:1 on the current palette. The contrast audit WARNs instead of failing for these so the gate can be adopted before the upcoming Barrier Island Digital palette PR fixes them. That PR must REMOVE each pair from this list as it raises the contrast. Format: pairs is an array of [textTokenName, surfaceTokenName].",
+  "pairs": []
+}

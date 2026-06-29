@@ -3,3 +3,5 @@ dist
 .env
 .env.local
 .wrangler
+# Visual regression captures (large binaries; see scripts/visual-baseline.md)
+scripts/visual-baseline/

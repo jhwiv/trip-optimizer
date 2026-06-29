@@ -1,0 +1,4 @@
+{
+  "_comment": "Ceiling for hex color literals in src/App.jsx, enforced by scripts/audit-hex-leaks.js. Set to the current post-exclusion count (192) plus headroom of 5. The upcoming Barrier Island Digital palette PR should LOWER this number as it migrates literals to --color-* tokens. Never raise it without justification.",
+  "maxHexLiterals": 197
+}
