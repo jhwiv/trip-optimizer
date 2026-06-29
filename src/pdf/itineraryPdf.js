@@ -34,7 +34,7 @@ const COLOR = {
   ink: [17, 17, 17],          // body text
   inkSoft: [85, 85, 85],      // secondary
   inkFaint: [140, 140, 140],  // meta / footer
-  gold: [201, 169, 97],       // #C9A961 brand accent
+  gold: [201, 169, 97],       // var(--color-gold) brand accent
   rule: [220, 220, 220],      // dividers
   ruleSoft: [240, 240, 240],  // row separators
   warn: [180, 90, 40],        // ⚠︎ markers
