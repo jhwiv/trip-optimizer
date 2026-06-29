@@ -13091,15 +13091,23 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                   placeholder={"e.g. United UA 57 EWR→CDG Sept 12 dep 18:55, return UA 58 Sept 19. Staying at Le Bristol Paris Sept 12–19, conf #BRST44A21. Dinners: Le Comptoir du Relais night 1, Le Cinq for anniversary on the 14th (already booked, 8pm), Frenchie night 3. Want a private driver from arrival through departure. Wife has a knee injury — no long walks or stairs-heavy days. Home by 9pm. Skip the Louvre, we've done it."}
                 />
               </Field>
-              {/* "Build from this →" shortcut. Appears when the box has enough
-                  text to be worth extracting from (~40 chars — enough for a
-                  short prompt like "Three nights in Saratoga in October high
-                  end hotel and restaurant" to surface the button, but still
-                  filters out accidental one- or two-word scribbles). Click →
-                  extract fields from narrative → jump straight to build. The
-                  full guidelines text still flows through to the build prompt
-                  as SOURCE OF TRUTH, so nothing is lost in translation. */}
-              {(guidelines || "").trim().length >= 40 && (
+              {/* "Build from this →" shortcut. Appears when the box looks like
+                  a real trip prompt: ≥ 20 chars AND ≥ 4 whitespace-separated
+                  tokens. Covers short brain-dumps like "3 nights in Saratoga.
+                  High end. October" (39 chars / 7 tokens) while still hiding
+                  the button for one-word fragments or random scribbles.
+                  Click → extract fields from narrative → jump straight to
+                  build. The full guidelines text still flows through to the
+                  build prompt as SOURCE OF TRUTH, so nothing is lost in
+                  translation. /api/extract-trip returns a 422 (already
+                  surfaced inline below) if it can't find a destination, so a
+                  generous client gate is safe. */}
+              {(() => {
+                const t = (guidelines || "").trim();
+                if (t.length < 20) return false;
+                const tokens = t.split(/\s+/).filter(Boolean).length;
+                return tokens >= 4;
+              })() && (
                 <div style={{ marginTop: "14px", display: "flex", flexDirection: "column", alignItems: "stretch", gap: "6px" }}>
                   <button
                     type="button"
