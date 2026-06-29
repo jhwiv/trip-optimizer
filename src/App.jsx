@@ -3955,7 +3955,7 @@ function InputSummary({ inputs }) {
     ["Travelers", basics?.travelers],
     ["Style", basics?.style],
     ["Pace", basics?.pace],
-    ["Budget", basics?.budget],
+    ["Budget", Array.isArray(basics?.budget) ? (basics.budget.length ? basics.budget.join(", ") : "\u2014") : (basics?.budget || "\u2014")],
     ["Home airport", flights?.homeAirport],
     ["Preferred airline", flights?.airline || "—"],
     ["Cabin", flights?.cabin || "—"],
@@ -8172,6 +8172,29 @@ function prefToText(v) {
   return v || "No preference";
 }
 
+// #5 Dynamic build-time estimate. The old copy hard-coded "3 to 15 minutes".
+// Builds scale with trip length (more days = more items to verify), multi-city
+// (each leg adds geocoding + per-city searches), and the number of optional
+// output sections selected (each is extra generation + verification). We return
+// a coarse minute RANGE string. Until the user has entered enough to estimate,
+// callers fall back to a generic "can take more than 5 minutes" message.
+function estimateBuildMinutes({ nights, citiesCount = 1, outputsCount = 0 } = {}) {
+  const days = Math.max(1, Number(nights) || 0);
+  const cityN = Math.max(1, Number(citiesCount) || 1);
+  const addons = Math.max(0, Number(outputsCount) || 0);
+  // Base ~2 min, +~0.5 min/day, +~1 min per extra city, +~0.4 min per add-on.
+  const low = 2 + days * 0.5 + (cityN - 1) * 1 + addons * 0.4;
+  const high = low * 1.7 + 2;
+  const lo = Math.max(2, Math.round(low));
+  const hi = Math.max(lo + 2, Math.round(high));
+  return { lo, hi, text: `about ${lo}\u2013${hi} minutes` };
+}
+
+// True once the user has entered enough for a meaningful estimate.
+function canEstimateBuild(basics) {
+  return !!(basics && (Number(basics.nights) > 0 || (Array.isArray(basics.cities) && basics.cities.some(c => c && c.name))));
+}
+
 function TagInput({ placeholder, tags, setTags, suggestions = [] }) {
   const [val, setVal] = useState("");
   const [open, setOpen] = useState(false);
@@ -8906,7 +8929,7 @@ function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
     inputs?.basics?.destination && `Destination: ${inputs.basics.destination}`,
     inputs?.basics?.nights && `${inputs.basics.nights} nights`,
     inputs?.basics?.travelers && `${inputs.basics.travelers}`,
-    inputs?.basics?.budget && `Budget: ${inputs.basics.budget}`,
+    (Array.isArray(inputs?.basics?.budget) ? inputs.basics.budget.length : inputs?.basics?.budget) && `Budget: ${prefToText(inputs.basics.budget)}`,
     inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
     inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
@@ -8977,7 +9000,7 @@ function buildRevisionSystemPromptSurgical(plan, findings, inputs) {
   const tripContext = [
     inputs?.basics?.destination && `Destination: ${inputs.basics.destination}`,
     inputs?.basics?.nights && `${inputs.basics.nights} nights`,
-    inputs?.basics?.budget && `Budget: ${inputs.basics.budget}`,
+    (Array.isArray(inputs?.basics?.budget) ? inputs.basics.budget.length : inputs?.basics?.budget) && `Budget: ${prefToText(inputs.basics.budget)}`,
     inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
     inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
@@ -9030,7 +9053,7 @@ function buildRevisionSystemPromptFull(plan, findings, inputs) {
     inputs?.basics?.destination && `Destination: ${inputs.basics.destination}`,
     inputs?.basics?.nights && `${inputs.basics.nights} nights`,
     inputs?.basics?.travelers && `${inputs.basics.travelers}`,
-    inputs?.basics?.budget && `Budget: ${inputs.basics.budget}`,
+    (Array.isArray(inputs?.basics?.budget) ? inputs.basics.budget.length : inputs?.basics?.budget) && `Budget: ${prefToText(inputs.basics.budget)}`,
     inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
     inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
@@ -10144,7 +10167,7 @@ export default function TripOptimizer() {
 
   // BLANK = truly empty state. Used on every launch and on "Plan another trip".
   const BLANK = {
-    basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: "" },
+    basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: [] },
     flights: { homeAirport: "EWR", airline: "", cabin: "", flex: "", noFlight: false },
     hotel: { brand: ["Marriott / Bonvoy"], tier: "", mustHave: "" },
     transport: { type: [], company: "Hertz", vehicle: "" },
@@ -10352,7 +10375,7 @@ export default function TripOptimizer() {
         nights: inferredNights || prev.nights,
         travelers: exBasics.travelers || prev.travelers,
         baseArea: exBasics.baseArea || prev.baseArea,
-        budget: exBasics.budget || prev.budget,
+        budget: exBasics.budget != null ? (Array.isArray(exBasics.budget) ? exBasics.budget : [exBasics.budget].filter(Boolean)) : prev.budget,
         style: (Array.isArray(exBasics.style) && exBasics.style.length) ? exBasics.style : prev.style,
         pace: exBasics.pace || prev.pace,
         // Mirror destination into cities[0].name so multi-city machinery
@@ -11321,7 +11344,7 @@ Start date: ${formatDateForDisplay(basics.startDate) || basics.startDate}${basic
 Return date: ${formatDateForDisplay(basics.endDate) || basics.endDate}` : ""}
 Nights: ${isMultiCity ? totalNightsFromCities : basics.nights}${isMultiCity ? "  (" + cities.map(c => `${c.nights} in ${c.name}`).join(" + ") + ")" : ""}
 Travelers: ${basics.travelers}
-Style: ${prefToText(basics.style)} · Pace: ${basics.pace || "No preference"} · Budget: ${basics.budget || "No preference"}
+Style: ${prefToText(basics.style)} · Pace: ${basics.pace || "No preference"} · Budget: ${prefToText(basics.budget)}
 ${flights.noFlight ? `Transportation mode: GROUND ONLY (${groundModeText}). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the ${trainAllowed ? "drive or rail" : "drive"} journey from the user's origin to the destination, with realistic time + distance.` : `Home airport: ${flights.homeAirport} (use IATA ${extractAirportCode(flights.homeAirport)} on Flight items) · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin || "no preference"}`}
 Hotel brand: ${prefToText(hotel.brand)}${hotel.tier ? ` · ${hotel.tier}` : ""} · Must-haves: ${hotel.mustHave || "none"}
 Transport: ${prefToText(transport.type)}${transport.company ? ` · ${transport.company}` : ""}
@@ -13022,6 +13045,33 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               />
             </div>
           </div>
+          {/* #1 Hero Reset — always available on the hero so the user can start
+              fresh without hunting for the in-form reset. Destructive, so it
+              confirms first; resets form, plan, review state, and outputs. */}
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm("Start over? This clears the current trip details, the built itinerary, and resets section choices.")) {
+                resetFormToBlank();
+                setOut(resolveOutputs(null));
+                setResult(null);
+                setCurrentSavedTripId(null);
+                setReviewState(null);
+                setOutputsStep(false);
+                setStep(1);
+                try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+              }
+            }}
+            aria-label="Reset and start over"
+            title="Clear everything and start a fresh trip"
+            style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: "6px", background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", fontWeight: 500, whiteSpace: "nowrap" }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 12a9 9 0 1 0 3-6.7" />
+              <path d="M3 3v5h5" />
+            </svg>
+            <span>Reset</span>
+          </button>
         </div>
         <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "14px 0 18px" }} />
 
@@ -13041,7 +13091,18 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.45, maxWidth: "52ch" }}>
               {findOnly
                 ? "Skip the wizard. Type a city, get hand-picked restaurants and activities in about a minute, with locals' picks auto-added."
-                : "Day-by-day itinerary with hotels, restaurants, activities, transport. 3 to 15 minutes depending on trip size."}
+                : (() => {
+                    const base = "Day-by-day itinerary with hotels, restaurants, activities, transport. ";
+                    if (canEstimateBuild(basics)) {
+                      const { text } = estimateBuildMinutes({
+                        nights: basics.nights,
+                        citiesCount: (cities && cities.length) || 1,
+                        outputsCount: Object.values(outputs || {}).filter(Boolean).length,
+                      });
+                      return base + `Estimated ${text} for this trip — larger trips take longer.`;
+                    }
+                    return base + "Can take more than 5 minutes depending on trip size.";
+                  })()}
             </p>
           </div>
           <button
@@ -13358,7 +13419,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               )}
             </div>
 
-            <button disabled={!ready} onClick={() => { if (ready) { setOutputsStep(false); setStep(2); } }}
+            <button disabled={!ready} onClick={() => { if (ready) { setOutputsStep(false); setStep(2); /* #2: always land at the top of Details (Trip style) on every viewport. Without this, mobile kept the prior scroll offset and opened partway down at Flights while desktop showed the top. */ try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } } }}
               style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: ready ? "pointer" : "not-allowed", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: ready ? "var(--color-text-primary)" : "var(--color-border-secondary)", color: "var(--color-background-primary)", opacity: ready ? 1 : 0.5 }}>
               Continue — Add Details →
             </button>
@@ -13439,7 +13500,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               <Field label="Style" hint="Tap one or more"><Sel multi value={basics.style} onChange={e => setB({ ...basics, style: e.target.value })} opts={["Cultural / sightseeing","Golf / sport","Food & wine","Beach / relaxation","Adventure / outdoor","Mixed"]} /></Field>
               <div style={{ ...g2r, marginTop: "16px" }}>
                 <Field label="Pace"><Sel value={basics.pace} onChange={e => setB({ ...basics, pace: e.target.value })} opts={["Relaxed (1–2 things/day)","Moderate (2–3 things/day)","Full (3–4 things/day)"]} /></Field>
-                <Field label="Budget"><Sel value={basics.budget} onChange={e => setB({ ...basics, budget: e.target.value })} opts={["$$ — value","$$$ — mid range","$$$$ — luxury","$$$$$ — ultra high end"]} /></Field>
+                <Field label="Budget" hint="Tap one or more"><Sel multi value={basics.budget} onChange={e => setB({ ...basics, budget: e.target.value })} opts={["$$ — value","$$$ — mid range","$$$$ — luxury","$$$$$ — ultra high end"]} /></Field>
               </div>
             </div>
 
