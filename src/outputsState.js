@@ -19,19 +19,22 @@
 // =====================================================================
 
 // The canonical default selection. Day-by-day itinerary is always on (a plan
-// with no days is meaningless, so its toggle is rendered locked-on); every
-// add-on section defaults OFF and the user opts in before building.
+// with no days is meaningless, so its toggle is rendered locked-on).
+// Default selection: every section ON except the last two in DISPLAY order
+// (outputDefs in App.jsx): "badges" and "pronunciation" default OFF. The user
+// asked to "preselect all but the last 2". Anchored to display order, NOT
+// object-key order, to avoid the documented defaults-reset regression above.
 export const DEFAULT_OUTPUTS = Object.freeze({
   itinerary: true,
-  weather: false,
-  navigation: false,
-  logistics: false,
-  tonight: false,
-  menus: false,
-  flags: false,
-  planb: false,
-  snobs: false,
-  practical: false,
+  weather: true,
+  navigation: true,
+  logistics: true,
+  tonight: true,
+  menus: true,
+  flags: true,
+  planb: true,
+  snobs: true,
+  practical: true,
   badges: false,
   pronunciation: false,
 });

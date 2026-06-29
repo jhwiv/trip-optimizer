@@ -27,12 +27,15 @@ console.log("\n[1] DEFAULT_OUTPUTS shape");
 {
   assert("has exactly the 12 known keys", ALL_KEYS.every(k => k in DEFAULT_OUTPUTS) && Object.keys(DEFAULT_OUTPUTS).length === 12, JSON.stringify(Object.keys(DEFAULT_OUTPUTS)));
   assert("itinerary defaults on", DEFAULT_OUTPUTS.itinerary === true);
-  assert("every add-on defaults off", ALL_KEYS.filter(k => k !== "itinerary").every(k => DEFAULT_OUTPUTS[k] === false));
+  // New spec (#4): preselect all sections except the last two in display order.
+  const OFF_BY_DEFAULT = ["badges", "pronunciation"];
+  assert("only badges & pronunciation default off", ALL_KEYS.every(k => OFF_BY_DEFAULT.includes(k) ? DEFAULT_OUTPUTS[k] === false : DEFAULT_OUTPUTS[k] === true));
+  assert("exactly 10 sections default on", ALL_KEYS.filter(k => DEFAULT_OUTPUTS[k] === true).length === 10);
   assert("defaultOutputs() returns a fresh copy", defaultOutputs() !== DEFAULT_OUTPUTS && JSON.stringify(defaultOutputs()) === JSON.stringify(DEFAULT_OUTPUTS));
   // The frozen canonical must not be mutated through the fresh copy.
   const copy = defaultOutputs();
-  copy.weather = true;
-  assert("mutating the copy never touches the canonical", DEFAULT_OUTPUTS.weather === false && copy.weather === true);
+  copy.badges = true;
+  assert("mutating the copy never touches the canonical", DEFAULT_OUTPUTS.badges === false && copy.badges === true);
 }
 
 console.log("\n[2] resolveOutputs falls back to defaults when nothing valid is persisted");
@@ -76,7 +79,11 @@ console.log("\n[4] resolveOutputs invariants: itinerary forced on, missing keys 
   // A partial map (e.g. an older snapshot before a new section existed) is
   // backfilled from defaults so the key set always matches outputDefs.
   const r2 = resolveOutputs({ weather: true });
-  assert("missing keys backfilled to default off", r2.navigation === false && r2.snobs === false);
+  // Missing keys are backfilled from DEFAULT_OUTPUTS (not hardcoded values).
+  // navigation/snobs default ON under the #4 spec; badges/pronunciation OFF.
+  assert("missing on-by-default keys backfilled true", r2.navigation === true && r2.snobs === true);
+  assert("missing off-by-default keys backfilled false", r2.badges === false && r2.pronunciation === false);
+  assert("backfilled keys match DEFAULT_OUTPUTS", ALL_KEYS.filter(k => k !== "weather" && k !== "itinerary").every(k => r2[k] === DEFAULT_OUTPUTS[k]));
   assert("backfilled map has all 12 keys", ALL_KEYS.every(k => k in r2));
 }
 
