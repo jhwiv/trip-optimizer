@@ -34,11 +34,11 @@ const COLOR = {
   ink: [17, 17, 17],          // body text
   inkSoft: [85, 85, 85],      // secondary
   inkFaint: [140, 140, 140],  // meta / footer
-  gold: [201, 169, 97],       // var(--color-gold) brand accent
+  gold: [28, 40, 64],         // navy accent (--color-text-primary); gold retired in branding sweep
   rule: [220, 220, 220],      // dividers
   ruleSoft: [240, 240, 240],  // row separators
   warn: [180, 90, 40],        // ⚠︎ markers
-  bgChip: [248, 244, 232],    // pale gold tint for chips
+  bgChip: [242, 240, 234],    // neutral silver-grey tint for chips (was pale gold)
 };
 
 const FONT = {

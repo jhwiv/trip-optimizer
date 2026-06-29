@@ -10,7 +10,7 @@
 
     <!-- PWA: installable home-screen app -->
     <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="theme-color" content="#c6a25a" />
+    <meta name="theme-color" content="#1c2840" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=2" />
     <link rel="icon" type="image/png" sizes="64x64" href="/favicon-64.png?v=2" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2" />
@@ -39,8 +39,9 @@
         /* BID core additions */
         --color-accent: #3f7d86;
         --color-accent-hover: #316169;
-        --color-gold: #c6a25a;
-        --color-cream: #f0e6cf;
+        /* --color-gold retired (branding sweep): accents now navy/silver. Alias kept as navy so any stray reference renders on-palette. */
+        --color-gold: #1c2840;
+        --color-cream: #f2f0ea;
         --color-surface-2: #f2f0ea;
         --color-surface-offset: #eceae3;
 
@@ -76,7 +77,8 @@
         --color-border-tertiary: #262d3b;
         --color-accent: #5fa3ac;
         --color-accent-hover: #79bcc5;
-        --color-gold: #d8b772;
+        /* --color-gold retired (branding sweep) — dark theme alias = light text navy-grey. */
+        --color-gold: #e7e9ee;
       }
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       /* Aggressive horizontal containment for iOS Chrome.

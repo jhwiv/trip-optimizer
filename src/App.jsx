@@ -32,9 +32,16 @@ function urlSearchFallback(name, destination) {
   return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
 }
 
-const GOLD = "var(--color-gold)";
-const GOLD_LIGHT = "var(--color-cream)";
+// --color-gold retired (branding sweep). These constants now resolve to the
+// navy/silver palette. GOLD = navy (accents, borders, eyebrows, rules).
+// GOLD_LIGHT = silver-grey surface (was cream). GOLD_DARK = navy (unchanged).
+// Where GOLD was used as a solid FILL, those sites set their own light text
+// color so navy fill stays readable; see ON_NAVY constant below.
+const GOLD = "var(--color-text-primary)";
+const GOLD_LIGHT = "var(--color-surface-2)";
 const GOLD_DARK = "var(--color-text-primary)";
+// Text/icon color to use ON a navy (GOLD) fill so it stays legible.
+const ON_NAVY = "var(--color-background-primary)";
 
 // --------------------------------------------------------------------------
 // Anthropic prompt-caching helper.
@@ -945,7 +952,7 @@ function TimePill({ time, end_time }) {
   return (
     <span style={{
       display: "inline-block", fontSize: "11px", fontWeight: 600,
-      color: "var(--color-text-primary)", background: "var(--color-cream)",
+      color: "var(--color-text-primary)", background: "var(--color-surface-2)",
       padding: "2px 7px", borderRadius: "3px", whiteSpace: "nowrap",
       letterSpacing: "0.02em", minWidth: "58px", textAlign: "center",
     }}>{et ? `${t} – ${et}` : t}</span>
@@ -1332,7 +1339,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
         <p style={{ fontSize: "11px", color: "var(--color-warning)", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 500, padding: "6px 8px", background: "rgba(184,92,0,0.06)", borderLeft: "2px solid var(--color-warning)", borderRadius: "2px" }}>⚠︎ {overrideBanner}</p>
       )}
       {airportBanner && (
-        <p style={{ fontSize: "11px", color: "var(--color-text-primary)", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 600, padding: "6px 8px", background: "rgba(196,168,98,0.18)", borderLeft: `2px solid ${GOLD}`, borderRadius: "2px" }}>✈ {airportBanner}</p>
+        <p style={{ fontSize: "11px", color: "var(--color-text-primary)", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 600, padding: "6px 8px", background: "rgba(91, 101, 119,0.18)", borderLeft: `2px solid ${GOLD}`, borderRadius: "2px" }}>✈ {airportBanner}</p>
       )}
       <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "2px 0 6px", letterSpacing: "0.02em" }}>
         {f.depart_time ? `Approx depart ${formatTime(f.depart_time)}` : ""}{f.arrive_time ? ` · arrive ${formatTime(f.arrive_time)}` : ""}{f.duration ? `  ·  ${f.duration}` : ""}  ·  {stopLabel}
@@ -1343,7 +1350,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
         </p>
       )}
       {f.airport_arrival_buffer && (
-        <div style={{ margin: "6px 0 4px", padding: "6px 9px", background: "var(--color-cream)", border: "0.5px solid var(--color-gold)", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+        <div style={{ margin: "6px 0 4px", padding: "6px 9px", background: "var(--color-surface-2)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
           <span style={{ fontSize: "10.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Arrive {f.airport_arrival_buffer} early</span>
           <span style={{ fontSize: "11.5px", color: "var(--color-text-primary)" }}>
             {/^A?UA$|^AUA$/.test(f.from_airport || "") ? "AUA pre-clears US Customs in Aruba — plan for the extra time before boarding." : "Lead time at the airport before scheduled departure."}
@@ -1351,10 +1358,10 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
         </div>
       )}
       {Array.isArray(f.lounge_access) && f.lounge_access.length > 0 && (
-        <div style={{ margin: "6px 0 4px", padding: "7px 9px", background: "rgba(196,168,98,0.08)", border: `0.5px solid ${GOLD}`, borderRadius: "4px" }}>
+        <div style={{ margin: "6px 0 4px", padding: "7px 9px", background: "rgba(91, 101, 119,0.08)", border: `0.5px solid ${GOLD}`, borderRadius: "4px" }}>
           <p style={{ fontSize: "10.5px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px" }}>Lounge access</p>
           {f.lounge_access.map((lg, i) => (
-            <div key={i} style={{ margin: i === 0 ? "3px 0" : "6px 0 3px", fontSize: "11.5px", color: "var(--color-text-primary)", lineHeight: 1.4, paddingTop: i === 0 ? 0 : 5, borderTop: i === 0 ? "none" : "0.5px dashed rgba(196,168,98,0.25)" }}>
+            <div key={i} style={{ margin: i === 0 ? "3px 0" : "6px 0 3px", fontSize: "11.5px", color: "var(--color-text-primary)", lineHeight: 1.4, paddingTop: i === 0 ? 0 : 5, borderTop: i === 0 ? "none" : "0.5px dashed rgba(91, 101, 119,0.25)" }}>
               <span style={{ fontWeight: 600 }}>{lg.name}</span>
               {i === 0 && f.lounge_access.length > 1 ? <span style={{ marginLeft: 6, fontSize: "9.5px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.06em", textTransform: "uppercase" }}>Closest to gate</span> : null}
               {lg.terminal ? <span style={{ display: "block", color: "var(--color-text-secondary)", fontSize: "11px" }}>{lg.terminal}</span> : null}
@@ -1433,7 +1440,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
                   const active = timeFilter === bucket;
                   return (
                     <button key={bucket} onClick={() => setTimeFilter(bucket)}
-                      style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: `0.5px solid ${active ? GOLD : "var(--color-border-secondary)"}`, background: active ? GOLD : "transparent", color: active ? "var(--color-text-primary)" : "var(--color-text-tertiary)", cursor: "pointer", fontWeight: active ? 700 : 400, letterSpacing: "0.04em", textTransform: "capitalize", fontFamily: "inherit" }}>
+                      style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: `0.5px solid ${active ? GOLD : "var(--color-border-secondary)"}`, background: active ? GOLD : "transparent", color: active ? ON_NAVY : "var(--color-text-tertiary)", cursor: "pointer", fontWeight: active ? 700 : 400, letterSpacing: "0.04em", textTransform: "capitalize", fontFamily: "inherit" }}>
                       {label}
                     </button>
                   );
@@ -1859,7 +1866,7 @@ function ContactBlock({ contact, name }) {
             <a href={telUrl} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>Call</a>
           )}
           {showBooking && (
-            <a href={bookingHref} target="_blank" rel="noopener noreferrer" title={bookingDead ? "Original booking link could not be verified — search for it on Google" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: `0.5px solid ${bookingDead ? GOLD_DARK : GOLD}`, background: bookingDead ? "transparent" : GOLD, color: bookingDead ? GOLD_DARK : "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>{bookingDead ? "Search ↗" : "Book ↗"}</a>
+            <a href={bookingHref} target="_blank" rel="noopener noreferrer" title={bookingDead ? "Original booking link could not be verified — search for it on Google" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: `0.5px solid ${bookingDead ? GOLD_DARK : GOLD}`, background: bookingDead ? "transparent" : GOLD, color: bookingDead ? GOLD_DARK : ON_NAVY, textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>{bookingDead ? "Search ↗" : "Book ↗"}</a>
           )}
           {showWebsite && (
             <a href={websiteHref} target="_blank" rel="noopener noreferrer" title={websiteDead ? "Original site link could not be verified — search for the official site" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: websiteDead ? GOLD_DARK : "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>{websiteDead ? "Find site ↗" : "Website ↗"}</a>
@@ -1959,7 +1966,7 @@ function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
         type="button"
         onClick={handleToggle}
         aria-expanded={open}
-        style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: open ? GOLD : "transparent", color: open ? "var(--color-text-primary)" : GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}
+        style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: open ? GOLD : "transparent", color: open ? ON_NAVY : GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}
       >{open ? "Close" : `↻ ${label}`}</button>
       {open && (
         <div style={{ marginTop: "10px" }}>
@@ -1999,7 +2006,7 @@ function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
                         <button
                           type="button"
                           onClick={() => handleUse(a)}
-                          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: GOLD, color: "var(--color-text-primary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap" }}
+                          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: GOLD, color: ON_NAVY, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap" }}
                         >Use this</button>
                       </div>
                     </div>
@@ -2079,10 +2086,10 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
         <Badge type={type} />
         <p style={{ fontSize: "14px", fontWeight: 600, color: isClosed ? "var(--color-danger-hover)" : "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1, textDecoration: isClosed ? "line-through" : "none" }}>{r.name}</p>
         {r._weekdayMismatch && !isClosed && (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-gold)", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r._weekdayMismatch] || r._weekdayMismatch}s — verify</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r._weekdayMismatch] || r._weekdayMismatch}s — verify</span>
         )}
         {r._missingBackup && !isClosed && (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-gold)", borderRadius: "3px", whiteSpace: "nowrap" }}>No backup</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", whiteSpace: "nowrap" }}>No backup</span>
         )}
         {r._isReturnVisit && !isClosed && (
           <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: `0.5px solid ${GOLD}`, borderRadius: "3px", whiteSpace: "nowrap" }}>Return visit</span>
@@ -2106,7 +2113,7 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
       {/* restaurant, so we default to the conservative "verify before booking" */}
       {/* microcopy whenever the model isn't certain. */}
       {!isClosed && (r.verify_status === "verify_before_booking" || (!r.verify_status && r.verify_url)) && (
-        <div style={{ margin: "0 0 8px", padding: "6px 9px", background: "var(--color-cream)", border: "0.5px solid var(--color-gold)", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+        <div style={{ margin: "0 0 8px", padding: "6px 9px", background: "var(--color-surface-2)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
           <span style={{ fontSize: "10.5px", fontWeight: 600, color: "var(--color-text-primary)", letterSpacing: "0.04em", textTransform: "uppercase" }}>Verify</span>
           <span style={{ fontSize: "11.5px", color: "var(--color-text-primary)" }}>
             We can't confirm this spot's status — check before booking.
@@ -2151,7 +2158,7 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
           <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>
             {r.backup.name}
             {r.backup._weekdayMismatch && (
-              <span style={{ marginLeft: "6px", fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.06em", textTransform: "uppercase", padding: "2px 6px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-gold)", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r.backup._weekdayMismatch] || r.backup._weekdayMismatch}s</span>
+              <span style={{ marginLeft: "6px", fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.06em", textTransform: "uppercase", padding: "2px 6px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r.backup._weekdayMismatch] || r.backup._weekdayMismatch}s</span>
             )}
           </p>
           {(r.backup.neighborhood || r.backup.cuisine) && (
@@ -3442,7 +3449,7 @@ function StaleChipsBanner({ suggestion, onClear, onDismiss }) {
           </p>
           <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "10px" }}>
             {items.map((it, i) => (
-              <span key={i} style={{ fontSize: "11px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-gold)", color: "var(--color-text-primary)", borderRadius: "3px", padding: "3px 7px" }}>{it}</span>
+              <span key={i} style={{ fontSize: "11px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-border-secondary)", color: "var(--color-text-primary)", borderRadius: "3px", padding: "3px 7px" }}>{it}</span>
             ))}
           </div>
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
@@ -3716,8 +3723,8 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating }) {
           style={{
             marginTop: "6px",
             padding: "10px 12px",
-            border: "1px solid var(--color-gold)",
-            background: "rgba(196,168,98,0.08)",
+            border: "1px solid var(--color-border-secondary)",
+            background: "rgba(91, 101, 119,0.08)",
             borderRadius: "var(--border-radius-md)",
             fontSize: "11px",
             color: "var(--color-text-primary)",
@@ -4303,8 +4310,8 @@ function DiningBrowseChips({ data, inputs }) {
       style={{
         margin: "4px 0 16px",
         padding: "12px 14px",
-        background: "rgba(196, 168, 98, 0.07)",
-        border: "0.5px solid rgba(196, 168, 98, 0.32)",
+        background: "rgba(91, 101, 119, 0.07)",
+        border: "0.5px solid rgba(91, 101, 119, 0.32)",
         borderRadius: "var(--border-radius-md)",
       }}
     >
@@ -4844,7 +4851,7 @@ function ProviderCard({ item }) {
         {verified ? (
           <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-success)", background: "var(--color-success-tint)", border: "0.5px solid var(--color-success-tint)", borderRadius: "10px", padding: "2px 8px" }}>✓ Verified</span>
         ) : (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-text-primary)", background: "var(--color-cream)", border: "0.5px solid var(--color-gold)", borderRadius: "10px", padding: "2px 8px" }}>Verify before booking</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-text-primary)", background: "var(--color-surface-2)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "10px", padding: "2px 8px" }}>Verify before booking</span>
         )}
       </div>
       {item.descriptor && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{item.descriptor}</p>}
@@ -5473,7 +5480,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             {selectedSources.map(s => s.lens === "hyperlocal" ? (
               <span key={s.id} title={`Hyperlocal source for ${hyperlocalRegion?.label || "this destination"}`} style={{ fontSize: "10.5px", color: GOLD_DARK, background: GOLD_LIGHT, padding: "3px 9px", borderRadius: "999px", border: `0.5px solid ${GOLD}`, letterSpacing: "0.02em", fontWeight: 700, whiteSpace: "nowrap" }}>{s.name}</span>
             ) : (
-              <span key={s.id} style={{ fontSize: "10.5px", color: "var(--color-text-primary)", background: GOLD, padding: "3px 9px", borderRadius: "999px", letterSpacing: "0.02em", fontWeight: 600, whiteSpace: "nowrap" }}>{s.name}</span>
+              <span key={s.id} style={{ fontSize: "10.5px", color: ON_NAVY, background: GOLD, padding: "3px 9px", borderRadius: "999px", letterSpacing: "0.02em", fontWeight: 600, whiteSpace: "nowrap" }}>{s.name}</span>
             ))}
             <button onClick={() => setPickerOpen(true)} style={{ fontSize: "10.5px", color: GOLD, background: "transparent", border: `0.5px dashed ${GOLD}`, padding: "3px 9px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", fontWeight: 600 }}>+ Change sources</button>
           </div>
@@ -5581,7 +5588,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                         });
                       }}
                       title="Include every change"
-                      style={{ fontSize: "10.5px", color: "var(--color-text-primary)", background: GOLD, border: `0.5px solid ${GOLD}`, padding: "4px 10px", borderRadius: "3px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}
+                      style={{ fontSize: "10.5px", color: ON_NAVY, background: GOLD, border: `0.5px solid ${GOLD}`, padding: "4px 10px", borderRadius: "3px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}
                     >
                       Include all
                     </button>
@@ -5702,7 +5709,7 @@ function ReviewPickerModal({ selectedIds, onToggle, onClose }) {
                 {sources.map(s => {
                   const on = selectedIds.includes(s.id);
                   return (
-                    <button key={s.id} onClick={() => onToggle(s.id)} style={{ fontSize: "11.5px", color: on ? "var(--color-text-primary)" : GOLD, background: on ? GOLD : "transparent", border: `0.5px solid ${GOLD}`, padding: "6px 12px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", fontWeight: on ? 600 : 500, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>
+                    <button key={s.id} onClick={() => onToggle(s.id)} style={{ fontSize: "11.5px", color: on ? ON_NAVY : GOLD, background: on ? GOLD : "transparent", border: `0.5px solid ${GOLD}`, padding: "6px 12px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", fontWeight: on ? 600 : 500, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>
                       {on ? "✓ " : ""}{s.name}
                     </button>
                   );
@@ -7081,7 +7088,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
           are not blockers; the rest of the text was extracted fine. Show as
           a soft amber note so the user knows to verify those bits. */}
       {!uploadError && uploadWarnings.length > 0 && (
-        <p style={{ fontSize: "11.5px", color: "var(--color-text-primary)", margin: 0, padding: "6px 10px", border: "0.5px solid var(--color-gold)", borderRadius: "4px", background: "var(--color-cream)", lineHeight: 1.5 }}>
+        <p style={{ fontSize: "11.5px", color: "var(--color-text-primary)", margin: 0, padding: "6px 10px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "var(--color-surface-2)", lineHeight: 1.5 }}>
           Heads up: {uploadWarnings.join(" · ")}
         </p>
       )}
@@ -7251,7 +7258,7 @@ function DateRangeInput({ startDate, endDate, onRangeChange }) {
     let bg = "transparent";
     let color = "var(--color-text-primary)";
     let weight = 400;
-    if (within) { bg = "rgba(196, 168, 98, 0.18)"; color = "var(--color-text-primary)"; }
+    if (within) { bg = "rgba(91, 101, 119, 0.18)"; color = "var(--color-text-primary)"; }
     if (isStart || isEnd) { bg = GOLD; color = "var(--color-background-primary)"; weight = 600; }
     if (isPast) color = "var(--color-text-tertiary)";
     const borderRadius = isStart && isEnd ? "50%"
@@ -8142,14 +8149,14 @@ function Sel({ value, onChange, opts, multi = false, placeholder = "No preferenc
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", padding: "6px 0", borderBottom: "0.5px solid var(--color-border-primary)" }}>
       <button type="button" onClick={clearAll}
-        style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${isNone ? GOLD : "var(--color-border-secondary)"}`, background: isNone ? `${GOLD}22` : "transparent", color: isNone ? GOLD : "var(--color-text-secondary)", fontWeight: isNone ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
+        style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${isNone ? GOLD : "var(--color-border-secondary)"}`, background: isNone ? "var(--color-surface-2)" : "transparent", color: isNone ? GOLD : "var(--color-text-secondary)", fontWeight: isNone ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
         {placeholder}
       </button>
       {opts.map(o => {
         const on = arr.includes(o);
         return (
           <button key={o} type="button" onClick={() => toggle(o)}
-            style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${on ? GOLD : "var(--color-border-secondary)"}`, background: on ? `${GOLD}22` : "transparent", color: on ? GOLD : "var(--color-text-primary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
+            style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${on ? GOLD : "var(--color-border-secondary)"}`, background: on ? "var(--color-surface-2)" : "transparent", color: on ? GOLD : "var(--color-text-primary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
             {o}
           </button>
         );
@@ -9880,7 +9887,7 @@ function FindView({ embedded = false } = {}) {
             <button
               type="submit"
               disabled={loading || !location.trim()}
-              style={{ flex: 1, minWidth: "140px", fontSize: "13px", padding: "12px 18px", borderRadius: "var(--border-radius-md)", border: "none", background: loading || !location.trim() ? "var(--color-border-secondary)" : GOLD, color: loading || !location.trim() ? "var(--color-text-tertiary)" : "var(--color-text-primary)", cursor: loading || !location.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
+              style={{ flex: 1, minWidth: "140px", fontSize: "13px", padding: "12px 18px", borderRadius: "var(--border-radius-md)", border: "none", background: loading || !location.trim() ? "var(--color-border-secondary)" : GOLD, color: loading || !location.trim() ? "var(--color-text-tertiary)" : ON_NAVY, cursor: loading || !location.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
             >{loading ? "Searching…" : "Search"}</button>
             {loading && (
               <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", letterSpacing: "0.04em", fontStyle: "italic" }}>This usually takes 20–40 seconds.</span>
@@ -10016,7 +10023,7 @@ function FindView({ embedded = false } = {}) {
             <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
               <h2 style={{ fontSize: "13px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.12em", textTransform: "uppercase", margin: 0 }}>Locally sourced</h2>
               {localExpertResults.localExpert?.source_set === "curated" && localExpertResults.localExpert?.status === "ok" && (
-                <span style={{ fontSize: "10.5px", padding: "2px 6px", background: GOLD, color: "var(--color-text-primary)", borderRadius: "3px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>Curated</span>
+                <span style={{ fontSize: "10.5px", padding: "2px 6px", background: GOLD, color: ON_NAVY, borderRadius: "3px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>Curated</span>
               )}
               {localExpertResults.localExpert?.status === "ok" && localExpertResults.localExpert.sources?.length > 0 && (
                 <button
@@ -13120,7 +13127,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                     type="button"
                     onClick={navHandler}
                     title={`Go to ${s}`}
-                    style={{ background: "transparent", border: "none", padding: "2px 0", cursor: "pointer", color: textColor, fontSize: "inherit", letterSpacing: "inherit", textTransform: "inherit", fontFamily: "inherit", textDecoration: "underline", textDecorationColor: "rgba(196, 168, 98, 0.4)", textUnderlineOffset: "3px" }}
+                    style={{ background: "transparent", border: "none", padding: "2px 0", cursor: "pointer", color: textColor, fontSize: "inherit", letterSpacing: "inherit", textTransform: "inherit", fontFamily: "inherit", textDecoration: "underline", textDecorationColor: "rgba(91, 101, 119, 0.4)", textUnderlineOffset: "3px" }}
                   >{s}</button>
                 ) : (
                   <span style={{ color: textColor, fontWeight: isCurrent ? 600 : 400 }}>{s}</span>
@@ -13556,7 +13563,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                     resolutions: { ...prev.resolutions, [i]: { ...resolution, ...patch } },
                   } : prev);
                   return (
-                    <div key={i} style={{ marginBottom: "14px", paddingBottom: "12px", borderBottom: i < pendingNameChecks.checks.length - 1 ? "1px solid var(--color-cream)" : "none" }}>
+                    <div key={i} style={{ marginBottom: "14px", paddingBottom: "12px", borderBottom: i < pendingNameChecks.checks.length - 1 ? "1px solid var(--color-surface-2)" : "none" }}>
                       <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 4px", textTransform: "uppercase", letterSpacing: "0.08em" }}>{c.kind}</p>
                       <p style={{ fontSize: "14px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>
                         You wrote: <span style={{ fontStyle: "italic" }}>“{c.original}”</span>
@@ -13594,7 +13601,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 <div style={{ display: "flex", gap: "10px", marginTop: "8px" }}>
                   <button onClick={cancelNameChecks} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>← Edit narrative
                   </button>
-                  <button onClick={confirmNameChecks} style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: GOLD, color: "var(--color-text-primary)" }}>
+                  <button onClick={confirmNameChecks} style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: GOLD, color: ON_NAVY }}>
                     Continue →
                   </button>
                 </div>
