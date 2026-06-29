@@ -991,7 +991,11 @@ function parseDayLabelToISODate(label) {
 // free tier is capped at 500 calls/month; the user pays per call beyond that,
 // so we only fetch once per (ident,date) per page-load (in-component memo)
 // and never block the rest of the card.
-const FLIGHT_STATUS_WORKER = "https://flight-status.jhwiv-online.workers.dev/";
+// NOTE (#19): the live-status call now goes through the same-origin
+// /api/flight-status Pages Function (functions/api/flight-status.js), which
+// owns the Worker URL server-side. We no longer reference the Worker origin
+// from the browser, so the prior FLIGHT_STATUS_WORKER constant was removed to
+// avoid implying a direct (CORS-blocked) browser call.
 
 // Parse "UA 57" / "AA3006" / "Delta 215" → "UA57" / "AA3006" / null.
 // We need ICAO/IATA carrier code + number, no spaces. We look at the
@@ -1044,7 +1048,12 @@ const _flightStatusCache = new Map();
 async function fetchFlightStatus(ident, isoDate) {
   const key = `${ident}|${isoDate}`;
   if (_flightStatusCache.has(key)) return _flightStatusCache.get(key);
-  const url = `${FLIGHT_STATUS_WORKER}?ident=${encodeURIComponent(ident)}&date=${encodeURIComponent(isoDate)}`;
+  // #19 Route through the same-origin Pages Function proxy, NOT the Worker
+  // directly. The shared Worker's CORS allowlist is pinned to one app origin
+  // (santafejune.com), so a direct browser call from routesmith.ai is
+  // CORS-blocked and the live-status panel silently fails. The proxy is
+  // same-origin (no CORS) and works regardless of the Worker's allowlist.
+  const url = `/api/flight-status?ident=${encodeURIComponent(ident)}&date=${encodeURIComponent(isoDate)}`;
   const p = fetch(url, { method: "GET" })
     .then((r) => r.json())
     .then((j) => (j && j.ok ? j : null))
