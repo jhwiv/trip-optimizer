@@ -1,97 +1,77 @@
-# Trip Optimizer — Handoff (2026-06-27, 4:44 PM EDT)
+# Trip Optimizer (RouteSmith) — Handoff (2026-06-29, 4:11 PM EDT)
 
-> One-page state of the world. Read this first when picking up Trip Optimizer in a new thread. Then read `index.md` for the rest of the wiki.
+> One-page state of the world. Read this first when picking up Trip Optimizer / RouteSmith in a new thread. Then read `index.md` for the rest of the wiki.
 
 ## Repo & deploy
 
 - **Repo:** [jhwiv/trip-optimizer](https://github.com/jhwiv/trip-optimizer) · default branch `master`
-- **Live:** [www.routesmith.ai](https://www.routesmith.ai) (canonical; also reachable at [trip-optimizer-6og.pages.dev](https://trip-optimizer-6og.pages.dev))
-- **Hosting:** Cloudflare Pages + Pages Functions; Anthropic Sonnet 4.5 for builds; Perplexity Sonar for retrieval; KV (`JOBS`) for cache and job state
-- **Mode:** Maintenance / feature-complete
+- **Live:** [www.routesmith.ai](https://www.routesmith.ai) (canonical) · also `trip-optimizer-6og.pages.dev`
+- **Hosting:** Cloudflare Pages + Pages Functions; Anthropic Sonnet 4.5 for builds; Perplexity Sonar for retrieval; KV (`JOBS`) for cache/job state
+- **CI gates (all required on every PR to master):** Unit tests (`tests/run-all.mjs`), ESLint (0 errors), Vite build, Hex-leak baseline, Contrast audit (WCAG AA). Cloudflare Pages preview + Cursor Bugbot are non-blocking.
 
-## What shipped on 2026-06-27
+## Active workstream: the 15-item update list (2026-06-29)
 
-Six PRs merged to master, all squash-merged with green CI:
+User supplied a 15-item update list (item 16 blank). Working in waves, one focused PR at a time, each verified live on www.routesmith.ai after merge (preview can't run builds — no API keys; see infra note). Status:
 
-| # | Branch | What it does |
-|---|---|---|
-| #64 | `fix/build-hang-output-reset` | Preserve output selections across remounts; bound stalled build stream |
-| #65 | `feat/local-providers` | Verified local providers (drivers, guides, tours, tastings) with fetch gating |
-| #66 | `fix/review-replan-load-failed` | Full re-plan aborts surface honest errors instead of "Load failed" |
-| #67 | `feat/auto-introduction` | Auto-generate trip introduction via post-build `/api/introduction` call |
-| #68 | `fix/expert-apply-connection-drop` | Resume surgical Expert-Review apply via KV poll when SSE drops |
-| **#69** | **`fix/intro-pdf-only`** | **Remove on-screen intro card; keep headless generator for PDF intro** (merged as `c2bfb45` at 14:45 EDT) |
+| # | Item | Status | PR |
+|---|------|--------|----|
+| 1 | Reset button on hero | ✅ Merged + verified live | #80 |
+| 2 | Continue → Trip style on both mobile & desktop (was Flights on mobile) | ✅ Merged + verified live | #80 |
+| 3 | Budget: allow multiple price ranges | ✅ Merged + verified live (4 multi-select pills) | #80 |
+| 4 | Preselect outputs (all but last 2: Badges, Pronunciation off) | ✅ Merged + verified live (10/12 checked) | #80 |
+| 5 | Dynamic build-time estimate (was static "3–15 min") | ✅ Merged + verified live (fallback + "~7–13 min" dynamic) | #80 |
+| 13 | Remove gold; navy + silver, no big color blocks | ✅ Merged + verified live (0% gold) | #79 |
+| 14 | "1 activity on one day" gave one every day | ✅ Merged + **verified live** | #81 |
+| 12 | PDF missing flight numbers (+ slow) | 🔎 Analysis complete, fix proposed, awaiting go | — |
+| 6 | No "preparing introduction"; go to top/Overview; auto post-build review | ⬜ Not started (expert-review cluster) | — |
+| 7 | Hotel-swap re-resolves dependent activities (e.g. bar drinks) | ⬜ Design spec'd, build later | — |
+| 8 | Auto expert-review + pre-build source picker | ⬜ Not started — **mostly already built in code** | — |
+| 9 | App intro (Add to Home Screen, how-to, what it is/isn't) | ⬜ Not started | — |
+| 10 | Collapse expert-review section to one line after rebuild | ⬜ Not started (expert-review cluster) | — |
+| 11 | Overview vs cards → tabbed view (Overview / Flights / Hotels / Activities) | ⬜ Not started | — |
+| 15 | Toggle: narrate build request vs manual dropdowns | ⬜ Not started | — |
 
-Open PRs: **0**. Open issues: **0**.
+**Score: 7 of 15 merged (6 verified live + #14 verified live), 1 analyzed/ready (#12), 7 remaining.**
 
-## Verified status (production)
+### #14 verification detail (2026-06-29)
+Live build on www.routesmith.ai (bundle `index-De_bnJup.js`), narrative: "only ONE activity on Day 3, keep it light; other days normal." Result per day — D1: 1 activity (arrival), D2: 3, **D3: 1 + dinner (as requested)**, D4: 3, D5: 1 (departure). Day-scope honored, did NOT propagate, other days kept full pacing. Fix was prompt-only (2 lines in `App.jsx`): a DAY-SCOPED REQUESTS rule + reframing the activities list as a pool. `build.js` (streaming proxy) and `chunkPlan.js` (token chunking) were not involved.
 
-User confirmed on www.routesmith.ai after the PR #69 deploy:
+### #13 branding detail
+`--color-gold` token retired → navy/silver. All fill sites flipped to `ON_NAVY` text to avoid navy-on-navy. PDF `COLOR.gold`→navy. theme-color/manifest→navy. The earlier stale branches `palette-bid`, `palette-leaks`, `chore/qa-contrast-hex-visual` already had their content on master — safe to delete (not yet deleted, per user not authorizing branch deletion).
 
-- ✅ **On-screen intro is gone** (the PR #69 contract worked)
-- ❌ **PDF intro is missing** — the post-build `/api/introduction` call hadn't completed before user clicked Download PDF
-- ⚠️ **PDF generation was slow** — pre-existing `jspdf` + `html2canvas-pro` performance on multi-day luxury itineraries, NOT a #69 regression
+## #12 — root cause (analysis done, fix proposed)
 
-User wasn't watching the Network tab, so no direct evidence that `/api/introduction` fires — but on-screen check passing + intro-missing-from-PDF + clicked-Download-immediately strongly points to a race condition, not a regression.
+PDF reads the right field (`itineraryPdf.js:1039` uses `fl.flight_number`) — but that field is often **empty in the plan object**. Two flight-number sources on screen; only one persists:
+1. `item.flight.flight_number` — model-emitted; PDF reads this. Model is (correctly) told not to fabricate, so often omitted.
+2. `autoFlight.flightNumber` — resolved live from the schedule API at render, shown on screen, lives in React state. Only written back to `item.flight.flight_number` when the user **taps a flight row** (`onFlightConfirmed`, `App.jsx:1457/1588`). Never auto-persisted.
 
-## The active bug — race condition (NOT YET FIXED)
+Common path: model omits number → screen auto-shows it → user never taps → `item.flight.flight_number` stays empty → PDF (no React, no API) prints carrier only. **Proposed fix (Option A):** auto-persist the auto-resolved number into `item.flight` on render when the field is empty (reuse the existing `Object.assign` shape from `onFlightConfirmed`), guarded to write once; carry the "verify at booking" honesty qualifier into the PDF. Scoped to that data flow only — no PDF-pipeline rewrite. PDF *slowness* is a separate item, untouched per user rule.
 
-**Symptom:** PDF renders with empty intro section when user clicks Download PDF immediately after Day 1 cards appear.
+## Open infrastructure work (not blocking)
 
-**Suspected cause:** `IntroductionAutoGenerator` (headless component in `src/App.jsx:6088`) fires `POST /api/introduction` in a `useEffect` after the build completes. Nothing gates the PDF download button on `data.introduction` being populated.
+1. **Cloudflare Pages Preview env vars** — `ANTHROPIC_API_KEY`, `PERPLEXITY_API_KEY`, `JOBS` KV bound to Production only. Preview builds soft-fail. Until fixed, PR preview verification is impossible for any LLM/build flow → we verify on production after merge. See `concepts/known-issues.md` #1.
+2. **Wizard date picker** — hostile to browser automation; blocks full end-to-end smoke tests. See `concepts/known-issues.md` #2.
+3. **PDF generation performance** — pre-existing slowness on multi-day itineraries (`jspdf` + `html2canvas-pro`). Item #12 covers flight numbers only; perf is separate and not to be touched without explicit instruction.
 
-```
-build completes
-  ↓
-day cards render  ────────────────▶  user clicks Download PDF
-  ↓                                       ↓
-POST /api/introduction (5-15 s)      PDF renders without intro
-  ↓
-applyGeneratedIntroduction → onPlanRevised(next)
-  ↓
-data.introduction populated (too late)
-```
+## User context / preferences (not optional)
 
-**Why this is consistent with the evidence:**
-- PR #67 added the auto-generator
-- PR #69 removed the on-screen card that previously gave the user a visible "introduction is ready" signal
-- Combined effect: no UI feedback that intro is in flight, no gate on PDF export
-- Other PRs touched 2026-06-27 (#64, #65, #66, #68) don't touch the introduction flow
+- Skilled JS/React/Cloudflare dev. Direct, terse communication. **No filler, no preambles, no exclamation points.**
+- **HARD PREFERENCE: never ask questions as numbered lists/paragraphs in chat — use the interactive checkbox/multiple-choice tool, or plain prose.** User has flagged violations of this repeatedly.
+- Windows desktop (not Mac/mobile). Comfortable with `gh` CLI, Cloudflare dashboard, PowerShell.
+- **Build process:** minimal/focused fixes; no auto-spawned PRs without explicit "go"; one PR at a time; every PR carries a "Needs live confirmation" checklist; verify on www.routesmith.ai (push + curl/visual confirm before "done"). Do not touch PDF perf or Preview env vars without instruction.
+- Owns RouteSmith + several travel apps + RailbirdAI + Vigil Family Records + Barrier Island Digital. Prefers this persistent wiki over re-explaining context.
 
-**Proposed fix shape** (started, then abandoned per user direction to reset):
-- Expose `isGenerating` from `IntroductionAutoGenerator` via a new `onGeneratingChange` prop, lift it to `ItineraryView`, disable the PDF download button (with "Preparing introduction…" label) until `data.introduction` is populated or the generator finishes/errors
+## What the next thread should do
 
-This is the cleanest path — small, surgical, no PDF code changes, no API changes. A local branch `fix/intro-race-on-pdf-download` was started but **never pushed** (sandbox was reset; branch is gone).
-
-## Open infrastructure work (not blocking, but worth doing)
-
-1. **Cloudflare Pages Preview env vars** — `ANTHROPIC_API_KEY`, `PERPLEXITY_API_KEY`, and the `JOBS` KV binding are bound to Production only. Preview deploys for PRs return "Server missing `ANTHROPIC_API_KEY`" the moment the user hits Build. Walkthrough was delivered to user; completion not yet confirmed. Until fixed, PR preview verification is impossible for any flow that hits the LLM APIs. See `concepts/known-issues.md` #1.
-
-2. **Wizard date picker** — hostile to browser automation. Not a user-facing bug; blocks any future end-to-end smoke test. See `concepts/known-issues.md` #2.
-
-3. **PDF generation performance** — pre-existing slowness on multi-day luxury itineraries. Worth a `perf/` issue but not urgent.
-
-## User context / preferences (read this — it's not optional)
-
-- Skilled JavaScript/React/Cloudflare developer. Wants direct, terse communication. **No filler.** No "Here's what I'll do" preambles. No exclamation points.
-- **Multi-part diagnostic questions MUST be presented as interactive checkbox/multiple-choice (the `ask_user_question` tool), NOT as numbered lists in chat.** This is a hard preference; respect it.
-- Working from Windows desktop (not mobile, not Mac). DevTools instructions should match that platform.
-- Comfortable with `gh` CLI, Cloudflare dashboard, PowerShell.
-- Owns Trip Optimizer + several other travel apps + RailbirdAI + Vigil Family Records + Barrier Island Digital.
-- Strongly prefers structured, persistent project documentation (this wiki) over re-explaining context every session.
-
-## What I recommend next thread does
-
-1. Read this `handoff.md`, then `index.md`, then any concepts/* files relevant to the immediate task
-2. Cross-reference long-term memory for any user preferences not captured here
-3. Confirm orientation with the user briefly, then wait for go-ahead before writing code
-4. When green-lit: ship the smallest possible race-condition fix per the proposed shape above
-5. Update this wiki as part of any PR that changes meaningful state (merged PR, infra fixed, bug discovered, decision made)
+1. Read this `handoff.md`, then `index.md`, then relevant `concepts/*`.
+2. Cross-reference long-term memory for preferences not captured here.
+3. Resume the 15-item list: **#12 is next** (flight-number persistence, Option A above), then the expert-review cluster (#8 → #6 → #10, with #8 mostly pre-built), then #7, then #11/#9/#15.
+4. One focused PR at a time, green CI, verify live after merge. No code without user "go".
+5. Update this wiki in the same PR that changes meaningful state.
 
 ## How to keep this wiki current
 
-- The wiki lives in the repo at `docs/wiki/` — every clone gets it automatically
-- Update wiki files in the same PR that changes the corresponding state
-- For ongoing work logs, add a dated file under `learnings/YYYY-MM-DD.md`
-- For new persistent facts about the project, add or update an `entities/` or `concepts/` page
-- Keep `handoff.md` updated as a single-file "where are we right now" — rewrite it freely
+- Lives in-repo at `docs/wiki/` — every clone gets it.
+- Update wiki files in the same PR that changes the corresponding state.
+- Dated work logs under `learnings/YYYY-MM-DD.md`. Persistent facts under `entities/` or `concepts/`.
+- Keep `handoff.md` as the single "where are we right now" — rewrite it freely.
