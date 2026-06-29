@@ -11840,8 +11840,10 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // "Still building" notice scales with expected build time so we don't
     // claim a 3-city plan is slow at 90s when 4-5 min is normal.
     const slowNoticeMs = Math.max(90000, Math.round(targetSec * 1000 * 0.75));
+    // #17 Derive the "still building" range from the trip's own targetSec so it
+    // never contradicts the hero/in-build estimate with a hardcoded "2-3 min".
     const typicalMin = Math.max(2, Math.round(targetSec / 60));
-    const typicalRange = citiesCount > 1 ? `${typicalMin}–${typicalMin + 2} minutes` : "2–3 minutes";
+    const typicalRange = `${typicalMin}–${typicalMin + 2} minutes`;
     const slowNotice = setTimeout(() => {
       setLoadingMsg(prev => prev.includes("still building") ? prev : `Still building — detailed plans typically take ${typicalRange}…`);
     }, slowNoticeMs);
@@ -13406,7 +13408,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                       width: "100%",
                       fontFamily: "inherit",
                       background: GOLD,
-                      color: "var(--color-text-primary)",
+                      color: ON_NAVY,
                       opacity: (extractingFromGuidelines || loading) ? 0.6 : 1,
                     }}
                     aria-label="Build the trip directly from this narrative"
@@ -13836,7 +13838,20 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               </div>
             )}
             {error && <p style={{ fontSize: "12px", color: "var(--color-text-danger, var(--color-text-danger))", marginTop: "8px", textAlign: "center" }}>{error}</p>}
-            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>{isMultiCity && cities.length >= 3 ? "Typical 3‑city plan: 5–7 minutes. Stays building if you switch tabs." : isMultiCity ? "Typical multi‑city plan: 3–5 minutes. Stays building if you switch tabs." : "Typical plan: 2–3 minutes. Stays building if you switch tabs."}</p>
+            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>{(() => {
+              // #17 Use the SAME dynamic estimate as the hero (estimateBuildMinutes)
+              // so the in-build caption never contradicts the pre-build figure.
+              // Falls back to the generic message if we somehow can't estimate.
+              if (canEstimateBuild(basics)) {
+                const { text } = estimateBuildMinutes({
+                  nights: basics.nights,
+                  citiesCount: (cities && cities.length) || 1,
+                  outputsCount: Object.values(outputs || {}).filter(Boolean).length,
+                });
+                return `Estimated ${text} for this trip. Stays building if you switch tabs.`;
+              }
+              return "Can take more than 5 minutes. Stays building if you switch tabs.";
+            })()}</p>
             </>
             )}
           </div>
