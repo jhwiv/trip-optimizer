@@ -22,7 +22,7 @@ User supplied a 15-item update list (item 16 blank). Working in waves, one focus
 | 5 | Dynamic build-time estimate (was static "3–15 min") | ✅ Merged + verified live (fallback + "~7–13 min" dynamic) | #80 |
 | 13 | Remove gold; navy + silver, no big color blocks | ✅ Merged + verified live (0% gold) | #79 |
 | 14 | "1 activity on one day" gave one every day | ✅ Merged + **verified live** | #81 |
-| 12 | PDF missing flight numbers (+ slow) | 🔎 Analysis complete, fix proposed, awaiting go | — |
+| 12 | PDF missing flight numbers (+ slow) | ✅ Merged + **verified live** (PDF shows numbers) | #84 (supersedes reverted #83) |
 | 6 | No "preparing introduction"; go to top/Overview; auto post-build review | ⬜ Not started (expert-review cluster) | — |
 | 7 | Hotel-swap re-resolves dependent activities (e.g. bar drinks) | ⬜ Design spec'd, build later | — |
 | 8 | Auto expert-review + pre-build source picker | ⬜ Not started — **mostly already built in code** | — |
@@ -31,7 +31,10 @@ User supplied a 15-item update list (item 16 blank). Working in waves, one focus
 | 11 | Overview vs cards → tabbed view (Overview / Flights / Hotels / Activities) | ⬜ Not started | — |
 | 15 | Toggle: narrate build request vs manual dropdowns | ⬜ Not started | — |
 
-**Score: 7 of 15 merged (6 verified live + #14 verified live), 1 analyzed/ready (#12), 7 remaining.**
+**Score: 8 of 15 merged & verified live. 7 remaining.**
+
+Verified-live done: #13, #1, #2, #3, #4, #5, #14, #12.
+Remaining: expert-review cluster (#8 → #6 → #10), then #7, #9, #11, #15.
 
 ### #14 verification detail (2026-06-29)
 Live build on www.routesmith.ai (bundle `index-De_bnJup.js`), narrative: "only ONE activity on Day 3, keep it light; other days normal." Result per day — D1: 1 activity (arrival), D2: 3, **D3: 1 + dinner (as requested)**, D4: 3, D5: 1 (departure). Day-scope honored, did NOT propagate, other days kept full pacing. Fix was prompt-only (2 lines in `App.jsx`): a DAY-SCOPED REQUESTS rule + reframing the activities list as a pool. `build.js` (streaming proxy) and `chunkPlan.js` (token chunking) were not involved.
@@ -39,7 +42,11 @@ Live build on www.routesmith.ai (bundle `index-De_bnJup.js`), narrative: "only O
 ### #13 branding detail
 `--color-gold` token retired → navy/silver. All fill sites flipped to `ON_NAVY` text to avoid navy-on-navy. PDF `COLOR.gold`→navy. theme-color/manifest→navy. The earlier stale branches `palette-bid`, `palette-leaks`, `chore/qa-contrast-hex-visual` already had their content on master — safe to delete (not yet deleted, per user not authorizing branch deletion).
 
-## #12 — root cause (analysis done, fix proposed)
+## #12 — DONE (verified live 2026-06-29)
+
+Fixed via PR #84 (PR #83 was reverted — it mutated the post-`applyQualityLayer` copy, which the layer re-stripped and the `useMemo` re-cloned, so the number never reached the PDF; live test confirmed the failure). Correct fix: new headless `FlightNumberAutoResolver` resolves missing numbers from `/api/flights-search` and persists them to the CANONICAL plan via `onPlanRevised` flagged `_scheduleVerified`; `applyQualityLayer` exempts `_scheduleVerified` numbers from the strip; PDF shows the number (self-prefixed, no double-prefix) with a "Verify — scheduled operating flight, confirm at booking" qualifier. Verified on production: Denver build → PDF showed UA670 / UA2345 matching screen. **Lesson: persist async-resolved data to the canonical plan (rawData via onPlanRevised), never mutate the rendered copy.**
+
+## #12 — original root-cause notes (kept for reference)
 
 PDF reads the right field (`itineraryPdf.js:1039` uses `fl.flight_number`) — but that field is often **empty in the plan object**. Two flight-number sources on screen; only one persists:
 1. `item.flight.flight_number` — model-emitted; PDF reads this. Model is (correctly) told not to fabricate, so often omitted.
@@ -65,7 +72,7 @@ Common path: model omits number → screen auto-shows it → user never taps →
 
 1. Read this `handoff.md`, then `index.md`, then relevant `concepts/*`.
 2. Cross-reference long-term memory for preferences not captured here.
-3. Resume the 15-item list: **#12 is next** (flight-number persistence, Option A above), then the expert-review cluster (#8 → #6 → #10, with #8 mostly pre-built), then #7, then #11/#9/#15.
+3. Resume the 15-item list: the expert-review cluster is next (#8 → #6 → #10, with #8 mostly pre-built), then #7, then #11/#9/#15.
 4. One focused PR at a time, green CI, verify live after merge. No code without user "go".
 5. Update this wiki in the same PR that changes meaningful state.
 
