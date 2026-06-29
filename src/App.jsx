@@ -1261,37 +1261,6 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   // match rather than implying it belongs to f.carrier.
   const autoFlightAttributed = !!_airlineIata;
 
-  // #12 PDF flight numbers — AUTO-PERSIST the resolved schedule flight number
-  // into the plan object so the PDF (and any non-React consumer) sees it.
-  //
-  // Before this, an auto-resolved number was shown on screen (autoFlight is
-  // local React state) but only written into item.flight when the user TAPPED
-  // a flight row. In the common path (model omits the number, user never taps)
-  // item.flight.flight_number stayed empty, so the PDF printed carrier only.
-  //
-  // We reuse onFlightConfirmed (the same Object.assign write the manual tap
-  // uses) but do NOT call setLockedFlight — the card keeps its honest
-  // "auto-matched · tap to change" framing; we only persist the data. We never
-  // set _userSuppliedFlightNumber, so the number stays flagged as unconfirmed
-  // ("verify at booking") everywhere, including the PDF. Guarded by a ref so it
-  // writes exactly once per resolved flight and never loops.
-  const _autoPersistRef = useRef(null);
-  useEffect(() => {
-    if (!f || !autoFlight || !autoFlight.flightNumber) return;
-    // Respect explicit numbers: never overwrite a user-supplied/confirmed or
-    // model-supplied flight number already on the plan.
-    if (f._userSuppliedFlightNumber || (f.flight_number && String(f.flight_number).trim())) return;
-    if (typeof onFlightConfirmed !== "function") return;
-    // Only write once per distinct resolved flight number.
-    if (_autoPersistRef.current === autoFlight.flightNumber) return;
-    _autoPersistRef.current = autoFlight.flightNumber;
-    // Persist via the parent handler (the sanctioned write path). The
-    // { autoResolved:true } flag tells the handler to mark the number as
-    // auto-sourced so the PDF/UI show the "verify at booking" qualifier and
-    // never imply a confirmed booking. We never set _userSuppliedFlightNumber.
-    onFlightConfirmed(autoFlight, { autoResolved: true });
-  }, [f, autoFlight, onFlightConfirmed]);
-
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
   const stopLabel = f.nonstop ? "Nonstop" : (f.connection ? `Connect ${f.connection}` : "Connecting");
@@ -1616,7 +1585,7 @@ function DayBlock({ day, dayIndex, onOpenMenu, legCity, onSwapItem }) {
       {sortedItems.map((item, i) => {
         // Structured flight → rich card.
         if (item.type === "Flight" && item.flight) {
-          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl, opts) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}), _autoResolvedFlightNumber: !!(opts && opts.autoResolved) }); }} />;
+          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />;
         }
         // Structured hotel → rich card.
         if (item.type === "Hotel" && item.hotel) {
@@ -4145,7 +4114,7 @@ function FlightsView({ data }) {
       {flights.map(({ item, day, dayIndex }, i) => (
         <div key={i} style={{ marginBottom: "10px" }}>
           <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>{dayShort(day, dayIndex)}</p>
-          <FlightCard type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl, opts) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}), _autoResolvedFlightNumber: !!(opts && opts.autoResolved) }); }} />
+          <FlightCard type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />
         </div>
       ))}
     </div>
@@ -4560,7 +4529,7 @@ function CategoryView({ data, onOpenMenu }) {
             <div key={i} style={{ marginBottom: "10px" }}>
               <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>{contextLabel(entry)}</p>
               {group.category === "flights" && (
-                <FlightCard type={entry.item.type} time={entry.item.time} end_time={entry.item.end_time} flight={entry.item.flight} text={entry.item.text} flags={entry.item.flags} dayLabel={entry.dayLabel} onFlightConfirmed={(fl, opts) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(entry.item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}), _autoResolvedFlightNumber: !!(opts && opts.autoResolved) }); }} />
+                <FlightCard type={entry.item.type} time={entry.item.time} end_time={entry.item.end_time} flight={entry.item.flight} text={entry.item.text} flags={entry.item.flags} dayLabel={entry.dayLabel} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(entry.item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />
               )}
               {group.category === "lodging" && (
                 <HotelCard type={entry.item.type} time={entry.item.time} end_time={entry.item.end_time} hotel={entry.item.hotel} text={entry.item.text} />
