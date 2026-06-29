@@ -1035,8 +1035,18 @@ function renderLinkLine(cur, label, value, url, x, maxW) {
 
 function renderFlightBlock(cur, fl, x, maxW) {
   // Single combined headline line: "United UA 1234 · EWR 8:45 AM → ABQ 11:20 AM · 4h 35m"
+  // Ident: a schedule-resolved number (e.g. "UA1792") already carries its own
+  // carrier prefix and is self-labeled, so pairing it with fl.carrier would
+  // double-prefix it ("United UA1792"). Mirror the on-screen title logic: show
+  // the number alone when it's self-prefixed/auto-resolved; otherwise pair
+  // carrier + number.
+  const _fn = fl.flight_number ? String(fl.flight_number).trim() : "";
+  const _selfPrefixed = fl._autoResolvedFlightNumber || /^[A-Z0-9]{2}\s?\d{1,4}$/.test(_fn);
+  const ident = _fn
+    ? (_selfPrefixed ? _fn : [fl.carrier, _fn].filter(Boolean).join(" "))
+    : (fl.carrier || "");
   const headline = [
-    [fl.carrier, fl.flight_number].filter(Boolean).join(" "),
+    ident,
     [fl.from_airport, to12h(fl.depart_time)].filter(Boolean).join(" "),
     "→",
     [fl.to_airport, to12h(fl.arrive_time)].filter(Boolean).join(" "),
@@ -1046,6 +1056,12 @@ function renderFlightBlock(cur, fl, x, maxW) {
   if (headline) renderDetailLine(cur, "Flight", headline, x, maxW);
   if (fl.cabin) renderDetailLine(cur, "Cabin", fl.cabin, x, maxW);
   if (fl.aircraft) renderDetailLine(cur, "Aircraft", fl.aircraft, x, maxW);
+  // #12 Honesty qualifier: a schedule-resolved (not user-confirmed) number is
+  // the scheduled operating flight, not a guaranteed booking — say so, matching
+  // the on-screen "verify" framing.
+  if (fl.flight_number && fl._autoResolvedFlightNumber && !fl._userSuppliedFlightNumber) {
+    renderDetailLine(cur, "Verify", "Flight number is the scheduled operating flight — confirm at booking.", x, maxW);
+  }
   if (fl.confirmation_note) renderDetailLine(cur, "Note", fl.confirmation_note, x, maxW);
   const bookUrl = carrierBookUrl(fl.carrier);
   if (bookUrl) renderLinkLine(cur, "Book", bookUrl, bookUrl, x, maxW);

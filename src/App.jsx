@@ -2885,6 +2885,12 @@ function applyQualityLayer(input, inputs) {
       (day.items || []).forEach(item => {
         if (item.type !== "Flight" || !item.flight) return;
         const f = item.flight;
+        // #12 Keep schedule-verified numbers as-is. These were resolved from the
+        // live flight schedule (FlightNumberAutoResolver) and persisted to the
+        // canonical plan — they are NOT model guesses, so the strip below must
+        // not remove them. Without this exemption the resolver's number would be
+        // wiped on the next applyQualityLayer recompute and never reach the PDF.
+        if (f._scheduleVerified && f.flight_number && String(f.flight_number).trim() !== "") return;
         if (f.flight_number != null && String(f.flight_number).trim() !== "") {
           // Pull out just the digits to see if the user stated this number.
           const digitsMatch = String(f.flight_number).match(/(\d{1,4})/);
@@ -6206,6 +6212,104 @@ function introPlanSignature(plan) {
   return `${plan?.destination || ""}|${days.length}|${first}|${last}`;
 }
 
+// #12 Headless flight-number resolver. Mirrors IntroductionAutoGenerator: a
+// post-build component that fills MISSING data on the canonical plan and
+// persists it via onPlanRevised so the PDF (and every consumer) sees it.
+//
+// Why this (not a card-level mutation): applyQualityLayer strips fabricated
+// model flight numbers and the rendered `data` is a re-derived copy, so an
+// in-place mutation in FlightCard never reaches the PDF. Persisting to the
+// CANONICAL plan (rawData) here, with a _scheduleVerified flag, survives the
+// re-memo and is exempted from the strip (see applyQualityLayer). Result: the
+// number the user sees on screen is the same one written into the plan and the
+// PDF — no export delay, no screen/PDF mismatch.
+//
+// Runs once per build, resolves only flights that have NO usable number, and
+// is fully resilient — any failure is silent and never touches the itinerary.
+function FlightNumberAutoResolver({ plan, onPlanRevised }) {
+  const attemptedRef = useRef("");
+  useEffect(() => {
+    const days = Array.isArray(plan?.days) ? plan.days : [];
+    if (days.length === 0 || typeof onPlanRevised !== "function") return;
+    const sig = introPlanSignature(plan);
+    if (attemptedRef.current === sig) return;
+    attemptedRef.current = sig;
+    let cancelled = false;
+
+    // Collect flights that need a number: structured Flight items whose
+    // flight has no usable flight_number yet and isn't user-supplied.
+    const targets = [];
+    days.forEach((d, di) => {
+      (Array.isArray(d.items) ? d.items : []).forEach((it, ii) => {
+        if (it?.type !== "Flight" || !it.flight) return;
+        const fl = it.flight;
+        const hasNum = fl.flight_number && String(fl.flight_number).trim();
+        if (fl._userSuppliedFlightNumber || hasNum) return;
+        const fromCode = normalizeAirportCode(fl.from_airport);
+        const toCode = normalizeAirportCode(fl.to_airport);
+        const isoDate = parseDayLabelToISODate(d.label);
+        if (!fromCode || !toCode || !isoDate) return;
+        targets.push({ di, ii, fl, fromCode, toCode, isoDate });
+      });
+    });
+    if (targets.length === 0) return;
+
+    (async () => {
+      const resolved = [];
+      for (const t of targets) {
+        try {
+          const iata = resolveAirlineIata(t.fl.carrier);
+          const params = new URLSearchParams({ date: t.isoDate, origin: t.fromCode, destination: t.toCode });
+          if (iata) params.set("airline", iata);
+          const res = await fetch(`/api/flights-search?${params}`);
+          const j = await res.json().catch(() => ({}));
+          if (!j.ok || !Array.isArray(j.flights) || j.flights.length === 0) continue;
+          const pool = iata
+            ? (j.flights.filter(x => (x.flightNumber || "").toUpperCase().startsWith(iata)) || [])
+            : j.flights;
+          const eligible = pool.length > 0 ? pool : j.flights;
+          const approx = parseClockToMinutes(t.fl.depart_time);
+          const pick = pickScheduledFlight(eligible, approx, iata || null);
+          if (pick && pick.flightNumber) resolved.push({ ...t, pick });
+        } catch {
+          // Silent — a failed lookup just leaves that flight without a number.
+        }
+      }
+      if (cancelled || resolved.length === 0) return;
+
+      // Build an immutable next plan with the resolved numbers persisted, each
+      // flagged _scheduleVerified so applyQualityLayer keeps it (not a model
+      // guess) and the PDF shows the "verify at booking" qualifier.
+      const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined;
+      const nextDays = plan.days.map((d, di) => {
+        const hits = resolved.filter(r => r.di === di);
+        if (hits.length === 0) return d;
+        const items = d.items.map((it, ii) => {
+          const hit = hits.find(h => h.ii === ii);
+          if (!hit) return it;
+          return {
+            ...it,
+            flight: {
+              ...it.flight,
+              flight_number: hit.pick.flightNumber,
+              depart_time: it.flight.depart_time || toT(hit.pick.scheduledOut),
+              arrive_time: it.flight.arrive_time || toT(hit.pick.scheduledIn),
+              ...(hit.pick.aircraft && !it.flight.aircraft ? { aircraft: hit.pick.aircraft } : {}),
+              _scheduleVerified: true,
+              _autoResolvedFlightNumber: true,
+            },
+          };
+        });
+        return { ...d, items };
+      });
+      onPlanRevised({ ...plan, days: nextDays });
+    })();
+
+    return () => { cancelled = true; attemptedRef.current = ""; };
+  }, [plan, onPlanRevised]);
+  return null;
+}
+
 function IntroductionAutoGenerator({ plan, inputs, onPlanRevised, onGeneratingChange }) {
   // Tracks the plan signature we've already auto-attempted so the effect fires
   // once per build and never auto-retries a failure.
@@ -6542,6 +6646,9 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         onPlanRevised={onPlanRevised}
         onGeneratingChange={setIntroIsGenerating}
       />
+      {/* #12 Resolve missing flight numbers from the live schedule and persist
+          them to the canonical plan so the PDF shows the same number as screen. */}
+      <FlightNumberAutoResolver plan={rawData} onPlanRevised={onPlanRevised} />
 
       {/* Professional review surface — user-initiated, sits between hero and the day-by-day content. */}
       <ReviewPanel
