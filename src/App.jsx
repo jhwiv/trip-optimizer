@@ -32,9 +32,9 @@ function urlSearchFallback(name, destination) {
   return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
 }
 
-const GOLD = "#C4A862";
-const GOLD_LIGHT = "#F5EDD6";
-const GOLD_DARK = "#A08845";
+const GOLD = "var(--color-gold)";
+const GOLD_LIGHT = "var(--color-cream)";
+const GOLD_DARK = "var(--color-text-primary)";
 
 // --------------------------------------------------------------------------
 // Anthropic prompt-caching helper.
@@ -890,22 +890,23 @@ function getAreaHint(dest) {
 }
 
 const BADGE_COLORS = {
-  Flight: { bg: "#EBF4FF", color: "#1E5FA8" },
-  Hotel: { bg: "#EDFAF3", color: "#1A6B42" },
-  Car: { bg: "#E8FAF5", color: "#0F6B56" },
-  Dinner: { bg: "#FEF3E2", color: "#92500A" },
-  Lunch: { bg: "#FEF3E2", color: "#92500A" },
-  Breakfast: { bg: "#FEF3E2", color: "#92500A" },
-  Activity: { bg: "#F0EEFF", color: "#4A35B0" },
-  Flag: { bg: "#FEF0EF", color: "#B03535" },
-  "Plan B": { bg: "#F5F5F5", color: "#555" },
-  Snob: { bg: "#FEF0F8", color: "#8B2566" },
-  Tonight: { bg: "#FEF8E2", color: "#7A5C00" },
-  Note: { bg: "#F0F4FF", color: "#334CA0" },
+  Flight:     { bg: "var(--color-info-tint)",            color: "var(--color-info)" },
+  // TODO: introduce --color-accent-tint token; literal #e3eef0 paired with --color-accent-hover yields 5.83:1 AA
+  Hotel:      { bg: "#e3eef0",                            color: "var(--color-accent-hover)" },
+  Car:        { bg: "var(--color-success-tint)",         color: "var(--color-success)" },
+  Dinner:     { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
+  Lunch:      { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
+  Breakfast:  { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
+  Activity:   { bg: "var(--color-category-purple-tint)", color: "var(--color-category-purple)" },
+  Flag:       { bg: "var(--color-danger-tint)",          color: "var(--color-text-danger)" },
+  "Plan B":   { bg: "var(--color-border-tertiary)",      color: "var(--color-text-secondary)" },
+  Snob:       { bg: "var(--color-category-rose-tint)",   color: "var(--color-category-rose)" },
+  Tonight:    { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
+  Note:       { bg: "var(--color-surface-2)",            color: "var(--color-text-secondary)" },
 };
 
 function Badge({ type }) {
-  const c = BADGE_COLORS[type] || { bg: "#F0F0F0", color: "#555" };
+  const c = BADGE_COLORS[type] || { bg: "var(--color-background-secondary)", color: "var(--color-text-secondary)" };
   return (
     <span style={{
       display: "inline-block", fontSize: "10px", fontWeight: "600",
@@ -944,7 +945,7 @@ function TimePill({ time, end_time }) {
   return (
     <span style={{
       display: "inline-block", fontSize: "11px", fontWeight: 600,
-      color: "var(--color-text-primary)", background: "#F5EDD6",
+      color: "var(--color-text-primary)", background: "var(--color-cream)",
       padding: "2px 7px", borderRadius: "3px", whiteSpace: "nowrap",
       letterSpacing: "0.02em", minWidth: "58px", textAlign: "center",
     }}>{et ? `${t} – ${et}` : t}</span>
@@ -1085,7 +1086,7 @@ function LiveFlightStatus({ ident, isoDate, userSupplied }) {
     if (userSupplied) {
       return (
         <div style={{ marginTop: "10px", paddingTop: "8px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
-          <p style={{ fontSize: "10.5px", margin: "0 0 4px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700, color: "#8A6500" }}>
+          <p style={{ fontSize: "10.5px", margin: "0 0 4px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700, color: "var(--color-text-primary)" }}>
             Flight not verified
           </p>
           <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.5 }}>
@@ -1098,11 +1099,11 @@ function LiveFlightStatus({ ident, isoDate, userSupplied }) {
   }
   // Color the status pill by severity.
   const level = status.statusLevel || "";
-  const pillBg = status.cancelled ? "#B85C00"
-    : level === "done" ? "#7A7A7A"
-    : level === "delayed" || (status.delayMinutes && status.delayMinutes > 15) ? "#B85C00"
+  const pillBg = status.cancelled ? "var(--color-warning)"
+    : level === "done" ? "var(--color-text-secondary)"
+    : level === "delayed" || (status.delayMinutes && status.delayMinutes > 15) ? "var(--color-warning)"
     : level === "inair" ? GOLD
-    : "#2A7A4A";
+    : "var(--color-success)";
   const pillLabel = status.cancelled ? "CANCELLED" : (status.status || "").toUpperCase();
   // Pick the freshest out/in times available (actual > estimated > scheduled).
   const outNew = status.actualOut || status.estimatedOut || status.scheduledOut;
@@ -1115,9 +1116,9 @@ function LiveFlightStatus({ ident, isoDate, userSupplied }) {
     <div style={{ marginTop: "10px", paddingTop: "8px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px", flexWrap: "wrap" }}>
         <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase" }}>Live status</span>
-        <span style={{ fontSize: "10px", fontWeight: 700, color: "#fff", background: pillBg, padding: "2px 7px", borderRadius: "3px", letterSpacing: "0.08em" }}>{pillLabel}</span>
+        <span style={{ fontSize: "10px", fontWeight: 700, color: "var(--color-background-primary)", background: pillBg, padding: "2px 7px", borderRadius: "3px", letterSpacing: "0.08em" }}>{pillLabel}</span>
         {typeof status.delayMinutes === "number" && status.delayMinutes > 0 && !status.cancelled && (
-          <span style={{ fontSize: "11px", color: "#B85C00", fontWeight: 600 }}>
+          <span style={{ fontSize: "11px", color: "var(--color-warning)", fontWeight: 600 }}>
             +{Math.floor(status.delayMinutes / 60) > 0 ? `${Math.floor(status.delayMinutes / 60)}h ` : ""}{status.delayMinutes % 60}m
           </span>
         )}
@@ -1328,10 +1329,10 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
         </p>
       </div>
       {overrideBanner && (
-        <p style={{ fontSize: "11px", color: "#B85C00", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 500, padding: "6px 8px", background: "rgba(184,92,0,0.06)", borderLeft: "2px solid #B85C00", borderRadius: "2px" }}>⚠︎ {overrideBanner}</p>
+        <p style={{ fontSize: "11px", color: "var(--color-warning)", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 500, padding: "6px 8px", background: "rgba(184,92,0,0.06)", borderLeft: "2px solid var(--color-warning)", borderRadius: "2px" }}>⚠︎ {overrideBanner}</p>
       )}
       {airportBanner && (
-        <p style={{ fontSize: "11px", color: "#0F0F0F", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 600, padding: "6px 8px", background: "rgba(196,168,98,0.18)", borderLeft: `2px solid ${GOLD}`, borderRadius: "2px" }}>✈ {airportBanner}</p>
+        <p style={{ fontSize: "11px", color: "var(--color-text-primary)", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 600, padding: "6px 8px", background: "rgba(196,168,98,0.18)", borderLeft: `2px solid ${GOLD}`, borderRadius: "2px" }}>✈ {airportBanner}</p>
       )}
       <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "2px 0 6px", letterSpacing: "0.02em" }}>
         {f.depart_time ? `Approx depart ${formatTime(f.depart_time)}` : ""}{f.arrive_time ? ` · arrive ${formatTime(f.arrive_time)}` : ""}{f.duration ? `  ·  ${f.duration}` : ""}  ·  {stopLabel}
@@ -1342,9 +1343,9 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
         </p>
       )}
       {f.airport_arrival_buffer && (
-        <div style={{ margin: "6px 0 4px", padding: "6px 9px", background: "#FFF8EC", border: "0.5px solid #E8C063", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-          <span style={{ fontSize: "10.5px", fontWeight: 700, color: "#8A6500", letterSpacing: "0.06em", textTransform: "uppercase" }}>Arrive {f.airport_arrival_buffer} early</span>
-          <span style={{ fontSize: "11.5px", color: "#5A4A1F" }}>
+        <div style={{ margin: "6px 0 4px", padding: "6px 9px", background: "var(--color-cream)", border: "0.5px solid var(--color-gold)", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "10.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Arrive {f.airport_arrival_buffer} early</span>
+          <span style={{ fontSize: "11.5px", color: "var(--color-text-primary)" }}>
             {/^A?UA$|^AUA$/.test(f.from_airport || "") ? "AUA pre-clears US Customs in Aruba — plan for the extra time before boarding." : "Lead time at the airport before scheduled departure."}
           </span>
         </div>
@@ -1432,7 +1433,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
                   const active = timeFilter === bucket;
                   return (
                     <button key={bucket} onClick={() => setTimeFilter(bucket)}
-                      style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: `0.5px solid ${active ? GOLD : "var(--color-border-secondary)"}`, background: active ? GOLD : "transparent", color: active ? "#0F0F0F" : "var(--color-text-tertiary)", cursor: "pointer", fontWeight: active ? 700 : 400, letterSpacing: "0.04em", textTransform: "capitalize", fontFamily: "inherit" }}>
+                      style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: `0.5px solid ${active ? GOLD : "var(--color-border-secondary)"}`, background: active ? GOLD : "transparent", color: active ? "var(--color-text-primary)" : "var(--color-text-tertiary)", cursor: "pointer", fontWeight: active ? 700 : 400, letterSpacing: "0.04em", textTransform: "capitalize", fontFamily: "inherit" }}>
                       {label}
                     </button>
                   );
@@ -1762,7 +1763,7 @@ function ContactBlock({ contact, name }) {
             <a href={telUrl} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>Call</a>
           )}
           {showBooking && (
-            <a href={bookingHref} target="_blank" rel="noopener noreferrer" title={bookingDead ? "Original booking link could not be verified — search for it on Google" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: `0.5px solid ${bookingDead ? GOLD_DARK : GOLD}`, background: bookingDead ? "transparent" : GOLD, color: bookingDead ? GOLD_DARK : "#0F0F0F", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>{bookingDead ? "Search ↗" : "Book ↗"}</a>
+            <a href={bookingHref} target="_blank" rel="noopener noreferrer" title={bookingDead ? "Original booking link could not be verified — search for it on Google" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: `0.5px solid ${bookingDead ? GOLD_DARK : GOLD}`, background: bookingDead ? "transparent" : GOLD, color: bookingDead ? GOLD_DARK : "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>{bookingDead ? "Search ↗" : "Book ↗"}</a>
           )}
           {showWebsite && (
             <a href={websiteHref} target="_blank" rel="noopener noreferrer" title={websiteDead ? "Original site link could not be verified — search for the official site" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: websiteDead ? GOLD_DARK : "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>{websiteDead ? "Find site ↗" : "Website ↗"}</a>
@@ -1862,7 +1863,7 @@ function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
         type="button"
         onClick={handleToggle}
         aria-expanded={open}
-        style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: open ? GOLD : "transparent", color: open ? "#0F0F0F" : GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}
+        style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: open ? GOLD : "transparent", color: open ? "var(--color-text-primary)" : GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}
       >{open ? "Close" : `↻ ${label}`}</button>
       {open && (
         <div style={{ marginTop: "10px" }}>
@@ -1874,7 +1875,7 @@ function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
             </p>
           )}
           {error && !loading && (
-            <p role="alert" style={{ fontSize: "12px", color: "#8C1F1F", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", padding: "8px 12px", margin: 0 }}>{error}</p>
+            <p role="alert" style={{ fontSize: "12px", color: "var(--color-danger-hover)", background: "var(--color-danger-tint)", border: "0.5px solid var(--color-text-danger)", borderRadius: "var(--border-radius-md)", padding: "8px 12px", margin: 0 }}>{error}</p>
           )}
           {alts && !loading && !error && (
             <div>
@@ -1896,13 +1897,13 @@ function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
                           {sub && <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 3px", letterSpacing: "0.02em" }}>{sub}</p>}
                           {why && <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.45 }}>{why}</p>}
                           {(a.verify_status === "verify_before_booking") && (
-                            <p style={{ fontSize: "10.5px", color: "#8A6500", margin: "4px 0 0", fontStyle: "italic" }}>⚠︎ Verify status before booking.</p>
+                            <p style={{ fontSize: "10.5px", color: "var(--color-text-primary)", margin: "4px 0 0", fontStyle: "italic" }}>⚠︎ Verify status before booking.</p>
                           )}
                         </div>
                         <button
                           type="button"
                           onClick={() => handleUse(a)}
-                          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: GOLD, color: "#0F0F0F", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap" }}
+                          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: GOLD, color: "var(--color-text-primary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap" }}
                         >Use this</button>
                       </div>
                     </div>
@@ -1966,21 +1967,21 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
   const isClosed = r.verify_status === "permanently_closed";
 
   return (
-    <div style={{ marginBottom: "12px", border: isClosed ? "1px solid #C92A2A" : "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: isClosed ? "#FFF5F5" : "var(--color-background-primary)", position: "relative" }}>
+    <div style={{ marginBottom: "12px", border: isClosed ? "1px solid var(--color-text-danger)" : "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: isClosed ? "var(--color-danger-tint)" : "var(--color-background-primary)", position: "relative" }}>
       {isClosed && (
-        <div style={{ margin: "-2px 0 10px", padding: "7px 10px", background: "#C92A2A", color: "#FFFFFF", borderRadius: "4px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", display: "flex", alignItems: "center", gap: "6px" }}>
+        <div style={{ margin: "-2px 0 10px", padding: "7px 10px", background: "var(--color-text-danger)", color: "var(--color-background-primary)", borderRadius: "4px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", display: "flex", alignItems: "center", gap: "6px" }}>
           <span style={{ fontSize: "13px" }}>⚠</span>
           <span>Permanently closed — do not book</span>
         </div>
       )}
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
         <Badge type={type} />
-        <p style={{ fontSize: "14px", fontWeight: 600, color: isClosed ? "#8C1F1F" : "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1, textDecoration: isClosed ? "line-through" : "none" }}>{r.name}</p>
+        <p style={{ fontSize: "14px", fontWeight: 600, color: isClosed ? "var(--color-danger-hover)" : "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1, textDecoration: isClosed ? "line-through" : "none" }}>{r.name}</p>
         {r._weekdayMismatch && !isClosed && (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "#92500A", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "#FEF3E2", border: "0.5px solid #E8C063", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r._weekdayMismatch] || r._weekdayMismatch}s — verify</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-gold)", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r._weekdayMismatch] || r._weekdayMismatch}s — verify</span>
         )}
         {r._missingBackup && !isClosed && (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "#92500A", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "#FEF3E2", border: "0.5px solid #E8C063", borderRadius: "3px", whiteSpace: "nowrap" }}>No backup</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-gold)", borderRadius: "3px", whiteSpace: "nowrap" }}>No backup</span>
         )}
         {r._isReturnVisit && !isClosed && (
           <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: `0.5px solid ${GOLD}`, borderRadius: "3px", whiteSpace: "nowrap" }}>Return visit</span>
@@ -1993,7 +1994,7 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
       )}
       {r.why && !isClosed && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{r.why}</p>}
       {r.closure_note && (
-        <p style={{ fontSize: "11px", color: isClosed ? "#8C1F1F" : (r.closure_note.toLowerCase().includes("confirm") ? "#B85C00" : "var(--color-text-tertiary)"), margin: "0 0 8px", fontStyle: "italic", fontWeight: isClosed ? 600 : "normal" }}>
+        <p style={{ fontSize: "11px", color: isClosed ? "var(--color-danger-hover)" : (r.closure_note.toLowerCase().includes("confirm") ? "var(--color-warning)" : "var(--color-text-tertiary)"), margin: "0 0 8px", fontStyle: "italic", fontWeight: isClosed ? 600 : "normal" }}>
           ⚠︎ {r.closure_note}
         </p>
       )}
@@ -2004,9 +2005,9 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
       {/* restaurant, so we default to the conservative "verify before booking" */}
       {/* microcopy whenever the model isn't certain. */}
       {!isClosed && (r.verify_status === "verify_before_booking" || (!r.verify_status && r.verify_url)) && (
-        <div style={{ margin: "0 0 8px", padding: "6px 9px", background: "#FFF8EC", border: "0.5px solid #E8C063", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-          <span style={{ fontSize: "10.5px", fontWeight: 600, color: "#8A6500", letterSpacing: "0.04em", textTransform: "uppercase" }}>Verify</span>
-          <span style={{ fontSize: "11.5px", color: "#5A4A1F" }}>
+        <div style={{ margin: "0 0 8px", padding: "6px 9px", background: "var(--color-cream)", border: "0.5px solid var(--color-gold)", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "10.5px", fontWeight: 600, color: "var(--color-text-primary)", letterSpacing: "0.04em", textTransform: "uppercase" }}>Verify</span>
+          <span style={{ fontSize: "11.5px", color: "var(--color-text-primary)" }}>
             We can't confirm this spot's status — check before booking.
           </span>
           {r.verify_url && (
@@ -2014,7 +2015,7 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
               href={r.verify_url}
               target="_blank"
               rel="noopener noreferrer"
-              style={{ fontSize: "11px", color: "#8A6500", textDecoration: "underline", fontWeight: 500, marginLeft: "auto" }}
+              style={{ fontSize: "11px", color: "var(--color-text-primary)", textDecoration: "underline", fontWeight: 500, marginLeft: "auto" }}
             >Check listing →</a>
           )}
         </div>
@@ -2049,7 +2050,7 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
           <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>
             {r.backup.name}
             {r.backup._weekdayMismatch && (
-              <span style={{ marginLeft: "6px", fontSize: "9.5px", fontWeight: 700, color: "#92500A", letterSpacing: "0.06em", textTransform: "uppercase", padding: "2px 6px", background: "#FEF3E2", border: "0.5px solid #E8C063", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r.backup._weekdayMismatch] || r.backup._weekdayMismatch}s</span>
+              <span style={{ marginLeft: "6px", fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.06em", textTransform: "uppercase", padding: "2px 6px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-gold)", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r.backup._weekdayMismatch] || r.backup._weekdayMismatch}s</span>
             )}
           </p>
           {(r.backup.neighborhood || r.backup.cuisine) && (
@@ -2156,7 +2157,7 @@ function Section({ title, children }) {
 
 function tonightPriority(s) {
   const t = (s || "").trim();
-  if (/^⚠/.test(t) || /^must today/i.test(t)) return { rank: 0, label: "Must today", color: "#B85C00", bg: "#FFF1E0" };
+  if (/^⚠/.test(t) || /^must today/i.test(t)) return { rank: 0, label: "Must today", color: "var(--color-warning)", bg: "var(--color-warning-tint)" };
   if (/^this week/i.test(t) || /^·\s*this week/i.test(t)) return { rank: 1, label: "This week", color: GOLD_DARK, bg: GOLD_LIGHT };
   if (/^anytime/i.test(t)) return { rank: 2, label: "Anytime", color: "var(--color-text-secondary)", bg: "var(--color-background-secondary)" };
   return { rank: 1, label: null, color: GOLD_DARK, bg: GOLD_LIGHT };
@@ -3207,7 +3208,7 @@ function QualityBadge({ qc }) {
         </p>
       )}
       {qc.warnings.length > 0 && (
-        <p style={{ fontSize: "11.5px", color: "#B85C00", margin: 0, lineHeight: 1.5 }}>
+        <p style={{ fontSize: "11.5px", color: "var(--color-warning)", margin: 0, lineHeight: 1.5 }}>
           ⚠︎ {qc.warnings.length} warning{qc.warnings.length === 1 ? "" : "s"}: {qc.warnings.slice(0, 2).join("; ")}{qc.warnings.length > 2 ? `; +${qc.warnings.length - 2} more` : ""}.
         </p>
       )}
@@ -3261,7 +3262,7 @@ function SaveTripButton({ inputs, result, onSaved }) {
       className="no-print"
       style={{
         background: justSaved ? GOLD : "var(--color-background-primary)",
-        color: justSaved ? "#0F0F0F" : "var(--color-text-primary)",
+        color: justSaved ? "var(--color-text-primary)" : "var(--color-text-primary)",
         border: `0.5px solid ${justSaved ? GOLD : "var(--color-border-secondary)"}`,
         borderRadius: "var(--border-radius-md)",
         padding: "10px 16px",
@@ -3330,22 +3331,22 @@ function StaleChipsBanner({ suggestion, onClear, onDismiss }) {
     ...(suggestion.staleActivities || []),
   ];
   return (
-    <div role="status" style={{ marginBottom: "1.25rem", border: "0.5px solid #B85C00", background: "#FFF7E8", borderRadius: "var(--border-radius-md)", padding: "12px 14px" }}>
+    <div role="status" style={{ marginBottom: "1.25rem", border: "0.5px solid var(--color-warning)", background: "var(--color-warning-tint)", borderRadius: "var(--border-radius-md)", padding: "12px 14px" }}>
       <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
-        <span aria-hidden="true" style={{ fontSize: "14px", color: "#B85C00", marginTop: "1px" }}>⚠︎</span>
+        <span aria-hidden="true" style={{ fontSize: "14px", color: "var(--color-warning)", marginTop: "1px" }}>⚠︎</span>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <p style={{ fontSize: "11px", color: "#7A3D00", letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 4px" }}>Destination changed</p>
-          <p style={{ fontSize: "13px", color: "#3D2400", margin: "0 0 8px", lineHeight: 1.5 }}>
+          <p style={{ fontSize: "11px", color: "var(--color-text-primary)", letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 4px" }}>Destination changed</p>
+          <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 8px", lineHeight: 1.5 }}>
             {total} pick{total === 1 ? "" : "s"} from {suggestion.prevLabel} {total === 1 ? "is" : "are"} still selected for {suggestion.newLabel || "your new destination"}.
           </p>
           <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "10px" }}>
             {items.map((it, i) => (
-              <span key={i} style={{ fontSize: "11px", background: "#FFE9C4", border: "0.5px solid #E5B870", color: "#5C3A00", borderRadius: "3px", padding: "3px 7px" }}>{it}</span>
+              <span key={i} style={{ fontSize: "11px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-gold)", color: "var(--color-text-primary)", borderRadius: "3px", padding: "3px 7px" }}>{it}</span>
             ))}
           </div>
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            <button onClick={onClear} style={{ background: "#B85C00", color: "#FFF", border: "none", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Clear those picks</button>
-            <button onClick={onDismiss} style={{ background: "transparent", color: "#7A3D00", border: "0.5px solid #B85C00", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Keep them</button>
+            <button onClick={onClear} style={{ background: "var(--color-warning)", color: "var(--color-background-primary)", border: "none", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Clear those picks</button>
+            <button onClick={onDismiss} style={{ background: "transparent", color: "var(--color-text-primary)", border: "0.5px solid var(--color-warning)", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Keep them</button>
           </div>
         </div>
       </div>
@@ -3606,7 +3607,7 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating }) {
         <span aria-hidden="true">⤓</span> {busy ? (status || "Working…") : (disabledForIntro ? gate.label : "Save as PDF")}
       </button>
       {error && (
-        <span style={{ fontSize: "11px", color: "#B85C00" }}>{error}</span>
+        <span style={{ fontSize: "11px", color: "var(--color-warning)" }}>{error}</span>
       )}
       {stale && (
         <div
@@ -3614,7 +3615,7 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating }) {
           style={{
             marginTop: "6px",
             padding: "10px 12px",
-            border: "1px solid #C4A862",
+            border: "1px solid var(--color-gold)",
             background: "rgba(196,168,98,0.08)",
             borderRadius: "var(--border-radius-md)",
             fontSize: "11px",
@@ -3770,11 +3771,11 @@ function PrintRidesButton({ data, inputs }) {
         and let CSS hide/show it.
       */}
       <div id="rides-print-root" className="rides-print-only" aria-hidden="true">
-        <div style={{ padding: "24px 28px", fontFamily: "Georgia, 'Times New Roman', serif", color: "#0F0F0F" }}>
+        <div style={{ padding: "24px 28px", fontFamily: "Georgia, 'Times New Roman', serif", color: "var(--color-text-primary)" }}>
           <div style={{ borderBottom: `2px solid ${GOLD}`, paddingBottom: "10px", marginBottom: "18px" }}>
-            <div style={{ fontSize: "10px", letterSpacing: "0.18em", textTransform: "uppercase", color: "#666", marginBottom: "4px" }}>Driver itinerary — share with chauffeur</div>
+            <div style={{ fontSize: "10px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-text-secondary)", marginBottom: "4px" }}>Driver itinerary — share with chauffeur</div>
             <div style={{ fontSize: "22px", fontStyle: "italic", marginBottom: "6px" }}>{tripTitle}</div>
-            <div style={{ fontSize: "12px", color: "#444" }}>
+            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
               Passenger: <strong>{passengerName}</strong>
               {dateRange ? ` · Dates: ${dateRange}` : ""}
               {rides.length ? ` · ${rides.length} ride${rides.length === 1 ? "" : "s"}` : ""}
@@ -3782,9 +3783,9 @@ function PrintRidesButton({ data, inputs }) {
           </div>
 
           {rides.map((r, i) => (
-            <div key={i} style={{ borderBottom: "1px solid #ddd", padding: "12px 0", pageBreakInside: "avoid" }}>
+            <div key={i} style={{ borderBottom: "1px solid var(--color-border-tertiary)", padding: "12px 0", pageBreakInside: "avoid" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "12px", marginBottom: "4px" }}>
-                <div style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", color: "#777", fontWeight: 700 }}>
+                <div style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--color-text-secondary)", fontWeight: 700 }}>
                   Ride {i + 1} · {r.dayLabel}{r.city ? ` · ${r.city}` : ""}
                 </div>
                 <div style={{ fontSize: "15px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.02em" }}>
@@ -3793,25 +3794,25 @@ function PrintRidesButton({ data, inputs }) {
               </div>
               <div style={{ fontSize: "14px", fontWeight: 600, marginBottom: "4px" }}>{r.text || "Transport"}</div>
               {r.location && (
-                <div style={{ fontSize: "12px", color: "#333", marginBottom: "3px" }}>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "3px" }}>
                   <strong>Pickup / route:</strong> {r.location}
                 </div>
               )}
               {r.contact?.address && (
-                <div style={{ fontSize: "12px", color: "#333", marginBottom: "3px" }}>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "3px" }}>
                   <strong>Address:</strong> {r.contact.address}
                 </div>
               )}
               {r.duration && (
-                <div style={{ fontSize: "12px", color: "#333", marginBottom: "3px" }}>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "3px" }}>
                   <strong>Duration:</strong> {r.duration}
                 </div>
               )}
               {r.why && (
-                <div style={{ fontSize: "12px", color: "#555", marginBottom: "3px", fontStyle: "italic" }}>{r.why}</div>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "3px", fontStyle: "italic" }}>{r.why}</div>
               )}
               {(r.contact?.phone || r.contact?.booking_note) && (
-                <div style={{ fontSize: "12px", color: "#333", marginTop: "6px", borderLeft: `3px solid ${GOLD}`, paddingLeft: "8px" }}>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "6px", borderLeft: `3px solid ${GOLD}`, paddingLeft: "8px" }}>
                   {r.contact?.phone && (<><strong>Operator phone:</strong> {r.contact.phone}<br /></>)}
                   {r.contact?.booking_note && (<><strong>Notes:</strong> {r.contact.booking_note}</>)}
                 </div>
@@ -3819,7 +3820,7 @@ function PrintRidesButton({ data, inputs }) {
             </div>
           ))}
 
-          <div style={{ marginTop: "22px", paddingTop: "12px", borderTop: `1px dashed ${GOLD}`, fontSize: "10.5px", color: "#666", lineHeight: 1.5 }}>
+          <div style={{ marginTop: "22px", paddingTop: "12px", borderTop: `1px dashed ${GOLD}`, fontSize: "10.5px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
             <div><strong>Passenger:</strong> {passengerName}</div>
             <div style={{ marginTop: "3px" }}>Generated by Trip Optimizer — verify each pickup time + address with the driver 24 hours ahead. Times shown are local to the destination.</div>
           </div>
@@ -3869,18 +3870,18 @@ function InputSummary({ inputs }) {
 
   return (
     <div className="print-only" style={{ display: "none" }}>
-      <h2 style={{ fontSize: "14px", letterSpacing: "0.08em", textTransform: "uppercase", color: "#000", margin: "0 0 10px", borderBottom: "1px solid #ccc", paddingBottom: "6px" }}>Input summary</h2>
+      <h2 style={{ fontSize: "14px", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--color-text-primary)", margin: "0 0 10px", borderBottom: "1px solid var(--color-border-tertiary)", paddingBottom: "6px" }}>Input summary</h2>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "10.5px", marginBottom: "16px" }}>
         <tbody>
           {rows.map(([k, v]) => (
-            <tr key={k} style={{ borderBottom: "0.5px solid #eee" }}>
-              <td style={{ padding: "4px 8px 4px 0", color: "#666", verticalAlign: "top", width: "38%", textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "9px", fontWeight: 600 }}>{k}</td>
-              <td style={{ padding: "4px 0", color: "#000" }}>{v}</td>
+            <tr key={k} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+              <td style={{ padding: "4px 8px 4px 0", color: "var(--color-text-secondary)", verticalAlign: "top", width: "38%", textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "9px", fontWeight: 600 }}>{k}</td>
+              <td style={{ padding: "4px 0", color: "var(--color-text-primary)" }}>{v}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <p style={{ fontSize: "9px", color: "#888", margin: "0 0 20px", fontStyle: "italic" }}>Generated {new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })} · trip-optimizer-6og.pages.dev</p>
+      <p style={{ fontSize: "9px", color: "var(--color-text-tertiary)", margin: "0 0 20px", fontStyle: "italic" }}>Generated {new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })} · trip-optimizer-6og.pages.dev</p>
     </div>
   );
 }
@@ -4177,9 +4178,9 @@ function DiningBrowseChips({ data, inputs }) {
   const yelpUrl = `https://www.yelp.com/search?find_desc=Restaurants&find_loc=${encodeURIComponent(urlCity)}`;
 
   const chips = [
-    { key: "opentable", label: "OpenTable", mark: "OT", href: opentableUrl, markBg: "#DA3743" },
-    { key: "resy",      label: "Resy",      mark: "R",  href: resyUrl,      markBg: "#111111" },
-    { key: "yelp",      label: "Yelp",      mark: "Y",  href: yelpUrl,      markBg: "#C41200" },
+    { key: "opentable", label: "OpenTable", mark: "OT", href: opentableUrl, markBg: "var(--color-text-danger)" },
+    { key: "resy",      label: "Resy",      mark: "R",  href: resyUrl,      markBg: "var(--color-text-primary)" },
+    { key: "yelp",      label: "Yelp",      mark: "Y",  href: yelpUrl,      markBg: "var(--color-danger-hover)" },
   ];
 
   // Footnote describing exactly what we prefilled — same idea as the
@@ -4227,9 +4228,9 @@ function DiningBrowseChips({ data, inputs }) {
         }
         /* !important needed because the chip uses an inline border style,
            which would otherwise win on specificity. */
-        .dining-browse-chips .dbc-chip-opentable:hover, .dining-browse-chips .dbc-chip-opentable:focus-visible { border-color: #DA3743 !important; }
-        .dining-browse-chips .dbc-chip-resy:hover,      .dining-browse-chips .dbc-chip-resy:focus-visible      { border-color: #111 !important; }
-        .dining-browse-chips .dbc-chip-yelp:hover,      .dining-browse-chips .dbc-chip-yelp:focus-visible      { border-color: #C41200 !important; }
+        .dining-browse-chips .dbc-chip-opentable:hover, .dining-browse-chips .dbc-chip-opentable:focus-visible { border-color: var(--color-text-danger) !important; }
+        .dining-browse-chips .dbc-chip-resy:hover,      .dining-browse-chips .dbc-chip-resy:focus-visible      { border-color: var(--color-text-primary) !important; }
+        .dining-browse-chips .dbc-chip-yelp:hover,      .dining-browse-chips .dbc-chip-yelp:focus-visible      { border-color: var(--color-danger-hover) !important; }
       `}</style>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
         {chips.map(c => (
@@ -4247,7 +4248,7 @@ function DiningBrowseChips({ data, inputs }) {
               gap: "8px",
               padding: "7px 13px 7px 7px",
               borderRadius: "999px",
-              background: "var(--color-background-primary, #fff)",
+              background: "var(--color-background-primary, var(--color-background-primary))",
               border: "0.5px solid var(--color-border-secondary)",
               textDecoration: "none",
               fontSize: "12.5px",
@@ -4268,7 +4269,7 @@ function DiningBrowseChips({ data, inputs }) {
                 height: "20px",
                 borderRadius: "50%",
                 background: c.markBg,
-                color: "#fff",
+                color: "var(--color-background-primary)",
                 fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
                 fontSize: "9.5px",
                 fontWeight: 700,
@@ -4537,7 +4538,7 @@ function EssentialsView({ data }) {
           <H>Heads up</H>
           {data.flags.map((f, i) => (
             <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "6px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: 1.5 }}>
-              <span style={{ flex: "0 0 auto", color: "#B85C00", fontSize: "12px", marginTop: "1px" }}>⚠︎</span>
+              <span style={{ flex: "0 0 auto", color: "var(--color-warning)", fontSize: "12px", marginTop: "1px" }}>⚠︎</span>
               <span>{f}</span>
             </div>
           ))}
@@ -4548,7 +4549,7 @@ function EssentialsView({ data }) {
           <H>If plans break</H>
           {data.planb.map((p, i) => (
             <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "7px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: 1.5 }}>
-              <span style={{ flex: "0 0 auto", fontSize: "9.5px", fontWeight: 700, color: "#5B6E8F", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: "0.5px solid #5B6E8F", borderRadius: "3px", whiteSpace: "nowrap", marginTop: "1px" }}>Plan B</span>
+              <span style={{ flex: "0 0 auto", fontSize: "9.5px", fontWeight: 700, color: "var(--color-accent)", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: "0.5px solid var(--color-accent)", borderRadius: "3px", whiteSpace: "nowrap", marginTop: "1px" }}>Plan B</span>
               <span>{p}</span>
             </div>
           ))}
@@ -4558,7 +4559,7 @@ function EssentialsView({ data }) {
         <>
           <H>Snob's guide</H>
           {data.snobs.map((s, i) => (
-            <div key={i} style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "8px 12px", borderLeft: `2px solid #D4537E`, marginBottom: "8px", lineHeight: "1.6", borderRadius: 0 }}>{s}</div>
+            <div key={i} style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "8px 12px", borderLeft: `2px solid var(--color-category-rose)`, marginBottom: "8px", lineHeight: "1.6", borderRadius: 0 }}>{s}</div>
           ))}
         </>
       )}
@@ -4740,9 +4741,9 @@ function ProviderCard({ item }) {
         <span style={{ fontSize: "13.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "-0.1px" }}>{item.name}</span>
         {item.city && <span style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", letterSpacing: "0.04em" }}>{item.city}</span>}
         {verified ? (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "#1F6B3B", background: "#EAF6EE", border: "0.5px solid #BFE3CB", borderRadius: "10px", padding: "2px 8px" }}>✓ Verified</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-success)", background: "var(--color-success-tint)", border: "0.5px solid var(--color-success-tint)", borderRadius: "10px", padding: "2px 8px" }}>✓ Verified</span>
         ) : (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "#8A6500", background: "#FFF8EC", border: "0.5px solid #E8C063", borderRadius: "10px", padding: "2px 8px" }}>Verify before booking</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-text-primary)", background: "var(--color-cream)", border: "0.5px solid var(--color-gold)", borderRadius: "10px", padding: "2px 8px" }}>Verify before booking</span>
         )}
       </div>
       {item.descriptor && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{item.descriptor}</p>}
@@ -4783,7 +4784,7 @@ function LocalProvidersView({ providers }) {
         Real local operators checked against Google Places. Anything we couldn't confirm is labeled “verify before booking” — we don't guess.
       </p>
       {error && (
-        <p role="alert" style={{ fontSize: "12px", color: "#B85C00", margin: 0 }}>
+        <p role="alert" style={{ fontSize: "12px", color: "var(--color-warning)", margin: 0 }}>
           {error}
         </p>
       )}
@@ -4802,7 +4803,7 @@ function LocalProvidersView({ providers }) {
               )}
             </div>
           ) : (
-            <p style={{ fontSize: "12px", color: failedIds.includes(g.id) ? "#B85C00" : "var(--color-text-secondary)", fontStyle: "italic", margin: 0 }}>
+            <p style={{ fontSize: "12px", color: failedIds.includes(g.id) ? "var(--color-warning)" : "var(--color-text-secondary)", fontStyle: "italic", margin: 0 }}>
               {status !== "done"
                 ? `Finding ${g.noun}s…`
                 : failedIds.includes(g.id)
@@ -4876,7 +4877,7 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
                   letterSpacing: "0.10em",
                   textTransform: "uppercase",
                   fontWeight: 700,
-                  color: active ? "#0F0F0F" : "var(--color-text-secondary)",
+                  color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)",
                   padding: "6px 12px",
                   border: active ? "none" : "0.5px solid var(--color-border-secondary)",
                   borderRadius: "20px",
@@ -4905,7 +4906,7 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
                     letterSpacing: "0.06em",
                     textTransform: "uppercase",
                     fontWeight: 600,
-                    color: active ? "#0F0F0F" : "var(--color-text-secondary)",
+                    color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)",
                     padding: "4px 9px",
                     border: active ? "none" : "0.5px solid var(--color-border-secondary)",
                     borderRadius: "3px",
@@ -5371,7 +5372,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             {selectedSources.map(s => s.lens === "hyperlocal" ? (
               <span key={s.id} title={`Hyperlocal source for ${hyperlocalRegion?.label || "this destination"}`} style={{ fontSize: "10.5px", color: GOLD_DARK, background: GOLD_LIGHT, padding: "3px 9px", borderRadius: "999px", border: `0.5px solid ${GOLD}`, letterSpacing: "0.02em", fontWeight: 700, whiteSpace: "nowrap" }}>{s.name}</span>
             ) : (
-              <span key={s.id} style={{ fontSize: "10.5px", color: "#0F0F0F", background: GOLD, padding: "3px 9px", borderRadius: "999px", letterSpacing: "0.02em", fontWeight: 600, whiteSpace: "nowrap" }}>{s.name}</span>
+              <span key={s.id} style={{ fontSize: "10.5px", color: "var(--color-text-primary)", background: GOLD, padding: "3px 9px", borderRadius: "999px", letterSpacing: "0.02em", fontWeight: 600, whiteSpace: "nowrap" }}>{s.name}</span>
             ))}
             <button onClick={() => setPickerOpen(true)} style={{ fontSize: "10.5px", color: GOLD, background: "transparent", border: `0.5px dashed ${GOLD}`, padding: "3px 9px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", fontWeight: 600 }}>+ Change sources</button>
           </div>
@@ -5384,10 +5385,10 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "0 0 12px", fontStyle: "italic" }}>
             Why these? They cover taste (CN Traveler), food (Michelin), pacing (NYT 36 Hours), and ground-truth (Reddit + locals){hyperlocalRegion ? ", plus destination-specific local papers and the tourism board" : ""}. Add more for hotel-specific or scene-specific feedback.
           </p>
-          <button onClick={handleRunReview} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}>
+          <button onClick={handleRunReview} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: GOLD }}>
             Run review (~45 sec)
           </button>
-          {error && <p style={{ fontSize: "11.5px", color: "#c0392b", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
+          {error && <p style={{ fontSize: "11.5px", color: "var(--color-text-danger)", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
         </div>
       )}
 
@@ -5401,7 +5402,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             </p>
           </div>
           <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 8px" }}>{progressLabel || "Working…"}</p>
-          <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
+          <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, var(--color-border-tertiary))", overflow: "hidden", position: "relative" }}>
             {progress > 0 ? (
               <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: GOLD, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
             ) : (
@@ -5426,7 +5427,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           <p style={{ fontSize: "15px", color: "var(--color-text-primary)", margin: "0 0 10px", lineHeight: 1.5, fontFamily: "var(--font-serif)", fontStyle: "italic" }}>{review.verdict}</p>
           {findings.length > 0 && (
             <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 12px" }}>
-              {criticalCount > 0 && <span style={{ color: "#c0392b", fontWeight: 600 }}>{criticalCount} critical</span>}
+              {criticalCount > 0 && <span style={{ color: "var(--color-text-danger)", fontWeight: 600 }}>{criticalCount} critical</span>}
               {criticalCount > 0 && (suggestedCount + niceCount) > 0 && <span>  ·  </span>}
               {suggestedCount > 0 && <span>{suggestedCount} suggested</span>}
               {suggestedCount > 0 && niceCount > 0 && <span>  ·  </span>}
@@ -5453,7 +5454,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             // see at a glance that the panel is already set up to apply
             // everything. The actual revision still fires from the bottom CTA.
             return (
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", margin: "4px 0 6px", padding: "10px 12px", background: "var(--color-background-secondary, #fafafa)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", margin: "4px 0 6px", padding: "10px 12px", background: "var(--color-background-secondary, var(--color-background-secondary))", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)" }}>
                 <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.4, flex: "1 1 180px" }}>
                   {allChecked
                     ? `All ${applicable.length} change${applicable.length === 1 ? "" : "s"} selected. Hit Apply at the bottom to revise the plan.`
@@ -5479,7 +5480,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                         });
                       }}
                       title="Include every change"
-                      style={{ fontSize: "10.5px", color: "#0F0F0F", background: GOLD, border: `0.5px solid ${GOLD}`, padding: "4px 10px", borderRadius: "3px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}
+                      style={{ fontSize: "10.5px", color: "var(--color-text-primary)", background: GOLD, border: `0.5px solid ${GOLD}`, padding: "4px 10px", borderRadius: "3px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}
                     >
                       Include all
                     </button>
@@ -5526,7 +5527,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                   ~{revisionMode === "surgical" ? "30 sec" : "2 min"}
                 </span>
               </p>
-              <button onClick={handleApply} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "14px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}>
+              <button onClick={handleApply} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "14px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: GOLD }}>
                 {`→ Apply ${selectedForApply.length} change${selectedForApply.length === 1 ? "" : "s"}`}
               </button>
             </div>
@@ -5544,7 +5545,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             <p style={{ marginTop: "10px", fontSize: "12px", color: GOLD, textAlign: "center", fontWeight: 600 }}>✓ Changes applied to your plan.</p>
           )}
           {notice && status !== "applying" && (
-            <div style={{ marginTop: "10px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
+            <div style={{ marginTop: "10px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, var(--color-background-secondary))" }}>
               <p style={{ fontSize: "11.5px", color: "var(--color-text-primary)", margin: 0, lineHeight: 1.45 }}>{notice}</p>
               {pendingRetryIds.length > 0 && (
                 <button
@@ -5555,14 +5556,14 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                     setNotice("");
                     handleApply({ findingsOverride: retry, forceMode: "full" });
                   }}
-                  style={{ marginTop: "8px", width: "100%", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "10px 14px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}
+                  style={{ marginTop: "8px", width: "100%", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "10px 14px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: GOLD }}
                 >
                   {`↻ Re-plan to apply the rest (${pendingRetryIds.length})`}
                 </button>
               )}
             </div>
           )}
-          {error && <p style={{ fontSize: "11.5px", color: "#c0392b", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
+          {error && <p style={{ fontSize: "11.5px", color: "var(--color-text-danger)", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
 
           {/* User-authored change request — lets the traveler ask for a
               specific swap on top of (or instead of) the panel findings. */}
@@ -5584,7 +5585,7 @@ function ReviewPickerModal({ selectedIds, onToggle, onClose }) {
   const lensOrder = ["editorial", "hotels", "restaurants", "local"];
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,15,15,0.6)", zIndex: 1000, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: "640px", maxHeight: "85vh", overflowY: "auto", background: "var(--color-background-primary, #fff)", borderTopLeftRadius: "16px", borderTopRightRadius: "16px", padding: "1.25rem 1.25rem 1.5rem", boxShadow: "0 -10px 40px rgba(0,0,0,0.25)" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: "640px", maxHeight: "85vh", overflowY: "auto", background: "var(--color-background-primary, var(--color-background-primary))", borderTopLeftRadius: "16px", borderTopRightRadius: "16px", padding: "1.25rem 1.25rem 1.5rem", boxShadow: "0 -10px 40px rgba(0,0,0,0.25)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "1rem" }}>
           <p style={{ fontSize: "15px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: 0, color: "var(--color-text-primary)" }}>Reviewer panel</p>
           <button onClick={onClose} style={{ background: "transparent", border: "none", color: GOLD, fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}>Done</button>
@@ -5600,7 +5601,7 @@ function ReviewPickerModal({ selectedIds, onToggle, onClose }) {
                 {sources.map(s => {
                   const on = selectedIds.includes(s.id);
                   return (
-                    <button key={s.id} onClick={() => onToggle(s.id)} style={{ fontSize: "11.5px", color: on ? "#0F0F0F" : GOLD, background: on ? GOLD : "transparent", border: `0.5px solid ${GOLD}`, padding: "6px 12px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", fontWeight: on ? 600 : 500, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>
+                    <button key={s.id} onClick={() => onToggle(s.id)} style={{ fontSize: "11.5px", color: on ? "var(--color-text-primary)" : GOLD, background: on ? GOLD : "transparent", border: `0.5px solid ${GOLD}`, padding: "6px 12px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", fontWeight: on ? 600 : 500, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>
                       {on ? "✓ " : ""}{s.name}
                     </button>
                   );
@@ -5864,7 +5865,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
           </p>
         </div>
         <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 8px" }}>{progressLabel || "Working…"}</p>
-        <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
+        <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, var(--color-border-tertiary))", overflow: "hidden", position: "relative" }}>
           {progress > 0 ? (
             <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: GOLD, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
           ) : (
@@ -5994,7 +5995,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
           textTransform: "uppercase",
           cursor: text.trim() ? "pointer" : "not-allowed",
           fontFamily: "inherit",
-          background: text.trim() ? "#0F0F0F" : "var(--color-border-tertiary, #eee)",
+          background: text.trim() ? "var(--color-text-primary)" : "var(--color-border-tertiary, var(--color-border-tertiary))",
           color: text.trim() ? GOLD : "var(--color-text-tertiary)",
           opacity: text.trim() ? 1 : 0.7,
         }}
@@ -6004,14 +6005,14 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
           : target.mode === "surgical" ? "Apply change" : "Re-plan with this change"}
       </button>
 
-      {error && <p style={{ fontSize: "11.5px", color: "#c0392b", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
+      {error && <p style={{ fontSize: "11.5px", color: "var(--color-text-danger)", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
     </div>
   );
 }
 
 function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
   const sev = finding.severity || "suggested";
-  const sevColor = sev === "critical" ? "#c0392b" : sev === "suggested" ? GOLD : "#7a7a7a";
+  const sevColor = sev === "critical" ? "var(--color-text-danger)" : sev === "suggested" ? GOLD : "var(--color-text-secondary)";
   const sevLabel = sev === "critical" ? "Critical" : sev === "suggested" ? "Suggested" : "Nice";
   return (
     <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", padding: "12px 0 4px", opacity: alreadyApplied ? 0.55 : 1 }}>
@@ -6020,7 +6021,7 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "4px", alignItems: "baseline" }}>
             <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: sevColor, padding: "2px 6px", border: `0.5px solid ${sevColor}`, borderRadius: "3px" }}>{sevLabel}</span>
-            {finding.target && <span style={{ fontSize: "10.5px", color: "var(--color-text-primary)", background: "var(--color-background-secondary, #fafafa)", padding: "2px 7px", borderRadius: "3px", border: "0.5px solid var(--color-border-tertiary)" }}>{formatFindingTarget(finding.target)}</span>}
+            {finding.target && <span style={{ fontSize: "10.5px", color: "var(--color-text-primary)", background: "var(--color-background-secondary, var(--color-background-secondary))", padding: "2px 7px", borderRadius: "3px", border: "0.5px solid var(--color-border-tertiary)" }}>{formatFindingTarget(finding.target)}</span>}
             {finding.source && <span style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", fontStyle: "italic" }}>via {finding.source}</span>}
           </div>
           <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.5 }}>{finding.summary}</p>
@@ -6053,7 +6054,7 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
                 borderRadius: "4px",
                 border: `0.5px solid ${checked ? GOLD : "var(--color-border-secondary)"}`,
                 background: checked ? GOLD : "transparent",
-                color: checked ? "#0F0F0F" : "var(--color-text-secondary)",
+                color: checked ? "var(--color-text-primary)" : "var(--color-text-secondary)",
                 cursor: "pointer",
                 fontFamily: "inherit",
               }}
@@ -6405,7 +6406,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
               </div>
               <p style={{ fontSize: "20px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 14px", color: "var(--color-text-primary)" }}>{menuRestaurant.name}</p>
               {menuLoading && <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontStyle: "italic" }}>Loading menu…</p>}
-              {menuError && <p role="alert" style={{ fontSize: "13px", color: "#8C1F1F", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{menuError}</p>}
+              {menuError && <p role="alert" style={{ fontSize: "13px", color: "var(--color-danger-hover)", background: "var(--color-danger-tint)", border: "0.5px solid var(--color-text-danger)", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{menuError}</p>}
               {!menuLoading && !menuError && <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontStyle: "italic" }}>No menu available.</p>}
             </div>
           </div>
@@ -6480,7 +6481,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
             return (
               <div key={i}>
                 {showLegHeader && (
-                  <div style={{ margin: "0 0 14px", padding: "10px 12px", background: "#0F0F0F", color: "#FFFFFF", borderRadius: "var(--border-radius-md)", display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
+                  <div style={{ margin: "0 0 14px", padding: "10px 12px", background: "var(--color-text-primary)", color: "var(--color-background-primary)", borderRadius: "var(--border-radius-md)", display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
                     <span style={{ fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, color: GOLD }}>Leg {legIndex}</span>
                     <span style={{ fontSize: "15px", fontFamily: "var(--font-serif)", fontStyle: "italic", letterSpacing: "-0.2px" }}>{d.city}</span>
                   </div>
@@ -6908,7 +6909,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
             border: "none",
             borderRadius: "50%",
             background: uploading ? GOLD : "var(--color-border-primary)",
-            color: uploading ? "#0F0F0F" : "var(--color-text-primary)",
+            color: uploading ? "var(--color-text-primary)" : "var(--color-text-primary)",
             cursor: uploading ? "wait" : "pointer",
             display: "flex",
             alignItems: "center",
@@ -6934,8 +6935,8 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
               height: isCompact ? "26px" : "32px",
               border: "none",
               borderRadius: "50%",
-              background: listening ? "#d11" : "var(--color-border-primary)",
-              color: listening ? "#fff" : "var(--color-text-primary)",
+              background: listening ? "var(--color-text-danger)" : "var(--color-border-primary)",
+              color: listening ? "var(--color-background-primary)" : "var(--color-text-primary)",
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
@@ -6963,7 +6964,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
                   : (hint || "")}
         </p>
         {!isCompact && (
-          <span style={{ fontSize: "11px", color: charCount > MAX - 200 ? "#d11" : "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: "11px", color: charCount > MAX - 200 ? "var(--color-text-danger)" : "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
             {charCount} / {MAX}
           </span>
         )}
@@ -6971,7 +6972,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
       {/* Upload error — separate row so it doesn't get squeezed by the char
           count. Red border to distinguish from the italic gray hint. */}
       {uploadError && (
-        <p role="alert" style={{ fontSize: "11.5px", color: "#c0392b", margin: 0, padding: "6px 10px", border: "0.5px solid #f0c4be", borderRadius: "4px", background: "#fdf3f1", lineHeight: 1.5 }}>
+        <p role="alert" style={{ fontSize: "11.5px", color: "var(--color-text-danger)", margin: 0, padding: "6px 10px", border: "0.5px solid var(--color-danger-tint)", borderRadius: "4px", background: "var(--color-danger-tint)", lineHeight: 1.5 }}>
           {uploadError}
         </p>
       )}
@@ -6979,7 +6980,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
           are not blockers; the rest of the text was extracted fine. Show as
           a soft amber note so the user knows to verify those bits. */}
       {!uploadError && uploadWarnings.length > 0 && (
-        <p style={{ fontSize: "11.5px", color: "#8A6500", margin: 0, padding: "6px 10px", border: "0.5px solid #efd9a4", borderRadius: "4px", background: "#fdf8ee", lineHeight: 1.5 }}>
+        <p style={{ fontSize: "11.5px", color: "var(--color-text-primary)", margin: 0, padding: "6px 10px", border: "0.5px solid var(--color-gold)", borderRadius: "4px", background: "var(--color-cream)", lineHeight: 1.5 }}>
           Heads up: {uploadWarnings.join(" · ")}
         </p>
       )}
@@ -7150,7 +7151,7 @@ function DateRangeInput({ startDate, endDate, onRangeChange }) {
     let color = "var(--color-text-primary)";
     let weight = 400;
     if (within) { bg = "rgba(196, 168, 98, 0.18)"; color = "var(--color-text-primary)"; }
-    if (isStart || isEnd) { bg = GOLD; color = "#fff"; weight = 600; }
+    if (isStart || isEnd) { bg = GOLD; color = "var(--color-background-primary)"; weight = 600; }
     if (isPast) color = "var(--color-text-tertiary)";
     const borderRadius = isStart && isEnd ? "50%"
       : isStart ? "50% 0 0 50%"
@@ -9268,7 +9269,7 @@ function ActivityDetailsModal({ activity, details, loading, error, onClose }) {
           <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontStyle: "italic" }}>Loading details…</p>
         )}
         {error && (
-          <p role="alert" style={{ fontSize: "13px", color: "#8C1F1F", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{error}</p>
+          <p role="alert" style={{ fontSize: "13px", color: "var(--color-danger-hover)", background: "var(--color-danger-tint)", border: "0.5px solid var(--color-text-danger)", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{error}</p>
         )}
         {details && sections.map(([title, body]) => body && (
           <div key={title} style={{ marginBottom: "14px" }}>
@@ -9775,7 +9776,7 @@ function FindView({ embedded = false } = {}) {
             <button
               type="submit"
               disabled={loading || !location.trim()}
-              style={{ flex: 1, minWidth: "140px", fontSize: "13px", padding: "12px 18px", borderRadius: "var(--border-radius-md)", border: "none", background: loading || !location.trim() ? "var(--color-border-secondary)" : GOLD, color: loading || !location.trim() ? "var(--color-text-tertiary)" : "#0F0F0F", cursor: loading || !location.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
+              style={{ flex: 1, minWidth: "140px", fontSize: "13px", padding: "12px 18px", borderRadius: "var(--border-radius-md)", border: "none", background: loading || !location.trim() ? "var(--color-border-secondary)" : GOLD, color: loading || !location.trim() ? "var(--color-text-tertiary)" : "var(--color-text-primary)", cursor: loading || !location.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
             >{loading ? "Searching…" : "Search"}</button>
             {loading && (
               <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", letterSpacing: "0.04em", fontStyle: "italic" }}>This usually takes 20–40 seconds.</span>
@@ -9792,7 +9793,7 @@ function FindView({ embedded = false } = {}) {
 
         {/* Error banner */}
         {error && (
-          <div role="alert" style={{ padding: "10px 14px", marginBottom: "1rem", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", color: "#8C1F1F", fontSize: "13px", lineHeight: 1.5 }}>
+          <div role="alert" style={{ padding: "10px 14px", marginBottom: "1rem", background: "var(--color-danger-tint)", border: "0.5px solid var(--color-text-danger)", borderRadius: "var(--border-radius-md)", color: "var(--color-danger-hover)", fontSize: "13px", lineHeight: 1.5 }}>
             {error}
           </div>
         )}
@@ -9828,7 +9829,7 @@ function FindView({ embedded = false } = {}) {
 
         {/* Optional note from the model */}
         {results?.note && (
-          <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{results.note}</p>
+          <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{results.note}</p>
         )}
 
         {/* Ask the locals — opt-in retrieval pass. Hidden while a local-expert
@@ -9860,7 +9861,7 @@ function FindView({ embedded = false } = {}) {
 
         {/* Section toggle — only when both sections have results */}
         {showSectionToggle && (
-          <div style={{ position: "sticky", top: 0, background: "#F4F2EE", padding: "10px 0", marginBottom: "0.5rem", zIndex: 10, display: "flex", gap: "16px", fontSize: "12px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+          <div style={{ position: "sticky", top: 0, background: "var(--color-background-secondary)", padding: "10px 0", marginBottom: "0.5rem", zIndex: 10, display: "flex", gap: "16px", fontSize: "12px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
             <a href="#find-restaurants" style={{ color: "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Restaurants <span style={{ color: GOLD }}>({results.restaurants.length})</span></a>
             <a href="#find-activities" style={{ color: "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Activities <span style={{ color: GOLD }}>({results.activities.length})</span></a>
           </div>
@@ -9870,7 +9871,7 @@ function FindView({ embedded = false } = {}) {
         {loading && (
           <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "1rem" }}>
             {[0, 1, 2].map((i) => (
-              <div key={i} style={{ height: "82px", borderRadius: "var(--border-radius-md)", background: "linear-gradient(90deg, var(--color-background-secondary) 0%, #EBE7DF 50%, var(--color-background-secondary) 100%)", backgroundSize: "200% 100%", animation: "find-shimmer 1.4s linear infinite" }} />
+              <div key={i} style={{ height: "82px", borderRadius: "var(--border-radius-md)", background: "linear-gradient(90deg, var(--color-background-secondary) 0%, var(--color-surface-offset) 50%, var(--color-background-secondary) 100%)", backgroundSize: "200% 100%", animation: "find-shimmer 1.4s linear infinite" }} />
             ))}
             <style>{`@keyframes find-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }`}</style>
           </div>
@@ -9911,7 +9912,7 @@ function FindView({ embedded = false } = {}) {
             <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
               <h2 style={{ fontSize: "13px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.12em", textTransform: "uppercase", margin: 0 }}>Locally sourced</h2>
               {localExpertResults.localExpert?.source_set === "curated" && localExpertResults.localExpert?.status === "ok" && (
-                <span style={{ fontSize: "10.5px", padding: "2px 6px", background: GOLD, color: "#0F0F0F", borderRadius: "3px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>Curated</span>
+                <span style={{ fontSize: "10.5px", padding: "2px 6px", background: GOLD, color: "var(--color-text-primary)", borderRadius: "3px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>Curated</span>
               )}
               {localExpertResults.localExpert?.status === "ok" && localExpertResults.localExpert.sources?.length > 0 && (
                 <button
@@ -9938,7 +9939,7 @@ function FindView({ embedded = false } = {}) {
               </ul>
             )}
             {localExpertResults.note && (
-              <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{localExpertResults.note}</p>
+              <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{localExpertResults.note}</p>
             )}
             {localExpertResults.restaurants?.length > 0 && (
               <div style={{ marginTop: "0.75rem" }}>
@@ -9976,7 +9977,7 @@ function FindView({ embedded = false } = {}) {
                 </div>
                 <p style={{ fontSize: "20px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 14px", color: "var(--color-text-primary)" }}>{menuRestaurant.name}</p>
                 {menuLoading && <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontStyle: "italic" }}>Loading menu…</p>}
-                {menuError && <p role="alert" style={{ fontSize: "13px", color: "#8C1F1F", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{menuError}</p>}
+                {menuError && <p role="alert" style={{ fontSize: "13px", color: "var(--color-danger-hover)", background: "var(--color-danger-tint)", border: "0.5px solid var(--color-text-danger)", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{menuError}</p>}
               </div>
             </div>
           )
@@ -12955,7 +12956,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           >
             <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-primary)", letterSpacing: "0.02em", whiteSpace: "nowrap" }}>Find local info only</span>
             <span aria-hidden="true" style={{ width: "34px", height: "20px", borderRadius: "999px", background: findOnly ? GOLD : "var(--color-border-secondary)", position: "relative", transition: "background 0.15s", flexShrink: 0 }}>
-              <span style={{ position: "absolute", top: "2px", left: findOnly ? "16px" : "2px", width: "16px", height: "16px", borderRadius: "50%", background: "#fff", transition: "left 0.15s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)" }} />
+              <span style={{ position: "absolute", top: "2px", left: findOnly ? "16px" : "2px", width: "16px", height: "16px", borderRadius: "50%", background: "var(--color-background-primary)", transition: "left 0.15s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)" }} />
             </span>
           </button>
         </div>
@@ -13125,7 +13126,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                       width: "100%",
                       fontFamily: "inherit",
                       background: GOLD,
-                      color: "#1a1a1a",
+                      color: "var(--color-text-primary)",
                       opacity: (extractingFromGuidelines || loading) ? 0.6 : 1,
                     }}
                     aria-label="Build the trip directly from this narrative"
@@ -13137,7 +13138,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                       (or a network blip) used to dim the button and vanish
                       with no feedback. Render error here so the user sees it. */}
                   {error && (
-                    <p role="alert" style={{ fontSize: "12px", color: "var(--color-text-danger, #c0392b)", margin: 0, textAlign: "center", lineHeight: 1.5 }}>{error}</p>
+                    <p role="alert" style={{ fontSize: "12px", color: "var(--color-text-danger, var(--color-text-danger))", margin: 0, textAlign: "center", lineHeight: 1.5 }}>{error}</p>
                   )}
                   <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, textAlign: "center", fontStyle: "italic", lineHeight: 1.5 }}>
                     Skip the form — we'll extract destination, dates, and details and build straight from your narrative.
@@ -13439,7 +13440,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 Continue rewrites form state and arms the build; Edit narrative
                 bounces back to step 1 unchanged. */}
             {pendingNameChecks && pendingNameChecks.checks.length > 0 && (
-              <div style={{ marginTop: "14px", padding: "14px 16px", border: `1px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", background: "#FFFCF4" }}>
+              <div style={{ marginTop: "14px", padding: "14px 16px", border: `1px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
                 <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Please confirm</p>
                 <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 12px", lineHeight: 1.5 }}>
                   A couple of names in your narrative aren't a clean match. Pick the right one so we don't silently substitute the wrong property.
@@ -13451,7 +13452,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                     resolutions: { ...prev.resolutions, [i]: { ...resolution, ...patch } },
                   } : prev);
                   return (
-                    <div key={i} style={{ marginBottom: "14px", paddingBottom: "12px", borderBottom: i < pendingNameChecks.checks.length - 1 ? "1px solid #F0E8D2" : "none" }}>
+                    <div key={i} style={{ marginBottom: "14px", paddingBottom: "12px", borderBottom: i < pendingNameChecks.checks.length - 1 ? "1px solid var(--color-cream)" : "none" }}>
                       <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 4px", textTransform: "uppercase", letterSpacing: "0.08em" }}>{c.kind}</p>
                       <p style={{ fontSize: "14px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>
                         You wrote: <span style={{ fontStyle: "italic" }}>“{c.original}”</span>
@@ -13479,7 +13480,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                             placeholder="Type the correct name"
                             onChange={(e) => setRes({ choice: "custom", value: e.target.value })}
                             onFocus={() => setRes({ choice: "custom" })}
-                            style={{ flex: 1, fontSize: "13px", padding: "6px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "#fff", fontFamily: "inherit", color: "var(--color-text-primary)", outline: "none" }}
+                            style={{ flex: 1, fontSize: "13px", padding: "6px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "var(--color-background-primary)", fontFamily: "inherit", color: "var(--color-text-primary)", outline: "none" }}
                           />
                         </label>
                       </div>
@@ -13489,14 +13490,14 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 <div style={{ display: "flex", gap: "10px", marginTop: "8px" }}>
                   <button onClick={cancelNameChecks} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>← Edit narrative
                   </button>
-                  <button onClick={confirmNameChecks} style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: GOLD, color: "#1a1a1a" }}>
+                  <button onClick={confirmNameChecks} style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: GOLD, color: "var(--color-text-primary)" }}>
                     Continue →
                   </button>
                 </div>
               </div>
             )}
             {(loading || extractingFromGuidelines) && (
-              <div ref={progressPanelRef} style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
+              <div ref={progressPanelRef} style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, var(--color-background-secondary))" }}>
                 {/* Progress bar honesty.
                     Once progress pegs at ≥95% the percentage is no longer
                     informative — the time-based estimator has saturated and
@@ -13532,7 +13533,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                           In long-tail mode show the indeterminate stripe so
                           the bar visibly KEEPS MOVING instead of sitting
                           frozen at 95%. */}
-                      <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
+                      <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, var(--color-border-tertiary))", overflow: "hidden", position: "relative" }}>
                         {longTail ? (
                           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
                         ) : progress > 0 ? (
@@ -13554,7 +13555,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 )}
               </div>
             )}
-            {error && <p style={{ fontSize: "12px", color: "var(--color-text-danger, #c0392b)", marginTop: "8px", textAlign: "center" }}>{error}</p>}
+            {error && <p style={{ fontSize: "12px", color: "var(--color-text-danger, var(--color-text-danger))", marginTop: "8px", textAlign: "center" }}>{error}</p>}
             <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>{isMultiCity && cities.length >= 3 ? "Typical 3‑city plan: 5–7 minutes. Stays building if you switch tabs." : isMultiCity ? "Typical multi‑city plan: 3–5 minutes. Stays building if you switch tabs." : "Typical plan: 2–3 minutes. Stays building if you switch tabs."}</p>
             </>
             )}
