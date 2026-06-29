@@ -462,6 +462,92 @@ console.log("\n[18] Malicious URLs rejected");
 }
 
 // ============================================================
+// Test 19: Slug-vs-name + locality QA — wrong-city Tock URL rejected
+// ============================================================
+// Bug guarded: Sonar returns a same-name venue in a different city (e.g.
+// 'Per Se' New York mapped to exploretock.com/per-se-social-corner-coal-
+// harbour in Vancouver). The validator must drop the URL and keep platform.
+console.log("\n[19] Wrong-city Tock URL is rejected");
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => sonarResp({
+    content: '{"platform":"tock","url":"https://www.exploretock.com/per-se-social-corner-coal-harbour","website":"","confidence":"high"}',
+  });
+  const ctx = {
+    request: makeReq({ restaurants: [{ name: "Per Se", city: "New York" }] }),
+    env: { PERPLEXITY_API_KEY: "k", JOBS: makeKV() },
+    waitUntil: () => {},
+  };
+  const res = await onRequestPost(ctx);
+  const body = await res.json();
+  assert("wrong-city url dropped", body.confirmations[0].url === null);
+  assert("platform kept as tock", body.confirmations[0].platform === "tock");
+  assert("confidence downgraded", body.confirmations[0].confidence === "low");
+  globalThis.fetch = originalFetch;
+}
+
+// ============================================================
+// Test 20: Slug-vs-name QA — correct-city Tock URL accepted
+// ============================================================
+console.log("\n[20] Correct-city Tock URL is accepted");
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => sonarResp({
+    content: '{"platform":"tock","url":"https://www.exploretock.com/perse","website":"","confidence":"high"}',
+  });
+  const ctx = {
+    request: makeReq({ restaurants: [{ name: "Per Se", city: "New York" }] }),
+    env: { PERPLEXITY_API_KEY: "k", JOBS: makeKV() },
+    waitUntil: () => {},
+  };
+  const res = await onRequestPost(ctx);
+  const body = await res.json();
+  assert("correct-city url kept", body.confirmations[0].url === "https://www.exploretock.com/perse");
+  assert("platform tock", body.confirmations[0].platform === "tock");
+}
+
+// ============================================================
+// Test 21: Slug-vs-name QA — Carbone NYC vs Miami
+// ============================================================
+console.log("\n[21] Carbone wrong-city marker rejected");
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => sonarResp({
+    content: '{"platform":"resy","url":"https://resy.com/cities/sf/carbone","website":"","confidence":"high"}',
+  });
+  const ctx = {
+    request: makeReq({ restaurants: [{ name: "Carbone", city: "New York" }] }),
+    env: { PERPLEXITY_API_KEY: "k", JOBS: makeKV() },
+    waitUntil: () => {},
+  };
+  const res = await onRequestPost(ctx);
+  const body = await res.json();
+  assert("wrong-city carbone dropped", body.confirmations[0].url === null);
+  assert("platform kept resy", body.confirmations[0].platform === "resy");
+  globalThis.fetch = originalFetch;
+}
+
+// ============================================================
+// Test 22: Slug-vs-name QA — OpenTable rid= URLs always pass
+// ============================================================
+console.log("\n[22] OpenTable rid-based URL accepted regardless of slug");
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => sonarResp({
+    content: '{"platform":"opentable","url":"https://www.opentable.com/booking/restref/client?rid=98765","website":"","confidence":"high"}',
+  });
+  const ctx = {
+    request: makeReq({ restaurants: [{ name: "Whatever", city: "Anywhere" }] }),
+    env: { PERPLEXITY_API_KEY: "k", JOBS: makeKV() },
+    waitUntil: () => {},
+  };
+  const res = await onRequestPost(ctx);
+  const body = await res.json();
+  assert("rid url accepted", body.confirmations[0].url && body.confirmations[0].url.includes("rid=98765"));
+  globalThis.fetch = originalFetch;
+}
+
+// ============================================================
 // Summary
 // ============================================================
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -1704,13 +1704,109 @@ function mergeBookingConfirmations(plan, confirmations) {
   return { ...plan, days: nextDays };
 }
 
+// Slug-vs-name + city locality validator. Mirrors the server-side check in
+// functions/api/confirm-booking.js. Defends against wrong-city URLs that
+// slip through when the build pipeline can't run confirm-booking (no
+// PERPLEXITY_API_KEY, Sonar timeout) and the model's r.reservation.url
+// survives un-grounded. See server-side comment for the full bug pattern
+// (Per Se NYC -> per-se-social-corner-coal-harbour in Vancouver).
+const RES_SLUG_STOPWORDS = new Set([
+  "the","a","an","of","and","at","on","in","by","to","for",
+  "de","la","le","el","du","di","da","los","las",
+  "r","rs","www","cities","city","venues","venue","restaurants",
+  "restaurant","booking","restref","experience","experiences",
+  "reservation","reservations","reserve","book","menu",
+]);
+const RES_FOREIGN_CITY_MARKERS = new Set([
+  "nyc","manhattan","brooklyn","queens","bronx","harlem",
+  "soho","tribeca","chelsea","midtown","uptown",
+  "la","hollywood","beverly","westwood",
+  "sf","oakland","berkeley","mission",
+  "chicago","wicker","loop",
+  "miami","brickell","wynwood",
+  "vegas",
+  "dallas","austin","houston",
+  "boston","cambridge",
+  "dc","arlington",
+  "atlanta","denver","seattle","portland",
+  "nashville","philadelphia","phoenix","detroit",
+  "paris","london","tokyo","kyoto","osaka",
+  "vancouver","toronto","montreal","ottawa","calgary",
+  "rome","milan","florence","venice","madrid","barcelona",
+  "amsterdam","berlin","munich","zurich","vienna",
+  "coal","harbour","harbor","yaletown","gastown","kitsilano",
+]);
+function resTokens(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 2 && !RES_SLUG_STOPWORDS.has(t));
+}
+function slugMatchesVenue(urlStr, name, city) {
+  try {
+    const u = new URL(urlStr);
+    if (/rid=\d|restaurantId=\d|venueId=\d/i.test(u.search + u.pathname)) return true;
+    const pathToks = resTokens(u.pathname);
+    const nameToks = resTokens(name);
+    if (nameToks.length === 0 || pathToks.length === 0) return true;
+    const cityToks = resTokens(city);
+    const cityAliases = new Set(cityToks);
+    const cityKey = (city || "").toLowerCase();
+    if (/new\s*york/.test(cityKey)) cityAliases.add("nyc");
+    if (/los\s*angeles/.test(cityKey)) { cityAliases.add("la"); cityAliases.add("lax"); }
+    if (/san\s*francisco/.test(cityKey)) { cityAliases.add("sf"); cityAliases.add("sfo"); }
+    if (/washington/.test(cityKey)) cityAliases.add("dc");
+    if (/las\s*vegas/.test(cityKey)) cityAliases.add("vegas");
+    const allTokensPresent = nameToks.every((t) => pathToks.includes(t));
+    const pathJoined = u.pathname.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const nameJoined = nameToks.join("");
+    const nameSubstring = nameJoined.length >= 4 && pathJoined.includes(nameJoined);
+    if (!allTokensPresent && !nameSubstring) return false;
+    const allowed = new Set([...nameToks, ...cityAliases]);
+    for (const t of pathToks) {
+      if (!allowed.has(t) && RES_FOREIGN_CITY_MARKERS.has(t)) return false;
+    }
+    const extras = pathToks.filter((t) => !allowed.has(t));
+    return extras.length <= 2;
+  } catch {
+    return false;
+  }
+}
+// Hosts whose direct venue URLs are subject to slug+city validation.
+const RES_PLATFORM_HOSTS = {
+  "exploretock.com": "tock",
+  "tockify.com": "tock",
+  "resy.com": "resy",
+  "opentable.com": "opentable",
+};
+function reservationUrlIsTrustworthy(url, name, destination) {
+  if (!url || !name) return true;
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+    const matched = Object.keys(RES_PLATFORM_HOSTS).find(
+      (d) => host === d || host.endsWith("." + d)
+    );
+    if (!matched) return true; // Not a known booking platform — trust the URL
+    return slugMatchesVenue(url, name, destination || "");
+  } catch {
+    return false;
+  }
+}
+
 // Build a reservation URL from a restaurant payload.
 // Anthropic should provide reservation.url directly; this is a fallback that
-// constructs a search URL on the named platform.
-function reservationLink(r) {
+// constructs a search URL on the named platform. The supplied destination is
+// used to validate direct platform URLs against a wrong-city collision; pass
+// "" if not available (validator falls back to name-only checks).
+function reservationLink(r, destination) {
   if (!r || !r.reservation) return null;
   const platform = (r.reservation.platform || "").toLowerCase();
-  if (r.reservation.url) return { platform, url: r.reservation.url };
+  if (r.reservation.url && reservationUrlIsTrustworthy(r.reservation.url, r.name, destination)) {
+    return { platform, url: r.reservation.url };
+  }
   const q = encodeURIComponent(r.name || "");
   if (platform === "opentable") return { platform, url: `https://www.opentable.com/s?term=${q}` };
   if (platform === "resy") return { platform, url: `https://resy.com/cities/search?query=${q}` };
@@ -1956,7 +2052,12 @@ function ActivityCard({ time, end_time, item, dayLabel, swapControl }) {
 }
 
 function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
-  const resv = reservationLink(r);
+  // destination is read from URLVerifyContext so reservationLink() can
+  // slug-validate r.reservation.url against the trip city (defense-in-depth
+  // against same-name venues in a different city, e.g. Per Se NYC vs Per Se
+  // Social Corner Vancouver).
+  const { destination: tripCity } = useURLVerify();
+  const resv = reservationLink(r, tripCity);
   const platformLabel = resv ? ({
     opentable: "OpenTable", resy: "Resy", tock: "Tock", yelp: "Yelp", phone: "Call",
   }[resv.platform] || "Reserve") : null;
@@ -2071,13 +2172,13 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
                 style={{ fontSize: "10.5px", padding: "5px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.04em", textTransform: "uppercase", textDecoration: "none" }}
               >Website ↗</a>
             )}
-            {reservationLink(r.backup) && (
+            {reservationLink(r.backup, tripCity) && (
               <a
-                href={reservationLink(r.backup).url}
+                href={reservationLink(r.backup, tripCity).url}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{ fontSize: "10.5px", padding: "5px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.04em", textTransform: "uppercase", textDecoration: "none" }}
-              >Reserve · {({opentable:"OpenTable",resy:"Resy",tock:"Tock",yelp:"Yelp",phone:"Call"}[reservationLink(r.backup).platform] || "Reserve")}</a>
+              >Reserve · {({opentable:"OpenTable",resy:"Resy",tock:"Tock",yelp:"Yelp",phone:"Call"}[reservationLink(r.backup, tripCity).platform] || "Reserve")}</a>
             )}
           </div>
         </div>
@@ -9158,9 +9259,12 @@ function collectFindURLs(results) {
 // If RestaurantCard's typography or padding changes, this card should be
 // updated to match — they're meant to look like the same surface.
 function FindRestaurantCard({ restaurant, onOpenMenu }) {
+  // Hook MUST be called unconditionally — keep above the early return.
+  // See RestaurantCard for why we thread destination through.
+  const { destination: tripCity } = useURLVerify();
   if (!restaurant) return null;
   const r = restaurant;
-  const resv = reservationLink(r);
+  const resv = reservationLink(r, tripCity);
   const platformLabel = resv ? ({
     opentable: "OpenTable", resy: "Resy", tock: "Tock", yelp: "Yelp", phone: "Call",
   }[resv.platform] || "Reserve") : null;
@@ -11096,7 +11200,7 @@ RESTAURANTS:
 • If you genuinely do NOT know a restaurant's open_days, omit the field entirely (do not guess). The renderer treats missing open_days as 'assume open' rather than 'closed every day', but you should set closure_note to 'Confirm hours — closure day uncertain' as a safety hint to the traveler.
 • Many fine-dining spots close Mon or Tue. If you're unsure of a closure day, put "Confirm hours — closure day uncertain" in closure_note. The post-build hours check catches real closure-day misses; this is just a quality signal.
 • Always include a same-tier backup in the same neighborhood / cuisine family. Populate open_days on the backup too when you know it — the verifier checks both.
-• reservation.platform: opentable for most US/UK/EU fine dining; resy for trendy NYC/LA/Miami; tock for tasting menus; phone with a phone number for hole-in-the-walls; walkin if no reservations. Include the canonical url when you know it. (A server-side pass grounds platform + url on the actual current booking system after the build, so honest best-guess is fine — just don't fabricate URLs.)
+• reservation.platform: opentable for most US/UK/EU fine dining; resy for trendy NYC/LA/Miami; tock for tasting menus; phone with a phone number for hole-in-the-walls; walkin if no reservations. Include the canonical url when you know it. (A server-side pass grounds platform + url on the actual current booking system after the build, so honest best-guess is fine — just don't fabricate URLs.) IMPORTANT: many famous restaurant names are reused across cities (there is a Per Se in New York AND a Per Se Social Corner in Vancouver; a Carbone in NYC, Miami, Las Vegas, and Dallas; a Le Bernardin in NYC AND a Le Bernardin in Paris). If you're not 100% certain a specific reservation.url points to the venue IN THIS CITY, omit reservation.url entirely — the app will build a safe platform search URL from reservation.platform. A wrong-city URL is worse than no URL.
 • contact.website: include the restaurant's official site URL when you genuinely know it (e.g. https://thecompoundrestaurant.com). The website button is rendered next to Reserve so travelers can see menus, photos, and verify hours directly. Do NOT fabricate URLs — omit the field if uncertain. A separate confirmation pass fills in missing websites where possible.
 • The 'menu' field on the restaurant schema is reserved for legacy use. DO NOT populate it for new builds — the View Menu button on every card lazy-fetches it from /api/menu, which is grounded on the restaurant's actual current offerings. Emitting menus inline wastes ~500 tokens per restaurant and adds 30-60 seconds to multi-day builds.
 
