@@ -11,6 +11,7 @@ import { relevantProviderCategories, bucketProviders, providerCategoryMeta } fro
 import { resolveOutputs } from "./outputsState.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnconfirmedTimesPayload } from "./flightResolver.js";
+import { classifyActivityCountConstraint, renderActivityCountPromptRule, enforceTripTotalActivityCap } from "./activityCountConstraint.js";
 import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, isPdfDownloadReady } from "./introduction.js";
 import { shouldShowWelcome, markWelcomeDismissed, detectPlatform } from "./appIntro.js";
 import { partitionTabs, isActiveTabInOverflow, activeOverflowLabel } from "./tabStrip.js";
@@ -3329,7 +3330,23 @@ function applyQualityLayer(input, inputs) {
     });
   }
 
-  return { data: { ...input, days }, qc: { fixes, warnings } };
+  // Activity-count cap enforcement (suspenders to the prompt-side belt at
+  // dynamicPreamble's ACTIVITY-COUNT HARD CAP rule). If the user's narrative
+  // or guidelines named a trip-total cap and the model emitted more than
+  // that, trim the excess. Closes the recurrence reported 2026-06-30 PM
+  // ("one activity during the entire itinerary" → model gave one per day).
+  // See src/activityCountConstraint.js for the classifier + trimmer.
+  const _activityCountConstraint = classifyActivityCountConstraint(inputs);
+  let cappedDays = days;
+  if (_activityCountConstraint.scope === "trip-total" && Array.isArray(days)) {
+    const { days: trimmed, fixes: capFixes } = enforceTripTotalActivityCap(days, _activityCountConstraint.count);
+    cappedDays = trimmed;
+    if (capFixes.length > 0) {
+      fixes.push(...capFixes);
+    }
+  }
+
+  return { data: { ...input, days: cappedDays }, qc: { fixes, warnings } };
 }
 
 // Small QC chip surfaced below the trip — shows we caught and fixed something
@@ -12280,7 +12297,18 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
       ? `\nFIELD EMISSION ORDER OVERRIDE — MULTI-CITY: this is a multi-city trip. Insert a cities[] field between meta and days in the tool input, so the order becomes: destination, meta, cities, days, logistics, flags, planb, snobs, tonight.`
       : "";
 
-    const dynamicPreamble = `PER-TRIP REQUIREMENTS (these are the trip-specific values + overrides referenced by the static rulebook above — follow them strictly):${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}
+    // Activity-count hard cap. Deterministic classifier scans the
+    // narrative + guidelines for phrasings the static TRIP-TOTAL
+    // REQUESTS rule (above) might miss. When detected, inject a
+    // machine-readable hard cap so the model has zero room to default
+    // to per-day pacing. Closes the recurrence reported 2026-06-30 PM
+    // ("one activity during the entire itinerary" → model gave one
+    // per day). Post-build enforcement in applyQualityLayer is the
+    // suspenders.
+    const _activityCountConstraint = classifyActivityCountConstraint({ narrative, guidelines });
+    const _activityCountRuleBlock = renderActivityCountPromptRule(_activityCountConstraint) || "";
+
+    const dynamicPreamble = `PER-TRIP REQUIREMENTS (these are the trip-specific values + overrides referenced by the static rulebook above — follow them strictly):${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}${_activityCountRuleBlock}
 ${_destinationFactsBlock}
 
 ${totalDaysLine}${_multiCityFieldOrder}${multiCityBlock}${_marqueePreamble}${_airportPreamble}${_routePreamble}`;
