@@ -1,4 +1,4 @@
-# Trip Optimizer (RouteSmith) — Handoff (2026-06-29, 4:11 PM EDT)
+# Trip Optimizer (RouteSmith) — Handoff (2026-06-30, 11:25 AM EDT)
 
 > One-page state of the world. Read this first when picking up Trip Optimizer / RouteSmith in a new thread. Then read `index.md` for the rest of the wiki.
 
@@ -36,8 +36,9 @@ User supplied a 15-item update list (item 16 blank). Working in waves, one focus
 | 17 | In-build caption hardcoded "2–3 min" vs dynamic hero estimate | ✅ Merged + verified live | #86 |
 | 18 | "2 activities" trip-TOTAL gave 9 (extends #14 to whole-trip) | ⬜ Not started (prompt fix) | — |
 | 19 | Live flight-status panel CORS-blocked (shared worker allowlist) | ✅ Merged + verified (proxy 200, no CORS; panel-render not re-tested) | #88 |
+| 24 | Build-stall watchdog hardening + decouple #8 auto-review from build stream | ⬜ Not started (diagnosis logged — see `concepts/build-stall-watchdog.md`) | — |
 
-**TRUE Score: 16 of 23 merged (list grew 15→23 via live testing). 7 remaining.**
+**TRUE Score: 16 of 24 merged (list grew 15→24 via live testing). 8 remaining.**
 
 Done & merged (all deployed to prod):
 - Original list: #1, #2, #3, #4, #5, #12, #13, #14
@@ -46,7 +47,7 @@ Done & merged (all deployed to prod):
 
 Investigated, NO fix shipped: **#22** ("Apply doesn't work") — reproduced live and apply DID work (~2.5 min full re-plan); likely the now-fixed invisible buttons (#23) made it feel broken. Awaiting user re-test before any code change.
 
-Remaining (7): **#6 + #10 + #8 part 2b** (finish expert-review cluster — NEXT), #18 (trip-total activity count), #7 (hotel-swap deps), #9 (app intro/A2HS), #11 (tabbed view), #15 (narrate toggle).
+Remaining (8): **#24 (build-stall watchdog) — NEXT per user**, then **#18 (trip-total activity count)** — branch `fix/trip-total-activity-count` was lost when the sandbox died (no trace on origin, no CI run, no PR), so it will be re-derived from scratch as a prompt-only fix mirroring #14. Then **#6 + #10 + #8 part 2b** (finish expert-review cluster), #7 (hotel-swap deps), #9 (app intro/A2HS), #11 (tabbed view), #15 (narrate toggle).
 
 ### Expert-review cluster status
 - #8 part 1 DONE: ReviewPanel auto-runs on fresh build (autoRun, guarded once per build, mirrors IntroductionAutoGenerator). autoReview = !initialReview.
