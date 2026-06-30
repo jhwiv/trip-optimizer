@@ -5135,6 +5135,17 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   const [review, setReview] = useState(initialReview?.review || null);
   const [applyState, setApplyState] = useState({}); // findingId -> bool
   const [appliedIds, setAppliedIds] = useState(() => initialReview?.applied_ids || []);
+  // #10 — Collapse the review section to a one-line summary after a successful
+  // Apply (or whenever a restored review already has applied findings). Once
+  // the user has accepted changes, the plan on screen is newer than the
+  // findings list above it; keeping the full findings card expanded above
+  // the day-by-day pushes the just-revised plan below the fold. Default:
+  // collapsed when a restored review carries applied findings, expanded
+  // otherwise. Re-running the review (handleRunReview, or the existing
+  // "Re-run review" button) clears this.
+  const [collapsed, setCollapsed] = useState(() =>
+    Array.isArray(initialReview?.applied_ids) && initialReview.applied_ids.length > 0,
+  );
   const [error, setError] = useState("");
   // Honest partial-apply surface: when a surgical revision applies SOME but
   // not all selected findings, we never claim full success. `notice` carries
@@ -5185,6 +5196,9 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   const handleRunReview = async () => {
     if (selectedSources.length === 0) { setError("Pick at least one source."); return; }
     setStatus("running");
+    // #10 — a fresh review run should always land expanded so the user can
+    // see the new findings; the collapse only applies to post-Apply state.
+    setCollapsed(false);
     setError("");
     setProgress(0);
     setProgressLabel("Starting review…");
@@ -5471,6 +5485,11 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
         setPendingRetryIds([]);
         setStatus("applied");
         setTimeout(() => setStatus("done"), 2500);
+        // #10 — once an Apply fully lands, collapse the report so the revised
+        // plan is what the user sees first. A partial apply (the if-branch
+        // above) stays expanded so the "Re-plan to apply the rest" affordance
+        // remains visible without an extra tap.
+        setCollapsed(true);
       }
       if (typeof onPlanRevised === "function") {
         onPlanRevised(newPlan);
@@ -5591,14 +5610,57 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
         </div>
       )}
 
+      {/* #10 — Collapsed one-line summary after a successful Apply. Shown
+          when the user has applied at least one finding (so the plan on
+          screen is newer than the findings list above it). "Show details"
+          expands the full findings card back; "Revalidate" kicks off a fresh
+          review run. */}
+      {(status === "done" || status === "applied") && review && collapsed && (
+        <div style={{ ...cardStyleLocal, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", padding: "10px 14px" }}>
+          <p style={{ ...sectionLabel, margin: 0, color: "var(--color-text-secondary)" }}>
+            Expert review
+            {appliedIds.length > 0 && (
+              <span style={{ color: "var(--color-text-tertiary)", fontWeight: 500, letterSpacing: "normal", textTransform: "none" }}>
+                {`  ·  ${appliedIds.length} change${appliedIds.length === 1 ? "" : "s"} applied`}
+              </span>
+            )}
+          </p>
+          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+            <button
+              onClick={() => setCollapsed(false)}
+              style={{ fontSize: "10.5px", color: "var(--color-text-secondary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}
+            >
+              Show details
+            </button>
+            <button
+              onClick={() => { setStatus("idle"); setReview(null); setCollapsed(false); }}
+              style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}
+            >
+              Revalidate
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* DONE — verdict + findings */}
-      {(status === "done" || status === "applied") && review && (
+      {(status === "done" || status === "applied") && review && !collapsed && (
         <div style={cardStyleLocal}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: "8px", marginBottom: "8px" }}>
             <p style={{ ...sectionLabel, margin: 0 }}>Review by {selectedSources.length} source{selectedSources.length !== 1 ? "s" : ""}</p>
-            <button onClick={() => { setStatus("idle"); setReview(null); }} style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
-              Re-run review
-            </button>
+            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+              {appliedIds.length > 0 && (
+                <button
+                  onClick={() => setCollapsed(true)}
+                  style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}
+                  title="Collapse to a one-line summary"
+                >
+                  Collapse
+                </button>
+              )}
+              <button onClick={() => { setStatus("idle"); setReview(null); setCollapsed(false); }} style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
+                Re-run review
+              </button>
+            </div>
           </div>
           <p style={{ fontSize: "15px", color: "var(--color-text-primary)", margin: "0 0 10px", lineHeight: 1.5, fontFamily: "var(--font-serif)", fontStyle: "italic" }}>{review.verdict}</p>
           {findings.length > 0 && (
