@@ -10,6 +10,7 @@ import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
+import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnconfirmedTimesPayload } from "./flightResolver.js";
 import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, isPdfDownloadReady } from "./introduction.js";
 import { shouldShowWelcome, markWelcomeDismissed, detectPlatform } from "./appIntro.js";
 
@@ -6458,69 +6459,117 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
     attemptedRef.current = sig;
     let cancelled = false;
 
-    // Collect flights that need a number: structured Flight items whose
-    // flight has no usable flight_number yet and isn't user-supplied.
+    // Collect flights the resolver should act on. flightNeedsResolve
+    // classifies each as:
+    //   - "number": model omitted the number (full resolve, may also
+    //     backfill times)
+    //   - "times":  model emitted the number but missing one or both
+    //     clock times (Gap 2 — PR #84 used to bail entirely on these)
+    //   - null: skip entirely
     const targets = [];
     days.forEach((d, di) => {
       (Array.isArray(d.items) ? d.items : []).forEach((it, ii) => {
         if (it?.type !== "Flight" || !it.flight) return;
-        const fl = it.flight;
-        const hasNum = fl.flight_number && String(fl.flight_number).trim();
-        if (fl._userSuppliedFlightNumber || hasNum) return;
-        const fromCode = normalizeAirportCode(fl.from_airport);
-        const toCode = normalizeAirportCode(fl.to_airport);
+        const mode = flightNeedsResolve(it.flight);
+        if (!mode) return;
+        const fromCode = normalizeAirportCode(it.flight.from_airport);
+        const toCode = normalizeAirportCode(it.flight.to_airport);
         const isoDate = parseDayLabelToISODate(d.label);
         if (!fromCode || !toCode || !isoDate) return;
-        targets.push({ di, ii, fl, fromCode, toCode, isoDate });
+        targets.push({ di, ii, fl: it.flight, fromCode, toCode, isoDate, mode });
       });
     });
     if (targets.length === 0) return;
 
+    // Per-flight: call /api/flights-search with the airline filter;
+    // retry route-only when the filter returns zero rows (Gap 1
+    // recovery, see concepts/flight-resolver-gaps.md). Build the
+    // merge payload via the pure helpers in flightResolver.js;
+    // accumulate either a positive resolve or a _timesUnconfirmed
+    // fallback per target.
     (async () => {
       const resolved = [];
       for (const t of targets) {
-        try {
-          const iata = resolveAirlineIata(t.fl.carrier);
-          const params = new URLSearchParams({ date: t.isoDate, origin: t.fromCode, destination: t.toCode });
-          if (iata) params.set("airline", iata);
-          const res = await fetch(`/api/flights-search?${params}`);
-          const j = await res.json().catch(() => ({}));
-          if (!j.ok || !Array.isArray(j.flights) || j.flights.length === 0) continue;
-          const pool = iata
-            ? (j.flights.filter(x => (x.flightNumber || "").toUpperCase().startsWith(iata)) || [])
-            : j.flights;
-          const eligible = pool.length > 0 ? pool : j.flights;
-          const approx = parseClockToMinutes(t.fl.depart_time);
-          const pick = pickScheduledFlight(eligible, approx, iata || null);
-          if (pick && pick.flightNumber) resolved.push({ ...t, pick });
-        } catch {
-          // Silent — a failed lookup just leaves that flight without a number.
+        const iata = resolveAirlineIata(t.fl.carrier);
+        const approx = parseClockToMinutes(t.fl.depart_time);
+        let pick = null;
+        let source = null;
+
+        // Attempt 1: airline-filtered query (existing behavior).
+        if (iata) {
+          try {
+            const params = new URLSearchParams({ date: t.isoDate, origin: t.fromCode, destination: t.toCode, airline: iata });
+            const res = await fetch(`/api/flights-search?${params}`);
+            const j = await res.json().catch(() => ({}));
+            if (j.ok && Array.isArray(j.flights) && j.flights.length > 0) {
+              pick = pickFromPool({ flights: j.flights, airlineIata: iata, approxMinutes: approx, pickScheduledFlight });
+              if (pick) source = "airline";
+            }
+          } catch {
+            // Silent — falls through to the route-only retry.
+          }
         }
+
+        // Attempt 2: route-only retry when the airline-filter miss
+        // returned nothing. Recovers the false-negative case the
+        // production probe surfaced (EWR-LAX-AA returns 0 with the
+        // airline filter but 15 without). Route-only results can
+        // only contribute times in number-mode (buildMergePayload
+        // downgrades cross-carrier picks to times-only automatically).
+        if (!pick) {
+          try {
+            const params = new URLSearchParams({ date: t.isoDate, origin: t.fromCode, destination: t.toCode });
+            const res = await fetch(`/api/flights-search?${params}`);
+            const j = await res.json().catch(() => ({}));
+            if (j.ok && Array.isArray(j.flights) && j.flights.length > 0) {
+              // In times-mode, prefer the row whose number exactly
+              // matches the model's emitted number — those are the
+              // times the user actually wants.
+              if (t.mode === "times" && t.fl.flight_number) {
+                const wanted = String(t.fl.flight_number).trim().toUpperCase();
+                const exact = j.flights.find(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase() === wanted);
+                pick = exact || pickFromPool({ flights: j.flights, airlineIata: null, approxMinutes: approx, pickScheduledFlight });
+              } else {
+                pick = pickFromPool({ flights: j.flights, airlineIata: null, approxMinutes: approx, pickScheduledFlight });
+              }
+              if (pick) source = "route-only";
+            }
+          } catch {
+            // Silent — falls through to the _timesUnconfirmed fallback.
+          }
+        }
+
+        if (pick) {
+          const merge = buildMergePayload({ mode: t.mode, pick, currentFlight: t.fl, source, airlineIata: iata });
+          if (merge) {
+            resolved.push({ di: t.di, ii: t.ii, merge });
+            continue;
+          }
+        }
+
+        // Total miss path: when even the route-only retry came up
+        // empty AND the flight has no times to begin with, persist
+        // _timesUnconfirmed so the PDF can render an honest line
+        // ("Times not yet confirmed — check with airline at booking")
+        // instead of a blank.
+        const fallback = buildUnconfirmedTimesPayload(t.fl);
+        if (fallback) resolved.push({ di: t.di, ii: t.ii, merge: fallback });
       }
+
       if (cancelled || resolved.length === 0) return;
 
-      // Build an immutable next plan with the resolved numbers persisted, each
-      // flagged _scheduleVerified so applyQualityLayer keeps it (not a model
-      // guess) and the PDF shows the "verify at booking" qualifier.
-      const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined;
+      // Build an immutable next plan with the resolved fields merged
+      // into the canonical plan via onPlanRevised. applyQualityLayer
+      // exempts _scheduleVerified numbers from the strip; PDF reads
+      // both _autoResolvedFlightNumber (for the "verify at booking"
+      // qualifier) and _timesUnconfirmed (for the honest-fallback line).
       const nextDays = plan.days.map((d, di) => {
         const hits = resolved.filter(r => r.di === di);
         if (hits.length === 0) return d;
         const items = d.items.map((it, ii) => {
           const hit = hits.find(h => h.ii === ii);
           if (!hit) return it;
-          return {
-            ...it,
-            flight: {
-              ...it.flight,
-              flight_number: hit.pick.flightNumber,
-              depart_time: it.flight.depart_time || toT(hit.pick.scheduledOut),
-              arrive_time: it.flight.arrive_time || toT(hit.pick.scheduledIn),
-              ...(hit.pick.aircraft && !it.flight.aircraft ? { aircraft: hit.pick.aircraft } : {}),
-              _scheduleVerified: true,
-              _autoResolvedFlightNumber: true,
-            },
-          };
+          return { ...it, flight: { ...it.flight, ...hit.merge } };
         });
         return { ...d, items };
       });
