@@ -26,3 +26,4 @@ Luxury-tier travel-planning web app. One bundle, two surfaces:
 - `concepts/known-issues.md` — outstanding non-blocking infra/QA gaps
 - `concepts/build-stall-watchdog.md` — #24 diagnosis: 180s stall watchdog + KV-poll resume + decouple #8 auto-review
 - `learnings/2026-06-27.md` — full work log for the day PRs #64–#69 shipped
+- `learnings/2026-06-30.md` — work log for the day PRs #96–#102 shipped; #6 parked; flight-numbers investigation opened
