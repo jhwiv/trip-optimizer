@@ -10881,6 +10881,23 @@ export default function TripOptimizer() {
   // outputs screen — never starts a build until the user taps "Build itinerary".
   const [outputsStep, setOutputsStep] = useState(false);
 
+  // #20 Land at the TOP of the outputs screen whenever it opens. The five
+  // setOutputsStep(true) callers previously scrolled inline in the SAME tick as
+  // the state change — i.e. before the new (taller) screen painted — so the
+  // browser kept a stale offset and the user landed partway down (on the newly
+  // added Expert review sources card) instead of the Output sections card.
+  // Scrolling in an effect after the render lands it correctly, and fixes all
+  // entry points at once. (Same scroll-before-render class as the #2 fix.)
+  useEffect(() => {
+    if (!outputsStep) return;
+    // Defer past this render so the (taller) outputs screen has painted first;
+    // a 0ms timeout lands after layout. (rAF isn't in the lint globals here.)
+    const id = setTimeout(() => {
+      try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+    }, 0);
+    return () => clearTimeout(id);
+  }, [outputsStep]);
+
   // Itinerary is locked on; never let it be toggled into an empty build.
   const togOut = k => { if (k === "itinerary") return; setOut(o => ({ ...o, [k]: !o[k] })); };
 
@@ -13754,7 +13771,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
             {/* Primary CTA off the Details screen — pure navigation to the
                 Outputs screen. It does NOT start a build (see Issue 1). */}
-            <button onClick={() => { setOutputsStep(true); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }}
+            <button onClick={() => { setOutputsStep(true); /* #20 scroll handled by the outputsStep effect (after render) */ }}
               style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
               Jump to select outputs →
             </button>
