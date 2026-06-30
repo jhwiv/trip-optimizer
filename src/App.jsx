@@ -6571,7 +6571,14 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
     //   - "times":  model emitted the number but missing one or both
     //     clock times (Gap 2 — PR #84 used to bail entirely on these)
     //   - null: skip entirely
+    // Collect targets the resolver can act on AND verify-mode flights
+    // we cannot reach the API for (missing airport code or unparseable
+    // day label). The latter MUST still get _scheduleVerified written
+    // so applyQualityLayer's strip doesn't null the model's number —
+    // that's the precondition-failure recurrence path. See peer-review
+    // note 'Possibility A' in this PR's description.
     const targets = [];
+    const verifyTrustOnly = [];
     days.forEach((d, di) => {
       (Array.isArray(d.items) ? d.items : []).forEach((it, ii) => {
         if (it?.type !== "Flight" || !it.flight) return;
@@ -6580,11 +6587,24 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         const fromCode = normalizeAirportCode(it.flight.from_airport);
         const toCode = normalizeAirportCode(it.flight.to_airport);
         const isoDate = parseDayLabelToISODate(d.label);
-        if (!fromCode || !toCode || !isoDate) return;
+        if (!fromCode || !toCode || !isoDate) {
+          // Precondition failure: cannot reach the API. For verify-mode
+          // (model emitted a complete-looking flight), trust the model
+          // and mark _scheduleVerified so the strip exemption fires.
+          // Worst case the model's number is wrong, but that's still
+          // better than rendering nothing at all — the user can verify
+          // at booking via the live-status panel.
+          if (mode === "verify") {
+            verifyTrustOnly.push({ di, ii });
+          }
+          // number/times modes with bad preconditions stay silent —
+          // there was never a number to display.
+          return;
+        }
         targets.push({ di, ii, fl: it.flight, fromCode, toCode, isoDate, mode });
       });
     });
-    if (targets.length === 0) return;
+    if (targets.length === 0 && verifyTrustOnly.length === 0) return;
 
     // Per-flight: call /api/flights-search with the airline filter;
     // retry route-only when the filter returns zero rows (Gap 1
@@ -6594,6 +6614,20 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
     // fallback per target.
     (async () => {
       const resolved = [];
+      // Precondition-failure verify-mode flights: write _scheduleVerified +
+      // _verifyTrusted with no merge of times/aircraft — we never reached
+      // the API for these, so the model's emitted times stay untouched.
+      for (const vt of verifyTrustOnly) {
+        resolved.push({
+          di: vt.di,
+          ii: vt.ii,
+          merge: {
+            _scheduleVerified: true,
+            _verifyTrusted: true,
+            _resolveSource: "verify-precondition-skipped",
+          },
+        });
+      }
       for (const t of targets) {
         const iata = resolveAirlineIata(t.fl.carrier);
         const approx = parseClockToMinutes(t.fl.depart_time);
@@ -6601,13 +6635,25 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         let source = null;
 
         // Attempt 1: airline-filtered query (existing behavior).
+        // Special case for verify-mode: prefer the row whose number
+        // exactly matches the model's emitted number first. If the
+        // exact number is in the airline-filtered pool, that's the
+        // confirmation case and we get _scheduleVerified without
+        // _autoResolvedFlightNumber. Otherwise fall back to the
+        // time-proximity pick (substitution case).
         if (iata) {
           try {
             const params = new URLSearchParams({ date: t.isoDate, origin: t.fromCode, destination: t.toCode, airline: iata });
             const res = await fetch(`/api/flights-search?${params}`);
             const j = await res.json().catch(() => ({}));
             if (j.ok && Array.isArray(j.flights) && j.flights.length > 0) {
-              pick = pickFromPool({ flights: j.flights, airlineIata: iata, approxMinutes: approx, pickScheduledFlight });
+              if (t.mode === "verify" && t.fl.flight_number) {
+                const wanted = String(t.fl.flight_number).trim().toUpperCase();
+                const exact = j.flights.find(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase() === wanted);
+                pick = exact || pickFromPool({ flights: j.flights, airlineIata: iata, approxMinutes: approx, pickScheduledFlight });
+              } else {
+                pick = pickFromPool({ flights: j.flights, airlineIata: iata, approxMinutes: approx, pickScheduledFlight });
+              }
               if (pick) source = "airline";
             }
           } catch {
@@ -6637,6 +6683,26 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
                 const wanted = String(t.fl.flight_number).trim().toUpperCase();
                 const exact = j.flights.find(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase() === wanted);
                 pick = exact || null;
+              } else if (t.mode === "verify" && t.fl.flight_number && iata) {
+                // verify-mode: model emitted a complete flight. First
+                // try the EXACT number match (confirmation case) so
+                // the merge can write _scheduleVerified without setting
+                // _autoResolvedFlightNumber. If the API doesn't have
+                // that exact number, fall back to a carrier-matched
+                // time-proximity pick (substitution case) so the
+                // schedule's number replaces the model's fabricated one.
+                // pre-filter by carrier IATA to guarantee no cross-carrier
+                // pick can sneak through (same rule PR #108 enforced).
+                const wanted = String(t.fl.flight_number).trim().toUpperCase();
+                const exact = j.flights.find(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase() === wanted);
+                if (exact) {
+                  pick = exact;
+                } else {
+                  const filtered = j.flights.filter(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase().startsWith(iata.toUpperCase()));
+                  if (filtered.length > 0) {
+                    pick = pickFromPool({ flights: filtered, airlineIata: iata, approxMinutes: approx, pickScheduledFlight });
+                  }
+                }
               } else if (t.mode === "number" && iata) {
                 // number-mode: pre-filter the pool to carrier-matching
                 // rows before picking. pickFromPool's internal fallback
@@ -6670,9 +6736,34 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
           }
         }
 
-        // Total miss path: when even the route-only retry came up
-        // empty AND the flight has no times to begin with, persist
-        // _timesUnconfirmed so the PDF can render an honest line
+        // Verify-mode total miss: model emitted a complete flight but
+        // the schedule API couldn't confirm or substitute. We CANNOT
+        // call buildUnconfirmedTimesPayload here because the flight
+        // already has both times — that helper would return null, the
+        // resolver would push nothing, and applyQualityLayer's strip
+        // would null the model's number leaving the user with a blank.
+        // This is the exact recurrence we are closing. Instead, write
+        // a verify-trusted payload: keep the model's number and times,
+        // mark _scheduleVerified so applyQualityLayer's exemption
+        // protects the number, and tag _verifyTrusted so downstream
+        // tooling (PDF qualifier, future audits) can distinguish a
+        // truly schedule-confirmed flight from a fallback-trusted one.
+        if (t.mode === "verify" && t.fl.flight_number) {
+          resolved.push({
+            di: t.di,
+            ii: t.ii,
+            merge: {
+              _scheduleVerified: true,
+              _verifyTrusted: true,
+              _resolveSource: "verify-fallback",
+            },
+          });
+          continue;
+        }
+
+        // Total miss path for number/times modes: when even the route-only
+        // retry came up empty AND the flight has no times to begin with,
+        // persist _timesUnconfirmed so the PDF can render an honest line
         // ("Times not yet confirmed — check with airline at booking")
         // instead of a blank.
         const fallback = buildUnconfirmedTimesPayload(t.fl);
