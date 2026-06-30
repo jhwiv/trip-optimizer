@@ -9,7 +9,7 @@ import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, ac
 import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
-import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll } from "./replanControl.js";
+import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
 import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, isPdfDownloadReady } from "./introduction.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
@@ -5306,6 +5306,14 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   // running. Uses the region-aware default sources already selected above. The
   // manual button still works for re-runs / source changes. Mirrors the
   // once-per-build guard pattern used by IntroductionAutoGenerator.
+  //
+  // #24 invariant (do not regress): this effect CANNOT extend the main build's
+  // streamBuildJob stall counter. ReviewPanel only mounts inside ItineraryView,
+  // which is only rendered after the wizard's handleBuild has resolved the main
+  // streamBuildJob promise and committed `rawData` to state. The review's own
+  // streamBuildJob call (handleRunReview → line ~5252) is a separate fetch with
+  // a separate AbortController and a separate stall watchdog. The two never
+  // share state — a slow review cannot make the main build appear stuck.
   const autoRunSigRef = useRef("");
   useEffect(() => {
     if (!autoRun) return;
@@ -7852,7 +7860,7 @@ function salvageTruncatedJSON(str) {
 //   scaled to the trip's expected duration (targetSec * 2.5) so multi-city
 //   trips that legitimately need 12-15 minutes of model output don't get
 //   guillotined by a 10-min ceiling.
-async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) {
+async function streamBuildJob(body, { signal, onJob, onDelta, onStallNotice, maxPollMs } = {}) {
   const resp = await fetch("/api/build", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -7891,6 +7899,38 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
   let doneSeen = false;
   let stopReason = null;
 
+  // #24 — Live-stream stall watchdog. The server emits {type:"ping"} every
+  // ~15 s so a healthy idle stream still resets the timer on every loop. If
+  // the stream goes truly silent (no deltas AND no pings) for more than
+  // LIVE_STALL_MS, we synthesize a StallError so the existing recoverable-
+  // drop path (shouldResumeViaPoll) breaks out of the read loop and the
+  // KV-poll fallback resumes the job. Without this, a half-closed TCP
+  // connection or a true upstream wedge blocked reader.read() indefinitely
+  // (the Sedona stall report) because no transport error ever surfaced.
+  //
+  // Threshold: 90 s. Server's HEARTBEAT_INTERVAL_MS is 15 s, so a quiet
+  // healthy stream emits a ping every ~15 s. 90 s = six missed heartbeats —
+  // well past anything transient and well below the KV-poll's 180 s budget,
+  // so we trip, resume via poll, and the user keeps moving.
+  const LIVE_STALL_MS = 90 * 1000;
+  let stallTimer = null;
+  function clearStallTimer() {
+    if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+  }
+  function readWithStallWatchdog() {
+    return new Promise((resolve, reject) => {
+      clearStallTimer();
+      stallTimer = setTimeout(() => {
+        stallTimer = null;
+        reject(new StallError("Live stream stalled — no events for 90s."));
+      }, LIVE_STALL_MS);
+      reader.read().then(
+        (res) => { clearStallTimer(); resolve(res); },
+        (err) => { clearStallTimer(); reject(err); },
+      );
+    });
+  }
+
   try {
     while (true) {
       if (signal?.aborted) {
@@ -7901,17 +7941,24 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
       }
       let value, done;
       try {
-        ({ value, done } = await reader.read());
+        ({ value, done } = await readWithStallWatchdog());
       } catch (readErr) {
-        // The live POST stream dropped mid-flight. Without this catch the
-        // reject propagated straight out of streamBuildJob, past the KV-poll
-        // fallback below (which only ran on a clean `done` break) — so a
-        // dropped surgical-revision stream was a hard failure even though the
-        // server job kept running and mirroring to KV. If we already have a
-        // jobId and the drop is a recognized transport error, fall through to
-        // resume via polling instead of failing. See shouldResumeViaPoll.
+        // The live POST stream dropped mid-flight OR our stall watchdog tripped
+        // (#24). Without this catch the reject propagated straight out of
+        // streamBuildJob, past the KV-poll fallback below (which only ran on a
+        // clean `done` break) — so a dropped surgical-revision stream was a
+        // hard failure even though the server job kept running and mirroring
+        // to KV. If we already have a jobId and the error is a recognized
+        // transport drop OR a StallError, fall through to resume via polling
+        // instead of failing. See shouldResumeViaPoll.
         if (readErr?.name === "AbortError") throw readErr;
-        if (shouldResumeViaPoll(readErr, { jobId, doneSeen })) break;
+        if (shouldResumeViaPoll(readErr, { jobId, doneSeen })) {
+          // Cancel the reader so its underlying connection is freed before we
+          // move to KV-poll mode — otherwise a stalled live stream can keep
+          // the fetch alive in the background until TCP eventually times out.
+          try { await reader.cancel(); } catch {}
+          break;
+        }
         throw readErr;
       }
       if (done) break;
@@ -7936,7 +7983,10 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
           // truncated regardless of how well it parses).
           stopReason = evt.reason;
         } else if (evt.type === "ping") {
-          // Server heartbeat — keeps NDJSON alive through long model pauses.
+          // Server heartbeat — keeps NDJSON alive through long model pauses,
+          // and (since #24) the surrounding readWithStallWatchdog already
+          // reset the live-stream stall timer when this event arrived, so a
+          // quiet-but-healthy stream isn't treated as wedged.
           continue;
         } else if (evt.type === "done") {
           doneSeen = true;
@@ -7947,7 +7997,16 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
       }
     }
   } finally {
+    clearStallTimer();
     try { reader.releaseLock(); } catch {}
+  }
+
+  // #24: if we broke out of the read loop via shouldResumeViaPoll (transport
+  // drop or stall watchdog) and we have a jobId to poll, surface a microcopy
+  // so the UI doesn't look dead during the transition to polling. Runs at
+  // most once per streamBuildJob invocation (this is the only call site).
+  if (!doneSeen && jobId && typeof onStallNotice === "function") {
+    try { onStallNotice("Live stream paused — polling for the result…"); } catch {}
   }
 
   // Stream ended without `done` — either a clean EOF or a mid-stream transport
@@ -7972,7 +8031,15 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
     // desserts + wine notes is one such block). 90s was tripping on healthy
     // builds; 180s gives real model pauses room while still catching truly
     // dead jobs.
-    const MAX_STALL_MS = 180 * 1000;
+    //
+    // #24: made adaptive. If the most recent KV status payload reports the
+    // job is still `running` server-side, extend to 300s so a genuinely heavy
+    // multi-city build that's slow but alive doesn't get killed by the
+    // client. Falls back to 180s when status is missing or anything other
+    // than `running`.
+    const MAX_STALL_MS_BASE = 180 * 1000;
+    const MAX_STALL_MS_ALIVE = 300 * 1000;
+    let lastServerStatus = null;
     const pollStart = Date.now();
     let lastProgressAt = Date.now();
     while (true) {
@@ -7984,8 +8051,9 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
       if (Date.now() - pollStart > MAX_POLL_MS) {
         throw new Error("Build is taking longer than expected. Tap Build again to retry.");
       }
-      if (Date.now() - lastProgressAt > MAX_STALL_MS) {
-        throw new Error("Build stalled — no new content for 3 minutes. The live stream likely dropped and KV mirroring is unavailable. Tap Build again to retry.");
+      const stallBudget = lastServerStatus === "running" ? MAX_STALL_MS_ALIVE : MAX_STALL_MS_BASE;
+      if (Date.now() - lastProgressAt > stallBudget) {
+        throw new Error("Build stalled — no new content from the server. Tap Build again to retry.");
       }
       let r;
       try {
@@ -8035,6 +8103,9 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
       // sends message_delta. Read it on the final poll so resume-via-poll
       // clients get the same stop_reason signal as SSE-stream clients.
       if (data.stopReason && !stopReason) stopReason = data.stopReason;
+      // #24: track server-reported status so the adaptive stall budget above
+      // can extend when the job is provably still alive.
+      if (typeof data.status === "string") lastServerStatus = data.status;
       if (data.status === "done") return { jobId, toolJson, stopReason };
       if (data.status === "error") throw new Error(data.error || "Build failed on server.");
       await new Promise(r => setTimeout(r, POLL_MS));
@@ -12327,6 +12398,10 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       maxPollMs: maxPollMsForTrip,
       onJob,
       onDelta: () => {},
+      // #24: surface a microcopy when the live stream stalls and we fall over
+      // to KV polling. The build keeps progressing server-side; the UI just
+      // tells the user we're switching transports so it doesn't look hung.
+      onStallNotice: (msg) => { try { setLoadingMsg(msg); } catch {} },
     });
     // A chunk that ends on max_tokens is truncated regardless of how well its
     // JSON parses — its tail days/items may be cut off. Fail loudly (surface
