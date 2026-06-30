@@ -11,6 +11,7 @@ import { relevantProviderCategories, bucketProviders, providerCategoryMeta } fro
 import { resolveOutputs } from "./outputsState.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
 import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, isPdfDownloadReady } from "./introduction.js";
+import { shouldShowWelcome, markWelcomeDismissed, detectPlatform } from "./appIntro.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -10558,6 +10559,293 @@ function FindView({ embedded = false } = {}) {
 // rules-of-hooks forbid returning before them.
 export { FindView };
 
+// #9 — First-visit App Intro overlay. Explains what RouteSmith is, what it
+// isn't, and how to add it to the home screen. Once-only per browser via
+// localStorage; suppressed when ?direct=1 is on the URL or the app is
+// running as an installed PWA. Pure gate logic lives in src/appIntro.js so
+// the dismissal, URL bypass, and platform detection are unit-testable.
+function AppIntroOverlay() {
+  // Render-stable gate: compute once on mount, never re-show within the
+  // same session even if the user opens another tab that dismisses it.
+  // useState lazy initializer so SSR / hydration mismatches don't trip.
+  const [visible, setVisible] = useState(() => shouldShowWelcome());
+  // Which A2HS panel is expanded. "" = none; "ios" / "android" / "desktop".
+  // Initialized from the user agent so the user sees their platform's
+  // instructions first without an extra tap. Desktop stays collapsed (the
+  // install flow is browser-specific and a generic panel is unhelpful).
+  const [a2hsOpen, setA2hsOpen] = useState(() => {
+    const p = detectPlatform(typeof navigator !== "undefined" ? navigator.userAgent : "");
+    return p === "ios" || p === "android" ? p : "";
+  });
+
+  const dismiss = useCallback(() => {
+    markWelcomeDismissed();
+    setVisible(false);
+  }, []);
+
+  // Lock body scroll while the overlay is up so background touches on
+  // mobile don't drift the wizard underneath. Restored on dismiss / unmount.
+  useEffect(() => {
+    if (!visible) return undefined;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [visible]);
+
+  // Escape key dismisses, matching modal conventions.
+  useEffect(() => {
+    if (!visible) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") dismiss(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [visible, dismiss]);
+
+  if (!visible) return null;
+
+  const OVERLAY_BG = "var(--color-background-secondary)";
+  const cardStyle = {
+    background: "var(--color-background-primary)",
+    border: "0.5px solid var(--color-border-secondary)",
+    borderRadius: "var(--border-radius-md)",
+    padding: "14px 16px",
+    marginBottom: "10px",
+  };
+  const cardLabel = {
+    fontSize: "10.5px",
+    color: "var(--color-text-primary)",
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    fontWeight: 700,
+    margin: "0 0 6px",
+  };
+  const cardBody = {
+    fontSize: "13px",
+    color: "var(--color-text-secondary)",
+    margin: 0,
+    lineHeight: 1.55,
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="app-intro-title"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: OVERLAY_BG,
+        zIndex: 9999,
+        overflowY: "auto",
+        WebkitOverflowScrolling: "touch",
+      }}
+    >
+      <button
+        type="button"
+        onClick={dismiss}
+        aria-label="Skip the intro and go straight to the planner"
+        style={{
+          position: "absolute",
+          top: "calc(env(safe-area-inset-top, 14px) + 14px)",
+          right: "18px",
+          background: "transparent",
+          border: "none",
+          color: "var(--color-text-tertiary)",
+          fontSize: "11px",
+          letterSpacing: "0.1em",
+          textTransform: "uppercase",
+          fontWeight: 600,
+          cursor: "pointer",
+          textDecoration: "underline",
+          fontFamily: "inherit",
+        }}
+      >
+        Skip
+      </button>
+
+      <div
+        style={{
+          position: "absolute",
+          top: "calc(env(safe-area-inset-top, 14px) + 14px)",
+          left: "22px",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "6px",
+          fontSize: "9.5px",
+          letterSpacing: "0.16em",
+          textTransform: "uppercase",
+          color: "var(--color-text-tertiary)",
+          fontWeight: 600,
+        }}
+      >
+        <span>Powered by</span>
+        <img
+          src="/brand-wordmark.png?v=2"
+          alt="Barrier Island Digital, LLC"
+          style={{ display: "block", height: "18px", width: "auto", opacity: 0.9 }}
+        />
+      </div>
+
+      <div
+        style={{
+          maxWidth: "640px",
+          margin: "0 auto",
+          padding: "calc(env(safe-area-inset-top, 14px) + 76px) 20px 32px",
+        }}
+      >
+        <div style={{ textAlign: "center", marginBottom: "24px" }}>
+          <img
+            src="/rs3-wordmark.svg?v=3"
+            alt="Route Smith"
+            style={{ display: "inline-block", height: "56px", width: "auto", margin: "0 0 10px" }}
+          />
+          <p
+            id="app-intro-title"
+            style={{
+              fontSize: "15px",
+              color: "var(--color-text-primary)",
+              margin: 0,
+              fontFamily: "var(--font-serif)",
+              fontStyle: "italic",
+              lineHeight: 1.4,
+            }}
+          >
+            An LLM-assisted itinerary builder for premium trips.
+          </p>
+        </div>
+
+        <div style={cardStyle}>
+          <p style={cardLabel}>What it is</p>
+          <p style={cardBody}>
+            Tell us where, when, and how you travel — get a day-by-day plan with flights, hotels, dining, activities, and the operational details you actually need: addresses, phone numbers, confirmation slots, weather windows, packing notes.
+          </p>
+        </div>
+
+        <div style={cardStyle}>
+          <p style={cardLabel}>What it isn&rsquo;t</p>
+          <p style={cardBody}>
+            Not a booking engine. We don&rsquo;t sell flights or hotels and we don&rsquo;t have live availability. Every recommendation is checked through a panel of expert sources, but you book directly with the operator. Treat dates, prices, and hours as starting points — confirm before you commit.
+          </p>
+        </div>
+
+        <div style={cardStyle}>
+          <p style={cardLabel}>How to use it</p>
+          <p style={cardBody}>
+            Build a plan, tweak it via the expert review or &ldquo;Suggest a change,&rdquo; save it to your device, and export as PDF for the trip. Nothing&rsquo;s stored on a server. You can come back any time and pick up where you left off.
+          </p>
+        </div>
+
+        <div style={cardStyle}>
+          <p style={cardLabel}>Add to your home screen</p>
+          <p style={{ ...cardBody, marginBottom: "10px" }}>
+            Travel apps get checked dozens of times per trip. Save Route Smith to your home screen so it&rsquo;s one tap away — it works offline once installed.
+          </p>
+          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: a2hsOpen ? "10px" : 0 }}>
+            {[
+              { id: "ios", label: "iPhone / iPad" },
+              { id: "android", label: "Android" },
+              { id: "desktop", label: "Desktop" },
+            ].map((opt) => {
+              const active = a2hsOpen === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  aria-expanded={active}
+                  aria-controls={`a2hs-panel-${opt.id}`}
+                  onClick={() => setA2hsOpen(active ? "" : opt.id)}
+                  style={{
+                    fontSize: "10.5px",
+                    letterSpacing: "0.04em",
+                    fontWeight: active ? 700 : 500,
+                    color: active ? "var(--color-background-primary)" : "var(--color-text-secondary)",
+                    background: active ? "var(--color-text-primary)" : "transparent",
+                    border: `0.5px solid ${active ? "var(--color-text-primary)" : "var(--color-border-secondary)"}`,
+                    borderRadius: "999px",
+                    padding: "4px 11px",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+          {a2hsOpen === "ios" && (
+            <ol
+              id="a2hs-panel-ios"
+              style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}
+            >
+              <li>Open this page in <strong>Safari</strong> (other iOS browsers can&rsquo;t install web apps).</li>
+              <li>Tap the <strong>Share</strong> icon at the bottom of the screen (the square with the up arrow).</li>
+              <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
+              <li>Tap <strong>Add</strong> in the top-right.</li>
+            </ol>
+          )}
+          {a2hsOpen === "android" && (
+            <ol
+              id="a2hs-panel-android"
+              style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}
+            >
+              <li>Open this page in <strong>Chrome</strong>, <strong>Edge</strong>, or <strong>Samsung Internet</strong>.</li>
+              <li>Tap the <strong>three-dot menu</strong> in the top-right corner.</li>
+              <li>Tap <strong>Add to Home screen</strong> (or <strong>Install app</strong> if you see it).</li>
+              <li>Tap <strong>Add</strong> to confirm.</li>
+            </ol>
+          )}
+          {a2hsOpen === "desktop" && (
+            <ol
+              id="a2hs-panel-desktop"
+              style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}
+            >
+              <li><strong>Chrome / Edge:</strong> look for the install icon in the URL bar (a small monitor with a down arrow) and click <strong>Install</strong>.</li>
+              <li><strong>Safari (macOS):</strong> File menu, then <strong>Add to Dock</strong>.</li>
+              <li><strong>Firefox:</strong> doesn&rsquo;t support PWA install; bookmark the page instead.</li>
+            </ol>
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={dismiss}
+          style={{
+            width: "100%",
+            border: "none",
+            borderRadius: "var(--border-radius-md)",
+            padding: "14px 18px",
+            fontSize: "12px",
+            fontWeight: 700,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            cursor: "pointer",
+            fontFamily: "inherit",
+            background: "var(--color-text-primary)",
+            color: "var(--color-background-primary)",
+            marginTop: "14px",
+          }}
+        >
+          Start planning
+        </button>
+
+        <p
+          style={{
+            textAlign: "center",
+            fontSize: "9.5px",
+            color: "var(--color-text-tertiary)",
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            marginTop: "18px",
+            marginBottom: 0,
+            fontWeight: 500,
+          }}
+        >
+          A travel companion crafted by Barrier Island Digital, LLC
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function TripOptimizer() {
 
   // Viewport awareness drives a few container widths so the wizard form
@@ -13481,6 +13769,11 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
   return (
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)" }}>
+
+      {/* #9 — First-visit App Intro overlay. Self-gated; renders null when
+          already dismissed, when ?direct=1 is on the URL, or when running
+          as an installed PWA. Sits above the wizard chrome at z-index 9999. */}
+      <AppIntroOverlay />
 
       <div style={{ padding: vp.isMobile ? "1.5rem 0 1.25rem" : "2rem 0 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}>
         <div style={{ maxWidth: colMaxWidth, margin: "0 auto", padding: vp.isMobile ? "0 1rem" : "0 1.5rem" }}>
