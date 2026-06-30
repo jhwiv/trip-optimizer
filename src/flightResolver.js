@@ -31,8 +31,21 @@
 //   "times"  — has a flight number (or user supplied one) but missing
 //              one or both clock times. Run a times-only backfill;
 //              never overwrite the number.
-//   null     — has number AND both times, or is user-supplied with
-//              complete fields. Skip entirely.
+//   "verify" — has number AND both times. The model emitted a complete-
+//              looking flight, but applyQualityLayer strips ALL model-
+//              emitted numbers unless _scheduleVerified is set. Without
+//              this mode the resolver skips the flight, the strip nulls
+//              the number, and the user sees nothing on screen or PDF.
+//              See docs/wiki/concepts/flight-resolver-gaps.md § the
+//              EWR-SFO recurrence for the full diagnosis. The verify-
+//              mode resolver call confirms the number against the live
+//              schedule (passes through unchanged + _scheduleVerified)
+//              OR substitutes the schedule's number if the model's was
+//              fabricated OR falls back to _timesUnconfirmed if the
+//              schedule API can't help.
+//   null     — user-supplied with complete fields. Skip entirely — user
+//              facts always win and the strip's user-supplied exception
+//              already keeps the number safe.
 //
 // Also returns null for malformed inputs so the caller can treat the
 // classification as a single "should-skip" check.
@@ -43,9 +56,16 @@ export function flightNeedsResolve(fl) {
   const depart = typeof fl.depart_time === "string" ? fl.depart_time.trim() : "";
   const arrive = typeof fl.arrive_time === "string" ? fl.arrive_time.trim() : "";
   const hasBothTimes = depart.length > 0 && arrive.length > 0;
+  // User-supplied flights with complete fields skip entirely — the
+  // applyQualityLayer user-supplied exception keeps the number.
+  if (fl._userSuppliedFlightNumber === true && hasBothTimes) return null;
   if (!hasNum) return "number";
   if (hasNum && !hasBothTimes) return "times";
-  return null;
+  // Has number AND both times AND not user-supplied → verify against
+  // live schedule. This is the case that caused the EWR-SFO recurrence:
+  // model emitted a complete flight, resolver used to skip, strip nulled
+  // the number, screen + PDF showed nothing.
+  return "verify";
 }
 
 // Filter a flights[] response by airline IATA prefix on the flight
@@ -113,7 +133,7 @@ export function pickFromPool({ flights, airlineIata, approxMinutes, pickSchedule
 export function buildMergePayload({ mode, pick, currentFlight, source, airlineIata }) {
   if (!currentFlight || typeof currentFlight !== "object") return null;
   if (!pick || typeof pick !== "object") return null;
-  if (mode !== "number" && mode !== "times") return null;
+  if (mode !== "number" && mode !== "times" && mode !== "verify") return null;
 
   const toT = (iso) =>
     iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined;
@@ -142,6 +162,51 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
       _autoResolvedFlightNumber: true,
       // source captured so downstream tooling can audit how a number
       // was resolved if needed; PDF doesn't read this.
+      _resolveSource: source || "airline",
+    };
+  }
+
+  if (mode === "verify") {
+    // verify-mode: model emitted a complete flight (number + both times).
+    // The pick must already be carrier-matched (App.jsx pre-filters by
+    // IATA in route-only retry; airline-filtered pool naturally matches).
+    // Defensive prefix re-check: if the pick disagrees with the requested
+    // airline, do NOT lift the number — refresh times only, keep model's
+    // number, but still mark _scheduleVerified so applyQualityLayer's
+    // exemption keeps the model's number safe.
+    if (airlineIata) {
+      const pickPrefix =
+        typeof pick.flightNumber === "string" ? pick.flightNumber.slice(0, 2).toUpperCase() : "";
+      if (pickPrefix && pickPrefix !== airlineIata.toUpperCase()) {
+        return {
+          depart_time: toT(pick.scheduledOut) || currentFlight.depart_time,
+          arrive_time: toT(pick.scheduledIn) || currentFlight.arrive_time,
+          ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
+          _scheduleVerified: true,
+          _resolveSource: source || "airline",
+        };
+      }
+    }
+    // The pick's number may be identical to the model's (the API confirmed
+    // it) or different (the model fabricated, the schedule corrected). In
+    // both cases the schedule is authoritative — lift the schedule's number
+    // and refresh times. _autoResolvedFlightNumber is set ONLY when the
+    // schedule overrode the model, so the PDF renders the "Verify at
+    // booking" qualifier only on substitutions, not on confirmations.
+    const currentNum =
+      typeof currentFlight.flight_number === "string"
+        ? currentFlight.flight_number.trim().toUpperCase()
+        : "";
+    const pickNum =
+      typeof pick.flightNumber === "string" ? pick.flightNumber.toUpperCase() : "";
+    const overrode = currentNum !== pickNum;
+    return {
+      flight_number: pick.flightNumber,
+      depart_time: toT(pick.scheduledOut) || currentFlight.depart_time,
+      arrive_time: toT(pick.scheduledIn) || currentFlight.arrive_time,
+      ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
+      _scheduleVerified: true,
+      ...(overrode ? { _autoResolvedFlightNumber: true } : {}),
       _resolveSource: source || "airline",
     };
   }

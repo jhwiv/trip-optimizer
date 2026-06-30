@@ -50,9 +50,14 @@ console.log("=== flightNeedsResolve — classification ===");
   assert("model emits number + arrive_time only → 'times'",
     flightNeedsResolve({ carrier: "UA", flight_number: "UA1792", arrive_time: "11:30 AM" }) === "times");
 
-  // Everything present → null (skip).
-  assert("model emits everything → null (skip)",
-    flightNeedsResolve({ flight_number: "UA1792", depart_time: "8:30 AM", arrive_time: "11:30 AM" }) === null);
+  // Everything present → "verify". The model emitted a complete-looking
+  // flight; we MUST verify it against the live schedule because
+  // applyQualityLayer's universal number strip would otherwise null the
+  // model's number when _scheduleVerified is missing. This was the
+  // EWR-SFO recurrence root cause — the old behavior returned null and
+  // let the strip nuke the number silently.
+  assert("model emits everything → 'verify' (must confirm against live schedule)",
+    flightNeedsResolve({ flight_number: "UA1792", depart_time: "8:30 AM", arrive_time: "11:30 AM" }) === "verify");
 
   // User-supplied with both times → null (skip; trust the user even if number is blank).
   assert("user supplied + both times → null (skip)",
@@ -297,8 +302,14 @@ console.log("=== Scenario B — model emits number only → times backfill ===")
     merge.flight_number === undefined);
 }
 
-console.log("=== Scenario C — model emits everything → no resolver call ===");
+console.log("=== Scenario C — model emits everything → verify against live schedule ===");
 {
+  // This scenario was REWRITTEN. The original Scenario C asserted that a
+  // complete-looking flight returned null and triggered NO resolver call.
+  // That behavior caused the EWR-SFO recurrence: applyQualityLayer's
+  // universal number strip nulled the model's number because
+  // _scheduleVerified was never set. New behavior: complete flights enter
+  // verify-mode and the resolver MUST run.
   const currentFlight = {
     carrier: "UA",
     flight_number: "UA1792",
@@ -307,8 +318,8 @@ console.log("=== Scenario C — model emits everything → no resolver call ==="
     depart_time: "9:00 AM",
     arrive_time: "12:30 PM",
   };
-  assert("Scenario C: flightNeedsResolve returns null (skip the API)",
-    flightNeedsResolve(currentFlight) === null);
+  assert("Scenario C: flightNeedsResolve returns 'verify' (NOT null)",
+    flightNeedsResolve(currentFlight) === "verify");
 }
 
 console.log("=== Scenario D — airline-filter miss → route-only retry recovers ===");
@@ -406,6 +417,128 @@ console.log("=== Scenario E — route-only retry with NO carrier match → fallb
     : null;
   assert("Scenario E (number-mode): empty filtered pool → no pick",
     numberModePick === null);
+}
+
+console.log("=== Scenario F — verify mode confirmation (model right, schedule agrees) ===");
+{
+  // EWR-SFO UA1792 — the canonical recurrence case. Model emitted a
+  // complete flight with depart/arrive times. API returns the same
+  // UA1792 in the carrier-filtered pool. Result: _scheduleVerified set,
+  // _autoResolvedFlightNumber NOT set (confirmation, not substitution),
+  // number unchanged, times refreshed from the live schedule.
+  const currentFlight = {
+    carrier: "United",
+    flight_number: "UA1792",
+    from_airport: "EWR",
+    to_airport: "SFO",
+    depart_time: "11:00 AM",
+    arrive_time: "2:30 PM",
+  };
+  assert("Scenario F: classified as 'verify'",
+    flightNeedsResolve(currentFlight) === "verify");
+
+  const airlinePool = [
+    { flightNumber: "UA1792", scheduledOut: "2026-08-15T15:00:00Z", scheduledIn: "2026-08-15T18:30:00Z" },
+    { flightNumber: "UA205",  scheduledOut: "2026-08-15T18:00:00Z", scheduledIn: "2026-08-15T21:00:00Z" },
+  ];
+
+  // Mirror App.jsx's verify-mode airline-filtered pick: prefer exact
+  // flightNumber match.
+  const wanted = currentFlight.flight_number.toUpperCase();
+  const exact = airlinePool.find(x => x.flightNumber.toUpperCase() === wanted);
+  assert("Scenario F: exact match found in airline-filtered pool",
+    !!exact && exact.flightNumber === "UA1792");
+
+  const merge = buildMergePayload({ mode: "verify", pick: exact, currentFlight, source: "airline", airlineIata: "UA" });
+  assert("Scenario F: merge writes the same flight_number (confirmation)",
+    merge.flight_number === "UA1792");
+  assert("Scenario F: merge sets _scheduleVerified",
+    merge._scheduleVerified === true);
+  assert("Scenario F: confirmation does NOT set _autoResolvedFlightNumber",
+    merge._autoResolvedFlightNumber === undefined);
+  assert("Scenario F: merge refreshes depart_time from the live schedule",
+    typeof merge.depart_time === "string" && merge.depart_time.length > 0);
+}
+
+console.log("=== Scenario G — verify mode substitution (model fabricated, schedule corrects) ===");
+{
+  // Model emitted UA9999 (a fabricated number not in the live schedule),
+  // both times present. API returns UA1792 at the model's time slot.
+  // Result: _scheduleVerified + _autoResolvedFlightNumber set, number
+  // substituted to UA1792, times refreshed.
+  const currentFlight = {
+    carrier: "United",
+    flight_number: "UA9999",
+    from_airport: "EWR",
+    to_airport: "SFO",
+    depart_time: "11:00 AM",
+    arrive_time: "2:30 PM",
+  };
+  assert("Scenario G: classified as 'verify'",
+    flightNeedsResolve(currentFlight) === "verify");
+
+  const airlinePool = [
+    { flightNumber: "UA1792", scheduledOut: "2026-08-15T15:00:00Z", scheduledIn: "2026-08-15T18:30:00Z" },
+    { flightNumber: "UA205",  scheduledOut: "2026-08-15T18:00:00Z", scheduledIn: "2026-08-15T21:00:00Z" },
+  ];
+
+  // No exact match → fall back to time-proximity carrier-matched pick.
+  const wanted = currentFlight.flight_number.toUpperCase();
+  const exact = airlinePool.find(x => x.flightNumber.toUpperCase() === wanted);
+  assert("Scenario G: no exact match for UA9999 in pool",
+    !exact);
+
+  const pick = pickFromPool({ flights: airlinePool, airlineIata: "UA", approxMinutes: 11 * 60, pickScheduledFlight });
+  assert("Scenario G: time-proximity pick lands on UA1792",
+    pick && pick.flightNumber === "UA1792");
+
+  const merge = buildMergePayload({ mode: "verify", pick, currentFlight, source: "airline", airlineIata: "UA" });
+  assert("Scenario G: merge substitutes the schedule's number",
+    merge.flight_number === "UA1792");
+  assert("Scenario G: merge sets _scheduleVerified",
+    merge._scheduleVerified === true);
+  assert("Scenario G: substitution sets _autoResolvedFlightNumber (PDF qualifier)",
+    merge._autoResolvedFlightNumber === true);
+}
+
+console.log("=== Scenario H — verify mode total miss (route not served by carrier) ===");
+{
+  // Model emitted AA200 EWR-LAX with full times. API returns 0 for AA on
+  // both airline-filtered AND no carrier-matching rows in route-only.
+  // The resolver MUST still write _scheduleVerified (with _verifyTrusted
+  // tagging the fallback) so applyQualityLayer's strip doesn't null the
+  // number. The full App.jsx-side fallback is covered by the integration
+  // tests; here we lock the helper-level invariants.
+  const currentFlight = {
+    carrier: "American",
+    flight_number: "AA200",
+    from_airport: "EWR",
+    to_airport: "LAX",
+    depart_time: "10:00 AM",
+    arrive_time: "1:30 PM",
+  };
+  assert("Scenario H: classified as 'verify'",
+    flightNeedsResolve(currentFlight) === "verify");
+
+  const airlineFiltered = [];
+  const routeOnly = [
+    { flightNumber: "UA100", scheduledOut: "2026-08-15T14:00:00Z", scheduledIn: "2026-08-15T17:00:00Z" },
+  ];
+  const pickFromAirline = airlineFiltered.length > 0
+    ? pickFromPool({ flights: airlineFiltered, airlineIata: "AA", approxMinutes: 600, pickScheduledFlight })
+    : null;
+  assert("Scenario H: airline-filtered pool empty → no pick",
+    pickFromAirline === null);
+
+  const aaOnly = routeOnly.filter(x => x.flightNumber.toUpperCase().startsWith("AA"));
+  assert("Scenario H: route-only carrier-filtered pool empty → no pick",
+    aaOnly.length === 0);
+
+  // buildUnconfirmedTimesPayload returns null because the flight has
+  // both times — proving the App.jsx-side fallback is the ONLY safe path.
+  const wouldFallback = buildUnconfirmedTimesPayload(currentFlight);
+  assert("Scenario H: buildUnconfirmedTimesPayload returns null (flight has both times)",
+    wouldFallback === null);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
