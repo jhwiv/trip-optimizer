@@ -5000,7 +5000,8 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
                   letterSpacing: "0.10em",
                   textTransform: "uppercase",
                   fontWeight: 700,
-                  color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)",
+                  /* #23 active = navy fill, so label must be LIGHT (was navy-on-navy = invisible). */
+                  color: active ? ON_NAVY : "var(--color-text-secondary)",
                   padding: "6px 12px",
                   border: active ? "none" : "0.5px solid var(--color-border-secondary)",
                   borderRadius: "20px",
@@ -5029,7 +5030,8 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
                     letterSpacing: "0.06em",
                     textTransform: "uppercase",
                     fontWeight: 600,
-                    color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)",
+                    /* #23 active = navy fill, label must be LIGHT (was navy-on-navy). */
+                    color: active ? ON_NAVY : "var(--color-text-secondary)",
                     padding: "4px 9px",
                     border: active ? "none" : "0.5px solid var(--color-border-secondary)",
                     borderRadius: "3px",
@@ -6209,7 +6211,8 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
                 borderRadius: "4px",
                 border: `0.5px solid ${checked ? GOLD : "var(--color-border-secondary)"}`,
                 background: checked ? GOLD : "transparent",
-                color: checked ? "var(--color-text-primary)" : "var(--color-text-secondary)",
+                /* #23 checked = navy fill, so label must be LIGHT (was navy-on-navy = invisible). */
+                color: checked ? ON_NAVY : "var(--color-text-secondary)",
                 cursor: "pointer",
                 fontFamily: "inherit",
               }}
