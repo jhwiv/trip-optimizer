@@ -1,6 +1,6 @@
 # Flight-number / flight-times resolver gaps (#12 follow-up)
 
-**Status:** Diagnosis confirmed against source 2026-06-30 PM · production API probed · code change authorized · PR pending
+**Status:** RESOLVED 2026-06-30 PM via PR #106 (gap fixes) + PR #108 (cross-carrier times-lift fix discovered during live verification). See handoff.md § Active Investigation. Awaiting real-trip live probe by user. This page kept for the diagnosis, probe data, and the lesson about live-probing after merge.
 **Surfaced:** User report 2026-06-30 PM ("flight numbers and times sometimes missing — feels like a fix that gets reverted")
 **Severity:** Medium (intermittent; primary PDF data quality)
 
