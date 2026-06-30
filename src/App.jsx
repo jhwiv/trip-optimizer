@@ -13,6 +13,7 @@ import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResume
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnconfirmedTimesPayload } from "./flightResolver.js";
 import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, isPdfDownloadReady } from "./introduction.js";
 import { shouldShowWelcome, markWelcomeDismissed, detectPlatform } from "./appIntro.js";
+import { partitionTabs, isActiveTabInOverflow, activeOverflowLabel } from "./tabStrip.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -4981,17 +4982,42 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
     if (Array.isArray(data.snobs) && data.snobs.length > 0) essentials++;
     return { flights, hotels, transport, dining, activities, essentials };
   }, [days, data.tonight, data.weather_window, data.pack, data.flags, data.planb, data.snobs]);
-  const TABS = [
-    { id: "overview", label: "Overview" },
-    counts.flights > 0 && { id: "flights", label: `Flights · ${counts.flights}` },
-    counts.hotels > 0 && { id: "lodging", label: `Lodging · ${counts.hotels}` },
-    counts.transport > 0 && { id: "transport", label: `Transport · ${counts.transport}` },
-    counts.dining > 0 && { id: "dining", label: `Dining · ${counts.dining}` },
-    counts.activities > 0 && { id: "activities", label: `Activities · ${counts.activities}` },
-    (counts.flights + counts.hotels + counts.transport + counts.dining + counts.activities) > 0 && { id: "category", label: "By category" },
-    showProviders && { id: "providers", label: "Local providers" },
-    counts.essentials > 0 && { id: "essentials", label: `Essentials · ${counts.essentials}` },
-  ].filter(Boolean);
+  // #11 B-prime: split the legacy 9-pill strip into 5 always-on
+  // primaries (Overview · Flights · Hotels · Dining · Activities) +
+  // a "More ▾" overflow popover for Transport / By category /
+  // Local providers / Essentials. Pure helpers in src/tabStrip.js;
+  // see tests/test_tab_strip.mjs for the partition/active-state logic.
+  const partition = useMemo(
+    () => partitionTabs(counts, { showProviders }),
+    [counts, showProviders],
+  );
+  const overflowActive = isActiveTabInOverflow(tab, partition);
+  const overflowLabel = activeOverflowLabel(tab, partition);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef(null);
+
+  // Close the More popover on click-outside and on Escape. Closing
+  // when the active tab changes is folded into each onTabChange callsite
+  // below (clicking a tab pill or a menu item dismisses the menu
+  // inline) so we don't need a tab-change effect — React 19's
+  // react-hooks/set-state-in-effect would flag that as a cascading-
+  // render risk.
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const onDocClick = (e) => {
+      if (!moreRef.current) return;
+      if (!moreRef.current.contains(e.target)) setMoreOpen(false);
+    };
+    const onKey = (e) => { if (e.key === "Escape") setMoreOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("touchstart", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("touchstart", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [moreOpen]);
   return (
     <>
       {/* Two-row sticky nav, modeled after zurich-weekend.com / maritimesgrandloop.com.
@@ -4999,14 +5025,18 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
          gets the warm gold pill. Tabs are rendered ABOVE the hero by the parent so
          the hero itself stays compact. */}
       <div className="no-print" style={{ position: "sticky", top: 0, zIndex: 6, background: "var(--color-background-primary)", paddingTop: "8px", paddingBottom: "10px", marginBottom: "14px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-        {/* Row 1 — section/reference tabs. Always visible. WRAPS to multiple lines so all are visible at once. */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", justifyContent: "flex-start" }}>
-          {TABS.map(t => {
+        {/* Row 1 — #11 B-prime: 5 primaries + 'More ▾' overflow.
+            Primaries are always visible; the More button takes the
+            active-pill styling whenever the current tab lives in the
+            overflow group, so the user can see at a glance that the
+            active section is behind the menu. */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", justifyContent: "flex-start", alignItems: "center" }}>
+          {partition.primaries.map(t => {
             const active = tab === t.id;
             return (
               <button
                 key={t.id}
-                onClick={() => onTabChange(t.id)}
+                onClick={() => { setMoreOpen(false); onTabChange(t.id); }}
                 style={{
                   flex: "0 0 auto",
                   fontSize: "10.5px",
@@ -5027,6 +5057,81 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
               >{t.label}</button>
             );
           })}
+          {partition.overflow.length > 0 && (
+            <div ref={moreRef} style={{ position: "relative", flex: "0 0 auto" }}>
+              <button
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={moreOpen}
+                onClick={() => setMoreOpen((v) => !v)}
+                title={overflowActive
+                  ? `Showing ${overflowLabel} — tap to switch tabs`
+                  : "More sections (Transport, Local providers, Essentials, By category)"}
+                style={{
+                  flex: "0 0 auto",
+                  fontSize: "10.5px",
+                  letterSpacing: "0.10em",
+                  textTransform: "uppercase",
+                  fontWeight: 700,
+                  color: overflowActive ? ON_NAVY : "var(--color-text-secondary)",
+                  padding: "6px 12px",
+                  border: overflowActive ? "none" : "0.5px solid var(--color-border-secondary)",
+                  borderRadius: "20px",
+                  whiteSpace: "nowrap",
+                  background: overflowActive ? GOLD : "var(--color-background-primary)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  lineHeight: 1.2,
+                }}
+              >{overflowActive ? `${overflowLabel} ▾` : "More ▾"}</button>
+              {moreOpen && (
+                <div
+                  role="menu"
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 6px)",
+                    right: 0,
+                    minWidth: "180px",
+                    background: "var(--color-background-primary)",
+                    border: "0.5px solid var(--color-border-secondary)",
+                    borderRadius: "var(--border-radius-md)",
+                    boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
+                    padding: "6px",
+                    zIndex: 8,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "2px",
+                  }}
+                >
+                  {partition.overflow.map((t) => {
+                    const active = tab === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { onTabChange(t.id); setMoreOpen(false); }}
+                        style={{
+                          textAlign: "left",
+                          fontSize: "11.5px",
+                          letterSpacing: "0.04em",
+                          fontWeight: active ? 700 : 500,
+                          color: active ? ON_NAVY : "var(--color-text-primary)",
+                          background: active ? GOLD : "transparent",
+                          border: "none",
+                          borderRadius: "6px",
+                          padding: "8px 12px",
+                          cursor: "pointer",
+                          fontFamily: "inherit",
+                          whiteSpace: "nowrap",
+                        }}
+                      >{t.label}</button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         {/* Row 2 — day filter (Overview only). "All" + one pill per day; click to focus that day. WRAPS. */}
         {tab === "overview" && days.length >= 2 && (
