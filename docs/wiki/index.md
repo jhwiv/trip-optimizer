@@ -26,5 +26,6 @@ Luxury-tier travel-planning web app. One bundle, two surfaces:
 - `concepts/known-issues.md` — outstanding non-blocking infra/QA gaps
 - `concepts/build-stall-watchdog.md` — #24 diagnosis: live-stream stall watchdog + adaptive KV-poll budget
 - `concepts/flight-resolver-gaps.md` — #12 follow-up diagnosis: two coverage gaps in `FlightNumberAutoResolver` (API miss + resolver skips when number exists), production probe data, authorized fix shape
+- `concepts/final-4-roadmap.md` — consolidated execution brief for the four remaining items (#22, #6, #7, #15): status, test scenarios, technical dependencies, and experiment design
 - `learnings/2026-06-27.md` — full work log for the day PRs #64–#69 shipped
 - `learnings/2026-06-30.md` — work log for the day PRs #96–#102 shipped; #6 parked; flight-numbers investigation opened
