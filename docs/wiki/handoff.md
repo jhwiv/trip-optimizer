@@ -1,4 +1,4 @@
-# Trip Optimizer (RouteSmith) — Handoff (2026-06-30, 3:25 PM EDT)
+# Trip Optimizer (RouteSmith) — Handoff (2026-06-30, 4:42 PM EDT)
 
 > One-page state of the world. Read this first when picking up Trip Optimizer / RouteSmith in a new thread. Then read `index.md` for the rest of the wiki.
 
@@ -9,21 +9,16 @@
 - **Hosting:** Cloudflare Pages + Pages Functions; Anthropic Sonnet 4.5 for builds; Perplexity Sonar for retrieval; KV (`JOBS`) for cache/job state
 - **CI gates (all required on every PR to master):** Unit tests (`tests/run-all.mjs`), ESLint (0 errors), Vite build, Hex-leak baseline, Contrast audit (WCAG AA). Cloudflare Pages preview + Cursor Bugbot are non-blocking.
 
-## ACTIVE INVESTIGATION (do this BEFORE any remaining update-list item)
+## ACTIVE INVESTIGATION — RESOLVED 2026-06-30 PM
 
-**Flight numbers and times sometimes missing from the build + PDF.** User reported on 2026-06-30 PM, framed as "the fix gets reverted." Static audit found **no regression in the repo**: every commit since PR #84 (the #12 fix, `471d969`, 2026-06-29) was audited; none touched flight-pipeline lines. `git blame` on every anchor line traces to PR #84. The live bundle contains the full fix. **The code is intact.**
+**Flight numbers and times sometimes missing from the build + PDF.** Closed via two PRs in sequence on 2026-06-30:
 
-The bug is real, but it's two coverage gaps PR #84 did NOT cover, firing under different inputs build-to-build. **Diagnosis page (read this before any code):** [`concepts/flight-resolver-gaps.md`](concepts/flight-resolver-gaps.md) — contains code anchors, the production `/api/flights-search` probe data (6 of 8 routes hit; the recoverable false-negative is the airline-filter case), and the user-authorized fix shape.
+- **PR #106** (commit `490bc3c`, merged 2026-06-30 ~3:50 PM EDT) shipped the four-case fix from the diagnosis page in [`concepts/flight-resolver-gaps.md`](concepts/flight-resolver-gaps.md): times-only backfill on `flightNeedsResolve === "times"`, airline-filter → route-only retry, honest `_timesUnconfirmed` PDF fallback, and `tests/test_flight_resolver.mjs` (60 assertions over 4 scenarios).
+- **PR #108** (commit `73190cb`, merged 2026-06-30 ~4:38 PM EDT) closed a latent cross-carrier times-lift bug discovered while verifying #106 against live production. Production probe of `EWR-LAX` route-only returned 15 rows from UA/TP/NH/VA/NZ codeshares with **zero AA**; the old route-only retry fell back to `pickFromPool(..., airlineIata: null, ...)` and lifted NH7235 redeye times onto an AA200 flight. Fix: in times-mode, ONLY accept exact `flightNumber` match (no cross-carrier fallback); in number-mode, pre-filter the route-only pool by carrier IATA prefix before `pickFromPool`. Adds Scenario E (+6 assertions, now 66 flight-resolver tests).
 
-**User authorized "Go on the shape as described"** 2026-06-30 PM. Summary:
+**Live verification on www.routesmith.ai:** index bundle `index-2-vNTVcg.js` (646,762 bytes) carries `_timesUnconfirmed`, `_resolveSource`, `route-only`, the new carrier-prefix pre-filter, plus the existing #12 fix. PDF chunk `itineraryPdf-BKPJEUmF.js` carries the "Not yet confirmed — check with airline at booking" fallback line.
 
-1. Loosen the Gap 2 bail at `App.jsx ~6469` so flights with a number but no times still query `/api/flights-search` for times-only backfill (never overwrite a present number).
-2. Airline-filter → route-only retry on Gap 1 API miss. Route-only results contribute **times only**, never numbers (cross-carrier number leakage risk).
-3. Persist `_timesUnconfirmed: true` and render an honest "Times not yet confirmed — check with airline at booking" fallback in the PDF when neither attempt resolves AND the model omitted windows.
-4. Add `tests/test_flight_resolver.mjs` with four cases: omit-both → fallback; number-only → backfill; emit-everything → no resolver call; airline-filter miss → route-only retry recovers.
-5. Live confirmation: Denver UA build (known-good); EWR-LAX-AA build (airline-filter recovery); JAC-FLG build (true miss → fallback string).
-
-No code yet. PR opens off current master after the user confirms the shape against the diagnosis page.
+**Still needs a real-trip live probe by user:** build EWR-LAX AA200 and confirm the PDF renders the honest fallback line (not bogus NH times). Regression-check Denver UA (Scenario 1 happy path) and JAC-FLG UA (Scenario 3 true-miss → fallback).
 
 ## Update-list status
 
@@ -43,8 +38,8 @@ The original 15-item list grew to 24 via live testing. Working in waves, one foc
 | 8 part 2b | Apply-mode toggle (auto-apply default vs approve-each) | ✅ Merged + verified live | #101 |
 | 9 | App intro (A2HS, what it is/isn't, how-to) | ✅ Merged + verified live | #102 |
 | 10 | Collapse expert-review section to one line after Apply | ✅ Merged + verified live | #100 |
-| 11 | Overview/cards → tabbed view | ⬜ Not started; **architecture proposal in flight** when user pivoted to flight-numbers issue. See "#11 architecture options" below. | — |
-| 12 | PDF missing flight numbers (+ slow) | ✅ Merged + verified live (PR #83 reverted; PR #84 is the correct fix). **Follow-up in flight:** see `concepts/flight-resolver-gaps.md` for the two coverage gaps; not a code revert. | #84 + follow-up |
+| 11 | Overview/cards → tabbed view | ✅ Merged + verified live (B-prime: 5 primaries + More ▾ overflow) | #107 |
+| 12 | PDF missing flight numbers (+ slow) | ✅ Merged + verified live. PR #83 reverted → PR #84 the correct base fix → PR #106 covered the two diagnosis gaps → PR #108 closed the cross-carrier times-lift latent bug discovered while verifying #106. Perf still untouched per instruction. | #84 + #106 + #108 |
 | 13 | Remove gold; navy + silver palette | ✅ Merged + verified live | #79 |
 | 14 | Day-scoped activity count ("1 activity on one day" → 1 every day) | ✅ Merged + verified live | #81 |
 | 15 | Toggle: narrate build request vs manual dropdowns | ⬜ Not started | — |
@@ -58,19 +53,14 @@ The original 15-item list grew to 24 via live testing. Working in waves, one foc
 | 23 | More navy-on-navy (review findings + tab pills) | ✅ Merged + verified live | #93 |
 | 24 | Live-stream stall watchdog + adaptive KV-poll budget | ✅ Merged + verified live | #97 |
 
-**TRUE Score: 20 of 24 merged. 4 remaining (#7, #11, #15, plus #22 awaiting re-test). #6 parked.**
+**TRUE Score: 22 of 24 merged. 2 remaining (#7, #15, plus #22 awaiting re-test). #6 parked.**
 
 ## Remaining (in user's preferred order)
 
-1. **Flight numbers/times investigation** (above) — DO THIS FIRST when picking back up, per user direction 2026-06-30 PM.
-2. **#11 Tabbed Overview/Flights/Hotels/Activities** — biggest UX leverage left. The post-build screen is already tabbed today (9 tabs). Wiki entry likely meant "collapse to 4–5 primaries + More overflow." Confirm interpretation before coding. Options on the table when user pivoted:
-   - **B-prime** (recommended): 5 primaries (Overview · Flights · Hotels · Dining · Activities) + "More ▾" (Transport, Local providers, Essentials, By category)
-   - **B literal**: 4 primaries (wiki spec) + everything else in More
-   - **A**: just rename Lodging → Hotels, leave strip alone
-   - **C**: rework Overview into a true at-a-glance summary; keep 9 tabs
-3. **#7 Hotel-swap dependency resolution** — touches swap pipeline; design-spec'd, build later.
-4. **#15 Narrate vs dropdowns toggle** — largest unknown; touches the build prompt pipeline. Scope separately.
-5. **#22 Apply broken** — awaiting user re-test now that #23 invisible-button regressions are well-shipped.
+1. **#7 Hotel-swap dependency resolution** — touches swap pipeline; design-spec'd, build later.
+2. **#15 Narrate vs dropdowns toggle** — largest unknown; touches the build prompt pipeline. Scope separately.
+3. **#22 Apply broken** — awaiting user re-test now that #23 invisible-button regressions are well-shipped.
+4. **Real-trip live probe of #108 carrier-match fix** — user needs to build EWR-LAX AA200 and confirm the PDF shows the honest "check with airline" fallback rather than wrong-carrier times. Regression-check Denver UA + JAC-FLG UA.
 
 Parked:
 - **#6** — per user 2026-06-30. Don't pick up unless user explicitly asks.
@@ -113,7 +103,9 @@ Fixed via PR #84 (PR #83 was reverted — it mutated the post-`applyQualityLayer
 
 **Lesson: persist async-resolved data to the canonical plan (rawData via onPlanRevised), never mutate the rendered copy.**
 
-**Known gaps (see Active Investigation above):** PR #84 covers "model omits number, API has a match." It does NOT cover (Gap 1) API miss → flight stays bare, or (Gap 2) model emits number but no times → resolver short-circuits and times stay blank.
+**Lesson (added 2026-06-30 PM via PR #108): end-to-end simulation against live API data catches bugs unit tests miss.** PR #106's unit tests all passed; the cross-carrier times-lift bug only surfaced when a production `/api/flights-search` probe for EWR-LAX with `airline=AA` returned 15 rows from other carriers and zero AA rows, then a step-through of the route-only retry showed `pickFromPool` happily picking an NH redeye whose times then merged onto the AA flight. Take-away: after any flight-pipeline change, probe production for at least one happy path, one airline-filter false-negative case, and one true-miss case before declaring done. Scenario E in `tests/test_flight_resolver.mjs` now locks the regression in.
+
+**Coverage status:** Base fix PR #84 + gap fixes PR #106 + carrier-match fix PR #108 together cover (1) model omits everything → API hit → number + times; (2) model emits number only → times-only backfill; (3) airline-filter API miss → route-only retry with strict carrier match; (4) total miss → honest `_timesUnconfirmed` PDF line; (5) route-only retry with NO carrier match in the response → honest fallback instead of cross-carrier times-lift.
 
 ## #13 branding detail (reference)
 `--color-gold` token retired → navy/silver. All fill sites flipped to `ON_NAVY` text to avoid navy-on-navy. PDF `COLOR.gold`→navy. theme-color/manifest→navy. Earlier stale branches `palette-bid`, `palette-leaks`, `chore/qa-contrast-hex-visual` already had their content on master — safe to delete (not yet deleted, per user not authorizing branch deletion).
@@ -139,8 +131,8 @@ Live build on www.routesmith.ai, narrative: "only ONE activity on Day 3, keep it
 
 1. Read this `handoff.md`, then `index.md`, then relevant `concepts/*`.
 2. Cross-reference long-term memory for preferences not captured here.
-3. **Pick up the Active Investigation (flight numbers/times) FIRST.** That's where the user paused work.
-4. Then resume the remaining list in user's preferred order: #11 (confirm interpretation before coding) → #7 → #15 → #22 (awaiting user re-test).
+3. Flight-numbers investigation is closed — see PR #108 entry. Wait for user to live-probe EWR-LAX AA200 in a real build before treating #12 as fully sealed.
+4. Resume remaining list in user's preferred order: #7 → #15 → #22 (awaiting user re-test).
 5. One focused PR at a time, green CI, verify live after merge. **No code without user "go".**
 6. Update this wiki in the same PR that changes meaningful state.
 
