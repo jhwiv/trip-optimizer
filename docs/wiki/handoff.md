@@ -1,4 +1,4 @@
-# Trip Optimizer (RouteSmith) — Handoff (2026-06-30, 11:25 AM EDT)
+# Trip Optimizer (RouteSmith) — Handoff (2026-06-30, 12:05 PM EDT)
 
 > One-page state of the world. Read this first when picking up Trip Optimizer / RouteSmith in a new thread. Then read `index.md` for the rest of the wiki.
 
@@ -36,18 +36,18 @@ User supplied a 15-item update list (item 16 blank). Working in waves, one focus
 | 17 | In-build caption hardcoded "2–3 min" vs dynamic hero estimate | ✅ Merged + verified live | #86 |
 | 18 | "2 activities" trip-TOTAL gave 9 (extends #14 to whole-trip) | ⬜ Not started (prompt fix) | — |
 | 19 | Live flight-status panel CORS-blocked (shared worker allowlist) | ✅ Merged + verified (proxy 200, no CORS; panel-render not re-tested) | #88 |
-| 24 | Build-stall watchdog hardening + decouple #8 auto-review from build stream | ⬜ Not started (diagnosis logged — see `concepts/build-stall-watchdog.md`) | — |
+| 24 | Live-stream stall watchdog + adaptive KV-poll budget (Sedona stall fix) | ✅ Merged (PR #97), awaiting live verification on www.routesmith.ai. Diagnosis was narrower than original wiki note — see `concepts/build-stall-watchdog.md`. | #97 |
 
-**TRUE Score: 16 of 24 merged (list grew 15→24 via live testing). 8 remaining.**
+**TRUE Score: 17 of 24 merged (list grew 15→24 via live testing). 7 remaining.**
 
 Done & merged (all deployed to prod):
 - Original list: #1, #2, #3, #4, #5, #12, #13, #14
 - Expert-review cluster (partial): #8 part 1 (auto-run review on build, PR #90), #8 part 2a (pre-build source picker, PR #91)
-- From live testing: #16 (build-button contrast, #86/#87), #17 (estimate caption, #86), #19 (flight-status CORS proxy, #88), #20 (outputs-step scroll-to-top, #92), #21 (hotel website links, #94), #23 (review/tab contrast, #93)
+- From live testing: #16 (build-button contrast, #86/#87), #17 (estimate caption, #86), #19 (flight-status CORS proxy, #88), #20 (outputs-step scroll-to-top, #92), #21 (hotel website links, #94), #23 (review/tab contrast, #93), **#24 (live-stream stall watchdog + adaptive KV-poll budget, #97)**
 
 Investigated, NO fix shipped: **#22** ("Apply doesn't work") — reproduced live and apply DID work (~2.5 min full re-plan); likely the now-fixed invisible buttons (#23) made it feel broken. Awaiting user re-test before any code change.
 
-Remaining (8): **#24 (build-stall watchdog) — NEXT per user**, then **#18 (trip-total activity count)** — branch `fix/trip-total-activity-count` was lost when the sandbox died (no trace on origin, no CI run, no PR), so it will be re-derived from scratch as a prompt-only fix mirroring #14. Then **#6 + #10 + #8 part 2b** (finish expert-review cluster), #7 (hotel-swap deps), #9 (app intro/A2HS), #11 (tabbed view), #15 (narrate toggle).
+Remaining (7): **#18 (trip-total activity count) — NEXT** — branch `fix/trip-total-activity-count` was lost when the sandbox died (no trace on origin, no CI run, no PR), so it will be re-derived from scratch as a prompt-only fix mirroring #14. Then **#6 + #10 + #8 part 2b** (finish expert-review cluster), #7 (hotel-swap deps), #9 (app intro/A2HS), #11 (tabbed view), #15 (narrate toggle).
 
 ### Expert-review cluster status
 - #8 part 1 DONE: ReviewPanel auto-runs on fresh build (autoRun, guarded once per build, mirrors IntroductionAutoGenerator). autoReview = !initialReview.
@@ -67,6 +67,9 @@ Remaining (8): **#24 (build-stall watchdog) — NEXT per user**, then **#18 (tri
 
 ### #8 wiring (build from this — already investigated)
 Much exists: `REVIEWER_SOURCES` (~8710), `REVIEWER_LENSES` (~8793), region default selection (~5097). `ReviewPanel` (~5070) = self-contained state machine with picker + `handleRunReview` (~5153), mounted POST-build (~6654). A PRE-build pass already fires `/api/review-retrieve` in `handleBuild` (~12771) using hardcoded `defaultSourceIds` (~12797). Build completes ~12047. So #8 = (1) lift source selection to wizard state pre-build, (2) feed picked IDs into the ~12797 pass, (3) auto-fire review at completion (guard once; mirror IntroductionAutoGenerator/FlightNumberAutoResolver). Apply-mode toggle ("both, user toggles") is the only net-new piece.
+
+### #24 process lesson (revise diagnosis before coding)
+The first wiki entry for #24 said "harden the 180s threshold + decouple #8 auto-review." Reading the code carefully before writing any change revealed both claims were wrong: the live stream had no stall watchdog at all (only the KV-poll fallback did), and the #8 auto-review was already structurally decoupled by mount order. The shipped fix matched the actual bug (live-stream watchdog) instead of the assumed one. Lesson: a wiki diagnosis written from memory is a hypothesis — always re-verify against the source before opening the code branch, and update the wiki when the diagnosis revises.
 
 ### #19 process lesson (verification rigor)
 #12's flight NUMBER tested fine, but the live-status panel (different path, shared worker CORS allowlist = santafejune.com only) was broken and a single happy-path test missed it. "Verified live" = the path I tested works, stated per item — NOT exhaustive coverage.
