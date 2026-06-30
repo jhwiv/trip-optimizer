@@ -353,5 +353,60 @@ console.log("=== Scenario D — airline-filter miss → route-only retry recover
     merge._resolveSource === "route-only");
 }
 
+console.log("=== Scenario E — route-only retry with NO carrier match → fallback ===");
+{
+  // Real production case from 2026-06-30 probe: EWR-LAX with AA200
+  // emitted by the model. Airline-filter API returns 0 rows. Route-only
+  // retry returns 15 rows from UA/TP/NH/VA/NZ — zero AA rows. The route-
+  // only retry MUST NOT lift any of those cross-carrier times onto the
+  // AA flight; instead it must leave pick=null so _timesUnconfirmed
+  // fires and the PDF renders an honest "check with airline" line.
+  const currentFlight = { carrier: "American", flight_number: "AA200", from_airport: "EWR", to_airport: "LAX" };
+  assert("Scenario E: classified as 'times' (number present, times missing)",
+    flightNeedsResolve(currentFlight) === "times");
+
+  // The route-only response shape from the production probe — ZERO AA rows.
+  const routeOnly = [
+    { flightNumber: "UA100", scheduledOut: "2026-08-15T08:00:00Z", scheduledIn: "2026-08-15T11:00:00Z" },
+    { flightNumber: "TP200", scheduledOut: "2026-08-15T09:00:00Z", scheduledIn: "2026-08-15T12:00:00Z" },
+    { flightNumber: "NH7235", scheduledOut: "2026-08-15T04:10:00Z", scheduledIn: "2026-08-15T10:15:00Z" },
+    { flightNumber: "VA100", scheduledOut: "2026-08-15T11:00:00Z", scheduledIn: "2026-08-15T14:00:00Z" },
+    { flightNumber: "NZ100", scheduledOut: "2026-08-15T13:00:00Z", scheduledIn: "2026-08-15T16:00:00Z" },
+  ];
+
+  // Mirror what the React component now does in times-mode after a
+  // route-only retry: ONLY accept an exact flightNumber match. No
+  // cross-carrier fallback. (Previously this line was `exact || pickFromPool(...)`.)
+  const wanted = currentFlight.flight_number.toUpperCase();
+  const exact = routeOnly.find(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase() === wanted);
+  const pick = exact || null;
+  assert("Scenario E: no exact carrier-match in route-only → pick is null",
+    pick === null);
+
+  // Because pick is null, the resolver falls through to the unconfirmed
+  // payload — honest fallback instead of wrong-carrier times.
+  const fallback = buildUnconfirmedTimesPayload(currentFlight);
+  assert("Scenario E: falls through to _timesUnconfirmed payload",
+    fallback && fallback._timesUnconfirmed === true);
+
+  // Sanity: NH7235 (the redeye that the old code would have lifted)
+  // would have produced bogus times — confirm the test is meaningful.
+  const nh = routeOnly.find(x => x.flightNumber === "NH7235");
+  const wouldHaveBeenWrong = buildMergePayload({ mode: "times", pick: nh, currentFlight, source: "route-only", airlineIata: "AA" });
+  assert("Scenario E (sanity): old behavior would have written NH times to the AA flight",
+    typeof wouldHaveBeenWrong.depart_time === "string" && wouldHaveBeenWrong.depart_time.length > 0);
+
+  // Same case in number-mode: pre-filter to AA-prefix → empty → pick
+  // remains null → fallback fires.
+  const aaOnly = routeOnly.filter(x => x.flightNumber.toUpperCase().startsWith("AA"));
+  assert("Scenario E (number-mode): pre-filter to AA prefix yields empty pool",
+    aaOnly.length === 0);
+  const numberModePick = aaOnly.length > 0
+    ? pickFromPool({ flights: aaOnly, airlineIata: "AA", approxMinutes: 600, pickScheduledFlight })
+    : null;
+  assert("Scenario E (number-mode): empty filtered pool → no pick",
+    numberModePick === null);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

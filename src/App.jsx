@@ -6513,23 +6513,41 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         // Attempt 2: route-only retry when the airline-filter miss
         // returned nothing. Recovers the false-negative case the
         // production probe surfaced (EWR-LAX-AA returns 0 with the
-        // airline filter but 15 without). Route-only results can
-        // only contribute times in number-mode (buildMergePayload
-        // downgrades cross-carrier picks to times-only automatically).
+        // airline filter but 15 without). Carrier-match is enforced
+        // strictly in BOTH modes so we never lift cross-carrier times
+        // (the codeshare honesty rule applies to times the same way it
+        // applies to numbers — an AA flight cannot honestly inherit an
+        // NH redeye's clock times just because they share a route).
         if (!pick) {
           try {
             const params = new URLSearchParams({ date: t.isoDate, origin: t.fromCode, destination: t.toCode });
             const res = await fetch(`/api/flights-search?${params}`);
             const j = await res.json().catch(() => ({}));
             if (j.ok && Array.isArray(j.flights) && j.flights.length > 0) {
-              // In times-mode, prefer the row whose number exactly
-              // matches the model's emitted number — those are the
-              // times the user actually wants.
               if (t.mode === "times" && t.fl.flight_number) {
+                // times-mode: ONLY accept the row whose number exactly
+                // matches the model's emitted number. No cross-carrier
+                // fallback — better to render an honest "check with
+                // airline" line than lift wrong-carrier times.
                 const wanted = String(t.fl.flight_number).trim().toUpperCase();
                 const exact = j.flights.find(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase() === wanted);
-                pick = exact || pickFromPool({ flights: j.flights, airlineIata: null, approxMinutes: approx, pickScheduledFlight });
+                pick = exact || null;
+              } else if (t.mode === "number" && iata) {
+                // number-mode: pre-filter the pool to carrier-matching
+                // rows before picking. pickFromPool's internal fallback
+                // (filtered empty → use full pool) would otherwise let a
+                // cross-carrier candidate through; buildMergePayload's
+                // downgrade would then lift its times onto the wrong-
+                // carrier flight. Filter here so the downgrade never has
+                // cross-carrier material to work with.
+                const filtered = j.flights.filter(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase().startsWith(iata.toUpperCase()));
+                if (filtered.length > 0) {
+                  pick = pickFromPool({ flights: filtered, airlineIata: iata, approxMinutes: approx, pickScheduledFlight });
+                }
               } else {
+                // No carrier known (mode === "number" with no IATA, or
+                // any other path) → existing behavior. buildMergePayload
+                // still gates number-lifts on prefix match.
                 pick = pickFromPool({ flights: j.flights, airlineIata: null, approxMinutes: approx, pickScheduledFlight });
               }
               if (pick) source = "route-only";
