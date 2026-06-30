@@ -24,6 +24,7 @@ Luxury-tier travel-planning web app. One bundle, two surfaces:
 - `concepts/conventions.md` — project conventions, testing, lint, PR norms
 - `concepts/verification-workflow.md` — standard manual verification procedure for PRs
 - `concepts/known-issues.md` — outstanding non-blocking infra/QA gaps
-- `concepts/build-stall-watchdog.md` — #24 diagnosis: 180s stall watchdog + KV-poll resume + decouple #8 auto-review
+- `concepts/build-stall-watchdog.md` — #24 diagnosis: live-stream stall watchdog + adaptive KV-poll budget
+- `concepts/flight-resolver-gaps.md` — #12 follow-up diagnosis: two coverage gaps in `FlightNumberAutoResolver` (API miss + resolver skips when number exists), production probe data, authorized fix shape
 - `learnings/2026-06-27.md` — full work log for the day PRs #64–#69 shipped
 - `learnings/2026-06-30.md` — work log for the day PRs #96–#102 shipped; #6 parked; flight-numbers investigation opened

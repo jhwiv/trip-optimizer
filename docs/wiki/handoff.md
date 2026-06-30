@@ -1,4 +1,4 @@
-# Trip Optimizer (RouteSmith) — Handoff (2026-06-30, 2:55 PM EDT)
+# Trip Optimizer (RouteSmith) — Handoff (2026-06-30, 3:25 PM EDT)
 
 > One-page state of the world. Read this first when picking up Trip Optimizer / RouteSmith in a new thread. Then read `index.md` for the rest of the wiki.
 
@@ -11,24 +11,19 @@
 
 ## ACTIVE INVESTIGATION (do this BEFORE any remaining update-list item)
 
-**Flight numbers and times sometimes missing from the build + PDF.** User reported on 2026-06-30 PM, framed as "the fix gets reverted." Static audit found **no regression in the repo**: every commit since PR #84 (the #12 fix, `471d969`, 2026-06-29) was audited; none touched flight-pipeline lines. `git blame` on every anchor line (`_scheduleVerified` exemption in `applyQualityLayer`, `FlightNumberAutoResolver`, PDF's `fl.flight_number` read) traces to PR #84. The live www.routesmith.ai bundle and `itineraryPdf-*.js` chunk both contain the full fix. **The code is intact.**
+**Flight numbers and times sometimes missing from the build + PDF.** User reported on 2026-06-30 PM, framed as "the fix gets reverted." Static audit found **no regression in the repo**: every commit since PR #84 (the #12 fix, `471d969`, 2026-06-29) was audited; none touched flight-pipeline lines. `git blame` on every anchor line traces to PR #84. The live bundle contains the full fix. **The code is intact.**
 
-The bug is real — symptom confirmed by user: "both number AND times missing." Two gaps PR #84 did NOT cover, both of which produce that exact symptom:
+The bug is real, but it's two coverage gaps PR #84 did NOT cover, firing under different inputs build-to-build. **Diagnosis page (read this before any code):** [`concepts/flight-resolver-gaps.md`](concepts/flight-resolver-gaps.md) — contains code anchors, the production `/api/flights-search` probe data (6 of 8 routes hit; the recoverable false-negative is the airline-filter case), and the user-authorized fix shape.
 
-- **Gap 1 — Schedule API miss.** `FlightNumberAutoResolver` (src/App.jsx ~6451) calls `/api/flights-search` to backfill missing numbers. When the API returns no candidate for the route+date+airline combo, the resolver silently bails (comment in code: *"Silent — a failed lookup just leaves that flight without a number."*) and the flight stays bare in both UI and PDF.
-- **Gap 2 — Model emits number but no times.** Line ~6469: `if (fl._userSuppliedFlightNumber || hasNum) return;` short-circuits the resolver when the model already emitted a number. If the model emitted a number but NOT times (instructed not to fabricate), the resolver never tries the schedule API, so no times get backfilled either.
+**User authorized "Go on the shape as described"** 2026-06-30 PM. Summary:
 
-Build-to-build variance in which gap fires explains the "fix gets reverted" feel — same code, different inputs.
+1. Loosen the Gap 2 bail at `App.jsx ~6469` so flights with a number but no times still query `/api/flights-search` for times-only backfill (never overwrite a present number).
+2. Airline-filter → route-only retry on Gap 1 API miss. Route-only results contribute **times only**, never numbers (cross-carrier number leakage risk).
+3. Persist `_timesUnconfirmed: true` and render an honest "Times not yet confirmed — check with airline at booking" fallback in the PDF when neither attempt resolves AND the model omitted windows.
+4. Add `tests/test_flight_resolver.mjs` with four cases: omit-both → fallback; number-only → backfill; emit-everything → no resolver call; airline-filter miss → route-only retry recovers.
+5. Live confirmation: Denver UA build (known-good); EWR-LAX-AA build (airline-filter recovery); JAC-FLG build (true miss → fallback string).
 
-**User authorized "repro first, then ship."** Plan:
-
-1. Probe `/api/flights-search` on production with ~6 realistic combos (domestic + international, near + far date, common + uncommon carriers) to characterize the API's hit rate.
-2. Read the schedule API source (`functions/api/flights-search.*`) to confirm what it returns on no match and whether there are silent-failure paths inside the worker.
-3. Design a defensive fix that closes both gaps. Likely shape:
-   - Loosen the resolver bail at ~line 6469 to still call `/api/flights-search` when times are missing (even when the number is present), and backfill times from the matched scheduled flight.
-   - On total API miss with model also missing times, emit honest fallback text in the PDF ("Times not yet confirmed — check with airline at booking") instead of a blank line.
-   - Add `tests/test_flight_resolver.mjs` with three cases: (a) model omits both → API miss → fallback text; (b) model emits number only → resolver hits API to backfill times; (c) model emits everything → no resolver call needed.
-4. Open the PR with the standard "Needs live confirmation" checklist. Wait for user "go" before merging.
+No code yet. PR opens off current master after the user confirms the shape against the diagnosis page.
 
 ## Update-list status
 
@@ -49,7 +44,7 @@ The original 15-item list grew to 24 via live testing. Working in waves, one foc
 | 9 | App intro (A2HS, what it is/isn't, how-to) | ✅ Merged + verified live | #102 |
 | 10 | Collapse expert-review section to one line after Apply | ✅ Merged + verified live | #100 |
 | 11 | Overview/cards → tabbed view | ⬜ Not started; **architecture proposal in flight** when user pivoted to flight-numbers issue. See "#11 architecture options" below. | — |
-| 12 | PDF missing flight numbers (+ slow) | ✅ Merged + verified live (PR #83 reverted; PR #84 is the correct fix). **NOTE:** see Active Investigation above — gaps still surface on some builds; not a code revert. | #84 |
+| 12 | PDF missing flight numbers (+ slow) | ✅ Merged + verified live (PR #83 reverted; PR #84 is the correct fix). **Follow-up in flight:** see `concepts/flight-resolver-gaps.md` for the two coverage gaps; not a code revert. | #84 + follow-up |
 | 13 | Remove gold; navy + silver palette | ✅ Merged + verified live | #79 |
 | 14 | Day-scoped activity count ("1 activity on one day" → 1 every day) | ✅ Merged + verified live | #81 |
 | 15 | Toggle: narrate build request vs manual dropdowns | ⬜ Not started | — |
