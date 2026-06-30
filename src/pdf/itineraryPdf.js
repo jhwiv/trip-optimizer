@@ -1062,6 +1062,14 @@ function renderFlightBlock(cur, fl, x, maxW) {
   if (fl.flight_number && fl._autoResolvedFlightNumber && !fl._userSuppliedFlightNumber) {
     renderDetailLine(cur, "Verify", "Flight number is the scheduled operating flight — confirm at booking.", x, maxW);
   }
+  // #12 follow-up: when both /api/flights-search attempts (airline-filtered
+  // + route-only retry) missed AND the model also omitted clock times, the
+  // resolver flags the flight with _timesUnconfirmed so the PDF can render
+  // an honest line in place of the blank we used to leave behind. See
+  // docs/wiki/concepts/flight-resolver-gaps.md.
+  if (fl._timesUnconfirmed && !(fl.depart_time && fl.arrive_time)) {
+    renderDetailLine(cur, "Times", "Not yet confirmed — check with airline at booking.", x, maxW);
+  }
   if (fl.confirmation_note) renderDetailLine(cur, "Note", fl.confirmation_note, x, maxW);
   const bookUrl = carrierBookUrl(fl.carrier);
   if (bookUrl) renderLinkLine(cur, "Book", bookUrl, bookUrl, x, maxW);
