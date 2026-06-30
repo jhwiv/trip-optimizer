@@ -37,10 +37,32 @@ User supplied a 15-item update list (item 16 blank). Working in waves, one focus
 | 18 | "2 activities" trip-TOTAL gave 9 (extends #14 to whole-trip) | ⬜ Not started (prompt fix) | — |
 | 19 | Live flight-status panel CORS-blocked (shared worker allowlist) | ✅ Merged + verified (proxy 200, no CORS; panel-render not re-tested) | #88 |
 
-**TRUE Score: 11 of 19 merged. 8 remaining.**
+**TRUE Score: 16 of 23 merged (list grew 15→23 via live testing). 7 remaining.**
 
-Done & verified live: #1, #2, #3, #4, #5, #12, #13, #14, #16, #17, #19.
-Remaining: **#8 (NEXT — investigated, wiring mapped)** → #6 → #10 (expert-review cluster), #18 (prompt), then #7, #9, #11, #15.
+Done & merged (all deployed to prod):
+- Original list: #1, #2, #3, #4, #5, #12, #13, #14
+- Expert-review cluster (partial): #8 part 1 (auto-run review on build, PR #90), #8 part 2a (pre-build source picker, PR #91)
+- From live testing: #16 (build-button contrast, #86/#87), #17 (estimate caption, #86), #19 (flight-status CORS proxy, #88), #20 (outputs-step scroll-to-top, #92), #21 (hotel website links, #94), #23 (review/tab contrast, #93)
+
+Investigated, NO fix shipped: **#22** ("Apply doesn't work") — reproduced live and apply DID work (~2.5 min full re-plan); likely the now-fixed invisible buttons (#23) made it feel broken. Awaiting user re-test before any code change.
+
+Remaining (7): **#6 + #10 + #8 part 2b** (finish expert-review cluster — NEXT), #18 (trip-total activity count), #7 (hotel-swap deps), #9 (app intro/A2HS), #11 (tabbed view), #15 (narrate toggle).
+
+### Expert-review cluster status
+- #8 part 1 DONE: ReviewPanel auto-runs on fresh build (autoRun, guarded once per build, mirrors IntroductionAutoGenerator). autoReview = !initialReview.
+- #8 part 2a DONE: reviewerSourceIds lifted to wizard state (region-aware default); compact picker card in the outputs step; feeds the pre-build /api/review-retrieve pass + ReviewPanel (externalSourceIds).
+- #8 part 2b TODO: apply-mode toggle (auto-apply default w/ changelog vs approve-each). Approve-each already exists (per-finding applyState + handleApply); auto-apply is the new path.
+- #6 TODO: kill the "preparing introduction" drop on completion; land at top/Overview; surface findings.
+- #10 TODO: collapse the review section to one line ("Expert review · Revalidate") after a rebuild.
+
+### New items from live testing (16–23)
+| 16 | Build/narrative button navy-on-navy | ✅ #86/#87 |
+| 17 | In-build caption "2-3 min" vs dynamic estimate | ✅ #86 |
+| 19 | Live flight-status CORS-blocked → same-origin proxy | ✅ #88 |
+| 20 | "Jump to select outputs" landed on review picker not top | ✅ #92 |
+| 21 | Hotel cards lacked website link (now like restaurants) | ✅ #94 |
+| 22 | Expert review "Apply" — reported broken; not reproduced | 🔎 open, user re-testing |
+| 23 | More navy-on-navy (review findings + tab pills) | ✅ #93 |
 
 ### #8 wiring (build from this — already investigated)
 Much exists: `REVIEWER_SOURCES` (~8710), `REVIEWER_LENSES` (~8793), region default selection (~5097). `ReviewPanel` (~5070) = self-contained state machine with picker + `handleRunReview` (~5153), mounted POST-build (~6654). A PRE-build pass already fires `/api/review-retrieve` in `handleBuild` (~12771) using hardcoded `defaultSourceIds` (~12797). Build completes ~12047. So #8 = (1) lift source selection to wizard state pre-build, (2) feed picked IDs into the ~12797 pass, (3) auto-fire review at completion (guard once; mirror IntroductionAutoGenerator/FlightNumberAutoResolver). Apply-mode toggle ("both, user toggles") is the only net-new piece.
