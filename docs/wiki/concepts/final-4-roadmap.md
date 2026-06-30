@@ -1,9 +1,9 @@
-# RouteSmith.ai — Final 4 Roadmap Brief
+# RouteSmith.ai — Final 6 Roadmap Brief
 
-**Author:** Computer session 2026-06-30, end-of-day
-**Source-of-truth wiki:** `docs/wiki/handoff.md` on master (jhwiv/trip-optimizer · commit `a984237`)
-**Live:** [www.routesmith.ai](https://www.routesmith.ai) · index bundle `assets/index-2-vNTVcg.js`
-**Score at this brief:** 22 of 24 merged + verified live. The four items below are the entire remainder.
+**Author:** Computer session 2026-06-30, end-of-day. Updated 7:48 PM EDT after PRs #111 + #112 shipped and user added items #25 + #26.
+**Source-of-truth wiki:** `docs/wiki/handoff.md` on master (jhwiv/trip-optimizer)
+**Live:** [www.routesmith.ai](https://www.routesmith.ai)
+**Score at this brief:** 22 of 26 merged + verified live. The six items below are the entire remainder.
 
 ---
 
@@ -13,10 +13,20 @@
 |---|------|--------|--------|------|------------------|
 | 22 | Expert-review "Apply" — reported broken | 🔎 Awaiting real-trip re-test by user | Low (likely already fixed indirectly by #23) | Low | **1st** |
 | 6  | "Preparing introduction…" / land at Overview | ⚪ Parked 2026-06-30 (diagnosis revision: only the Save-as-PDF gate string is that label; no visible layout drop) | Low if revived | Low | **2nd** (validation only — confirms park decision) |
-| 7  | Hotel-swap re-resolves dependent activities | ⬜ Not started; design-spec'd | Medium | Medium (touches swap pipeline + canonical plan persistence) | **3rd** |
-| 15 | Narrate vs dropdowns toggle | ⬜ Not started; largest unknown | Medium–High (touches build-prompt pipeline) | Medium | **4th** |
+| **25** | **Narrate-vs-dropdown call-out** (intro overlay + wizard step 1) | ⬜ Not started — added 2026-06-30 PM | **Low–Medium** | Low | **3rd** — small, high-impact onboarding fix |
+| **26** | **PDF luxury palette** (cover hero + color sections + activity thumbnails) | ⬜ Not started — added 2026-06-30 PM | Medium | Low (styling only, perf untouched) | **4th** — user-facing polish |
+| 7  | Hotel-swap re-resolves dependent activities | ⬜ Not started; design-spec'd | Medium | Medium (touches swap pipeline + canonical plan persistence) | **5th** |
+| 15 | Narrate vs dropdowns toggle (FULL mode-toggle) | ⬜ Not started; largest unknown | Medium–High (touches build-prompt pipeline) | Medium | **6th** — #25 covers the visible UX; this is the deeper underlying toggle |
 
-Rationale for the order: #22 and #6 are validation work (test scenarios, no new code expected) and can be cleared in a single session. #7 is the next clear engineering win because the design is already sketched. #15 is intentionally last because it changes the front door of the wizard and deserves a proper experiment rather than a guess.
+Rationale for the order: #22 and #6 are validation work (test scenarios, no new code expected) and can be cleared in a single session. #25 and #26 are user-facing polish on visible surfaces and ship value fast. #7 is the next clear engineering win because the design is already sketched. #15 is intentionally last because it changes the front door of the wizard and deserves a proper experiment rather than a guess.
+
+## Two structural recurrence-guard PRs shipped this evening
+
+**PR #111 — universal verify mode for flight numbers.** Closed the EWR-SFO recurrence. Every flight with a number is now schedule-verified or schedule-verified-with-trust-fallback. `applyQualityLayer`'s number strip can no longer null a real flight number. 88 new test assertions across 4 test files including an end-to-end recurrence guard.
+
+**PR #112 — deterministic activity-count classifier + post-build cap enforcement.** Closed the "one activity per day" recurrence. User's narrative is now scanned by a regex set that catches phrasings the prompt rule misses ("during the entire itinerary", etc.), and a post-build trim step ensures the model can't overshoot the cap. 51 new test assertions including a recurrence guard.
+
+Both PRs implement the same pattern: **belt** (deterministic pre-build classifier/verifier) + **suspenders** (post-build enforcement in `applyQualityLayer`). Future similar recurrences should follow this pattern.
 
 ---
 
@@ -114,6 +124,87 @@ Two cheap tests can confirm the park decision is correct:
 ### Estimated effort
 
 10 minutes of live testing. No code unless un-parked.
+
+---
+
+## Item #25 — Narrate-vs-dropdown call-out
+
+### Status
+
+Not started. Added 2026-06-30 ~7:38 PM EDT after the user noted that first-time users don't realize they can just speak their ideas (narrative box) instead of using the dropdowns. Partial scope of #15 — focused on **discoverability** (visible UX call-out) rather than the underlying mode toggle.
+
+### What this needs to do
+
+Make the choice between "tell me about the trip" (narrative) and "use dropdowns" (structured) obvious to a new user. Two placements per the user's spec:
+
+1. **First-visit intro overlay** (PR #102 surface, `src/appIntro.js` + the overlay component in `App.jsx`). Add a card or two-up section explaining the two paths. Sample copy:
+   - "Speak your trip. Type a few sentences about where you're going and what you want — we'll handle the rest."
+   - "Or use the dropdowns. If you'd rather pick from menus, the wizard has structured inputs for everything."
+2. **Wizard step 1** (the form/narrative entry surface). A persistent visual element — likely two large clickable cards or a radio toggle — at the top of step 1 letting the user pick a path. The page below remains the same form (both paths share the same wizard); the call-out is signaling, not gating.
+
+### Why this is NOT a mode toggle (yet)
+
+The full #15 mode toggle changes how the build prompt is assembled. That work is bigger and needs the Phase 1 instrumentation experiment described under #15 below. #25 is the visible discoverability fix that ships fast.
+
+### Code anchors
+
+- `src/appIntro.js` — gate logic for the first-visit overlay
+- `App.jsx` ~7280 — current narrative box component
+- `App.jsx` step-1 wizard surface
+- `docs/wiki/concepts/architecture.md` — wizard flow overview
+
+### Open design questions
+
+1. **Two-card layout vs radio toggle?** Two large cards is more discoverable for the intro overlay; a radio toggle is more compact for wizard step 1.
+2. **What does clicking the card do?** Pre-fill the narrative box vs scroll the wizard to that input vs just visually highlight it. Recommendation: a soft scroll + highlight, no state change.
+3. **Should the call-out persist after first build?** Recommendation: persist (users return for new trips and forget the option exists).
+
+### Estimated effort
+
+One PR, ~1–1.5 hours including unit tests. Touches `src/appIntro.js` for the overlay copy and `App.jsx` for the wizard step-1 surface.
+
+---
+
+## Item #26 — PDF luxury palette
+
+### Status
+
+Not started. Added 2026-06-30 ~7:38 PM EDT. User feedback: "The PDF output is basically dark blue and white. It needs color as appropriate."
+
+### What this needs to do
+
+Replace the current dark-blue + white PDF with a full luxury-travel palette matching the website's visual polish. Per user's spec ("Full luxury-travel palette — photo hero on cover, color section breaks, image thumbnails on activities"):
+
+1. **Photo hero on the cover page.** Destination-aware. Use the same Unsplash/CDN source pattern the website uses for the hero image. Falls back to a placeholder if no image is available. Sized for letter/A4 paper.
+2. **Color section breaks.** Replace the all-navy section headers with destination-aware accent colors (navy primary + destination accent + sand for dividers). Use the existing palette tokens.
+3. **Activity image thumbnails.** Where source material has photos (hotel websites, restaurant gallery URLs, activity operator pages), include small thumbnails inline with each card. Where there's no image, fall back to a destination-themed graphic or just omit.
+
+### Likely PR split
+
+- **PR A** — palette + cover hero + section breaks. Touches `src/pdf/itineraryPdf.js`. ~3 hours.
+- **PR B** — activity image thumbnails. ~2 hours.
+
+### Constraints from prior user instructions
+
+- "Do not touch PDF perf without instruction." This work is styling, not performance — it's in scope. PR description must call this out explicitly.
+- The PDF currently uses `jspdf` + `html2canvas-pro`. Adding images means larger PDF files. Recommendation: base64 for offline-readable PDFs.
+- The existing navy/silver palette token system (#13, PR #79) is the foundation. The luxury palette extends rather than replaces it.
+
+### Code anchors
+
+- `src/pdf/itineraryPdf.js` — the entire PDF render path
+- `src/pdf/itineraryPdf.js` `COLOR.` references — palette tokens
+- Grep `unsplash` and `hero` in `src/App.jsx` for the website's hero-image source pattern
+
+### Open design questions
+
+1. **Cover hero image source.** Same as website (consistency) or different (more distinctive PDF)? Recommendation: same image.
+2. **Where do activity thumbnails sit?** Inline left of the card (compact) or above the card (richer, magazine-like)? Recommendation: inline left for day-by-day, larger above for the Activities tab.
+3. **What about flights/hotels?** Recommendation: airline logos for flights (cheap, recognizable); hotel exterior skip for now (hard to source reliably).
+
+### Estimated effort
+
+Two PRs as above. ~5 hours total. The PDF rendering pipeline is well-isolated so risk is low.
 
 ---
 
