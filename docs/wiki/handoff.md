@@ -1,4 +1,4 @@
-# Trip Optimizer (RouteSmith) — Handoff (2026-06-30, 4:42 PM EDT)
+# Trip Optimizer (RouteSmith) — Handoff (2026-06-30, 7:48 PM EDT)
 
 > One-page state of the world. Read this first when picking up Trip Optimizer / RouteSmith in a new thread. Then read `index.md` for the rest of the wiki.
 
@@ -39,28 +39,37 @@ The original 15-item list grew to 24 via live testing. Working in waves, one foc
 | 9 | App intro (A2HS, what it is/isn't, how-to) | ✅ Merged + verified live | #102 |
 | 10 | Collapse expert-review section to one line after Apply | ✅ Merged + verified live | #100 |
 | 11 | Overview/cards → tabbed view | ✅ Merged + verified live (B-prime: 5 primaries + More ▾ overflow) | #107 |
-| 12 | PDF missing flight numbers (+ slow) | ✅ Merged + verified live. PR #83 reverted → PR #84 the correct base fix → PR #106 covered the two diagnosis gaps → PR #108 closed the cross-carrier times-lift latent bug discovered while verifying #106. Perf still untouched per instruction. | #84 + #106 + #108 |
+| 12 | PDF missing flight numbers (+ slow) | ✅ Merged + verified live. PR #83 reverted → PR #84 the correct base fix → PR #106 covered the two diagnosis gaps → PR #108 closed the cross-carrier times-lift latent bug → PR #111 closed the EWR-SFO complete-flight recurrence with universal verify mode (the structural end to the recurrence pattern). Perf still untouched per instruction. | #84 + #106 + #108 + #111 |
 | 13 | Remove gold; navy + silver palette | ✅ Merged + verified live | #79 |
 | 14 | Day-scoped activity count ("1 activity on one day" → 1 every day) | ✅ Merged + verified live | #81 |
 | 15 | Toggle: narrate build request vs manual dropdowns | ⬜ Not started | — |
 | 16 | Build/narrative button navy-on-navy (invisible) | ✅ Merged + verified live | #86, #87 |
 | 17 | In-build caption "2–3 min" vs dynamic estimate | ✅ Merged + verified live | #86 |
-| 18 | "2 activities" trip-TOTAL gave 9 (extends #14 to whole-trip) | ✅ Merged + verified live | #99 |
+| 18 | "2 activities" trip-TOTAL gave 9 (extends #14 to whole-trip) | ✅ Merged + verified live. PR #99 prompt-only fix; PR #112 added deterministic classifier + post-build cap enforcement after user hit the recurrence with "one activity during the entire itinerary" phrasing. | #99 + #112 |
 | 19 | Live flight-status panel CORS-blocked | ✅ Merged + verified (proxy 200, no CORS; panel-render not re-tested) | #88 |
 | 20 | Outputs-step landed on review picker, not top | ✅ Merged + verified live | #92 |
 | 21 | Hotel cards lacked website link | ✅ Merged + verified live | #94 |
 | 22 | Expert review "Apply" — reported broken | 🔎 **Open, awaiting user re-test** — reproduced live and Apply DID work (~2.5 min full re-plan); likely the now-fixed invisible buttons (#23) made it feel broken. | — |
 | 23 | More navy-on-navy (review findings + tab pills) | ✅ Merged + verified live | #93 |
 | 24 | Live-stream stall watchdog + adaptive KV-poll budget | ✅ Merged + verified live | #97 |
+| 25 | Narrate-vs-dropdown call-out (intro overlay + wizard step 1) | ⬜ Not started — user flagged 2026-06-30 ~7:38 PM EDT. Partial scope of original #15, focused on discoverability rather than the mode toggle. | — |
+| 26 | PDF luxury palette (cover photo hero + color section breaks + activity image thumbnails) | ⬜ Not started — user flagged 2026-06-30 ~7:38 PM EDT. Likely 2 PRs (palette + hero, then image thumbnails). Touches src/pdf/itineraryPdf.js — styling only, not perf. | — |
 
-**TRUE Score: 22 of 24 merged. 2 remaining (#7, #15, plus #22 awaiting re-test). #6 parked.**
+**TRUE Score: 22 of 26 merged. 4 remaining (#7, #15, #25, #26, plus #22 awaiting re-test). #6 parked.**
+
+The structural recurrence guards are now in place. Two of today's PRs (#111 + #112) established a pattern: any prompt rule the model can pattern-match against now has a deterministic enforcement layer on top. Future similar bugs ("no rental car → model emits one anyway", "vegetarian only → model surfaces a steakhouse") should follow this same belt + suspenders approach.
 
 ## Remaining (in user's preferred order)
 
-1. **#7 Hotel-swap dependency resolution** — touches swap pipeline; design-spec'd, build later.
-2. **#15 Narrate vs dropdowns toggle** — largest unknown; touches the build prompt pipeline. Scope separately.
-3. **#22 Apply broken** — awaiting user re-test now that #23 invisible-button regressions are well-shipped.
-4. **Real-trip live probe of #108 carrier-match fix** — user needs to build EWR-LAX AA200 and confirm the PDF shows the honest "check with airline" fallback rather than wrong-carrier times. Regression-check Denver UA + JAC-FLG UA.
+1. **#25 Narrate-vs-dropdown call-out** — user-facing discoverability. Add a clear card on the first-visit intro overlay (PR #102 surface) AND a persistent radio-style choice at wizard step 1 ("Tell me about the trip" vs "Use dropdowns"). Smaller scope than the full #15 toggle (no underlying mode change, just the call-out).
+2. **#26 PDF luxury palette** — user-facing polish. Replace dark-blue + white PDF with destination-aware luxury palette: photo hero on cover, color section breaks, activity image thumbnails. Likely 2 PRs (palette + cover first, image thumbnails second). Touches src/pdf/itineraryPdf.js (styling only — perf still off-limits per user).
+3. **#7 Hotel-swap dependency resolution** — touches swap pipeline; design-spec'd, build later.
+4. **#15 Narrate vs dropdowns toggle (full)** — largest unknown; touches the build prompt pipeline. The discoverability call-out (#25) covers the visible UX; the full toggle changes mode-aware prompt assembly. Scope separately.
+5. **#22 Apply broken** — awaiting user re-test now that #23 invisible-button regressions are well-shipped.
+6. **Real-trip live probes**
+   - PR #108 carrier-match: build EWR-LAX AA200 and confirm honest fallback rather than wrong-carrier times.
+   - PR #111 verify-mode: build EWR-SFO UA round-trip and confirm flight numbers render on screen + PDF.
+   - PR #112 activity-count cap: build any trip with "one activity during the entire itinerary" and confirm exactly 1 activity in the final plan.
 
 Parked:
 - **#6** — per user 2026-06-30. Don't pick up unless user explicitly asks.
