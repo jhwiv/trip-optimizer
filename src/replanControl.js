@@ -72,6 +72,21 @@ export function isNetworkLoadError(err) {
   );
 }
 
+// Sentinel error thrown by streamBuildJob's client-side live-stream stall
+// watchdog (#24). Distinct class so shouldResumeViaPoll can treat it as a
+// resumable drop without depending on a fragile message-string match. The
+// stall watchdog fires when the open NDJSON stream goes quiet for too long
+// with no deltas AND no pings — a true upstream wedge or a half-closed TCP
+// connection that never surfaces a transport error. Without this, the read
+// loop blocked forever; with it, we break out and let the KV-poll fallback
+// finish the job (the server keeps running and mirroring to KV).
+export class StallError extends Error {
+  constructor(message = "Live stream stalled") {
+    super(message);
+    this.name = "StallError";
+  }
+}
+
 // Decide whether a thrown LIVE-STREAM read error is recoverable by resuming
 // the job via KV polling instead of hard-failing.
 //
@@ -90,12 +105,14 @@ export function isNetworkLoadError(err) {
 // Resumable ONLY when:
 //   - we have a jobId (the server told us which job to poll), AND
 //   - the stream hadn't already completed (no `done` seen), AND
-//   - the error is a recognized transport drop (not an abort we caused, not an
-//     explicit server `{type:"error"}` event).
+//   - the error is a recognized transport drop OR a StallError from the
+//     client-side stall watchdog (#24) — not an abort we caused, not an
+//     explicit server `{type:"error"}` event.
 // A drop BEFORE the jobId arrived, or an abort we triggered, is NOT resumable.
 export function shouldResumeViaPoll(err, { jobId, doneSeen = false } = {}) {
   if (!jobId || doneSeen) return false;
   if (isAbortLikeError(err)) return false;
+  if (err instanceof StallError) return true;
   return isNetworkLoadError(err);
 }
 

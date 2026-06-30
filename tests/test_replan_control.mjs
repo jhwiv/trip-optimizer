@@ -16,6 +16,7 @@ import {
   isAbortLikeError,
   isNetworkLoadError,
   shouldResumeViaPoll,
+  StallError,
 } from "../src/replanControl.js";
 
 let passed = 0, failed = 0;
@@ -125,6 +126,42 @@ console.log("=== shouldResumeViaPoll (surgical-apply connection-drop recovery) =
   const afterExhausted = classifyApplyError(drop, { aborted: false, timedOut: false });
   assert("drop that can't resume still classifies as honest network error",
     afterExhausted.kind === "network" && !/load failed/i.test(afterExhausted.message));
+}
+
+console.log("=== StallError + shouldResumeViaPoll (#24 live-stream stall watchdog) ===");
+{
+  const stall = new StallError("Live stream stalled — no events for 90s.");
+  assert("StallError is an Error", stall instanceof Error);
+  assert("StallError has name 'StallError'", stall.name === "StallError");
+  assert("StallError carries a descriptive message", typeof stall.message === "string" && stall.message.length > 0);
+
+  // The whole point of the sentinel: a stall MUST be treated as a resumable
+  // drop (when we have a jobId and the stream isn't already done) so the
+  // KV-poll fallback can finish the job server-side.
+  assert("StallError WITH a jobId and no `done` → resume via poll",
+    shouldResumeViaPoll(stall, { jobId: "abc123", doneSeen: false }) === true);
+
+  // Resume requires a jobId in hand — a stall before the server sent jobId
+  // means there's nothing to poll.
+  assert("StallError BEFORE jobId arrived → NOT resumable",
+    shouldResumeViaPoll(stall, { jobId: null, doneSeen: false }) === false);
+
+  // A stall after `done` is impossible in practice (the read loop returns on
+  // `done`), but the guard must still hold defensively.
+  assert("StallError after `done` → NOT resumable",
+    shouldResumeViaPoll(stall, { jobId: "abc123", doneSeen: true }) === false);
+
+  // StallError must NOT be misclassified as an abort. A real abort cancels;
+  // a stall recovers via KV.
+  assert("StallError is not abort-like by name",
+    isAbortLikeError(stall) === false);
+
+  // Sanity: StallError class is the same identity exported from the module,
+  // so consumers can `throw new StallError(...)` and downstream `instanceof`
+  // checks (the one inside shouldResumeViaPoll) match.
+  const stall2 = new StallError();
+  assert("a default-constructed StallError still resumes via poll",
+    shouldResumeViaPoll(stall2, { jobId: "abc123" }) === true);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
