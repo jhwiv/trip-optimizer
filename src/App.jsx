@@ -1503,9 +1503,17 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
 }
 
 function HotelCard({ type, time, end_time, hotel: h, text }) {
+  // #21 URL verification (same context restaurants/activities use) so the hotel
+  // website link swaps to a Google search fallback if the model's URL is dead.
+  const { status: urlStatus, destination } = useURLVerify();
   if (!h) return null;
   const mapsUrl = h.address ? `https://maps.google.com/?q=${encodeURIComponent(`${h.name || ""} ${h.address}`.trim())}` : null;
   const telUrl = h.phone ? `tel:${h.phone.replace(/[^0-9+]/g, "")}` : null;
+  // #21 Hotel website link — mirrors the restaurant/activity "Website ↗" pattern.
+  const websiteState = h.website ? (urlStatus.get(h.website) || "pending") : null;
+  const websiteDead = websiteState === "dead";
+  const showWebsite = !!h.website;
+  const websiteHref = websiteDead ? urlSearchFallback(h.name, destination) : h.website;
   return (
     <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
@@ -1532,13 +1540,16 @@ function HotelCard({ type, time, end_time, hotel: h, text }) {
       {h.confirmation_note && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", fontStyle: "italic" }}>{h.confirmation_note}</p>
       )}
-      {(telUrl || mapsUrl) && (
+      {(telUrl || mapsUrl || showWebsite) && (
         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "8px" }}>
           {telUrl && (
             <a href={telUrl} style={{ fontSize: "11px", padding: "6px 11px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>Call · {h.phone}</a>
           )}
           {mapsUrl && (
             <a href={mapsUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>Open in Maps</a>
+          )}
+          {showWebsite && (
+            <a href={websiteHref} target="_blank" rel="noopener noreferrer" title={websiteDead ? "Original site link could not be verified — search for the official site" : undefined} style={{ fontSize: "11px", padding: "6px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>{websiteDead ? "Find site ↗" : "Website ↗"}</a>
           )}
         </div>
       )}
@@ -6856,6 +6867,7 @@ function collectVendorURLs(data) {
         push(c.booking_url);
       }
       if (it?.flight?.booking_url) push(it.flight.booking_url);
+      if (it?.hotel?.website) push(it.hotel.website); // #21 verify hotel sites too
     }
   }
   return Array.from(out);
@@ -8625,6 +8637,7 @@ const HOTEL_ITEM_SCHEMA = {
     check_in_time: { type: "string", description: "e.g. '15:00'." },
     check_out_time: { type: "string", description: "e.g. '11:00'." },
     room_type: { type: "string" },
+    website: { type: "string", description: "Official hotel website URL — the property's actual homepage (e.g. https://www.ritzcarlton.com/...). URLs are HEAD-checked after generation; broken links auto-swap to a Google fallback. OMIT this field if you are not highly confident the URL is live. Do NOT fabricate URLs or guess a domain." },
     confirmation_note: { type: "string" },
   },
 };
@@ -11414,7 +11427,7 @@ Otherwise, when the user did NOT state a number, set "flight_number": null. Do N
 • If the user's preferred airline doesn't fly nonstop but a competitor does, mention the competitor nonstop in flags[] AND use the competitor as the carrier — do not falsely claim the preferred airline operates a nonstop it doesn't actually fly.
 
 HOTEL ITEMS:
-• Use a Hotel-type item on arrival day (check-in) and departure day (check-out). Populate the "hotel" object with name, address, phone (formatted, tappable), check_in_time, check_out_time, room_type, confirmation_note.
+• Use a Hotel-type item on arrival day (check-in) and departure day (check-out). Populate the "hotel" object with name, address, phone (formatted, tappable), check_in_time, check_out_time, room_type, website, confirmation_note. For website: include the property's official site URL only when you genuinely know it (e.g. https://www.fourseasons.com/...) — it powers the "Website ↗" button on the hotel card next to Maps/Call. Do NOT fabricate URLs; omit if uncertain. A confirmation pass fills in missing hotel websites where possible.
 • The phone field is critical — it becomes a tappable "Call hotel" CTA in the app.
 
 RESTAURANTS:
