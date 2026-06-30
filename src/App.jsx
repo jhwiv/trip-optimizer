@@ -5076,7 +5076,7 @@ function TripSectionView({ tab, data, inputs, onOpenMenu, providers }) {
 // All result/state writes go up through onPlanRevised / onReviewChange so the
 // parent (TripOptimizer) can persist them into saved trips.
 // ============================================================================
-function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false }) {
+function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false, externalSourceIds, onSourcesChange }) {
   // --- review state ------------------------------------------------------
   // 'idle' — banner card with picker
   // 'running' — review in flight
@@ -5101,6 +5101,10 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   const [selectedIds, setSelectedIds] = useState(() => {
     // Restoring a prior review: use exactly the sources the user picked then.
     if (initialReview?.sources) return initialReview.sources;
+    // #8 If the wizard already lifted a pre-build source selection, honor it so
+    // the post-build panel matches what the user chose up front (and what the
+    // pre-build review-retrieve pass actually used).
+    if (Array.isArray(externalSourceIds) && externalSourceIds.length) return externalSourceIds;
     // Fresh review: standard 6 defaults + (if destination matches) the
     // curated hyperlocal source set for that region.
     const baseDefaults = REVIEWER_SOURCES.filter(s => s.dflt).map(s => s.id);
@@ -5109,6 +5113,12 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
     }
     return baseDefaults;
   });
+  // #8 Keep the wizard-level source selection in sync when the user changes
+  // sources from inside the panel, so a re-run / saved trip reflects the change.
+  useEffect(() => {
+    if (typeof onSourcesChange === "function") onSourcesChange(selectedIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIds]);
   const [review, setReview] = useState(initialReview?.review || null);
   const [applyState, setApplyState] = useState({}); // findingId -> bool
   const [appliedIds, setAppliedIds] = useState(() => initialReview?.applied_ids || []);
@@ -6421,7 +6431,7 @@ function IntroductionAutoGenerator({ plan, inputs, onPlanRevised, onGeneratingCh
   return null;
 }
 
-function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId: _savedTripId, onPlanRevised, onReviewChange, initialReview }) {
+function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId: _savedTripId, onPlanRevised, onReviewChange, initialReview, reviewerSourceIds, onReviewerSourcesChange }) {
   // Whether IntroductionAutoGenerator's headless POST /api/introduction call
   // is in flight. Lifted here so PrintButton can disable Save as PDF until
   // the intro is either populated on the plan or the generator finishes/fails
@@ -6696,6 +6706,8 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         onReviewChange={onReviewChange}
         initialReview={initialReview}
         autoRun={autoReview}
+        externalSourceIds={reviewerSourceIds}
+        onSourcesChange={onReviewerSourcesChange}
       />
 
       {/* Always-visible traveler change request — same revision pipeline as
@@ -10439,6 +10451,21 @@ export default function TripOptimizer() {
   // Declared here (with the other input buckets, before the snapshot effect
   // that reads it) so the key set stays identical to outputDefs.
   const [outputs, setOut] = useState(() => resolveOutputs(recovered?.inputs?.outputs));
+  // #8 Reviewer source selection, LIFTED to wizard level so the user can pick
+  // expert-review sources BEFORE the build (the agreed "pre-build picker, then
+  // full auto" flow). Defaults mirror ReviewPanel exactly: the dflt sources +
+  // (if the destination matches a curated region) that region's hyperlocal set.
+  // Recovered trips reuse their saved review sources when present.
+  const [reviewerSourceIds, setReviewerSourceIds] = useState(() => {
+    const saved = recovered?.result?.review?.sources;
+    if (Array.isArray(saved) && saved.length) return saved;
+    const base = REVIEWER_SOURCES.filter(s => s.dflt).map(s => s.id);
+    const dest = recovered?.inputs?.basics?.destination
+      || (Array.isArray(recovered?.inputs?.basics?.cities) ? recovered.inputs.basics.cities.map(c => c?.name).filter(Boolean).join(" ") : "")
+      || "";
+    const region = matchHyperlocalRegion(dest);
+    return region ? Array.from(new Set([...base, ...region.sourceIds])) : base;
+  });
   // Pending state for the "Build from this" shortcut. extractingFromGuidelines
   // shows the spinner on the shortcut button; pendingBuildFromGuidelines fires
   // handleBuild on the NEXT render after setState flushes — we cannot call
@@ -12839,7 +12866,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       try {
         const retrieveCtrl = new AbortController();
         const retrieveTimeout = setTimeout(() => retrieveCtrl.abort(), 18000);
-        const defaultSourceIds = REVIEWER_SOURCES.filter(s => s.dflt).map(s => s.id);
+        // #8 Use the user's PRE-BUILD picked reviewer sources (lifted to wizard
+        // state) instead of the hardcoded defaults. Falls back to the dflt set if
+        // somehow empty, so the pre-build local-knowledge pass always has sources.
+        const preBuildSourceIds = (Array.isArray(reviewerSourceIds) && reviewerSourceIds.length)
+          ? reviewerSourceIds
+          : REVIEWER_SOURCES.filter(s => s.dflt).map(s => s.id);
         const retrieveResp = await fetch("/api/review-retrieve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -12848,7 +12880,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             destination: destForRetrieve,
             restaurants: Array.isArray(restaurants) ? restaurants.slice(0, 6) : [],
             activities: Array.isArray(activities) ? activities.slice(0, 4) : [],
-            sources: defaultSourceIds,
+            sources: preBuildSourceIds,
           }),
         });
         clearTimeout(retrieveTimeout);
@@ -13737,6 +13769,34 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} disabled={k === "itinerary"} />)}
             </div>
 
+            {/* #8 Pre-build expert-review source picker. The review runs
+                automatically after the build (#8 part 1); choosing the sources
+                HERE means the pre-build local-knowledge pass and the auto-review
+                both use exactly what the user wants. Selected = navy pill w/
+                light label (ON_NAVY, avoiding the navy-on-navy contrast bug). */}
+            {!findOnly && (
+              <div style={cardStyleR}>
+                <p style={ctStyle}>{`Expert review sources  ·  ${reviewerSourceIds.length} selected`}</p>
+                <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 10px", lineHeight: 1.4 }}>
+                  After the build, a panel of these sources reviews your plan and suggests fixes. Tap to add or remove.
+                </p>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {REVIEWER_SOURCES.filter(s => s.lens !== "hyperlocal").map(s => {
+                    const on = reviewerSourceIds.includes(s.id);
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        title={s.blurb}
+                        onClick={() => setReviewerSourceIds(prev => prev.includes(s.id) ? prev.filter(x => x !== s.id) : [...prev, s.id])}
+                        style={{ fontSize: "11px", padding: "6px 12px", borderRadius: "999px", border: `0.5px solid ${on ? "var(--color-text-primary)" : "var(--color-border-secondary)"}`, background: on ? "var(--color-text-primary)" : "transparent", color: on ? ON_NAVY : "var(--color-text-secondary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", whiteSpace: "nowrap" }}
+                      >{on ? "\u2713 " : ""}{s.name}</button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div style={{ display: "flex", gap: "10px", marginTop: "0.5rem" }}>
               <button onClick={() => { setOutputsStep(false); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }} disabled={loading} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", opacity: loading ? 0.5 : 1 }}>← Back</button>
               {loading ? (
@@ -13942,6 +14002,8 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             onPlanRevised={handlePlanRevised}
             onReviewChange={handleReviewChange}
             initialReview={reviewState}
+            reviewerSourceIds={reviewerSourceIds}
+            onReviewerSourcesChange={setReviewerSourceIds}
           />
         )}
 
