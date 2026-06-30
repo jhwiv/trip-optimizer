@@ -5146,6 +5146,25 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   const [collapsed, setCollapsed] = useState(() =>
     Array.isArray(initialReview?.applied_ids) && initialReview.applied_ids.length > 0,
   );
+  // #8 part 2b — Apply-mode toggle (the BUILD-LEVEL choice, not the per-call
+  // revision mode). Named `applyModeChoice` to avoid shadowing the existing
+  // local `applyMode` inside handleApply (which holds "surgical" | "full").
+  // Two modes:
+  //   "auto":         on a fresh review, queue every finding flagged
+  //                   default_apply: true and fire one handleApply
+  //                   automatically (the user still sees the apply
+  //                   progress + applied changelog via the existing surface).
+  //   "approve_each": current behavior — user reviews findings, toggles
+  //                   which to include, hits Apply manually.
+  // Default: "auto" per the wiki spec. A restored saved trip carries its
+  // saved choice forward via initialReview.apply_mode_choice.
+  const [applyModeChoice, setApplyModeChoice] = useState(
+    initialReview?.apply_mode_choice === "approve_each" ? "approve_each" : "auto",
+  );
+  // Once-per-review guard so auto-apply can't double-fire on re-render or a
+  // brief status oscillation. Stores the review's generatedAt-or-verdict
+  // signature; reset on every fresh handleRunReview.
+  const autoApplySigRef = useRef("");
   const [error, setError] = useState("");
   // Honest partial-apply surface: when a surgical revision applies SOME but
   // not all selected findings, we never claim full success. `notice` carries
@@ -5199,6 +5218,9 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
     // #10 — a fresh review run should always land expanded so the user can
     // see the new findings; the collapse only applies to post-Apply state.
     setCollapsed(false);
+    // #8 part 2b — reset the auto-apply guard so the new review can auto-fire
+    // once it lands in "done" state (only when applyModeChoice === "auto").
+    autoApplySigRef.current = "";
     setError("");
     setProgress(0);
     setProgressLabel("Starting review…");
@@ -5295,6 +5317,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           review: parsed,
           applied_ids: [],
           generatedAt: new Date().toISOString(),
+          apply_mode_choice: applyModeChoice,
         });
       }
     } catch (err) {
@@ -5501,6 +5524,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           applied_ids: newAppliedIds,
           generatedAt: new Date().toISOString(),
           last_mode: applyMode,
+          apply_mode_choice: applyModeChoice,
         });
       }
     } catch (err) {
@@ -5518,6 +5542,36 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       setElapsedSec(0);
     }
   };
+
+  // #8 part 2b — Auto-apply effect. When applyModeChoice === "auto" and a fresh
+  // review just landed in "done" state with no applies yet, queue every finding
+  // flagged default_apply: true and fire one handleApply automatically. The
+  // user still sees the apply progress card (status "applying") and the
+  // applied changelog afterwards via the existing surface. Guarded by
+  // autoApplySigRef so a re-render or status oscillation can't double-fire,
+  // and by appliedIds.length === 0 so a partial-apply retry cycle can't
+  // reawaken auto-apply. Placed AFTER handleApply's definition so the lint
+  // rule "Cannot access variable before it is declared" stays satisfied
+  // (handleApply is a const, not a hoisted function declaration).
+  useEffect(() => {
+    if (applyModeChoice !== "auto") return;
+    if (status !== "done") return;
+    if (!review || !Array.isArray(review.findings) || review.findings.length === 0) return;
+    if (appliedIds.length > 0) return;          // user (or a prior auto fire) already applied for this review
+    const defaultApply = review.findings.filter(f => f.default_apply && !appliedIds.includes(f.id));
+    if (defaultApply.length === 0) return;       // nothing flagged default_apply: true — nothing to auto-fire
+    // Stable per review: prefer generatedAt, fall back to the verdict hash.
+    const sig = (review.generatedAt || review.verdict || "").slice(0, 64);
+    if (!sig) return;
+    if (autoApplySigRef.current === sig) return; // already auto-applied for this review
+    autoApplySigRef.current = sig;
+    handleApply({ findingsOverride: defaultApply });
+    // handleApply is a stable closure recreated each render; the sig ref above
+    // guards against double-fire. applyState is intentionally NOT a dep — we
+    // pass the default-apply set explicitly via findingsOverride so a slow
+    // setApplyState propagation can't make us apply the wrong subset.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyModeChoice, status, review, appliedIds.length]);
 
   const togglePickerSource = (id) => {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -5580,6 +5634,48 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "0 0 12px", fontStyle: "italic" }}>
             Why these? They cover taste (CN Traveler), food (Michelin), pacing (NYT 36 Hours), and ground-truth (Reddit + locals){hyperlocalRegion ? ", plus destination-specific local papers and the tourism board" : ""}. Add more for hotel-specific or scene-specific feedback.
           </p>
+          {/* #8 part 2b — Apply-mode toggle. Sets what happens when findings
+              land: auto-apply the default-flagged ones in one pass (with the
+              changelog still visible), or approve each finding manually.
+              Default auto per the wiki spec; saved trips carry the user's
+              prior choice via initialReview.apply_mode_choice. */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px", padding: "8px 10px", marginBottom: "10px", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)" }}>
+            <p style={{ fontSize: "10.5px", color: "var(--color-text-secondary)", margin: 0, letterSpacing: "0.04em", textTransform: "uppercase", fontWeight: 600 }}>
+              When findings land
+            </p>
+            <div role="radiogroup" aria-label="Apply mode" style={{ display: "flex", gap: "4px" }}>
+              {[
+                { id: "auto", label: "Auto-apply", title: "As soon as the review lands, apply every recommended change in one pass. You'll see what changed in the changelog." },
+                { id: "approve_each", label: "Approve each", title: "Review findings one by one and pick which to apply." },
+              ].map(opt => {
+                const active = applyModeChoice === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setApplyModeChoice(opt.id)}
+                    title={opt.title}
+                    style={{
+                      fontSize: "10.5px",
+                      letterSpacing: "0.04em",
+                      fontWeight: active ? 700 : 500,
+                      color: active ? ON_NAVY : "var(--color-text-secondary)",
+                      background: active ? GOLD : "transparent",
+                      border: `0.5px solid ${active ? GOLD : "var(--color-border-secondary)"}`,
+                      borderRadius: "999px",
+                      padding: "4px 10px",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <button onClick={handleRunReview} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_NAVY }}>
             Run review (~45 sec)
           </button>
