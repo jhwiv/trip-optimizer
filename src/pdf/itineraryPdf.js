@@ -537,8 +537,8 @@ function renderCover(cur, data, inputs, opts = {}) {
       cur.state.y += photoH + 6;
     } catch { /* addImage failure silently falls through to text-only cover */ }
   } else {
-    // No photo: use the compact vertical spacing from before.
-    cur.space(8);
+    // No photo: compact spacing — the title block provides enough breathing room.
+    cur.space(4);
   }
 
   // Eyebrow
@@ -706,7 +706,7 @@ function renderIntroduction(cur, data, inputs) {
   pdf.setCharSpace(0);
   cur.space(2);
   cur.accentRule(48);
-  cur.space(8);
+  cur.space(5);
 
   // Body — navy text in serif, generous leading for an editorial read.
   // The two parts sit as separated paragraphs; a thin teal rule between
@@ -751,14 +751,27 @@ function renderIntroduction(cur, data, inputs) {
 // -----------------------------------------------------------------------------
 // DAY PAGES
 // -----------------------------------------------------------------------------
-function renderDay(cur, day, index) {
+function renderDay(cur, day, index, opts = {}) {
   const { pdf } = cur;
+  const { cityPhoto = null } = opts;
 
-  // Reserve real room before starting a day. If less than ~110mm remains on
-  // the current page, push the day to a fresh page so it has room to start
-  // with proper hierarchy (day label, headline, accent rule, first item).
-  // 110mm reliably fits a day label + headline + 3 items without orphaning.
-  cur.ensureSpace(110);
+  // Reserve room before starting a day. 72mm fits a day label + headline +
+  // 2 items without orphaning; the previous 110mm was too aggressive and
+  // wasted half-pages worth of blank space before each day header.
+  cur.ensureSpace(72);
+
+  // City photo banner — full-width landscape image shown on the first day
+  // of each new city (passed in via opts.cityPhoto). Provides visual
+  // interest without requiring every day to have its own photo fetch.
+  if (cityPhoto) {
+    const photoW = PAGE.width - PAGE.marginX * 2;
+    const photoH = 40;
+    try {
+      const imgFmt = cityPhoto.match(/^data:image\/(\w+);/)?.[1]?.toUpperCase() ?? "JPEG";
+      pdf.addImage(cityPhoto, imgFmt, PAGE.marginX, cur.state.y, photoW, photoH, undefined, "FAST");
+      cur.state.y += photoH + 3;
+    } catch { /* silently skip — text-only fallback */ }
+  }
 
   // Day label — bigger, more tracked, and with a generous teal accent rule
   // so the start of each day reads like a proper section, not another bullet.
@@ -768,7 +781,7 @@ function renderDay(cur, day, index) {
   // ~190mm wide at 10pt bold + 1.6mm letter-spacing, well past the page
   // edge. splitTextToSize handles the wrap; we draw each line at the
   // current y and advance manually.
-  cur.space(2);
+  cur.space(1);
   pdf.setFont(FONT.sans, "bold");
   pdf.setFontSize(10);
   pdf.setCharSpace(1.6);
@@ -782,9 +795,9 @@ function renderDay(cur, day, index) {
   });
   cur.state.y += Math.max(0, labelLines.length - 1) * labelLineH;
   pdf.setCharSpace(0);
-  cur.space(2);
+  cur.space(1.5);
   cur.accentRule(36);
-  cur.space(3);
+  cur.space(2);
 
   // Headline (editorial serif italic)
   if (day.headline) {
@@ -803,12 +816,12 @@ function renderDay(cur, day, index) {
   if (day.pace_note) metaBits.push(day.pace_note);
   if (day.city && !labelText.toLowerCase().includes(String(day.city).toLowerCase())) metaBits.push(day.city);
   if (metaBits.length) {
-    cur.space(0.5);
+    cur.space(0.3);
     cur.text(metaBits.join("  ·  "), { font: FONT.sans, style: "italic", size: 10, color: COLOR.inkSoft });
   }
-  cur.space(0.5);
-  cur.rule({ color: COLOR.rule, space: 0.8 });
-  cur.space(0.5);
+  cur.space(0.3);
+  cur.rule({ color: COLOR.rule, space: 0.5 });
+  cur.space(0.3);
 
   // Items
   const items = Array.isArray(day.items) ? day.items : [];
@@ -954,14 +967,14 @@ function renderItem(cur, item, isLast) {
   if (item.contact) renderContactBlock(cur, item.contact, headX, bodyMaxW);
 
   // Bottom spacer + divider line between items
-  cur.space(0.8);
+  cur.space(0.5);
   if (!isLast) {
     cur.setDraw(COLOR.ruleSoft);
     pdf.setLineWidth(0.1);
     pdf.line(headX, cur.state.y, PAGE.width - PAGE.marginX, cur.state.y);
-    cur.space(0.8);
+    cur.space(0.5);
   } else {
-    cur.space(0.8);
+    cur.space(0.5);
   }
   // Make sure item top reference exists (keeps the column visually aligned
   // even if the body is shorter than the time label). Only enforce this
@@ -1288,9 +1301,10 @@ function renderByCategory(cur, data) {
   const groups = groupItemsByCategory(data);
   if (!groups.length) return;
 
-  // Start on a fresh page so it reads like a back-of-book reference.
-  cur.newPage();
-  cur.space(2);
+  // Start a new section — push to a fresh page only when there isn't enough
+  // room for the heading + a couple of entries.
+  cur.ensureSpace(55);
+  cur.space(4);
   cur.text("By Category", { font: FONT.serif, style: "italic", size: 22, color: COLOR.ink });
   cur.space(2);
   cur.accentRule(48);
@@ -1350,8 +1364,8 @@ function renderLocalProviders(cur, providers) {
     .filter((g) => g.items.length > 0);
   if (groups.length === 0) return;
 
-  cur.newPage();
-  cur.space(2);
+  cur.ensureSpace(55);
+  cur.space(4);
   cur.text("Local Providers", { font: FONT.serif, style: "italic", size: 22, color: COLOR.ink });
   cur.space(2);
   cur.accentRule(48);
@@ -1380,8 +1394,8 @@ function renderLocalProviders(cur, providers) {
 // -----------------------------------------------------------------------------
 function sectionHeader(cur, title) {
   const { pdf } = cur;
-  cur.ensureSpace(18);
-  cur.space(3.5);
+  cur.ensureSpace(16);
+  cur.space(2.5);
   pdf.setFont(FONT.sans, "bold");
   pdf.setFontSize(8.5);
   pdf.setCharSpace(1.4);
@@ -1411,11 +1425,11 @@ function renderReferences(cur, data) {
   const hasAny = ref.logistics.length || ref.weather || ref.pack.length || ref.flags.length || ref.planb.length || ref.snobs.length || ref.tonight.length;
   if (!hasAny) return;
 
-  // Always start references on a fresh page so they read like a back-of-book reference.
-  cur.newPage();
+  // Start references — push to a new page only if very little space remains.
+  cur.ensureSpace(55);
+  cur.space(4);
 
   // Section title — "Trip Reference"
-  cur.space(2);
   cur.text("Trip Reference", { font: FONT.serif, style: "italic", size: 22, color: COLOR.ink });
   cur.space(2);
   cur.accentRule(48);
@@ -1649,14 +1663,22 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
   // the day-by-day header + first day's worth of content genuinely won't
   // fit on what's left of the cover page.
   const days = Array.isArray(data?.days) ? data.days : [];
+  const cityPhotos = options.cityPhotos || {};
   if (days.length > 0) {
-    cur.space(8);
-    cur.ensureSpace(60);
-    cur.text("Day by Day", { font: FONT.serif, style: "italic", size: 22, color: COLOR.ink });
-    cur.space(2);
-    cur.accentRule(48);
     cur.space(4);
-    days.forEach((d, i) => renderDay(cur, d, i));
+    cur.ensureSpace(50);
+    cur.text("Day by Day", { font: FONT.serif, style: "italic", size: 22, color: COLOR.ink });
+    cur.space(1.5);
+    cur.accentRule(48);
+    cur.space(2);
+    let lastDayCity = null;
+    days.forEach((d, i) => {
+      const dayCity = (d.city || "").toLowerCase();
+      const isNewCity = dayCity && dayCity !== lastDayCity;
+      const cityPhoto = isNewCity ? (cityPhotos[dayCity] || null) : null;
+      if (d.city) lastDayCity = dayCity;
+      renderDay(cur, d, i, { cityPhoto });
+    });
   }
 
   // 4. By category — same items as the day-by-day, regrouped (flights /

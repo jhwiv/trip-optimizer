@@ -83,6 +83,15 @@ export function buildFlightCardTitle({ flight, autoFlight, route }) {
   if (autoFlight && typeof autoFlight === "object" && typeof autoFlight.flightNumber === "string" && autoFlight.flightNumber.trim().length > 0) {
     return `${autoFlight.flightNumber.trim()}${routeSuffix}`;
   }
+  // Model-estimated number: not yet schedule-verified. Show with a "~" prefix
+  // so the user sees a plausible number and knows to verify before booking.
+  // The resolver replaces it with a clean verified number once the schedule
+  // API confirms or substitutes it (at which point the verifiedFn branch above
+  // fires and the "~" disappears).
+  const estimatedFn = fnWhen(flight, "_modelEstimatedFlightNumber");
+  if (estimatedFn) {
+    return `${carrier} ~${estimatedFn}`.trim() + routeSuffix;
+  }
   const fallbackCarrier = carrier || "Carrier TBD";
   return `${fallbackCarrier}${routeSuffix}`;
 }

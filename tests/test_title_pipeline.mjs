@@ -113,9 +113,9 @@ console.log("=== Scenario 2 — user-supplied number: _userSuppliedFlightNumber 
 
 // ---------------------------------------------------------------------------
 // Scenario 3 — model-only number (no _scheduleVerified, not user-supplied)
-// Strip nulls it → title falls through to carrier-only fallback.
+// Strip marks it estimated → title shows number with "~" prefix as badge.
 // ---------------------------------------------------------------------------
-console.log("=== Scenario 3 — model-only number: strip nulls → carrier-only title ===");
+console.log("=== Scenario 3 — model-only number: strip marks estimated → ~prefix title ===");
 {
   const { flight, title } = pipelineTitle(
     {
@@ -129,15 +129,15 @@ console.log("=== Scenario 3 — model-only number: strip nulls → carrier-only 
     "Thu Aug 15",
     { narrative: "", guidelines: "" },
   );
-  assert("Model-only: number nulled by strip",
-    flight.flight_number === null);
-  assert("Model-only: _flightNumberStripped set",
-    flight._flightNumberStripped === true);
-  assert("Model-only: title does NOT contain model's number",
-    !title.includes("9999"),
+  assert("Model-only: number is KEPT (not nulled)",
+    flight.flight_number === "UA9999");
+  assert("Model-only: _modelEstimatedFlightNumber = true",
+    flight._modelEstimatedFlightNumber === true);
+  assert("Model-only: title contains model's number with ~ prefix",
+    title.includes("~UA9999"),
     `got: "${title}"`);
-  assert("Model-only: title falls back to carrier + route",
-    title === "United · EWR → SFO",
+  assert("Model-only: title includes carrier",
+    title.includes("United"),
     `got: "${title}"`);
 }
 

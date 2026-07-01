@@ -15,8 +15,9 @@
 //      number alone. This is the resolver's promise.
 //   B. user-supplied flight numbers (matching userFlightNumbers built
 //      from inputs.narrative + inputs.guidelines) MUST be kept.
-//   C. Every other model-emitted number MUST be stripped, with
-//      _originalFlightNumber preserved + _flightNumberStripped = true.
+//   C. Model-emitted numbers not yet verified by the schedule API MUST be
+//      kept but marked _modelEstimatedFlightNumber = true so the UI shows
+//      an "(est.)" badge. The original is also preserved in _originalFlightNumber.
 //   D. When the model omitted the number AND the user named one, the
 //      strip back-fills the user's number with _userSuppliedFlightNumber.
 //
@@ -82,13 +83,11 @@ console.log("=== Contract A — _scheduleVerified exemption ===");
     f._scheduleVerified === true);
 }
 
-console.log("=== Contract A negative — WITHOUT _scheduleVerified the same flight is stripped ===");
+console.log("=== Contract A* — WITHOUT _scheduleVerified the same flight is marked estimated (not stripped) ===");
 {
-  // The exact same flight, but no _scheduleVerified flag. This is the
-  // BUG case: pre-fix, the resolver never wrote the flag for complete
-  // flights, and the strip nulled the number. We lock the bad behavior
-  // in deliberately so future code can't accidentally invert the
-  // exemption semantics.
+  // The exact same flight, but no _scheduleVerified flag.
+  // New behavior: we KEEP the number but mark it _modelEstimatedFlightNumber so
+  // the UI shows an "(est.)" badge. The resolver will confirm or replace it.
   const days = [{
     label: "Thu Aug 15",
     items: [{
@@ -106,11 +105,11 @@ console.log("=== Contract A negative — WITHOUT _scheduleVerified the same flig
   }];
   const { days: out } = applyFlightNumberStrip(days, { narrative: "", guidelines: "" });
   const f = out[0].items[0].flight;
-  assert("Contract A neg: without _scheduleVerified, number is stripped to null",
-    f.flight_number === null);
-  assert("Contract A neg: _flightNumberStripped = true",
-    f._flightNumberStripped === true);
-  assert("Contract A neg: original number preserved in _originalFlightNumber",
+  assert("Contract A*: without _scheduleVerified, number is KEPT (not nulled)",
+    f.flight_number === "UA1792");
+  assert("Contract A*: _modelEstimatedFlightNumber = true (shows est. badge)",
+    f._modelEstimatedFlightNumber === true);
+  assert("Contract A*: _originalFlightNumber preserved for audit",
     f._originalFlightNumber === "UA1792");
 }
 
@@ -139,7 +138,7 @@ console.log("=== Contract B — user-supplied number is kept ===");
     f._userSuppliedFlightNumber === true);
 }
 
-console.log("=== Contract C — model-only number is stripped ===");
+console.log("=== Contract C — model-only number is marked estimated (not stripped) ===");
 {
   const days = [{
     label: "Thu Aug 15",
@@ -147,7 +146,7 @@ console.log("=== Contract C — model-only number is stripped ===");
       type: "Flight",
       flight: {
         carrier: "United",
-        flight_number: "UA9999",  // fabricated
+        flight_number: "UA9999",  // model-generated
         from_airport: "EWR",
         to_airport: "SFO",
       },
@@ -155,14 +154,14 @@ console.log("=== Contract C — model-only number is stripped ===");
   }];
   const { days: out, fixes } = applyFlightNumberStrip(days, { narrative: "", guidelines: "" });
   const f = out[0].items[0].flight;
-  assert("Contract C: model-only number stripped to null",
-    f.flight_number === null);
-  assert("Contract C: _flightNumberStripped = true",
-    f._flightNumberStripped === true);
+  assert("Contract C: model-only number is KEPT (not nulled)",
+    f.flight_number === "UA9999");
+  assert("Contract C: _modelEstimatedFlightNumber = true",
+    f._modelEstimatedFlightNumber === true);
   assert("Contract C: _originalFlightNumber preserved",
     f._originalFlightNumber === "UA9999");
-  assert("Contract C: fixes log includes the strip line",
-    fixes.some((s) => s.includes("removed model-supplied flight number")));
+  assert("Contract C: fixes log mentions model-estimated",
+    fixes.some((s) => s.includes("model-estimated")));
 }
 
 console.log("=== Contract D — back-fill user number when model omits ===");
