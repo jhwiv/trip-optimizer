@@ -3427,6 +3427,16 @@ function pdfFilename(data) {
   return `trip-${date}-${slug}${n}.pdf`;
 }
 
+// Convert a Blob/Response to a data URL (needed for jsPDF.addImage).
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
 // Build a polished, vector itinerary PDF from the trip plan data.
 // This is a purpose-built print template (NOT an html2canvas screenshot) —
 // sharp typography, hyperlinks (phones, addresses, booking URLs), proper
@@ -3461,7 +3471,26 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers
     try {
       const { buildItineraryPdf } = await import("./pdf/itineraryPdf.js");
       const buildId = (typeof __BUILD_ID__ !== "undefined" && __BUILD_ID__) ? String(__BUILD_ID__) : "";
-      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers });
+
+      // Fetch a destination photo for the cover page hero.
+      // Runs in parallel with the module warm-up; silently skipped if unavailable.
+      let coverPhoto = null;
+      const destination = data?.destination ||
+        (Array.isArray(data?.cities) && data.cities[0]?.name) || "";
+      if (destination) {
+        setStatus("Fetching cover photo…");
+        try {
+          const photoRes = await fetch(
+            `/api/destination-photo?destination=${encodeURIComponent(destination)}`
+          );
+          if (photoRes.ok) {
+            coverPhoto = await blobToDataUrl(await photoRes.blob());
+          }
+        } catch { /* photo is non-critical; silently skip */ }
+      }
+
+      setStatus("Composing pages…");
+      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers, coverPhoto });
       setStatus("Saving…");
       pdf.save(filename);
       return;
@@ -6939,6 +6968,11 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   const cityByDay = (data.days || []).map(d => d.city || null);
   const isMultiCityPlan = Array.isArray(data.cities) && data.cities.length > 1;
   const legCities = useMemo(() => collectPlanLegCities(rawData), [rawData]);
+
+  // Warm the PDF module cache as soon as ItineraryView mounts so the dynamic
+  // import resolves instantly when the user clicks Export (jsPDF is ~500KB;
+  // pre-fetching it hides the cold-load latency behind normal reading time).
+  useEffect(() => { import("./pdf/itineraryPdf.js").catch(() => {}); }, []);
 
   // Local providers (private drivers/guides/tours/tastings). Lifted here so
   // both the "Local providers" tab and the PDF export read the same verified
