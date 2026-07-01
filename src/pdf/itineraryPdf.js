@@ -1588,8 +1588,8 @@ function renderFooters(pdf, opts) {
     // Page 1 carries the Generated stamp; subsequent pages carry the brand
     // mark. Both fit on a single footer line so we never overlap content.
     const left = i === 1
-      ? `Trip Optimizer${opts.buildId ? ` · ${opts.buildId}` : ""} · Generated ${new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}`
-      : `Trip Optimizer${opts.buildId ? ` · ${opts.buildId}` : ""}`;
+      ? `www.routesmith.ai${opts.buildId ? ` · ${opts.buildId}` : ""} · Generated ${new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}`
+      : "www.routesmith.ai";
     pdf.text(asciiSafe(left), PAGE.marginX, footerY);
 
     // Suppress the X/Y page number on the introduction page per spec
@@ -1620,9 +1620,9 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
   try {
     pdf.setProperties({
       title: `${safe(data?.destination) || "Trip"} itinerary`,
-      author: "Trip Optimizer",
+      author: "RouteSmith",
       subject: safe(data?.meta) || "Travel itinerary",
-      creator: "Trip Optimizer",
+      creator: "www.routesmith.ai",
     });
   } catch { /* setProperties not critical */ }
 

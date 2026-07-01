@@ -7071,17 +7071,25 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   const [tab, setTab] = useState(initialTab);
   // Day filter for Overview tab. -1 = "All days" (default). 0..N = focus that day.
   const [dayFilter, setDayFilter] = useState(-1);
+  // Ref attached to the top of the tab-content area so tab changes scroll there,
+  // not to the page top (which lands above the hero and leaves content off-screen).
+  const sectionContentRef = useRef(null);
+  const scrollToContent = () => {
+    if (typeof window !== "undefined" && sectionContentRef.current) {
+      const el = sectionContentRef.current;
+      const rect = el.getBoundingClientRect();
+      // Offset for the sticky TripTabs bar (~88px, two rows). Scroll so content
+      // appears just below it rather than hidden under it.
+      window.scrollTo({ top: window.scrollY + rect.top - 96, behavior: "smooth" });
+    }
+  };
   const handleTabChange = (next) => {
     setTab(next);
-    if (typeof window !== "undefined") {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
+    scrollToContent();
   };
   const handleDayFilterChange = (idx) => {
     setDayFilter(idx);
-    if (typeof window !== "undefined") {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
+    scrollToContent();
   };
   // Apply the pass-three quality layer once before render. This dedupes
   // restaurants, fills verify microcopy, and computes a QC summary.
@@ -7094,7 +7102,10 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   // Warm the PDF module cache as soon as ItineraryView mounts so the dynamic
   // import resolves instantly when the user clicks Export (jsPDF is ~500KB;
   // pre-fetching it hides the cold-load latency behind normal reading time).
-  useEffect(() => { import("./pdf/itineraryPdf.js").catch(() => {}); }, []);
+  useEffect(() => {
+    import("./pdf/itineraryPdf.js").catch(() => {});
+    import("jspdf").catch(() => {});
+  }, []);
 
   // Local providers (private drivers/guides/tours/tastings). Lifted here so
   // both the "Local providers" tab and the PDF export read the same verified
@@ -7255,6 +7266,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         />
       )}
 
+      <div ref={sectionContentRef}>
       {data.days && data.days.length > 0 && tab !== "overview" && (
         <Section title={({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities", category: "By category", providers: "Local providers", essentials: "Essentials" }[tab] || "")}>
           <TripSectionView tab={tab} data={data} inputs={inputs} onOpenMenu={openMenu} providers={providers} />
@@ -7284,6 +7296,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           })}
         </Section>
       )}
+      </div>
 
       {/* Trip reference footer — surfaces the non-itinerary blocks (Tonight,
           Weather & pack, Heads up, Plan B, Snob's guide) inline on Overview so
