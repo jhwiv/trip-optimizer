@@ -905,14 +905,14 @@ const BADGE_COLORS = {
   Flight:     { bg: "var(--color-info-tint)",            color: "var(--color-info)" },
   Hotel:      { bg: "var(--color-accent-tint)",          color: "var(--color-accent-hover)" },
   Car:        { bg: "var(--color-success-tint)",         color: "var(--color-success)" },
-  Dinner:     { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
-  Lunch:      { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
-  Breakfast:  { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
+  Dinner:     { bg: "var(--color-category-rose-tint)",   color: "var(--color-category-rose)" },
+  Lunch:      { bg: "var(--color-category-rose-tint)",   color: "var(--color-category-rose)" },
+  Breakfast:  { bg: "var(--color-category-rose-tint)",   color: "var(--color-category-rose)" },
   Activity:   { bg: "var(--color-category-purple-tint)", color: "var(--color-category-purple)" },
   Flag:       { bg: "var(--color-danger-tint)",          color: "var(--color-text-danger)" },
   "Plan B":   { bg: "var(--color-accent-tint)",          color: "var(--color-accent-hover)" },
   Snob:       { bg: "var(--color-category-rose-tint)",   color: "var(--color-category-rose)" },
-  Tonight:    { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
+  Tonight:    { bg: "var(--color-category-rose-tint)",   color: "var(--color-category-rose)" },
   Note:       { bg: "var(--color-accent-tint)",          color: "var(--color-accent-hover)" },
 };
 
@@ -3991,7 +3991,7 @@ function InputSummary({ inputs }) {
   );
 }
 
-function TripHero({ data }) {
+function TripHero({ data, coverPhotoUrl }) {
   // Pull flight + hotel summary directly from days[].
   const items = (data.days || []).flatMap(d => (d.items || []));
   const flights = items.filter(it => it.type === "Flight" && it.flight);
@@ -4003,7 +4003,14 @@ function TripHero({ data }) {
 
   return (
     <div style={{ marginBottom: "1.5rem" }}>
-      <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "600", margin: "0 0 6px" }}>Your trip</p>
+      {coverPhotoUrl && (
+        <div style={{ width: "100%", height: "200px", borderRadius: "var(--border-radius-lg)", overflow: "hidden", marginBottom: "1rem", position: "relative" }}>
+          <img src={coverPhotoUrl} alt={data.destination} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+          <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to bottom, rgba(0,0,0,0) 40%, rgba(0,0,0,0.35) 100%)" }} />
+          <p style={{ position: "absolute", bottom: "12px", left: "14px", fontSize: "11px", color: "rgba(255,255,255,0.75)", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "600", margin: 0 }}>Your trip</p>
+        </div>
+      )}
+      {!coverPhotoUrl && <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "600", margin: "0 0 6px" }}>Your trip</p>}
       <p style={{ fontSize: "24px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)", letterSpacing: "-0.4px", lineHeight: 1.15 }}>{data.destination}</p>
       <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "0 0 14px" }}>{data.meta}</p>
 
@@ -6855,6 +6862,17 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   // so a silent /api/introduction error never permanently blocks the button.
   const [introIsGenerating, setIntroIsGenerating] = useState(false);
 
+  // Destination hero photo — fetched from /api/destination-photo on mount and
+  // whenever the destination changes. Null while loading or on any failure so
+  // TripHero degrades cleanly without a blank image slot.
+  const [heroPhotoUrl, setHeroPhotoUrl] = useState(null);
+  useEffect(() => {
+    const dest = rawData?.destination;
+    if (!dest) return;
+    setHeroPhotoUrl(null);
+    fetchCoverPhoto(dest).then(url => setHeroPhotoUrl(url || null));
+  }, [rawData?.destination]);
+
   // #8 Auto-run the expert review when a FRESH build lands. Per the chosen flow
   // ("pre-build picker, then full auto"), a brand-new plan kicks off the review
   // automatically; a RESTORED saved trip (initialReview present) does not — its
@@ -7099,7 +7117,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} showProviders={providers.relevantIds.length > 0} onOpenMenu={openMenu} />
       )}
 
-      <TripHero data={data} />
+      <TripHero data={data} coverPhotoUrl={heroPhotoUrl} />
       <QualityBadge qc={qc} />
 
       {/* Headless introduction generator — auto-generates the intro after build
@@ -14296,8 +14314,8 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 (confirmation numbers, named guides, exact hotels). Both flow
                 into the prompt; guidelines render first. */}
             <div style={{ ...cardStyleR, borderLeft: `2px solid ${ACCENT}`, marginBottom: "1.25rem" }}>
-              <p style={ctStyle}>Trip guidelines</p>
-              <Field label="Tell the planner everything you already know about this trip" hint="Type or dictate. Dump anything that matters: booked flights with numbers and times, hotel names, restaurants with reservation times, named drivers or guides, anniversary or kids' ages, mobility notes, pacing preferences, things to avoid. The planner reads this as the source of truth — every named flight, hotel, and restaurant is used EXACTLY, not substituted.">
+              <p style={ctStyle}>About your trip</p>
+              <Field label="Tell us about your trip" hint="Type or dictate. Dump anything that matters: booked flights with numbers and times, hotel names, restaurants with reservation times, named drivers or guides, anniversary or kids' ages, mobility notes, pacing preferences, things to avoid. The planner reads this as the source of truth — every named flight, hotel, and restaurant is used EXACTLY, not substituted.">
                 <NarrativeBox
                   value={guidelines}
                   onChange={e => setGuidelines(e.target.value)}
@@ -14670,10 +14688,15 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               ) : (
                 <button onClick={handleBuild} disabled={loading}
                   style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
-                  Build itinerary
+                  Plan my trip
                 </button>
               )}
             </div>
+            {!loading && (
+              <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", marginTop: "10px", textAlign: "center", lineHeight: 1.7, fontStyle: "italic" }}>
+                Every venue verified open · Plans draw on Michelin, Condé Nast Traveler, NYT&nbsp;36&nbsp;Hours, Eater, and more
+              </p>
+            )}
             {/* Uncertain-name confirmation. Renders between extraction and
                 build when the extractor flagged ambiguous names. Each check
                 lets the user pick: original / a candidate / custom text.
