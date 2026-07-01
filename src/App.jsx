@@ -1206,7 +1206,11 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   const [lockedFlight, setLockedFlight] = useState(null);
   const [timeFilter, setTimeFilter] = useState(() => hourToBucket(parseHour(f?.depart_time)));
   useEffect(() => {
-    if (!f || !_isoDate || _knownIdent || !_fromCode || !_toCode) return;
+    // Skip if we already have a CONFIRMED ident (user-supplied or schedule-verified).
+    // An estimated number (_modelEstimatedFlightNumber) is NOT confirmed — we still
+    // want to run the schedule lookup so the resolver can verify or replace it.
+    const hasConfirmedIdent = _knownIdent && !f?._modelEstimatedFlightNumber;
+    if (!f || !_isoDate || hasConfirmedIdent || !_fromCode || !_toCode) return;
     let cancelled = false;
     const params = new URLSearchParams({ date: _isoDate });
     params.set("origin", _fromCode);
@@ -11859,8 +11863,16 @@ export default function TripOptimizer() {
   // added Expert review sources card) instead of the Output sections card.
   // Scrolling in an effect after the render lands it correctly, and fixes all
   // entry points at once. (Same scroll-before-render class as the #2 fix.)
+  //
+  // Also pre-warms the PDF module here so the dynamic import resolves
+  // before the user finishes reading and clicks "Save as PDF". jsPDF is
+  // ~500 KB; starting the fetch now hides the cold-load latency behind
+  // the time the user spends reviewing the plan.
   useEffect(() => {
     if (!outputsStep) return;
+    // Pre-warm PDF module while the user chooses options.
+    import("./pdf/itineraryPdf.js").catch(() => {});
+    import("jspdf").catch(() => {});
     // Defer past this render so the (taller) outputs screen has painted first;
     // a 0ms timeout lands after layout. (rAF isn't in the lint globals here.)
     const id = setTimeout(() => {
@@ -12368,11 +12380,11 @@ FLIGHTS — ACCURACY OVER SPECIFICITY, PREFER NONSTOP, ALWAYS STRUCTURED:
 • If you DON'T know the carrier's specific gate range at this airport, set gate_proximity to a HONEST string like 'Same terminal as the gate' or 'Different terminal — only worth a visit with 2+ hours to kill' rather than inventing precise gate numbers. The terminal field should always be set when known.
 • Common high-value lounges to know with terminal locations: EWR Polaris (Terminal C, post-security, near gates C70-C90), EWR Amex Centurion (Terminal C, near gate C102 — farther from most UA intl gates), JFK Centurion (Terminal 4, Concourse B mezzanine near gate B30), JFK Delta Sky Club T4 (post-security, multiple locations), LAX Amex Centurion (Tom Bradley intl T-B, post-security level 3) + LAX United Polaris (Terminal 7, near gates 70-79) + Korean Air SKYPASS (Terminal B / TBIT), ORD United Polaris (Terminal 1 C-concourse, near gate C18) + United Club + Amex Centurion (Terminal 3 H/K, near gate K17), ATL Delta Sky Club + Amex Centurion (Concourse F intl terminal), MIA Amex Centurion (Concourse D, near gate D12) + Centurion Studio (Concourse E). International: LHR Concorde Room (Terminal 5 A-gates, post-security — BA First only), CDG Air France La Première (Terminal 2E, satellite K), FCO Casa ITA (Terminal 3 intl), ZRH Swiss First (Terminal A, post-security), AUA Aruba Airport Lounge (Priority Pass, US Departures terminal, post-pre-clearance — the only lounge once you're past US Customs).
 • CARRIER SELECTION — DO THIS FIRST: name a carrier you are HIGHLY CONFIDENT actually operates a nonstop on this exact city pair. If you cannot name one with confidence, leave carrier as a comma-separated short list of candidates (e.g. "SAS or Delta") and add a flags[] entry like "Verify which carrier operates nonstop — candidates: SAS, Delta". Do NOT invent a carrier that doesn't fly the route.
-• FLIGHT NUMBERS — ONLY EMIT WHEN THE USER GAVE YOU ONE, AND WHEN THEY DID, EMIT IT ALWAYS. If the user's narrative or guidelines literally name a flight number ("flight 1040", "UA1039", "on United 47", "depart on 1040", "return on 1039"), you MUST:
-  1. Set flight_number to the exact digits the user stated (e.g. "1040"). That is a USER FACT and must be preserved on every Flight item that matches the direction (outbound number on outbound leg, return number on return leg).
-  2. Still emit depart_time and arrive_time as realistic windows for that route. The app verifies these against a live flight-status service at render time, so a reasonable estimate is fine — it will be replaced with canonical data.
-  3. Still emit carrier. If the user gave "flight 1040" without an airline, infer the most likely carrier for that route + number combination (e.g. for EWR—AUA, 1040 likely = United UA1040; for JFK—AUA, 1040 likely = JetBlue B61040).
-Otherwise, when the user did NOT state a number, set "flight_number": null. Do NOT invent numbers — they will be stripped. The app handles look-up for the unstated case.
+• FLIGHT NUMBERS — ALWAYS EMIT A FLIGHT NUMBER. The app marks it "est." until the live schedule confirms or replaces it.
+  USER-STATED NUMBERS: If the user's narrative or guidelines name a flight number ("flight 1040", "UA1039", "on United 47"), emit the EXACT digits they stated — that is a USER FACT, preserved as-is.
+  MODEL-GENERATED NUMBERS: When the user did NOT state a number, emit your BEST-GUESS realistic flight number for the carrier + route (e.g. "UA 4215" for a United EWR→SAV leg). Pick a number in the 1–5000 range that is plausible for the carrier (United uses mostly 3-4 digit numbers for domestic). The app displays it with a "~" estimate badge and verifies against the live schedule at render time — it will be confirmed or replaced automatically.
+  If the user gave "flight 1040" without an airline, infer the most likely carrier for that route + number (e.g. for EWR—AUA, 1040 likely = United UA1040; for JFK—AUA, 1040 likely = JetBlue B61040).
+  In ALL cases: still emit realistic depart_time, arrive_time, and carrier.
 • Route-specific carrier truth (when on file for this trip's route) appears in the per-trip preamble below — follow it strictly.
 • Every confirmation_note MUST literally end with this exact sentence: "Verify flight number, times and equipment at booking — schedules change." Copy it verbatim; do not paraphrase.
 • WRONG confirmation_note: "Book directly on united.com for Polaris lounge access at EWR Terminal C"
@@ -14048,14 +14060,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     return () => window.cancelAnimationFrame(raf);
   }, [loading]);
 
-  // Deferred build trigger for the "Build from this" shortcut.
+  // Deferred navigation for the "Build from this" shortcut.
   // buildFromGuidelines extracts fields from the narrative, calls all the
   // setters, and sets pendingBuildFromGuidelines=true. On the NEXT render
-  // (after React flushes those setters), this effect fires handleBuild() with
-  // the fresh closure, so the prompt builders see the extracted values. We
-  // also gate on basics.destination because the build can't resolve geography
-  // without one — if extraction couldn't find a destination, the effect
-  // disarms itself and the API's 422 path has already surfaced a clear error.
+  // (after React flushes those setters), this effect navigates to the outputs
+  // screen so the user can choose outputs and review sources before pressing
+  // "Plan my trip" — the build does NOT fire automatically anymore.
   useEffect(() => {
     if (!pendingBuildFromGuidelines) return;
     // All state changes happen on the next tick so the eslint react-compiler
@@ -14075,10 +14085,14 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         setStep(1);
         return;
       }
+      // Clear the extraction loading message now that extraction is done.
+      // The user lands on the outputs screen and must press "Plan my trip"
+      // to start the build — nothing fires automatically.
       setPendingBuildFromGuidelines(false);
+      setLoadingMsg("");
       setOutputsStep(true);
       setStep(2);
-      handleBuild();
+      // No handleBuild() here — user chooses outputs/sources then clicks the button.
     }, 0);
     // We intentionally only depend on the trigger flag + destination — every
     // other state piece is read fresh inside handleBuild.

@@ -10,9 +10,13 @@
 //   2. If a flight has a number that matches userFlightNumbers (the
 //      user dictated it in their narrative/guidelines), KEEP it and
 //      normalize to bare digits + _userSuppliedFlightNumber = true.
-//   3. Otherwise the model emitted the number and we cannot trust it.
-//      Strip the number (null it), set _flightNumberStripped = true,
-//      preserve the original in _originalFlightNumber for later audit.
+//   3. Otherwise the model emitted the number and we cannot fully trust
+//      it. KEEP the number but mark it _modelEstimatedFlightNumber = true
+//      so the UI shows an "(est.)" badge. The resolver will confirm or
+//      replace it via the live schedule API and write _scheduleVerified;
+//      the badge then disappears. Preserving the number means the user
+//      always sees something rather than a blank when the API is slow or
+//      unavailable.
 //   4. If the model emitted NO number but the user named some in their
 //      narrative, back-fill the user-supplied number (outbound vs
 //      return chosen by route direction first, day index as fallback).
@@ -89,9 +93,12 @@ export function applyFlightNumberStrip(days, inputs) {
               fixes.push(`Day ${dayIdx + 1} flight: kept user-supplied flight number ${f.carrier || ""}${digits}`);
             } else {
               f._originalFlightNumber = f.flight_number;
-              f.flight_number = null;
-              f._flightNumberStripped = true;
-              fixes.push(`Day ${dayIdx + 1} flight: removed model-supplied flight number — look up live schedule`);
+              // Keep the number but mark it as a model estimate. The resolver
+              // (FlightNumberAutoResolver) will confirm or replace it via the
+              // live schedule API and set _scheduleVerified; until then the UI
+              // shows an "(est.)" badge so the user knows to verify before booking.
+              f._modelEstimatedFlightNumber = true;
+              fixes.push(`Day ${dayIdx + 1} flight: flight number ${f.flight_number} is model-estimated — schedule verification pending`);
             }
           } else if (userFlightNumbers.size > 0) {
             const userNums = Array.from(userFlightNumbers).filter((n) => /^\d+$/.test(n));
