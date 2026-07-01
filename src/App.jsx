@@ -3437,6 +3437,27 @@ function blobToDataUrl(blob) {
   });
 }
 
+// Fetch a cover photo data URL for a destination, with a 10 s client-side
+// deadline so a slow Worker never stalls the PDF export indefinitely.
+// Returns null on any failure — the PDF exports cleanly without a photo.
+async function fetchCoverPhoto(destination) {
+  if (!destination) return null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const res = await fetch(
+      `/api/destination-photo?destination=${encodeURIComponent(destination)}`,
+      { signal: ctrl.signal }
+    );
+    if (!res.ok) return null;
+    return await blobToDataUrl(await res.blob());
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Build a polished, vector itinerary PDF from the trip plan data.
 // This is a purpose-built print template (NOT an html2canvas screenshot) —
 // sharp typography, hyperlinks (phones, addresses, booking URLs), proper
@@ -3469,27 +3490,20 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers
   // Prefer the rich template when we have structured plan data.
   if (data && Array.isArray(data.days) && data.days.length > 0) {
     try {
-      const { buildItineraryPdf } = await import("./pdf/itineraryPdf.js");
       const buildId = (typeof __BUILD_ID__ !== "undefined" && __BUILD_ID__) ? String(__BUILD_ID__) : "";
-
-      // Fetch a destination photo for the cover page hero.
-      // Runs in parallel with the module warm-up; silently skipped if unavailable.
-      let coverPhoto = null;
       const destination = data?.destination ||
-        (Array.isArray(data?.cities) && data.cities[0]?.name) || "";
-      if (destination) {
-        setStatus("Fetching cover photo…");
-        try {
-          const photoRes = await fetch(
-            `/api/destination-photo?destination=${encodeURIComponent(destination)}`
-          );
-          if (photoRes.ok) {
-            coverPhoto = await blobToDataUrl(await photoRes.blob());
-          }
-        } catch { /* photo is non-critical; silently skip */ }
-      }
+        (Array.isArray(data?.cities) && data.cities.length > 0 && data.cities[0]?.name) || "";
 
-      setStatus("Composing pages…");
+      // Run the module import and the cover-photo fetch in parallel so neither
+      // stalls waiting for the other. The preload useEffect in ItineraryView
+      // means the import typically resolves instantly from cache; the photo
+      // fetch (up to 10 s with its AbortController) is the real variable cost.
+      setStatus("Fetching cover photo…");
+      const [{ buildItineraryPdf }, coverPhoto] = await Promise.all([
+        import("./pdf/itineraryPdf.js"),
+        fetchCoverPhoto(destination),
+      ]);
+
       const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers, coverPhoto });
       setStatus("Saving…");
       pdf.save(filename);
@@ -6552,7 +6566,7 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
           // strip it entirely and show nothing. Number-mode stays silent
           // because there was no number to display in the first place.
           if (mode === "verify" || mode === "times") {
-            verifyTrustOnly.push({ di, ii });
+            verifyTrustOnly.push({ di, ii, mode });
           }
           return;
         }
@@ -6569,9 +6583,12 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
     // fallback per target.
     (async () => {
       const resolved = [];
-      // Precondition-failure verify-mode flights: write _scheduleVerified +
-      // _verifyTrusted with no merge of times/aircraft — we never reached
-      // the API for these, so the model's emitted times stay untouched.
+      // Precondition-failure flights: write _scheduleVerified + _verifyTrusted.
+      // For times-mode (model gave a number but no clock times) also set
+      // _timesUnconfirmed so the PDF renders the honest "check with airline"
+      // fallback line rather than silently blank time rows. The _scheduleVerified
+      // guard in flightNeedsResolve would otherwise lock these out of future
+      // resolve attempts, so the fallback flag must be written here.
       for (const vt of verifyTrustOnly) {
         resolved.push({
           di: vt.di,
@@ -6580,6 +6597,7 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
             _scheduleVerified: true,
             _verifyTrusted: true,
             _resolveSource: "verify-precondition-skipped",
+            ...(vt.mode === "times" ? { _timesUnconfirmed: true } : {}),
           },
         });
       }
