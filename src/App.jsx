@@ -3462,7 +3462,7 @@ async function fetchCoverPhoto(destination) {
 // page breaks, and a clean editorial layout. The legacy DOM-screenshot path
 // is preserved below as a fallback for the unlikely case the new builder
 // throws on malformed data.
-async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers } = {}) {
+async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers, coverPhoto: preloadedCoverPhoto } = {}) {
   setStatus("Preparing…");
   // Pre-export gate — see CLAUDE.md "VENUE VERIFICATION — HARD RULE".
   // Block PDF generation if any venue still carries a severity:'block'
@@ -3492,14 +3492,15 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers
       const destination = data?.destination ||
         (Array.isArray(data?.cities) && data.cities.length > 0 && data.cities[0]?.name) || "";
 
-      // Run the module import and the cover-photo fetch in parallel so neither
-      // stalls waiting for the other. The preload useEffect in ItineraryView
-      // means the import typically resolves instantly from cache; the photo
-      // fetch (up to 10 s with its AbortController) is the real variable cost.
-      setStatus("Fetching cover photo…");
+      // Module import resolves instantly from cache (preload useEffect in
+      // ItineraryView fires on mount). Cover photo reuses the hero image
+      // already fetched for TripHero; only falls back to a network fetch if
+      // that pre-fetch hasn't resolved yet (e.g. user clicks Export very fast).
       const [{ buildItineraryPdf }, coverPhoto] = await Promise.all([
         import("./pdf/itineraryPdf.js"),
-        fetchCoverPhoto(destination),
+        preloadedCoverPhoto != null
+          ? Promise.resolve(preloadedCoverPhoto)
+          : (setStatus("Fetching cover photo…"), fetchCoverPhoto(destination)),
       ]);
 
       const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers, coverPhoto });
@@ -3683,7 +3684,7 @@ function WebExportSection({ data, inputs }) {
   );
 }
 
-function PrintButton({ data, inputs, providers, plan, introIsGenerating }) {
+function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPhoto }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -3714,7 +3715,7 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating }) {
         const loaded = await providers.ensureLoaded();
         providersForPdf = { ...providers, byCategory: loaded || providers.byCategory };
       }
-      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers: providersForPdf });
+      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers: providersForPdf, coverPhoto });
     } catch (err) {
       console.error("PDF save failed", err);
       if (isStaleChunkError(err)) {
@@ -7341,7 +7342,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           >✎ Edit trip details</button>
         )}
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
-        <PrintButton data={data} inputs={inputs} providers={providers} plan={rawData} introIsGenerating={introIsGenerating} />
+        <PrintButton data={data} inputs={inputs} providers={providers} plan={rawData} introIsGenerating={introIsGenerating} coverPhoto={heroPhotoUrl} />
         <PrintRidesButton data={data} inputs={inputs} />
         {/* Reset — surfaced here on Step 3 (results) so users don't have to
             navigate Home + scroll Step 1 to find it. Styled as a clear but
