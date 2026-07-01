@@ -1,0 +1,24 @@
+name: Sync main → master
+
+# Every time a PR merges into main (or a push lands on main), push the same
+# commit directly to master so Cloudflare Pages picks it up and deploys.
+# This closes the gap between where GitHub defaults PRs (main) and where
+# Cloudflare Pages is configured to deploy from (master).
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Push main to master
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Push main → master
+        run: git push origin HEAD:refs/heads/master
