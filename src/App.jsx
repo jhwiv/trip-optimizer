@@ -4984,7 +4984,7 @@ function LocalProvidersView({ providers }) {
 // Tabbed shell. Row 1 of the sticky nav is the day-tab strip (Overview only,
 // now an interactive filter — click to focus a single day, "All" to see them
 // all). Row 2 is the section/reference strip. Default tab is "Overview".
-function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showProviders, onOpenMenu: _onOpenMenu, onBack }) {
+function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showProviders, onOpenMenu: _onOpenMenu }) {
   const days = data.days || [];
   // Compute counts so we can show e.g. "Dining · 12" inline.
   const counts = useMemo(() => {
@@ -5058,39 +5058,6 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
             overflow group, so the user can see at a glance that the
             active section is behind the menu. */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", justifyContent: "flex-start", alignItems: "center" }}>
-          {typeof onBack === "function" && (
-            <button
-              type="button"
-              onClick={onBack}
-              aria-label="Return to home"
-              title="Return to home (your trip plan stays saved)"
-              style={{
-                flex: "0 0 auto",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "5px",
-                fontSize: "10.5px",
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                fontWeight: 600,
-                color: ACCENT,
-                padding: "6px 10px",
-                border: `0.5px solid ${ACCENT}`,
-                borderRadius: "20px",
-                background: "transparent",
-                cursor: "pointer",
-                fontFamily: "inherit",
-                lineHeight: 1.2,
-                marginRight: "2px",
-              }}
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M3 10.5 12 3l9 7.5" />
-                <path d="M5 9.5V21h14V9.5" />
-              </svg>
-              Home
-            </button>
-          )}
           {partition.primaries.map(t => {
             const active = tab === t.id;
             return (
@@ -7214,7 +7181,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       {/* Sticky two-row tab nav lives ABOVE the hero so the hero stays compact and every
          tab is reachable at a glance — modeled after zurich-weekend.com / maritimesgrandloop.com. */}
       {data.days && data.days.length > 0 && (
-        <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} showProviders={providers.relevantIds.length > 0} onOpenMenu={openMenu} onBack={onBack} />
+        <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} showProviders={providers.relevantIds.length > 0} onOpenMenu={openMenu} />
       )}
 
       <TripHero data={data} coverPhotoUrl={heroPhotoUrl} />
@@ -7331,6 +7298,36 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
         <PrintButton data={data} inputs={inputs} providers={providers} plan={rawData} introIsGenerating={introIsGenerating} />
         <PrintRidesButton data={data} inputs={inputs} />
+        {typeof onBack === "function" && (
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label="Return to home"
+            title="Return to home (your trip plan stays saved)"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "5px",
+              background: "transparent",
+              color: ACCENT,
+              border: `0.5px solid ${ACCENT}`,
+              borderRadius: "var(--border-radius-md)",
+              padding: "10px 16px",
+              fontSize: "11px",
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              fontWeight: 500,
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 10.5 12 3l9 7.5" />
+              <path d="M5 9.5V21h14V9.5" />
+            </svg>
+            Home
+          </button>
+        )}
         {/* Reset — surfaced here on Step 3 (results) so users don't have to
             navigate Home + scroll Step 1 to find it. Styled as a clear but
             secondary action: muted text, no border highlight, confirms
