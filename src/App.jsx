@@ -10935,14 +10935,25 @@ const HERO_SLIDES = [
   {
     dest: "Amalfi Coast",
     region: "Campania, Italy",
+    prefillDest: "Amalfi Coast, Italy",
     tagline: "Where limestone cliffs meet the Tyrrhenian Sea",
     fact: "The scenic SS163 coastal road was carved from sheer cliff faces in the 1850s — a decade-long feat that transformed the region into one of Europe’s most storied drives.",
     gradient: "linear-gradient(150deg, #1a3a4a 0%, #2d7a8a 40%, #e8724a 72%, #c94a2a 100%)",
     accent: "#f0a07a",
   },
   {
+    dest: "Sedona",
+    region: "Red Rock Country, Arizona",
+    prefillDest: "Sedona, Arizona",
+    tagline: "Cathedral rocks and canyon silence",
+    fact: "Sedona’s red rock formations are not sandstone — they’re ancient seabed sediment compressed and uplifted over 300 million years. The color comes from iron oxide. Every sunset turns them a different shade of fire.",
+    gradient: "linear-gradient(150deg, #3d0a00 0%, #8b2500 40%, #c85a1e 72%, #f0a060 100%)",
+    accent: "#f0c090",
+  },
+  {
     dest: "Kyoto",
     region: "Kansai, Japan",
+    prefillDest: "Kyoto, Japan",
     tagline: "Seventeen centuries of imperial elegance",
     fact: "Kyoto holds 17 UNESCO World Heritage Sites — more than any other city in Japan — spanning Zen gardens, golden pavilions, and shrines predating the printing press.",
     gradient: "linear-gradient(150deg, #1c0a2e 0%, #4a1a5e 40%, #c85fa4 72%, #ff9a9e 100%)",
@@ -10951,14 +10962,25 @@ const HERO_SLIDES = [
   {
     dest: "Patagonia",
     region: "Southern Chile & Argentina",
+    prefillDest: "Patagonia, South America",
     tagline: "The end of the world, magnificently preserved",
     fact: "Torres del Paine’s granite towers were shaped over 12 million years of glaciation and rise nearly 9,000 feet. The park receives fewer annual visitors than some city museums host in a week.",
     gradient: "linear-gradient(150deg, #03045e 0%, #0077b6 40%, #00b4d8 72%, #90e0ef 100%)",
     accent: "#90e0ef",
   },
   {
+    dest: "Saratoga Springs",
+    region: "Capital District, New York",
+    prefillDest: "Saratoga Springs, New York",
+    tagline: "A spa town with a gambling soul",
+    fact: "Saratoga’s thoroughbred racing season has run continuously since 1863 — interrupted only by World War I. The oldest active track in America, it hosts the Travers Stakes, one of the sport’s oldest races.",
+    gradient: "linear-gradient(150deg, #0a2212 0%, #1a4a2e 40%, #2e7d52 72%, #c8a830 100%)",
+    accent: "#e8c84a",
+  },
+  {
     dest: "Marrakech",
     region: "Morocco",
+    prefillDest: "Marrakech, Morocco",
     tagline: "A living labyrinth of color and craft",
     fact: "The Chouara tannery has operated in the same location since the 11th century, using techniques nearly unchanged for a thousand years — pomegranate juice and pigeon dung still soften the hides.",
     gradient: "linear-gradient(150deg, #264653 0%, #c25b4e 40%, #e76f51 72%, #f4a261 100%)",
@@ -10967,6 +10989,7 @@ const HERO_SLIDES = [
   {
     dest: "New York City",
     region: "United States",
+    prefillDest: "New York City, New York",
     tagline: "Forty-eight hours is never enough. It never is.",
     fact: "More than 800 languages are spoken in New York City — the highest linguistic diversity of any urban area on Earth. You can hear them all on a single subway ride.",
     gradient: "linear-gradient(150deg, #0b0c2a 0%, #1a2a5e 40%, #3d5a80 72%, #e9c46a 100%)",
@@ -10975,14 +10998,25 @@ const HERO_SLIDES = [
   {
     dest: "Maldives",
     region: "Indian Ocean",
+    prefillDest: "Maldives",
     tagline: "Overwater bungalows. Zero agenda.",
     fact: "The Maldives is the lowest-lying nation on Earth — its highest natural point sits 2.4 metres above sea level, making every sunrise over the lagoon feel borrowed from the sea.",
     gradient: "linear-gradient(150deg, #073b4c 0%, #118ab2 40%, #06d6a0 72%, #ffd166 100%)",
     accent: "#7eefd8",
   },
   {
+    dest: "Greenville",
+    region: "Upstate South Carolina",
+    prefillDest: "Greenville, South Carolina",
+    tagline: "The New South’s most livable secret",
+    fact: "Greenville’s downtown revival began by removing a 1970s highway overpass. The pedestrian bridge over Reedy River Falls that replaced it sparked a $2 billion renaissance since studied by urban planners worldwide.",
+    gradient: "linear-gradient(150deg, #0f1f2e 0%, #1a3a4e 40%, #2d6b8a 72%, #7ab8c8 100%)",
+    accent: "#a8d8e8",
+  },
+  {
     dest: "Scottish Highlands",
     region: "Scotland",
+    prefillDest: "Scottish Highlands, Scotland",
     tagline: "Mist, myth, and a dram by the fire",
     fact: "Loch Ness holds more fresh water than all the lakes of England and Wales combined. Its depths have never been fully charted, and neither has its grip on the imagination.",
     gradient: "linear-gradient(150deg, #1a3a2a 0%, #2e4a3e 40%, #6b3fa0 72%, #9b8ec4 100%)",
@@ -10990,7 +11024,7 @@ const HERO_SLIDES = [
   },
 ];
 
-function AppIntroOverlay() {
+function AppIntroOverlay({ onBeginPlanning } = {}) {
   const [visible, setVisible] = useState(() => shouldShowWelcome());
   const [a2hsOpen, setA2hsOpen] = useState(() => {
     const p = detectPlatform(typeof navigator !== "undefined" ? navigator.userAgent : "");
@@ -11077,31 +11111,40 @@ function AppIntroOverlay() {
               display: "flex",
               flexDirection: "column",
               justifyContent: "flex-end",
-              padding: "0 0 100px",
             }}
           >
-            {/* Bottom-to-top dark scrim for text legibility */}
-            <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to top, rgba(0,0,0,0.62) 0%, rgba(0,0,0,0.1) 55%, transparent 100%)" }} />
-            {/* Slide text */}
-            <div style={{ position: "relative", zIndex: 1, padding: "0 28px 0 32px", maxWidth: "680px" }}>
-              <p style={{ fontSize: "10px", color: slide.accent, letterSpacing: "0.22em", textTransform: "uppercase", margin: "0 0 6px", fontWeight: 700 }}>
+            {/* Bottom-to-top dark scrim — stronger gradient so text is always readable */}
+            <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to top, rgba(0,0,0,0.78) 0%, rgba(0,0,0,0.3) 45%, transparent 75%)" }} />
+            {/* Slide text + CTA — all inside the slide so nothing floats over dots */}
+            <div style={{ position: "relative", zIndex: 1, padding: "0 24px calc(env(safe-area-inset-bottom, 16px) + 46px)" }}>
+              <p style={{ fontSize: "10px", color: slide.accent, letterSpacing: "0.22em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 700 }}>
                 {slide.region}
               </p>
               <h2
                 id={i === slideIdx ? "app-intro-title" : undefined}
-                style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: "clamp(34px, 7vw, 58px)", color: "#fff", margin: "0 0 10px", lineHeight: 1.1, fontWeight: 400 }}
+                style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: "clamp(30px, 7vw, 52px)", color: "#fff", margin: "0 0 5px", lineHeight: 1.08, fontWeight: 400 }}
               >
                 {slide.dest}
               </h2>
-              <p style={{ fontSize: "clamp(13px, 2.2vw, 17px)", color: "rgba(255,255,255,0.78)", margin: "0 0 18px", lineHeight: 1.5, fontStyle: "italic" }}>
+              <p style={{ fontSize: "clamp(12px, 2vw, 15px)", color: "rgba(255,255,255,0.8)", margin: "0 0 10px", lineHeight: 1.4, fontStyle: "italic" }}>
                 {slide.tagline}
               </p>
-              <div style={{ background: "rgba(0,0,0,0.35)", backdropFilter: "blur(6px)", border: "0.5px solid rgba(255,255,255,0.15)", borderRadius: "8px", padding: "10px 14px", maxWidth: "520px" }}>
-                <p style={{ fontSize: "11.5px", color: "rgba(255,255,255,0.72)", margin: 0, lineHeight: 1.65 }}>
+              <div style={{ background: "rgba(0,0,0,0.38)", backdropFilter: "blur(8px)", border: "0.5px solid rgba(255,255,255,0.14)", borderRadius: "8px", padding: "9px 13px", marginBottom: "14px" }}>
+                <p style={{ fontSize: "11px", color: "rgba(255,255,255,0.75)", margin: 0, lineHeight: 1.6 }}>
                   <span style={{ color: slide.accent, fontWeight: 600 }}>Did you know · </span>
                   {slide.fact}
                 </p>
               </div>
+              {/* CTA — full-width, inside the slide content block */}
+              <button
+                type="button"
+                onClick={() => { dismiss(); if (onBeginPlanning) onBeginPlanning(slide.prefillDest); }}
+                style={{ display: "block", width: "100%", padding: "12px 0", borderRadius: "4px", border: "1.5px solid rgba(255,255,255,0.52)", background: "rgba(255,255,255,0.13)", backdropFilter: "blur(4px)", color: "#fff", fontSize: "11.5px", fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}
+                onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.24)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.13)"; }}
+              >
+                Begin planning →
+              </button>
             </div>
           </div>
         ))}
@@ -11128,44 +11171,30 @@ function AppIntroOverlay() {
           </p>
         </div>
 
-        {/* Begin planning button — bottom right */}
-        <button type="button" onClick={dismiss}
-          style={{ position: "absolute", bottom: "clamp(52px, 8%, 72px)", right: "32px", zIndex: 10, padding: "12px 28px", borderRadius: "3px", border: "1.5px solid rgba(255,255,255,0.5)", background: "rgba(255,255,255,0.12)", backdropFilter: "blur(4px)", color: "#fff", fontSize: "11.5px", fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}
-          onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.22)"; }}
-          onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.12)"; }}
-        >
-          Begin planning →
-        </button>
-
-        {/* Prev arrow */}
+        {/* Prev arrow — positioned in the gradient zone above the text content */}
         <button type="button" onClick={prevSlide} aria-label="Previous destination"
-          style={{ position: "absolute", left: "14px", top: "50%", transform: "translateY(-50%)", zIndex: 10, background: "rgba(0,0,0,0.28)", border: "0.5px solid rgba(255,255,255,0.2)", borderRadius: "50%", width: "38px", height: "38px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "rgba(255,255,255,0.8)", fontSize: "22px", lineHeight: 1, fontFamily: "inherit", padding: 0 }}>
+          style={{ position: "absolute", left: "14px", top: "36%", transform: "translateY(-50%)", zIndex: 10, background: "rgba(0,0,0,0.28)", border: "0.5px solid rgba(255,255,255,0.2)", borderRadius: "50%", width: "38px", height: "38px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "rgba(255,255,255,0.8)", fontSize: "22px", lineHeight: 1, fontFamily: "inherit", padding: 0 }}>
           ‹
         </button>
 
         {/* Next arrow */}
         <button type="button" onClick={nextSlide} aria-label="Next destination"
-          style={{ position: "absolute", right: "14px", top: "50%", transform: "translateY(-50%)", zIndex: 10, background: "rgba(0,0,0,0.28)", border: "0.5px solid rgba(255,255,255,0.2)", borderRadius: "50%", width: "38px", height: "38px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "rgba(255,255,255,0.8)", fontSize: "22px", lineHeight: 1, fontFamily: "inherit", padding: 0 }}>
+          style={{ position: "absolute", right: "14px", top: "36%", transform: "translateY(-50%)", zIndex: 10, background: "rgba(0,0,0,0.28)", border: "0.5px solid rgba(255,255,255,0.2)", borderRadius: "50%", width: "38px", height: "38px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "rgba(255,255,255,0.8)", fontSize: "22px", lineHeight: 1, fontFamily: "inherit", padding: 0 }}>
           ›
         </button>
 
-        {/* Dot indicators */}
-        <div style={{ position: "absolute", bottom: "22px", left: 0, right: 0, zIndex: 10, display: "flex", justifyContent: "center", alignItems: "center", gap: "8px" }}>
+        {/* Dot indicators — compact pill style, safe-area aware, 10 slides fit comfortably */}
+        <div style={{ position: "absolute", bottom: "calc(env(safe-area-inset-bottom, 10px) + 8px)", left: 0, right: 0, zIndex: 10, display: "flex", justifyContent: "center", alignItems: "center", gap: "6px" }}>
           {HERO_SLIDES.map((_, i) => (
             <button
               key={i}
               type="button"
               onClick={() => setSlideIdx(i)}
               aria-label={`Go to slide ${i + 1}`}
-              style={{ width: i === slideIdx ? "22px" : "8px", height: "8px", borderRadius: "4px", background: i === slideIdx ? "#fff" : "rgba(255,255,255,0.38)", border: "none", cursor: "pointer", padding: 0, transition: "all 0.35s ease" }}
+              style={{ width: i === slideIdx ? "18px" : "6px", height: "6px", borderRadius: "3px", background: i === slideIdx ? "#fff" : "rgba(255,255,255,0.35)", border: "none", cursor: "pointer", padding: 0, transition: "all 0.3s ease" }}
             />
           ))}
         </div>
-
-        {/* Scroll hint */}
-        <p style={{ position: "absolute", bottom: "22px", left: 0, right: 0, margin: 0, textAlign: "center", color: "rgba(255,255,255,0)", fontSize: "11px", pointerEvents: "none", userSelect: "none" }} aria-hidden="true">
-          ↓ &nbsp; How it works
-        </p>
       </div>
 
       {/* ── INFO (scrollable below carousel) ─────────────────────────── */}
@@ -14203,7 +14232,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       {/* #9 — First-visit App Intro overlay. Self-gated; renders null when
           already dismissed, when ?direct=1 is on the URL, or when running
           as an installed PWA. Sits above the wizard chrome at z-index 9999. */}
-      <AppIntroOverlay />
+      <AppIntroOverlay onBeginPlanning={dest => setB(p => ({ ...p, destination: dest }))} />
 
       <div style={{ padding: vp.isMobile ? "1.5rem 0 1.25rem" : "2rem 0 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}>
         <div style={{ maxWidth: colMaxWidth, margin: "0 auto", padding: vp.isMobile ? "0 1rem" : "0 1.5rem" }}>

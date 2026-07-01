@@ -1,4 +1,4 @@
 {
-  "_comment": "Ceiling for hex color literals in src/App.jsx, enforced by scripts/audit-hex-leaks.js. Raised from 7 to 44: the 7 pre-existing justified literals remain (hotel badge #e3eef0, three html2canvas/jsPDF rasterizer whites, plus 2 headroom). The +37 increase is the HERO_SLIDES hero-carousel array (AppIntroOverlay): 7 destination slides each with a 4-stop gradient and a 1-color accent, totalling 35 hex literals, plus 2 additional headroom. These are intentional, per-destination color palettes that cannot be expressed as shared design tokens — each slide needs a visually distinct palette. Never raise it without justification.",
-  "maxHexLiterals": 44
+  "_comment": "Ceiling for hex color literals in src/App.jsx, enforced by scripts/audit-hex-leaks.js. Raised to 59: the 9 pre-existing justified literals remain (hotel badge #e3eef0, three html2canvas/jsPDF rasterizer whites, plus headroom). HERO_SLIDES carousel (AppIntroOverlay) accounts for the rest — 10 destination slides each with a 4-stop gradient and a 1-color accent. These are intentional, per-destination color palettes that cannot be expressed as shared design tokens. Never raise it without justification.",
+  "maxHexLiterals": 59
 }
