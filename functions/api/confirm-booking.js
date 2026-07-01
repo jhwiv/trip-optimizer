@@ -59,7 +59,12 @@ const SONAR_TIMEOUT_MS = 6000;
 const MAX_PARALLEL = 6;
 const MAX_RESTAURANTS = 30;
 
-const CACHE_VERSION = "v1";
+// v2 (2026-06-29): added slug-vs-name + city locality validation in
+// parseSonarAnswer. Old v1 cache could contain wrong-city URLs (e.g. Per Se
+// New York mapped to per-se-social-corner-coal-harbour in Vancouver).
+// Bumping the version invalidates every cached entry so the new validator
+// runs against fresh Sonar lookups.
+const CACHE_VERSION = "v2";
 const CACHE_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
 const RESERVATION_DOMAINS = [
@@ -206,7 +211,7 @@ export async function onRequestPost(context) {
 
     try {
       const sonar = await querySonar(env.PERPLEXITY_API_KEY, entry);
-      const parsed = parseSonarAnswer(sonar);
+      const parsed = parseSonarAnswer(sonar, entry);
       const payload = {
         platform: parsed.platform,
         url: parsed.url,
@@ -254,7 +259,7 @@ async function querySonar(apiKey, entry) {
       {
         role: "system",
         content:
-          "You are a restaurant-booking lookup assistant. Return only the JSON object requested — no markdown, no preface. If you can't confidently determine the platform, return platform=unknown with confidence=low. Never invent a URL: if you don't know the canonical URL, leave url empty.",
+          "You are a restaurant-booking lookup assistant. Return only the JSON object requested — no markdown, no preface. If you can't confidently determine the platform, return platform=unknown with confidence=low. Never invent a URL: if you don't know the canonical URL, leave url empty.\n\nCRITICAL — same-name venues across cities are common. There is a Per Se fine-dining restaurant in New York AND a different Per Se Social Corner in Vancouver. There is a Carbone in NYC, Miami, Las Vegas, and Dallas. The URL you return MUST be the direct page for THIS restaurant in THIS city. If the only platform page you can find is for a same-named venue in a DIFFERENT city, return url empty and platform=unknown rather than the wrong-city URL. Cross-check the venue's city/locality on the page before returning its URL.",
       },
       { role: "user", content: userMsg },
     ],
@@ -290,7 +295,113 @@ async function querySonar(apiKey, entry) {
 
 // ---- Response parsing ---------------------------------------------------
 
-function parseSonarAnswer({ content, citations }) {
+// Token utilities used by slug-vs-name QA below.
+const SLUG_STOPWORDS = new Set([
+  "the", "a", "an", "of", "and", "at", "on", "in", "by", "to", "for",
+  "de", "la", "le", "el", "du", "di", "da", "los", "las",
+  // platform path noise tokens — present in URL paths but not venue names
+  "r", "rs", "www", "cities", "city", "venues", "venue", "restaurants",
+  "restaurant", "booking", "restref", "experience", "experiences",
+  "reservation", "reservations", "reserve", "book", "menu",
+]);
+
+function tokens(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 2 && !SLUG_STOPWORDS.has(t));
+}
+
+// City/region tokens that, when they appear in a URL slug AND are NOT part
+// of the trip's input city, strongly signal a wrong-city collision. The
+// extras-count check alone wouldn't flag /carbone-miami for an NYC Carbone
+// because there's only one extra token — but "miami" itself is the giveaway.
+const FOREIGN_CITY_MARKERS = new Set([
+  // US cities + neighborhoods commonly embedded in slugs
+  "nyc", "manhattan", "brooklyn", "queens", "bronx", "harlem",
+  "soho", "tribeca", "chelsea", "midtown", "uptown",
+  "la", "hollywood", "beverly", "westwood",
+  "sf", "oakland", "berkeley", "mission",
+  "chicago", "wicker", "loop",
+  "miami", "brickell", "wynwood",
+  "vegas",
+  "dallas", "austin", "houston",
+  "boston", "cambridge",
+  "dc", "arlington",
+  "atlanta", "denver", "seattle", "portland",
+  "nashville", "philadelphia", "phoenix", "detroit",
+  // International
+  "paris", "london", "tokyo", "kyoto", "osaka",
+  "vancouver", "toronto", "montreal", "ottawa", "calgary",
+  "rome", "milan", "florence", "venice", "madrid", "barcelona",
+  "amsterdam", "berlin", "munich", "zurich", "vienna",
+  // Neighborhood tokens that produced the original bug (Per Se Social
+  // Corner, Coal Harbour in Vancouver) and similar wrong-city tells.
+  "coal", "harbour", "harbor", "yaletown", "gastown", "kitsilano",
+]);
+
+// Returns true if the URL's path looks like the right venue in the right
+// city. Heuristic only — server-side content fetch would be more robust
+// but Workers' fetch budget is tight; this catches the common bug class.
+// The bug we're defending against: Sonar's search_domain_filter restricts
+// to booking-platform domains but does NOT enforce city, so a query for
+// "Per Se, New York" can return exploretock.com/per-se-social-corner-coal
+// -harbour (a same-named venue in Vancouver). Three layered checks:
+//   (1) every venue-name token appears in the path, OR the name appears as
+//       a concatenated substring (catches Tock's /perse for "Per Se")
+//   (2) NO path token is a foreign-city marker that isn't part of the
+//       input city's aliases (catches /carbone-miami when city=New York)
+//   (3) at most 2 "extra" tokens unexplained by name + input city
+function slugMatchesVenue(urlStr, name, city) {
+  try {
+    const u = new URL(urlStr);
+    // ID-based booking URLs (?rid=12345, ?restaurantId=12345) carry no slug;
+    // we can't validate them this way. Accept — they're rare from Sonar.
+    if (/rid=\d|restaurantId=\d|venueId=\d/i.test(u.search + u.pathname)) {
+      return true;
+    }
+    const pathToks = tokens(u.pathname);
+    const nameToks = tokens(name);
+    if (nameToks.length === 0 || pathToks.length === 0) return true;
+
+    // City + common aliases. Used to whitelist legitimate city extras
+    // ("per-se-new-york", "atera-nyc") so they don't trigger reject.
+    const cityToks = tokens(city);
+    const cityAliases = new Set(cityToks);
+    const cityKey = (city || "").toLowerCase();
+    if (/new\s*york/.test(cityKey)) cityAliases.add("nyc");
+    if (/los\s*angeles/.test(cityKey)) { cityAliases.add("la"); cityAliases.add("lax"); }
+    if (/san\s*francisco/.test(cityKey)) { cityAliases.add("sf"); cityAliases.add("sfo"); }
+    if (/washington/.test(cityKey)) cityAliases.add("dc");
+    if (/las\s*vegas/.test(cityKey)) cityAliases.add("vegas");
+
+    // (1) Name presence: every name token in path tokens, OR name appears
+    // as a concatenated substring (Tock's /perse for "Per Se").
+    const allTokensPresent = nameToks.every((t) => pathToks.includes(t));
+    const pathJoined = u.pathname.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const nameJoined = nameToks.join("");
+    const nameSubstring = nameJoined.length >= 4 && pathJoined.includes(nameJoined);
+    if (!allTokensPresent && !nameSubstring) return false;
+
+    // (2) Foreign-city marker check — strong wrong-city signal.
+    const allowed = new Set([...nameToks, ...cityAliases]);
+    for (const t of pathToks) {
+      if (!allowed.has(t) && FOREIGN_CITY_MARKERS.has(t)) return false;
+    }
+
+    // (3) Extras cap. A clean direct slug has 0-2 extras; a wrong-venue
+    // collision typically has 3+.
+    const extras = pathToks.filter((t) => !allowed.has(t));
+    return extras.length <= 2;
+  } catch {
+    return false;
+  }
+}
+
+function parseSonarAnswer({ content, citations }, entry) {
   // Sonar usually obeys the JSON-only directive, but sometimes wraps it in
   // a ```json fence or trails commentary. Strip the fence and grab the
   // first {...} block.
@@ -328,6 +439,16 @@ function parseSonarAnswer({ content, citations }) {
     if (hint && hint !== platform && platform !== "phone") {
       platform = hint;
       confidence = "high";
+    }
+  }
+
+  // Slug-vs-name + locality QA. See slugMatchesVenue() above for the bug
+  // pattern this defends against. Reject the URL on mismatch — the client
+  // will fall back to a safe platform search URL via reservationLink().
+  if (url && ["opentable", "resy", "tock"].includes(platform) && entry) {
+    if (!slugMatchesVenue(url, entry.name, entry.city)) {
+      url = null;
+      confidence = "low";
     }
   }
 

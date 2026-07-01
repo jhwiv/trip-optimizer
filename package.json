@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint src/",
-    "test": "node tests/run-all.mjs"
+    "test": "node tests/run-all.mjs",
+    "audit:contrast": "node scripts/audit-contrast.js",
+    "audit:hex-leaks": "node scripts/audit-hex-leaks.js"
   },
   "dependencies": {
     "html2canvas-pro": "^2.0.3",

@@ -9,8 +9,14 @@ import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, ac
 import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
-import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll } from "./replanControl.js";
-import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, hasIntroduction } from "./introduction.js";
+import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
+import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnconfirmedTimesPayload } from "./flightResolver.js";
+import { applyFlightNumberStrip } from "./flightNumberStrip.js";
+import { classifyActivityCountConstraint, renderActivityCountPromptRule, enforceTripTotalActivityCap } from "./activityCountConstraint.js";
+import { buildFlightCardTitle } from "./flightCardTitle.js";
+import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, isPdfDownloadReady } from "./introduction.js";
+import { shouldShowWelcome, markWelcomeDismissed, detectPlatform } from "./appIntro.js";
+import { partitionTabs, isActiveTabInOverflow, activeOverflowLabel } from "./tabStrip.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -32,9 +38,16 @@ function urlSearchFallback(name, destination) {
   return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
 }
 
-const GOLD = "#C4A862";
-const GOLD_LIGHT = "#F5EDD6";
-const GOLD_DARK = "#A08845";
+// --color-gold retired (branding sweep). These constants now resolve to the
+// navy/silver palette. GOLD = navy (accents, borders, eyebrows, rules).
+// GOLD_LIGHT = silver-grey surface (was cream). GOLD_DARK = navy (unchanged).
+// Where GOLD was used as a solid FILL, those sites set their own light text
+// color so navy fill stays readable; see ON_NAVY constant below.
+const GOLD = "var(--color-text-primary)";
+const GOLD_LIGHT = "var(--color-surface-2)";
+const GOLD_DARK = "var(--color-text-primary)";
+// Text/icon color to use ON a navy (GOLD) fill so it stays legible.
+const ON_NAVY = "var(--color-background-primary)";
 
 // --------------------------------------------------------------------------
 // Anthropic prompt-caching helper.
@@ -890,22 +903,23 @@ function getAreaHint(dest) {
 }
 
 const BADGE_COLORS = {
-  Flight: { bg: "#EBF4FF", color: "#1E5FA8" },
-  Hotel: { bg: "#EDFAF3", color: "#1A6B42" },
-  Car: { bg: "#E8FAF5", color: "#0F6B56" },
-  Dinner: { bg: "#FEF3E2", color: "#92500A" },
-  Lunch: { bg: "#FEF3E2", color: "#92500A" },
-  Breakfast: { bg: "#FEF3E2", color: "#92500A" },
-  Activity: { bg: "#F0EEFF", color: "#4A35B0" },
-  Flag: { bg: "#FEF0EF", color: "#B03535" },
-  "Plan B": { bg: "#F5F5F5", color: "#555" },
-  Snob: { bg: "#FEF0F8", color: "#8B2566" },
-  Tonight: { bg: "#FEF8E2", color: "#7A5C00" },
-  Note: { bg: "#F0F4FF", color: "#334CA0" },
+  Flight:     { bg: "var(--color-info-tint)",            color: "var(--color-info)" },
+  // TODO: introduce --color-accent-tint token; literal #e3eef0 paired with --color-accent-hover yields 5.83:1 AA
+  Hotel:      { bg: "#e3eef0",                            color: "var(--color-accent-hover)" },
+  Car:        { bg: "var(--color-success-tint)",         color: "var(--color-success)" },
+  Dinner:     { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
+  Lunch:      { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
+  Breakfast:  { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
+  Activity:   { bg: "var(--color-category-purple-tint)", color: "var(--color-category-purple)" },
+  Flag:       { bg: "var(--color-danger-tint)",          color: "var(--color-text-danger)" },
+  "Plan B":   { bg: "var(--color-border-tertiary)",      color: "var(--color-text-secondary)" },
+  Snob:       { bg: "var(--color-category-rose-tint)",   color: "var(--color-category-rose)" },
+  Tonight:    { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
+  Note:       { bg: "var(--color-surface-2)",            color: "var(--color-text-secondary)" },
 };
 
 function Badge({ type }) {
-  const c = BADGE_COLORS[type] || { bg: "#F0F0F0", color: "#555" };
+  const c = BADGE_COLORS[type] || { bg: "var(--color-background-secondary)", color: "var(--color-text-secondary)" };
   return (
     <span style={{
       display: "inline-block", fontSize: "10px", fontWeight: "600",
@@ -944,7 +958,7 @@ function TimePill({ time, end_time }) {
   return (
     <span style={{
       display: "inline-block", fontSize: "11px", fontWeight: 600,
-      color: "var(--color-text-primary)", background: "#F5EDD6",
+      color: "var(--color-text-primary)", background: "var(--color-surface-2)",
       padding: "2px 7px", borderRadius: "3px", whiteSpace: "nowrap",
       letterSpacing: "0.02em", minWidth: "58px", textAlign: "center",
     }}>{et ? `${t} – ${et}` : t}</span>
@@ -983,7 +997,11 @@ function parseDayLabelToISODate(label) {
 // free tier is capped at 500 calls/month; the user pays per call beyond that,
 // so we only fetch once per (ident,date) per page-load (in-component memo)
 // and never block the rest of the card.
-const FLIGHT_STATUS_WORKER = "https://flight-status.jhwiv-online.workers.dev/";
+// NOTE (#19): the live-status call now goes through the same-origin
+// /api/flight-status Pages Function (functions/api/flight-status.js), which
+// owns the Worker URL server-side. We no longer reference the Worker origin
+// from the browser, so the prior FLIGHT_STATUS_WORKER constant was removed to
+// avoid implying a direct (CORS-blocked) browser call.
 
 // Parse "UA 57" / "AA3006" / "Delta 215" → "UA57" / "AA3006" / null.
 // We need ICAO/IATA carrier code + number, no spaces. We look at the
@@ -1036,7 +1054,12 @@ const _flightStatusCache = new Map();
 async function fetchFlightStatus(ident, isoDate) {
   const key = `${ident}|${isoDate}`;
   if (_flightStatusCache.has(key)) return _flightStatusCache.get(key);
-  const url = `${FLIGHT_STATUS_WORKER}?ident=${encodeURIComponent(ident)}&date=${encodeURIComponent(isoDate)}`;
+  // #19 Route through the same-origin Pages Function proxy, NOT the Worker
+  // directly. The shared Worker's CORS allowlist is pinned to one app origin
+  // (santafejune.com), so a direct browser call from routesmith.ai is
+  // CORS-blocked and the live-status panel silently fails. The proxy is
+  // same-origin (no CORS) and works regardless of the Worker's allowlist.
+  const url = `/api/flight-status?ident=${encodeURIComponent(ident)}&date=${encodeURIComponent(isoDate)}`;
   const p = fetch(url, { method: "GET" })
     .then((r) => r.json())
     .then((j) => (j && j.ok ? j : null))
@@ -1085,7 +1108,7 @@ function LiveFlightStatus({ ident, isoDate, userSupplied }) {
     if (userSupplied) {
       return (
         <div style={{ marginTop: "10px", paddingTop: "8px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
-          <p style={{ fontSize: "10.5px", margin: "0 0 4px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700, color: "#8A6500" }}>
+          <p style={{ fontSize: "10.5px", margin: "0 0 4px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700, color: "var(--color-text-primary)" }}>
             Flight not verified
           </p>
           <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.5 }}>
@@ -1098,11 +1121,11 @@ function LiveFlightStatus({ ident, isoDate, userSupplied }) {
   }
   // Color the status pill by severity.
   const level = status.statusLevel || "";
-  const pillBg = status.cancelled ? "#B85C00"
-    : level === "done" ? "#7A7A7A"
-    : level === "delayed" || (status.delayMinutes && status.delayMinutes > 15) ? "#B85C00"
+  const pillBg = status.cancelled ? "var(--color-warning)"
+    : level === "done" ? "var(--color-text-secondary)"
+    : level === "delayed" || (status.delayMinutes && status.delayMinutes > 15) ? "var(--color-warning)"
     : level === "inair" ? GOLD
-    : "#2A7A4A";
+    : "var(--color-success)";
   const pillLabel = status.cancelled ? "CANCELLED" : (status.status || "").toUpperCase();
   // Pick the freshest out/in times available (actual > estimated > scheduled).
   const outNew = status.actualOut || status.estimatedOut || status.scheduledOut;
@@ -1115,9 +1138,9 @@ function LiveFlightStatus({ ident, isoDate, userSupplied }) {
     <div style={{ marginTop: "10px", paddingTop: "8px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px", flexWrap: "wrap" }}>
         <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase" }}>Live status</span>
-        <span style={{ fontSize: "10px", fontWeight: 700, color: "#fff", background: pillBg, padding: "2px 7px", borderRadius: "3px", letterSpacing: "0.08em" }}>{pillLabel}</span>
+        <span style={{ fontSize: "10px", fontWeight: 700, color: "var(--color-background-primary)", background: pillBg, padding: "2px 7px", borderRadius: "3px", letterSpacing: "0.08em" }}>{pillLabel}</span>
         {typeof status.delayMinutes === "number" && status.delayMinutes > 0 && !status.cancelled && (
-          <span style={{ fontSize: "11px", color: "#B85C00", fontWeight: 600 }}>
+          <span style={{ fontSize: "11px", color: "var(--color-warning)", fontWeight: 600 }}>
             +{Math.floor(status.delayMinutes / 60) > 0 ? `${Math.floor(status.delayMinutes / 60)}h ` : ""}{status.delayMinutes % 60}m
           </span>
         )}
@@ -1289,21 +1312,18 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   // the quality layer via _userSuppliedFlightNumber), show it in the title so
   // the traveler immediately sees the right number on the card. Otherwise the
   // number was stripped (model guess) and the title shows carrier · route only.
-  const userFn = f._userSuppliedFlightNumber && f.flight_number ? String(f.flight_number).trim() : null;
-  // Compose the title flight ident. For a user-supplied number we keep the
-  // full carrier string the model produced so the user sees what they typed
-  // ("United 1040"). For an auto-selected schedule flight, the schedule
-  // flightNumber already carries the IATA prefix ("UA1040") and is guaranteed
-  // (by the autoFlight memo's _airlineIata gate) to belong to this carrier, so
-  // we show the ident alone — prepending f.carrier would double-prefix it
-  // ("United UA1040"). Precedence: (1) user-supplied/confirmed number,
-  // (2) auto-selected schedule flight (real number from schedFlights),
-  // (3) carrier · route.
-  const titleLine = userFn
-    ? `${f.carrier || ""} ${userFn}`.trim() + ` · ${route}`
-    : autoFlight
-    ? `${autoFlight.flightNumber} · ${route}`
-    : `${f.carrier || "Carrier TBD"} · ${route}`;
+  // Title composition delegated to buildFlightCardTitle (src/flightCardTitle.js).
+  // Precedence, in order:
+  //   1. User-supplied number (_userSuppliedFlightNumber === true) — user-typed.
+  //   2. Resolver schedule-verified number (_scheduleVerified === true) —
+  //      confirmed or substituted by FlightNumberAutoResolver against the
+  //      live schedule. Added 2026-06-30 late-evening to close the recurrence
+  //      where FlightCard showed "United · EWR → SFO" while the trip Overview
+  //      showed "United UA 337 · EWR → SFO" — two components on the same plan
+  //      disagreeing because only Overview read f.flight_number directly.
+  //   3. autoFlight from the card's own live-lookup (schedFlights useEffect).
+  //   4. Carrier + route only, honest fallback.
+  const titleLine = buildFlightCardTitle({ flight: f, autoFlight, route });
   // Banner copy: priority is carrier-correction → airport suggestion → generic look-up.
   const overrideBanner = f._carrierOverride
     ? `App corrected carrier: ${f._originalCarrier || "the model's pick"} does not operate this nonstop. Use ${f.carrier} — confirm with the live lookup below.`
@@ -1328,10 +1348,10 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
         </p>
       </div>
       {overrideBanner && (
-        <p style={{ fontSize: "11px", color: "#B85C00", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 500, padding: "6px 8px", background: "rgba(184,92,0,0.06)", borderLeft: "2px solid #B85C00", borderRadius: "2px" }}>⚠︎ {overrideBanner}</p>
+        <p style={{ fontSize: "11px", color: "var(--color-warning)", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 500, padding: "6px 8px", background: "rgba(184,92,0,0.06)", borderLeft: "2px solid var(--color-warning)", borderRadius: "2px" }}>⚠︎ {overrideBanner}</p>
       )}
       {airportBanner && (
-        <p style={{ fontSize: "11px", color: "#0F0F0F", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 600, padding: "6px 8px", background: "rgba(196,168,98,0.18)", borderLeft: `2px solid ${GOLD}`, borderRadius: "2px" }}>✈ {airportBanner}</p>
+        <p style={{ fontSize: "11px", color: "var(--color-text-primary)", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 600, padding: "6px 8px", background: "rgba(91, 101, 119,0.18)", borderLeft: `2px solid ${GOLD}`, borderRadius: "2px" }}>✈ {airportBanner}</p>
       )}
       <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "2px 0 6px", letterSpacing: "0.02em" }}>
         {f.depart_time ? `Approx depart ${formatTime(f.depart_time)}` : ""}{f.arrive_time ? ` · arrive ${formatTime(f.arrive_time)}` : ""}{f.duration ? `  ·  ${f.duration}` : ""}  ·  {stopLabel}
@@ -1342,18 +1362,18 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
         </p>
       )}
       {f.airport_arrival_buffer && (
-        <div style={{ margin: "6px 0 4px", padding: "6px 9px", background: "#FFF8EC", border: "0.5px solid #E8C063", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-          <span style={{ fontSize: "10.5px", fontWeight: 700, color: "#8A6500", letterSpacing: "0.06em", textTransform: "uppercase" }}>Arrive {f.airport_arrival_buffer} early</span>
-          <span style={{ fontSize: "11.5px", color: "#5A4A1F" }}>
+        <div style={{ margin: "6px 0 4px", padding: "6px 9px", background: "var(--color-surface-2)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "10.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Arrive {f.airport_arrival_buffer} early</span>
+          <span style={{ fontSize: "11.5px", color: "var(--color-text-primary)" }}>
             {/^A?UA$|^AUA$/.test(f.from_airport || "") ? "AUA pre-clears US Customs in Aruba — plan for the extra time before boarding." : "Lead time at the airport before scheduled departure."}
           </span>
         </div>
       )}
       {Array.isArray(f.lounge_access) && f.lounge_access.length > 0 && (
-        <div style={{ margin: "6px 0 4px", padding: "7px 9px", background: "rgba(196,168,98,0.08)", border: `0.5px solid ${GOLD}`, borderRadius: "4px" }}>
+        <div style={{ margin: "6px 0 4px", padding: "7px 9px", background: "rgba(91, 101, 119,0.08)", border: `0.5px solid ${GOLD}`, borderRadius: "4px" }}>
           <p style={{ fontSize: "10.5px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px" }}>Lounge access</p>
           {f.lounge_access.map((lg, i) => (
-            <div key={i} style={{ margin: i === 0 ? "3px 0" : "6px 0 3px", fontSize: "11.5px", color: "var(--color-text-primary)", lineHeight: 1.4, paddingTop: i === 0 ? 0 : 5, borderTop: i === 0 ? "none" : "0.5px dashed rgba(196,168,98,0.25)" }}>
+            <div key={i} style={{ margin: i === 0 ? "3px 0" : "6px 0 3px", fontSize: "11.5px", color: "var(--color-text-primary)", lineHeight: 1.4, paddingTop: i === 0 ? 0 : 5, borderTop: i === 0 ? "none" : "0.5px dashed rgba(91, 101, 119,0.25)" }}>
               <span style={{ fontWeight: 600 }}>{lg.name}</span>
               {i === 0 && f.lounge_access.length > 1 ? <span style={{ marginLeft: 6, fontSize: "9.5px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.06em", textTransform: "uppercase" }}>Closest to gate</span> : null}
               {lg.terminal ? <span style={{ display: "block", color: "var(--color-text-secondary)", fontSize: "11px" }}>{lg.terminal}</span> : null}
@@ -1432,7 +1452,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
                   const active = timeFilter === bucket;
                   return (
                     <button key={bucket} onClick={() => setTimeFilter(bucket)}
-                      style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: `0.5px solid ${active ? GOLD : "var(--color-border-secondary)"}`, background: active ? GOLD : "transparent", color: active ? "#0F0F0F" : "var(--color-text-tertiary)", cursor: "pointer", fontWeight: active ? 700 : 400, letterSpacing: "0.04em", textTransform: "capitalize", fontFamily: "inherit" }}>
+                      style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: `0.5px solid ${active ? GOLD : "var(--color-border-secondary)"}`, background: active ? GOLD : "transparent", color: active ? ON_NAVY : "var(--color-text-tertiary)", cursor: "pointer", fontWeight: active ? 700 : 400, letterSpacing: "0.04em", textTransform: "capitalize", fontFamily: "inherit" }}>
                       {label}
                     </button>
                   );
@@ -1486,9 +1506,17 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
 }
 
 function HotelCard({ type, time, end_time, hotel: h, text }) {
+  // #21 URL verification (same context restaurants/activities use) so the hotel
+  // website link swaps to a Google search fallback if the model's URL is dead.
+  const { status: urlStatus, destination } = useURLVerify();
   if (!h) return null;
   const mapsUrl = h.address ? `https://maps.google.com/?q=${encodeURIComponent(`${h.name || ""} ${h.address}`.trim())}` : null;
   const telUrl = h.phone ? `tel:${h.phone.replace(/[^0-9+]/g, "")}` : null;
+  // #21 Hotel website link — mirrors the restaurant/activity "Website ↗" pattern.
+  const websiteState = h.website ? (urlStatus.get(h.website) || "pending") : null;
+  const websiteDead = websiteState === "dead";
+  const showWebsite = !!h.website;
+  const websiteHref = websiteDead ? urlSearchFallback(h.name, destination) : h.website;
   return (
     <div style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
@@ -1515,13 +1543,16 @@ function HotelCard({ type, time, end_time, hotel: h, text }) {
       {h.confirmation_note && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", fontStyle: "italic" }}>{h.confirmation_note}</p>
       )}
-      {(telUrl || mapsUrl) && (
+      {(telUrl || mapsUrl || showWebsite) && (
         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "8px" }}>
           {telUrl && (
             <a href={telUrl} style={{ fontSize: "11px", padding: "6px 11px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>Call · {h.phone}</a>
           )}
           {mapsUrl && (
             <a href={mapsUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>Open in Maps</a>
+          )}
+          {showWebsite && (
+            <a href={websiteHref} target="_blank" rel="noopener noreferrer" title={websiteDead ? "Original site link could not be verified — search for the official site" : undefined} style={{ fontSize: "11px", padding: "6px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>{websiteDead ? "Find site ↗" : "Website ↗"}</a>
           )}
         </div>
       )}
@@ -1703,13 +1734,109 @@ function mergeBookingConfirmations(plan, confirmations) {
   return { ...plan, days: nextDays };
 }
 
+// Slug-vs-name + city locality validator. Mirrors the server-side check in
+// functions/api/confirm-booking.js. Defends against wrong-city URLs that
+// slip through when the build pipeline can't run confirm-booking (no
+// PERPLEXITY_API_KEY, Sonar timeout) and the model's r.reservation.url
+// survives un-grounded. See server-side comment for the full bug pattern
+// (Per Se NYC -> per-se-social-corner-coal-harbour in Vancouver).
+const RES_SLUG_STOPWORDS = new Set([
+  "the","a","an","of","and","at","on","in","by","to","for",
+  "de","la","le","el","du","di","da","los","las",
+  "r","rs","www","cities","city","venues","venue","restaurants",
+  "restaurant","booking","restref","experience","experiences",
+  "reservation","reservations","reserve","book","menu",
+]);
+const RES_FOREIGN_CITY_MARKERS = new Set([
+  "nyc","manhattan","brooklyn","queens","bronx","harlem",
+  "soho","tribeca","chelsea","midtown","uptown",
+  "la","hollywood","beverly","westwood",
+  "sf","oakland","berkeley","mission",
+  "chicago","wicker","loop",
+  "miami","brickell","wynwood",
+  "vegas",
+  "dallas","austin","houston",
+  "boston","cambridge",
+  "dc","arlington",
+  "atlanta","denver","seattle","portland",
+  "nashville","philadelphia","phoenix","detroit",
+  "paris","london","tokyo","kyoto","osaka",
+  "vancouver","toronto","montreal","ottawa","calgary",
+  "rome","milan","florence","venice","madrid","barcelona",
+  "amsterdam","berlin","munich","zurich","vienna",
+  "coal","harbour","harbor","yaletown","gastown","kitsilano",
+]);
+function resTokens(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 2 && !RES_SLUG_STOPWORDS.has(t));
+}
+function slugMatchesVenue(urlStr, name, city) {
+  try {
+    const u = new URL(urlStr);
+    if (/rid=\d|restaurantId=\d|venueId=\d/i.test(u.search + u.pathname)) return true;
+    const pathToks = resTokens(u.pathname);
+    const nameToks = resTokens(name);
+    if (nameToks.length === 0 || pathToks.length === 0) return true;
+    const cityToks = resTokens(city);
+    const cityAliases = new Set(cityToks);
+    const cityKey = (city || "").toLowerCase();
+    if (/new\s*york/.test(cityKey)) cityAliases.add("nyc");
+    if (/los\s*angeles/.test(cityKey)) { cityAliases.add("la"); cityAliases.add("lax"); }
+    if (/san\s*francisco/.test(cityKey)) { cityAliases.add("sf"); cityAliases.add("sfo"); }
+    if (/washington/.test(cityKey)) cityAliases.add("dc");
+    if (/las\s*vegas/.test(cityKey)) cityAliases.add("vegas");
+    const allTokensPresent = nameToks.every((t) => pathToks.includes(t));
+    const pathJoined = u.pathname.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const nameJoined = nameToks.join("");
+    const nameSubstring = nameJoined.length >= 4 && pathJoined.includes(nameJoined);
+    if (!allTokensPresent && !nameSubstring) return false;
+    const allowed = new Set([...nameToks, ...cityAliases]);
+    for (const t of pathToks) {
+      if (!allowed.has(t) && RES_FOREIGN_CITY_MARKERS.has(t)) return false;
+    }
+    const extras = pathToks.filter((t) => !allowed.has(t));
+    return extras.length <= 2;
+  } catch {
+    return false;
+  }
+}
+// Hosts whose direct venue URLs are subject to slug+city validation.
+const RES_PLATFORM_HOSTS = {
+  "exploretock.com": "tock",
+  "tockify.com": "tock",
+  "resy.com": "resy",
+  "opentable.com": "opentable",
+};
+function reservationUrlIsTrustworthy(url, name, destination) {
+  if (!url || !name) return true;
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+    const matched = Object.keys(RES_PLATFORM_HOSTS).find(
+      (d) => host === d || host.endsWith("." + d)
+    );
+    if (!matched) return true; // Not a known booking platform — trust the URL
+    return slugMatchesVenue(url, name, destination || "");
+  } catch {
+    return false;
+  }
+}
+
 // Build a reservation URL from a restaurant payload.
 // Anthropic should provide reservation.url directly; this is a fallback that
-// constructs a search URL on the named platform.
-function reservationLink(r) {
+// constructs a search URL on the named platform. The supplied destination is
+// used to validate direct platform URLs against a wrong-city collision; pass
+// "" if not available (validator falls back to name-only checks).
+function reservationLink(r, destination) {
   if (!r || !r.reservation) return null;
   const platform = (r.reservation.platform || "").toLowerCase();
-  if (r.reservation.url) return { platform, url: r.reservation.url };
+  if (r.reservation.url && reservationUrlIsTrustworthy(r.reservation.url, r.name, destination)) {
+    return { platform, url: r.reservation.url };
+  }
   const q = encodeURIComponent(r.name || "");
   if (platform === "opentable") return { platform, url: `https://www.opentable.com/s?term=${q}` };
   if (platform === "resy") return { platform, url: `https://resy.com/cities/search?query=${q}` };
@@ -1762,7 +1889,7 @@ function ContactBlock({ contact, name }) {
             <a href={telUrl} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>Call</a>
           )}
           {showBooking && (
-            <a href={bookingHref} target="_blank" rel="noopener noreferrer" title={bookingDead ? "Original booking link could not be verified — search for it on Google" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: `0.5px solid ${bookingDead ? GOLD_DARK : GOLD}`, background: bookingDead ? "transparent" : GOLD, color: bookingDead ? GOLD_DARK : "#0F0F0F", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>{bookingDead ? "Search ↗" : "Book ↗"}</a>
+            <a href={bookingHref} target="_blank" rel="noopener noreferrer" title={bookingDead ? "Original booking link could not be verified — search for it on Google" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: `0.5px solid ${bookingDead ? GOLD_DARK : GOLD}`, background: bookingDead ? "transparent" : GOLD, color: bookingDead ? GOLD_DARK : ON_NAVY, textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>{bookingDead ? "Search ↗" : "Book ↗"}</a>
           )}
           {showWebsite && (
             <a href={websiteHref} target="_blank" rel="noopener noreferrer" title={websiteDead ? "Original site link could not be verified — search for the official site" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: websiteDead ? GOLD_DARK : "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>{websiteDead ? "Find site ↗" : "Website ↗"}</a>
@@ -1862,7 +1989,7 @@ function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
         type="button"
         onClick={handleToggle}
         aria-expanded={open}
-        style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: open ? GOLD : "transparent", color: open ? "#0F0F0F" : GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}
+        style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: open ? GOLD : "transparent", color: open ? ON_NAVY : GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}
       >{open ? "Close" : `↻ ${label}`}</button>
       {open && (
         <div style={{ marginTop: "10px" }}>
@@ -1874,7 +2001,7 @@ function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
             </p>
           )}
           {error && !loading && (
-            <p role="alert" style={{ fontSize: "12px", color: "#8C1F1F", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", padding: "8px 12px", margin: 0 }}>{error}</p>
+            <p role="alert" style={{ fontSize: "12px", color: "var(--color-danger-hover)", background: "var(--color-danger-tint)", border: "0.5px solid var(--color-text-danger)", borderRadius: "var(--border-radius-md)", padding: "8px 12px", margin: 0 }}>{error}</p>
           )}
           {alts && !loading && !error && (
             <div>
@@ -1896,13 +2023,13 @@ function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
                           {sub && <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 3px", letterSpacing: "0.02em" }}>{sub}</p>}
                           {why && <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.45 }}>{why}</p>}
                           {(a.verify_status === "verify_before_booking") && (
-                            <p style={{ fontSize: "10.5px", color: "#8A6500", margin: "4px 0 0", fontStyle: "italic" }}>⚠︎ Verify status before booking.</p>
+                            <p style={{ fontSize: "10.5px", color: "var(--color-text-primary)", margin: "4px 0 0", fontStyle: "italic" }}>⚠︎ Verify status before booking.</p>
                           )}
                         </div>
                         <button
                           type="button"
                           onClick={() => handleUse(a)}
-                          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: GOLD, color: "#0F0F0F", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap" }}
+                          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: GOLD, color: ON_NAVY, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap" }}
                         >Use this</button>
                       </div>
                     </div>
@@ -1955,7 +2082,12 @@ function ActivityCard({ time, end_time, item, dayLabel, swapControl }) {
 }
 
 function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
-  const resv = reservationLink(r);
+  // destination is read from URLVerifyContext so reservationLink() can
+  // slug-validate r.reservation.url against the trip city (defense-in-depth
+  // against same-name venues in a different city, e.g. Per Se NYC vs Per Se
+  // Social Corner Vancouver).
+  const { destination: tripCity } = useURLVerify();
+  const resv = reservationLink(r, tripCity);
   const platformLabel = resv ? ({
     opentable: "OpenTable", resy: "Resy", tock: "Tock", yelp: "Yelp", phone: "Call",
   }[resv.platform] || "Reserve") : null;
@@ -1966,21 +2098,21 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
   const isClosed = r.verify_status === "permanently_closed";
 
   return (
-    <div style={{ marginBottom: "12px", border: isClosed ? "1px solid #C92A2A" : "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: isClosed ? "#FFF5F5" : "var(--color-background-primary)", position: "relative" }}>
+    <div style={{ marginBottom: "12px", border: isClosed ? "1px solid var(--color-text-danger)" : "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: isClosed ? "var(--color-danger-tint)" : "var(--color-background-primary)", position: "relative" }}>
       {isClosed && (
-        <div style={{ margin: "-2px 0 10px", padding: "7px 10px", background: "#C92A2A", color: "#FFFFFF", borderRadius: "4px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", display: "flex", alignItems: "center", gap: "6px" }}>
+        <div style={{ margin: "-2px 0 10px", padding: "7px 10px", background: "var(--color-text-danger)", color: "var(--color-background-primary)", borderRadius: "4px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", display: "flex", alignItems: "center", gap: "6px" }}>
           <span style={{ fontSize: "13px" }}>⚠</span>
           <span>Permanently closed — do not book</span>
         </div>
       )}
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
         <Badge type={type} />
-        <p style={{ fontSize: "14px", fontWeight: 600, color: isClosed ? "#8C1F1F" : "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1, textDecoration: isClosed ? "line-through" : "none" }}>{r.name}</p>
+        <p style={{ fontSize: "14px", fontWeight: 600, color: isClosed ? "var(--color-danger-hover)" : "var(--color-text-primary)", margin: 0, lineHeight: 1.3, flex: 1, textDecoration: isClosed ? "line-through" : "none" }}>{r.name}</p>
         {r._weekdayMismatch && !isClosed && (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "#92500A", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "#FEF3E2", border: "0.5px solid #E8C063", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r._weekdayMismatch] || r._weekdayMismatch}s — verify</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r._weekdayMismatch] || r._weekdayMismatch}s — verify</span>
         )}
         {r._missingBackup && !isClosed && (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "#92500A", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "#FEF3E2", border: "0.5px solid #E8C063", borderRadius: "3px", whiteSpace: "nowrap" }}>No backup</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", whiteSpace: "nowrap" }}>No backup</span>
         )}
         {r._isReturnVisit && !isClosed && (
           <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: `0.5px solid ${GOLD}`, borderRadius: "3px", whiteSpace: "nowrap" }}>Return visit</span>
@@ -1993,7 +2125,7 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
       )}
       {r.why && !isClosed && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{r.why}</p>}
       {r.closure_note && (
-        <p style={{ fontSize: "11px", color: isClosed ? "#8C1F1F" : (r.closure_note.toLowerCase().includes("confirm") ? "#B85C00" : "var(--color-text-tertiary)"), margin: "0 0 8px", fontStyle: "italic", fontWeight: isClosed ? 600 : "normal" }}>
+        <p style={{ fontSize: "11px", color: isClosed ? "var(--color-danger-hover)" : (r.closure_note.toLowerCase().includes("confirm") ? "var(--color-warning)" : "var(--color-text-tertiary)"), margin: "0 0 8px", fontStyle: "italic", fontWeight: isClosed ? 600 : "normal" }}>
           ⚠︎ {r.closure_note}
         </p>
       )}
@@ -2004,9 +2136,9 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
       {/* restaurant, so we default to the conservative "verify before booking" */}
       {/* microcopy whenever the model isn't certain. */}
       {!isClosed && (r.verify_status === "verify_before_booking" || (!r.verify_status && r.verify_url)) && (
-        <div style={{ margin: "0 0 8px", padding: "6px 9px", background: "#FFF8EC", border: "0.5px solid #E8C063", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-          <span style={{ fontSize: "10.5px", fontWeight: 600, color: "#8A6500", letterSpacing: "0.04em", textTransform: "uppercase" }}>Verify</span>
-          <span style={{ fontSize: "11.5px", color: "#5A4A1F" }}>
+        <div style={{ margin: "0 0 8px", padding: "6px 9px", background: "var(--color-surface-2)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "10.5px", fontWeight: 600, color: "var(--color-text-primary)", letterSpacing: "0.04em", textTransform: "uppercase" }}>Verify</span>
+          <span style={{ fontSize: "11.5px", color: "var(--color-text-primary)" }}>
             We can't confirm this spot's status — check before booking.
           </span>
           {r.verify_url && (
@@ -2014,7 +2146,7 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
               href={r.verify_url}
               target="_blank"
               rel="noopener noreferrer"
-              style={{ fontSize: "11px", color: "#8A6500", textDecoration: "underline", fontWeight: 500, marginLeft: "auto" }}
+              style={{ fontSize: "11px", color: "var(--color-text-primary)", textDecoration: "underline", fontWeight: 500, marginLeft: "auto" }}
             >Check listing →</a>
           )}
         </div>
@@ -2049,7 +2181,7 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
           <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>
             {r.backup.name}
             {r.backup._weekdayMismatch && (
-              <span style={{ marginLeft: "6px", fontSize: "9.5px", fontWeight: 700, color: "#92500A", letterSpacing: "0.06em", textTransform: "uppercase", padding: "2px 6px", background: "#FEF3E2", border: "0.5px solid #E8C063", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r.backup._weekdayMismatch] || r.backup._weekdayMismatch}s</span>
+              <span style={{ marginLeft: "6px", fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.06em", textTransform: "uppercase", padding: "2px 6px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r.backup._weekdayMismatch] || r.backup._weekdayMismatch}s</span>
             )}
           </p>
           {(r.backup.neighborhood || r.backup.cuisine) && (
@@ -2070,13 +2202,13 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
                 style={{ fontSize: "10.5px", padding: "5px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.04em", textTransform: "uppercase", textDecoration: "none" }}
               >Website ↗</a>
             )}
-            {reservationLink(r.backup) && (
+            {reservationLink(r.backup, tripCity) && (
               <a
-                href={reservationLink(r.backup).url}
+                href={reservationLink(r.backup, tripCity).url}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{ fontSize: "10.5px", padding: "5px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.04em", textTransform: "uppercase", textDecoration: "none" }}
-              >Reserve · {({opentable:"OpenTable",resy:"Resy",tock:"Tock",yelp:"Yelp",phone:"Call"}[reservationLink(r.backup).platform] || "Reserve")}</a>
+              >Reserve · {({opentable:"OpenTable",resy:"Resy",tock:"Tock",yelp:"Yelp",phone:"Call"}[reservationLink(r.backup, tripCity).platform] || "Reserve")}</a>
             )}
           </div>
         </div>
@@ -2156,7 +2288,7 @@ function Section({ title, children }) {
 
 function tonightPriority(s) {
   const t = (s || "").trim();
-  if (/^⚠/.test(t) || /^must today/i.test(t)) return { rank: 0, label: "Must today", color: "#B85C00", bg: "#FFF1E0" };
+  if (/^⚠/.test(t) || /^must today/i.test(t)) return { rank: 0, label: "Must today", color: "var(--color-warning)", bg: "var(--color-warning-tint)" };
   if (/^this week/i.test(t) || /^·\s*this week/i.test(t)) return { rank: 1, label: "This week", color: GOLD_DARK, bg: GOLD_LIGHT };
   if (/^anytime/i.test(t)) return { rank: 2, label: "Anytime", color: "var(--color-text-secondary)", bg: "var(--color-background-secondary)" };
   return { rank: 1, label: null, color: GOLD_DARK, bg: GOLD_LIGHT };
@@ -2591,30 +2723,9 @@ function applyQualityLayer(input, inputs) {
   const fixes = [];
   const warnings = [];
 
-  // Build a set of flight numbers the USER explicitly stated in their narrative
-  // or guidelines. These are facts, not LLM guesses, and we must NOT strip them.
-  // Matches: "flight 1039", "UA 1039", "UA1039", "United 1039", "#1039", and bare
-  // numbers near the word "flight" / a known carrier word.
-  const userFlightNumbers = new Set();
-  {
-    const blob = `${inputs?.narrative || ""}\n${inputs?.guidelines || ""}`;
-    // Pattern A: explicit airline code + number (UA1039 / UA 1039 / B6 47).
-    for (const m of blob.matchAll(/\b([A-Z]{2})\s*0*(\d{1,4})\b/g)) {
-      userFlightNumbers.add(`${m[1]}${m[2]}`);
-      userFlightNumbers.add(m[2]); // bare digits too, for cross-checking
-    }
-    // Pattern B: "flight 1039", "flight #1039", "on 1039" near "flight".
-    for (const m of blob.matchAll(/\bflight\s*#?\s*0*(\d{1,4})\b/gi)) {
-      userFlightNumbers.add(m[1]);
-    }
-    // Pattern C: airline name followed by a number (United 1039, Delta 47).
-    for (const m of blob.matchAll(/\b(united|delta|american|jetblue|southwest|alaska|air\s*france|klm|lufthansa|swiss|british\s*airways|virgin|iberia|ana|japan\s*airlines|jal|cathay|korean|aer\s*lingus|ita|sas|scandinavian)\s+#?\s*0*(\d{1,4})\b/gi)) {
-      userFlightNumbers.add(m[2]);
-    }
-  }
-
   // Deep-clone the bits we'll touch so renderer mutation is safe.
-  const days = Array.isArray(input.days)
+  // `let` so the strip step below can replace days with the helper's output.
+  let days = Array.isArray(input.days)
     ? input.days.map(d => ({ ...d, items: Array.isArray(d.items) ? d.items.map(it => ({ ...it, restaurant: it.restaurant ? { ...it.restaurant } : it.restaurant, flight: it.flight ? { ...it.flight } : it.flight })) : d.items }))
     : input.days;
 
@@ -2760,77 +2871,15 @@ function applyQualityLayer(input, inputs) {
     });
   }
 
-  // 2b. UNIVERSAL flight-number strip. The model cannot be trusted to know
-  // specific published flight numbers — even for routes it gets the carrier
-  // right on, the number is usually fabricated. Strip every flight_number
-  // unconditionally and force the renderer to surface a "Look up actual
-  // flight" CTA. This is route-agnostic and applies to every flight, every
-  // trip, no allowlist required.
-  //
-  // EXCEPTION: if the user literally told us the flight number in their
-  // narrative or guidelines ("depart on flight 1039", "return on UA1040"),
-  // that's a USER FACT, not an LLM guess. We KEEP it, normalize the format,
-  // and let the live-status panel show real AeroAPI data for it.
-  if (Array.isArray(days)) {
-    days.forEach((day, dayIdx) => {
-      (day.items || []).forEach(item => {
-        if (item.type !== "Flight" || !item.flight) return;
-        const f = item.flight;
-        if (f.flight_number != null && String(f.flight_number).trim() !== "") {
-          // Pull out just the digits to see if the user stated this number.
-          const digitsMatch = String(f.flight_number).match(/(\d{1,4})/);
-          const digits = digitsMatch ? String(parseInt(digitsMatch[1], 10)) : null;
-          const matchesUser = digits && (
-            userFlightNumbers.has(digits) ||
-            (f.carrier && userFlightNumbers.has(
-              `${(f.carrier.match(/\b([A-Z]{2})\b/) || [])[1] || ""}${digits}`
-            ))
-          );
-          if (matchesUser) {
-            // User-confirmed flight number — keep it. Normalize to plain digits
-            // for now; parseFlightIdent will compose carrier + digits at render.
-            f.flight_number = digits;
-            f._userSuppliedFlightNumber = true;
-            fixes.push(`Day ${dayIdx + 1} flight: kept user-supplied flight number ${f.carrier || ""}${digits}`);
-          } else {
-            f._originalFlightNumber = f.flight_number;
-            f.flight_number = null;
-            f._flightNumberStripped = true;
-            fixes.push(`Day ${dayIdx + 1} flight: removed model-supplied flight number — look up live schedule`);
-          }
-        } else if (userFlightNumbers.size > 0) {
-          // Model didn't emit a number but the user named some. Attach one
-          // based on direction. We previously gated on `f.carrier` being
-          // present, but the model sometimes omits both number AND carrier
-          // when it follows the "don't emit flight_number" instruction too
-          // aggressively — we should still back-fill the user-stated number
-          // because that's a USER FACT, and the live-status panel can still
-          // resolve carrier from the number prefix.
-          const userNums = Array.from(userFlightNumbers).filter(n => /^\d+$/.test(n));
-          if (userNums.length >= 1 && userNums.length <= 2) {
-            // Detect outbound vs return by ROUTE direction first (more
-            // reliable than day index, since the return might fall on the
-            // second-to-last day if the flight is in the morning). Falls
-            // back to day-index heuristic when route info is missing.
-            const homeCode = (inputs?.flights?.homeAirport || "").toUpperCase().match(/\b([A-Z]{3})\b/)?.[1];
-            let isReturnLeg;
-            if (homeCode && f.to_airport) {
-              isReturnLeg = String(f.to_airport).toUpperCase() === homeCode;
-            } else if (homeCode && f.from_airport) {
-              isReturnLeg = String(f.from_airport).toUpperCase() !== homeCode;
-            } else {
-              isReturnLeg = dayIdx === (days.length - 1);
-            }
-            const chosen = isReturnLeg && userNums.length > 1
-              ? userNums[userNums.length - 1]
-              : userNums[0];
-            f.flight_number = chosen;
-            f._userSuppliedFlightNumber = true;
-            fixes.push(`Day ${dayIdx + 1} flight: filled in user-supplied flight number ${f.carrier || ""}${chosen}`);
-          }
-        }
-      });
-    });
+  // 2b. UNIVERSAL flight-number strip. Logic lives in src/flightNumberStrip.js
+  // (the single source of truth, tested in tests/test_flight_number_strip.mjs).
+  // Importing here instead of duplicating prevents drift between the inline
+  // block and the extracted helper — the past history where they diverged and
+  // tests passed while production broke.
+  {
+    const { days: stripped, fixes: sFixes } = applyFlightNumberStrip(days, inputs);
+    days = stripped;
+    fixes.push(...sFixes);
   }
 
   // 2c. KNOWN_NONSTOPS carrier-correction (route-specific bonus layer). If the
@@ -3191,7 +3240,23 @@ function applyQualityLayer(input, inputs) {
     });
   }
 
-  return { data: { ...input, days }, qc: { fixes, warnings } };
+  // Activity-count cap enforcement (suspenders to the prompt-side belt at
+  // dynamicPreamble's ACTIVITY-COUNT HARD CAP rule). If the user's narrative
+  // or guidelines named a trip-total cap and the model emitted more than
+  // that, trim the excess. Closes the recurrence reported 2026-06-30 PM
+  // ("one activity during the entire itinerary" → model gave one per day).
+  // See src/activityCountConstraint.js for the classifier + trimmer.
+  const _activityCountConstraint = classifyActivityCountConstraint(inputs);
+  let cappedDays = days;
+  if (_activityCountConstraint.scope === "trip-total" && Array.isArray(days)) {
+    const { days: trimmed, fixes: capFixes } = enforceTripTotalActivityCap(days, _activityCountConstraint.count);
+    cappedDays = trimmed;
+    if (capFixes.length > 0) {
+      fixes.push(...capFixes);
+    }
+  }
+
+  return { data: { ...input, days: cappedDays }, qc: { fixes, warnings } };
 }
 
 // Small QC chip surfaced below the trip — shows we caught and fixed something
@@ -3207,7 +3272,7 @@ function QualityBadge({ qc }) {
         </p>
       )}
       {qc.warnings.length > 0 && (
-        <p style={{ fontSize: "11.5px", color: "#B85C00", margin: 0, lineHeight: 1.5 }}>
+        <p style={{ fontSize: "11.5px", color: "var(--color-warning)", margin: 0, lineHeight: 1.5 }}>
           ⚠︎ {qc.warnings.length} warning{qc.warnings.length === 1 ? "" : "s"}: {qc.warnings.slice(0, 2).join("; ")}{qc.warnings.length > 2 ? `; +${qc.warnings.length - 2} more` : ""}.
         </p>
       )}
@@ -3261,7 +3326,7 @@ function SaveTripButton({ inputs, result, onSaved }) {
       className="no-print"
       style={{
         background: justSaved ? GOLD : "var(--color-background-primary)",
-        color: justSaved ? "#0F0F0F" : "var(--color-text-primary)",
+        color: justSaved ? "var(--color-text-primary)" : "var(--color-text-primary)",
         border: `0.5px solid ${justSaved ? GOLD : "var(--color-border-secondary)"}`,
         borderRadius: "var(--border-radius-md)",
         padding: "10px 16px",
@@ -3330,22 +3395,22 @@ function StaleChipsBanner({ suggestion, onClear, onDismiss }) {
     ...(suggestion.staleActivities || []),
   ];
   return (
-    <div role="status" style={{ marginBottom: "1.25rem", border: "0.5px solid #B85C00", background: "#FFF7E8", borderRadius: "var(--border-radius-md)", padding: "12px 14px" }}>
+    <div role="status" style={{ marginBottom: "1.25rem", border: "0.5px solid var(--color-warning)", background: "var(--color-warning-tint)", borderRadius: "var(--border-radius-md)", padding: "12px 14px" }}>
       <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
-        <span aria-hidden="true" style={{ fontSize: "14px", color: "#B85C00", marginTop: "1px" }}>⚠︎</span>
+        <span aria-hidden="true" style={{ fontSize: "14px", color: "var(--color-warning)", marginTop: "1px" }}>⚠︎</span>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <p style={{ fontSize: "11px", color: "#7A3D00", letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 4px" }}>Destination changed</p>
-          <p style={{ fontSize: "13px", color: "#3D2400", margin: "0 0 8px", lineHeight: 1.5 }}>
+          <p style={{ fontSize: "11px", color: "var(--color-text-primary)", letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 4px" }}>Destination changed</p>
+          <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 8px", lineHeight: 1.5 }}>
             {total} pick{total === 1 ? "" : "s"} from {suggestion.prevLabel} {total === 1 ? "is" : "are"} still selected for {suggestion.newLabel || "your new destination"}.
           </p>
           <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "10px" }}>
             {items.map((it, i) => (
-              <span key={i} style={{ fontSize: "11px", background: "#FFE9C4", border: "0.5px solid #E5B870", color: "#5C3A00", borderRadius: "3px", padding: "3px 7px" }}>{it}</span>
+              <span key={i} style={{ fontSize: "11px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-border-secondary)", color: "var(--color-text-primary)", borderRadius: "3px", padding: "3px 7px" }}>{it}</span>
             ))}
           </div>
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            <button onClick={onClear} style={{ background: "#B85C00", color: "#FFF", border: "none", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Clear those picks</button>
-            <button onClick={onDismiss} style={{ background: "transparent", color: "#7A3D00", border: "0.5px solid #B85C00", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Keep them</button>
+            <button onClick={onClear} style={{ background: "var(--color-warning)", color: "var(--color-background-primary)", border: "none", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Clear those picks</button>
+            <button onClick={onDismiss} style={{ background: "transparent", color: "var(--color-text-primary)", border: "0.5px solid var(--color-warning)", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Keep them</button>
           </div>
         </div>
       </div>
@@ -3360,6 +3425,37 @@ function pdfFilename(data) {
   const date = (data?.start_date || data?.startDate || new Date().toISOString().slice(0, 10)).toString().slice(0, 10);
   const n = data?.nights ? `-${data.nights}n` : "";
   return `trip-${date}-${slug}${n}.pdf`;
+}
+
+// Convert a Blob/Response to a data URL (needed for jsPDF.addImage).
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+// Fetch a cover photo data URL for a destination, with a 10 s client-side
+// deadline so a slow Worker never stalls the PDF export indefinitely.
+// Returns null on any failure — the PDF exports cleanly without a photo.
+async function fetchCoverPhoto(destination) {
+  if (!destination) return null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const res = await fetch(
+      `/api/destination-photo?destination=${encodeURIComponent(destination)}`,
+      { signal: ctrl.signal }
+    );
+    if (!res.ok) return null;
+    return await blobToDataUrl(await res.blob());
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Build a polished, vector itinerary PDF from the trip plan data.
@@ -3394,9 +3490,21 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers
   // Prefer the rich template when we have structured plan data.
   if (data && Array.isArray(data.days) && data.days.length > 0) {
     try {
-      const { buildItineraryPdf } = await import("./pdf/itineraryPdf.js");
       const buildId = (typeof __BUILD_ID__ !== "undefined" && __BUILD_ID__) ? String(__BUILD_ID__) : "";
-      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers });
+      const destination = data?.destination ||
+        (Array.isArray(data?.cities) && data.cities.length > 0 && data.cities[0]?.name) || "";
+
+      // Run the module import and the cover-photo fetch in parallel so neither
+      // stalls waiting for the other. The preload useEffect in ItineraryView
+      // means the import typically resolves instantly from cache; the photo
+      // fetch (up to 10 s with its AbortController) is the real variable cost.
+      setStatus("Fetching cover photo…");
+      const [{ buildItineraryPdf }, coverPhoto] = await Promise.all([
+        import("./pdf/itineraryPdf.js"),
+        fetchCoverPhoto(destination),
+      ]);
+
+      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers, coverPhoto });
       setStatus("Saving…");
       pdf.save(filename);
       return;
@@ -3525,7 +3633,7 @@ function hardReloadNow() {
   window.location.replace(url.toString());
 }
 
-function PrintButton({ data, inputs, providers }) {
+function PrintButton({ data, inputs, providers, plan, introIsGenerating }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -3533,8 +3641,19 @@ function PrintButton({ data, inputs, providers }) {
   // refresh prompt instead of auto-reloading (which would lose unsaved work).
   const [stale, setStale] = useState(false);
 
+  // Closes the PR #69 race: when the headless IntroductionAutoGenerator is
+  // mid-flight, disable Save as PDF (with a clear "Preparing introduction…"
+  // label) so the user can't ship a PDF with no intro page. Falls open the
+  // moment the intro is populated OR the generator finishes/fails — a silent
+  // /api/introduction failure must never permanently block the PDF.
+  // `plan` is the source-of-truth rawData (introduction lives there via
+  // onPlanRevised); falling back to `data` keeps any caller that doesn't
+  // pass `plan` from regressing.
+  const gate = isPdfDownloadReady({ plan: plan || data, isGenerating: introIsGenerating });
+  const disabledForIntro = !gate.ready;
+
   const handleClick = async () => {
-    if (busy) return;
+    if (busy || disabledForIntro) return;
     setBusy(true); setError(""); setStatus("Starting…");
     try {
       // The PDF's Local-providers section needs the data, but fetching is now
@@ -3571,7 +3690,7 @@ function PrintButton({ data, inputs, providers }) {
     <div className="no-print" style={{ display: "inline-flex", flexDirection: "column", gap: "4px" }}>
       <button
         onClick={handleClick}
-        disabled={busy}
+        disabled={busy || disabledForIntro}
         style={{
           background: "var(--color-text-primary)",
           color: "var(--color-background-primary)",
@@ -3581,20 +3700,21 @@ function PrintButton({ data, inputs, providers }) {
           fontSize: "11px",
           letterSpacing: "0.08em",
           textTransform: "uppercase",
-          cursor: busy ? "wait" : "pointer",
+          cursor: (busy || disabledForIntro) ? "wait" : "pointer",
           fontFamily: "inherit",
           fontWeight: 600,
           display: "inline-flex",
           alignItems: "center",
           gap: "8px",
-          opacity: busy ? 0.7 : 1,
+          opacity: (busy || disabledForIntro) ? 0.7 : 1,
         }}
-        aria-label="Save itinerary as PDF"
+        aria-label={disabledForIntro ? gate.label : "Save itinerary as PDF"}
+        aria-busy={disabledForIntro ? "true" : undefined}
       >
-        <span aria-hidden="true">⤓</span> {busy ? (status || "Working…") : "Save as PDF"}
+        <span aria-hidden="true">⤓</span> {busy ? (status || "Working…") : (disabledForIntro ? gate.label : "Save as PDF")}
       </button>
       {error && (
-        <span style={{ fontSize: "11px", color: "#B85C00" }}>{error}</span>
+        <span style={{ fontSize: "11px", color: "var(--color-warning)" }}>{error}</span>
       )}
       {stale && (
         <div
@@ -3602,8 +3722,8 @@ function PrintButton({ data, inputs, providers }) {
           style={{
             marginTop: "6px",
             padding: "10px 12px",
-            border: "1px solid #C4A862",
-            background: "rgba(196,168,98,0.08)",
+            border: "1px solid var(--color-border-secondary)",
+            background: "rgba(91, 101, 119,0.08)",
             borderRadius: "var(--border-radius-md)",
             fontSize: "11px",
             color: "var(--color-text-primary)",
@@ -3758,11 +3878,11 @@ function PrintRidesButton({ data, inputs }) {
         and let CSS hide/show it.
       */}
       <div id="rides-print-root" className="rides-print-only" aria-hidden="true">
-        <div style={{ padding: "24px 28px", fontFamily: "Georgia, 'Times New Roman', serif", color: "#0F0F0F" }}>
+        <div style={{ padding: "24px 28px", fontFamily: "Georgia, 'Times New Roman', serif", color: "var(--color-text-primary)" }}>
           <div style={{ borderBottom: `2px solid ${GOLD}`, paddingBottom: "10px", marginBottom: "18px" }}>
-            <div style={{ fontSize: "10px", letterSpacing: "0.18em", textTransform: "uppercase", color: "#666", marginBottom: "4px" }}>Driver itinerary — share with chauffeur</div>
+            <div style={{ fontSize: "10px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-text-secondary)", marginBottom: "4px" }}>Driver itinerary — share with chauffeur</div>
             <div style={{ fontSize: "22px", fontStyle: "italic", marginBottom: "6px" }}>{tripTitle}</div>
-            <div style={{ fontSize: "12px", color: "#444" }}>
+            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
               Passenger: <strong>{passengerName}</strong>
               {dateRange ? ` · Dates: ${dateRange}` : ""}
               {rides.length ? ` · ${rides.length} ride${rides.length === 1 ? "" : "s"}` : ""}
@@ -3770,9 +3890,9 @@ function PrintRidesButton({ data, inputs }) {
           </div>
 
           {rides.map((r, i) => (
-            <div key={i} style={{ borderBottom: "1px solid #ddd", padding: "12px 0", pageBreakInside: "avoid" }}>
+            <div key={i} style={{ borderBottom: "1px solid var(--color-border-tertiary)", padding: "12px 0", pageBreakInside: "avoid" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "12px", marginBottom: "4px" }}>
-                <div style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", color: "#777", fontWeight: 700 }}>
+                <div style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--color-text-secondary)", fontWeight: 700 }}>
                   Ride {i + 1} · {r.dayLabel}{r.city ? ` · ${r.city}` : ""}
                 </div>
                 <div style={{ fontSize: "15px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.02em" }}>
@@ -3781,25 +3901,25 @@ function PrintRidesButton({ data, inputs }) {
               </div>
               <div style={{ fontSize: "14px", fontWeight: 600, marginBottom: "4px" }}>{r.text || "Transport"}</div>
               {r.location && (
-                <div style={{ fontSize: "12px", color: "#333", marginBottom: "3px" }}>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "3px" }}>
                   <strong>Pickup / route:</strong> {r.location}
                 </div>
               )}
               {r.contact?.address && (
-                <div style={{ fontSize: "12px", color: "#333", marginBottom: "3px" }}>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "3px" }}>
                   <strong>Address:</strong> {r.contact.address}
                 </div>
               )}
               {r.duration && (
-                <div style={{ fontSize: "12px", color: "#333", marginBottom: "3px" }}>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "3px" }}>
                   <strong>Duration:</strong> {r.duration}
                 </div>
               )}
               {r.why && (
-                <div style={{ fontSize: "12px", color: "#555", marginBottom: "3px", fontStyle: "italic" }}>{r.why}</div>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "3px", fontStyle: "italic" }}>{r.why}</div>
               )}
               {(r.contact?.phone || r.contact?.booking_note) && (
-                <div style={{ fontSize: "12px", color: "#333", marginTop: "6px", borderLeft: `3px solid ${GOLD}`, paddingLeft: "8px" }}>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "6px", borderLeft: `3px solid ${GOLD}`, paddingLeft: "8px" }}>
                   {r.contact?.phone && (<><strong>Operator phone:</strong> {r.contact.phone}<br /></>)}
                   {r.contact?.booking_note && (<><strong>Notes:</strong> {r.contact.booking_note}</>)}
                 </div>
@@ -3807,7 +3927,7 @@ function PrintRidesButton({ data, inputs }) {
             </div>
           ))}
 
-          <div style={{ marginTop: "22px", paddingTop: "12px", borderTop: `1px dashed ${GOLD}`, fontSize: "10.5px", color: "#666", lineHeight: 1.5 }}>
+          <div style={{ marginTop: "22px", paddingTop: "12px", borderTop: `1px dashed ${GOLD}`, fontSize: "10.5px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
             <div><strong>Passenger:</strong> {passengerName}</div>
             <div style={{ marginTop: "3px" }}>Generated by Trip Optimizer — verify each pickup time + address with the driver 24 hours ahead. Times shown are local to the destination.</div>
           </div>
@@ -3834,7 +3954,7 @@ function InputSummary({ inputs }) {
     ["Travelers", basics?.travelers],
     ["Style", basics?.style],
     ["Pace", basics?.pace],
-    ["Budget", basics?.budget],
+    ["Budget", Array.isArray(basics?.budget) ? (basics.budget.length ? basics.budget.join(", ") : "\u2014") : (basics?.budget || "\u2014")],
     ["Home airport", flights?.homeAirport],
     ["Preferred airline", flights?.airline || "—"],
     ["Cabin", flights?.cabin || "—"],
@@ -3857,18 +3977,18 @@ function InputSummary({ inputs }) {
 
   return (
     <div className="print-only" style={{ display: "none" }}>
-      <h2 style={{ fontSize: "14px", letterSpacing: "0.08em", textTransform: "uppercase", color: "#000", margin: "0 0 10px", borderBottom: "1px solid #ccc", paddingBottom: "6px" }}>Input summary</h2>
+      <h2 style={{ fontSize: "14px", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--color-text-primary)", margin: "0 0 10px", borderBottom: "1px solid var(--color-border-tertiary)", paddingBottom: "6px" }}>Input summary</h2>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "10.5px", marginBottom: "16px" }}>
         <tbody>
           {rows.map(([k, v]) => (
-            <tr key={k} style={{ borderBottom: "0.5px solid #eee" }}>
-              <td style={{ padding: "4px 8px 4px 0", color: "#666", verticalAlign: "top", width: "38%", textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "9px", fontWeight: 600 }}>{k}</td>
-              <td style={{ padding: "4px 0", color: "#000" }}>{v}</td>
+            <tr key={k} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+              <td style={{ padding: "4px 8px 4px 0", color: "var(--color-text-secondary)", verticalAlign: "top", width: "38%", textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "9px", fontWeight: 600 }}>{k}</td>
+              <td style={{ padding: "4px 0", color: "var(--color-text-primary)" }}>{v}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <p style={{ fontSize: "9px", color: "#888", margin: "0 0 20px", fontStyle: "italic" }}>Generated {new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })} · trip-optimizer-6og.pages.dev</p>
+      <p style={{ fontSize: "9px", color: "var(--color-text-tertiary)", margin: "0 0 20px", fontStyle: "italic" }}>Generated {new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })} · trip-optimizer-6og.pages.dev</p>
     </div>
   );
 }
@@ -4165,9 +4285,9 @@ function DiningBrowseChips({ data, inputs }) {
   const yelpUrl = `https://www.yelp.com/search?find_desc=Restaurants&find_loc=${encodeURIComponent(urlCity)}`;
 
   const chips = [
-    { key: "opentable", label: "OpenTable", mark: "OT", href: opentableUrl, markBg: "#DA3743" },
-    { key: "resy",      label: "Resy",      mark: "R",  href: resyUrl,      markBg: "#111111" },
-    { key: "yelp",      label: "Yelp",      mark: "Y",  href: yelpUrl,      markBg: "#C41200" },
+    { key: "opentable", label: "OpenTable", mark: "OT", href: opentableUrl, markBg: "var(--color-text-danger)" },
+    { key: "resy",      label: "Resy",      mark: "R",  href: resyUrl,      markBg: "var(--color-text-primary)" },
+    { key: "yelp",      label: "Yelp",      mark: "Y",  href: yelpUrl,      markBg: "var(--color-danger-hover)" },
   ];
 
   // Footnote describing exactly what we prefilled — same idea as the
@@ -4189,8 +4309,8 @@ function DiningBrowseChips({ data, inputs }) {
       style={{
         margin: "4px 0 16px",
         padding: "12px 14px",
-        background: "rgba(196, 168, 98, 0.07)",
-        border: "0.5px solid rgba(196, 168, 98, 0.32)",
+        background: "rgba(91, 101, 119, 0.07)",
+        border: "0.5px solid rgba(91, 101, 119, 0.32)",
         borderRadius: "var(--border-radius-md)",
       }}
     >
@@ -4215,9 +4335,9 @@ function DiningBrowseChips({ data, inputs }) {
         }
         /* !important needed because the chip uses an inline border style,
            which would otherwise win on specificity. */
-        .dining-browse-chips .dbc-chip-opentable:hover, .dining-browse-chips .dbc-chip-opentable:focus-visible { border-color: #DA3743 !important; }
-        .dining-browse-chips .dbc-chip-resy:hover,      .dining-browse-chips .dbc-chip-resy:focus-visible      { border-color: #111 !important; }
-        .dining-browse-chips .dbc-chip-yelp:hover,      .dining-browse-chips .dbc-chip-yelp:focus-visible      { border-color: #C41200 !important; }
+        .dining-browse-chips .dbc-chip-opentable:hover, .dining-browse-chips .dbc-chip-opentable:focus-visible { border-color: var(--color-text-danger) !important; }
+        .dining-browse-chips .dbc-chip-resy:hover,      .dining-browse-chips .dbc-chip-resy:focus-visible      { border-color: var(--color-text-primary) !important; }
+        .dining-browse-chips .dbc-chip-yelp:hover,      .dining-browse-chips .dbc-chip-yelp:focus-visible      { border-color: var(--color-danger-hover) !important; }
       `}</style>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
         {chips.map(c => (
@@ -4235,7 +4355,7 @@ function DiningBrowseChips({ data, inputs }) {
               gap: "8px",
               padding: "7px 13px 7px 7px",
               borderRadius: "999px",
-              background: "var(--color-background-primary, #fff)",
+              background: "var(--color-background-primary, var(--color-background-primary))",
               border: "0.5px solid var(--color-border-secondary)",
               textDecoration: "none",
               fontSize: "12.5px",
@@ -4256,7 +4376,7 @@ function DiningBrowseChips({ data, inputs }) {
                 height: "20px",
                 borderRadius: "50%",
                 background: c.markBg,
-                color: "#fff",
+                color: "var(--color-background-primary)",
                 fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
                 fontSize: "9.5px",
                 fontWeight: 700,
@@ -4525,7 +4645,7 @@ function EssentialsView({ data }) {
           <H>Heads up</H>
           {data.flags.map((f, i) => (
             <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "6px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: 1.5 }}>
-              <span style={{ flex: "0 0 auto", color: "#B85C00", fontSize: "12px", marginTop: "1px" }}>⚠︎</span>
+              <span style={{ flex: "0 0 auto", color: "var(--color-warning)", fontSize: "12px", marginTop: "1px" }}>⚠︎</span>
               <span>{f}</span>
             </div>
           ))}
@@ -4536,7 +4656,7 @@ function EssentialsView({ data }) {
           <H>If plans break</H>
           {data.planb.map((p, i) => (
             <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "7px", fontSize: "13px", color: "var(--color-text-primary)", lineHeight: 1.5 }}>
-              <span style={{ flex: "0 0 auto", fontSize: "9.5px", fontWeight: 700, color: "#5B6E8F", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: "0.5px solid #5B6E8F", borderRadius: "3px", whiteSpace: "nowrap", marginTop: "1px" }}>Plan B</span>
+              <span style={{ flex: "0 0 auto", fontSize: "9.5px", fontWeight: 700, color: "var(--color-accent)", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: "0.5px solid var(--color-accent)", borderRadius: "3px", whiteSpace: "nowrap", marginTop: "1px" }}>Plan B</span>
               <span>{p}</span>
             </div>
           ))}
@@ -4546,7 +4666,7 @@ function EssentialsView({ data }) {
         <>
           <H>Snob's guide</H>
           {data.snobs.map((s, i) => (
-            <div key={i} style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "8px 12px", borderLeft: `2px solid #D4537E`, marginBottom: "8px", lineHeight: "1.6", borderRadius: 0 }}>{s}</div>
+            <div key={i} style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "8px 12px", borderLeft: `2px solid var(--color-category-rose)`, marginBottom: "8px", lineHeight: "1.6", borderRadius: 0 }}>{s}</div>
           ))}
         </>
       )}
@@ -4728,9 +4848,9 @@ function ProviderCard({ item }) {
         <span style={{ fontSize: "13.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "-0.1px" }}>{item.name}</span>
         {item.city && <span style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", letterSpacing: "0.04em" }}>{item.city}</span>}
         {verified ? (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "#1F6B3B", background: "#EAF6EE", border: "0.5px solid #BFE3CB", borderRadius: "10px", padding: "2px 8px" }}>✓ Verified</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-success)", background: "var(--color-success-tint)", border: "0.5px solid var(--color-success-tint)", borderRadius: "10px", padding: "2px 8px" }}>✓ Verified</span>
         ) : (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "#8A6500", background: "#FFF8EC", border: "0.5px solid #E8C063", borderRadius: "10px", padding: "2px 8px" }}>Verify before booking</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--color-text-primary)", background: "var(--color-surface-2)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "10px", padding: "2px 8px" }}>Verify before booking</span>
         )}
       </div>
       {item.descriptor && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{item.descriptor}</p>}
@@ -4771,7 +4891,7 @@ function LocalProvidersView({ providers }) {
         Real local operators checked against Google Places. Anything we couldn't confirm is labeled “verify before booking” — we don't guess.
       </p>
       {error && (
-        <p role="alert" style={{ fontSize: "12px", color: "#B85C00", margin: 0 }}>
+        <p role="alert" style={{ fontSize: "12px", color: "var(--color-warning)", margin: 0 }}>
           {error}
         </p>
       )}
@@ -4790,7 +4910,7 @@ function LocalProvidersView({ providers }) {
               )}
             </div>
           ) : (
-            <p style={{ fontSize: "12px", color: failedIds.includes(g.id) ? "#B85C00" : "var(--color-text-secondary)", fontStyle: "italic", margin: 0 }}>
+            <p style={{ fontSize: "12px", color: failedIds.includes(g.id) ? "var(--color-warning)" : "var(--color-text-secondary)", fontStyle: "italic", margin: 0 }}>
               {status !== "done"
                 ? `Finding ${g.noun}s…`
                 : failedIds.includes(g.id)
@@ -4832,17 +4952,42 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
     if (Array.isArray(data.snobs) && data.snobs.length > 0) essentials++;
     return { flights, hotels, transport, dining, activities, essentials };
   }, [days, data.tonight, data.weather_window, data.pack, data.flags, data.planb, data.snobs]);
-  const TABS = [
-    { id: "overview", label: "Overview" },
-    counts.flights > 0 && { id: "flights", label: `Flights · ${counts.flights}` },
-    counts.hotels > 0 && { id: "lodging", label: `Lodging · ${counts.hotels}` },
-    counts.transport > 0 && { id: "transport", label: `Transport · ${counts.transport}` },
-    counts.dining > 0 && { id: "dining", label: `Dining · ${counts.dining}` },
-    counts.activities > 0 && { id: "activities", label: `Activities · ${counts.activities}` },
-    (counts.flights + counts.hotels + counts.transport + counts.dining + counts.activities) > 0 && { id: "category", label: "By category" },
-    showProviders && { id: "providers", label: "Local providers" },
-    counts.essentials > 0 && { id: "essentials", label: `Essentials · ${counts.essentials}` },
-  ].filter(Boolean);
+  // #11 B-prime: split the legacy 9-pill strip into 5 always-on
+  // primaries (Overview · Flights · Hotels · Dining · Activities) +
+  // a "More ▾" overflow popover for Transport / By category /
+  // Local providers / Essentials. Pure helpers in src/tabStrip.js;
+  // see tests/test_tab_strip.mjs for the partition/active-state logic.
+  const partition = useMemo(
+    () => partitionTabs(counts, { showProviders }),
+    [counts, showProviders],
+  );
+  const overflowActive = isActiveTabInOverflow(tab, partition);
+  const overflowLabel = activeOverflowLabel(tab, partition);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef(null);
+
+  // Close the More popover on click-outside and on Escape. Closing
+  // when the active tab changes is folded into each onTabChange callsite
+  // below (clicking a tab pill or a menu item dismisses the menu
+  // inline) so we don't need a tab-change effect — React 19's
+  // react-hooks/set-state-in-effect would flag that as a cascading-
+  // render risk.
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const onDocClick = (e) => {
+      if (!moreRef.current) return;
+      if (!moreRef.current.contains(e.target)) setMoreOpen(false);
+    };
+    const onKey = (e) => { if (e.key === "Escape") setMoreOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("touchstart", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("touchstart", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [moreOpen]);
   return (
     <>
       {/* Two-row sticky nav, modeled after zurich-weekend.com / maritimesgrandloop.com.
@@ -4850,21 +4995,26 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
          gets the warm gold pill. Tabs are rendered ABOVE the hero by the parent so
          the hero itself stays compact. */}
       <div className="no-print" style={{ position: "sticky", top: 0, zIndex: 6, background: "var(--color-background-primary)", paddingTop: "8px", paddingBottom: "10px", marginBottom: "14px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-        {/* Row 1 — section/reference tabs. Always visible. WRAPS to multiple lines so all are visible at once. */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", justifyContent: "flex-start" }}>
-          {TABS.map(t => {
+        {/* Row 1 — #11 B-prime: 5 primaries + 'More ▾' overflow.
+            Primaries are always visible; the More button takes the
+            active-pill styling whenever the current tab lives in the
+            overflow group, so the user can see at a glance that the
+            active section is behind the menu. */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", justifyContent: "flex-start", alignItems: "center" }}>
+          {partition.primaries.map(t => {
             const active = tab === t.id;
             return (
               <button
                 key={t.id}
-                onClick={() => onTabChange(t.id)}
+                onClick={() => { setMoreOpen(false); onTabChange(t.id); }}
                 style={{
                   flex: "0 0 auto",
                   fontSize: "10.5px",
                   letterSpacing: "0.10em",
                   textTransform: "uppercase",
                   fontWeight: 700,
-                  color: active ? "#0F0F0F" : "var(--color-text-secondary)",
+                  /* #23 active = navy fill, so label must be LIGHT (was navy-on-navy = invisible). */
+                  color: active ? ON_NAVY : "var(--color-text-secondary)",
                   padding: "6px 12px",
                   border: active ? "none" : "0.5px solid var(--color-border-secondary)",
                   borderRadius: "20px",
@@ -4877,6 +5027,81 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
               >{t.label}</button>
             );
           })}
+          {partition.overflow.length > 0 && (
+            <div ref={moreRef} style={{ position: "relative", flex: "0 0 auto" }}>
+              <button
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={moreOpen}
+                onClick={() => setMoreOpen((v) => !v)}
+                title={overflowActive
+                  ? `Showing ${overflowLabel} — tap to switch tabs`
+                  : "More sections (Transport, Local providers, Essentials, By category)"}
+                style={{
+                  flex: "0 0 auto",
+                  fontSize: "10.5px",
+                  letterSpacing: "0.10em",
+                  textTransform: "uppercase",
+                  fontWeight: 700,
+                  color: overflowActive ? ON_NAVY : "var(--color-text-secondary)",
+                  padding: "6px 12px",
+                  border: overflowActive ? "none" : "0.5px solid var(--color-border-secondary)",
+                  borderRadius: "20px",
+                  whiteSpace: "nowrap",
+                  background: overflowActive ? GOLD : "var(--color-background-primary)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  lineHeight: 1.2,
+                }}
+              >{overflowActive ? `${overflowLabel} ▾` : "More ▾"}</button>
+              {moreOpen && (
+                <div
+                  role="menu"
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 6px)",
+                    right: 0,
+                    minWidth: "180px",
+                    background: "var(--color-background-primary)",
+                    border: "0.5px solid var(--color-border-secondary)",
+                    borderRadius: "var(--border-radius-md)",
+                    boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
+                    padding: "6px",
+                    zIndex: 8,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "2px",
+                  }}
+                >
+                  {partition.overflow.map((t) => {
+                    const active = tab === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { onTabChange(t.id); setMoreOpen(false); }}
+                        style={{
+                          textAlign: "left",
+                          fontSize: "11.5px",
+                          letterSpacing: "0.04em",
+                          fontWeight: active ? 700 : 500,
+                          color: active ? ON_NAVY : "var(--color-text-primary)",
+                          background: active ? GOLD : "transparent",
+                          border: "none",
+                          borderRadius: "6px",
+                          padding: "8px 12px",
+                          cursor: "pointer",
+                          fontFamily: "inherit",
+                          whiteSpace: "nowrap",
+                        }}
+                      >{t.label}</button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         {/* Row 2 — day filter (Overview only). "All" + one pill per day; click to focus that day. WRAPS. */}
         {tab === "overview" && days.length >= 2 && (
@@ -4893,7 +5118,8 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
                     letterSpacing: "0.06em",
                     textTransform: "uppercase",
                     fontWeight: 600,
-                    color: active ? "#0F0F0F" : "var(--color-text-secondary)",
+                    /* #23 active = navy fill, label must be LIGHT (was navy-on-navy). */
+                    color: active ? ON_NAVY : "var(--color-text-secondary)",
                     padding: "4px 9px",
                     border: active ? "none" : "0.5px solid var(--color-border-secondary)",
                     borderRadius: "3px",
@@ -4940,7 +5166,7 @@ function TripSectionView({ tab, data, inputs, onOpenMenu, providers }) {
 // All result/state writes go up through onPlanRevised / onReviewChange so the
 // parent (TripOptimizer) can persist them into saved trips.
 // ============================================================================
-function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview }) {
+function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false, externalSourceIds, onSourcesChange }) {
   // --- review state ------------------------------------------------------
   // 'idle' — banner card with picker
   // 'running' — review in flight
@@ -4965,6 +5191,10 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   const [selectedIds, setSelectedIds] = useState(() => {
     // Restoring a prior review: use exactly the sources the user picked then.
     if (initialReview?.sources) return initialReview.sources;
+    // #8 If the wizard already lifted a pre-build source selection, honor it so
+    // the post-build panel matches what the user chose up front (and what the
+    // pre-build review-retrieve pass actually used).
+    if (Array.isArray(externalSourceIds) && externalSourceIds.length) return externalSourceIds;
     // Fresh review: standard 6 defaults + (if destination matches) the
     // curated hyperlocal source set for that region.
     const baseDefaults = REVIEWER_SOURCES.filter(s => s.dflt).map(s => s.id);
@@ -4973,9 +5203,45 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
     }
     return baseDefaults;
   });
+  // #8 Keep the wizard-level source selection in sync when the user changes
+  // sources from inside the panel, so a re-run / saved trip reflects the change.
+  useEffect(() => {
+    if (typeof onSourcesChange === "function") onSourcesChange(selectedIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIds]);
   const [review, setReview] = useState(initialReview?.review || null);
   const [applyState, setApplyState] = useState({}); // findingId -> bool
   const [appliedIds, setAppliedIds] = useState(() => initialReview?.applied_ids || []);
+  // #10 — Collapse the review section to a one-line summary after a successful
+  // Apply (or whenever a restored review already has applied findings). Once
+  // the user has accepted changes, the plan on screen is newer than the
+  // findings list above it; keeping the full findings card expanded above
+  // the day-by-day pushes the just-revised plan below the fold. Default:
+  // collapsed when a restored review carries applied findings, expanded
+  // otherwise. Re-running the review (handleRunReview, or the existing
+  // "Re-run review" button) clears this.
+  const [collapsed, setCollapsed] = useState(() =>
+    Array.isArray(initialReview?.applied_ids) && initialReview.applied_ids.length > 0,
+  );
+  // #8 part 2b — Apply-mode toggle (the BUILD-LEVEL choice, not the per-call
+  // revision mode). Named `applyModeChoice` to avoid shadowing the existing
+  // local `applyMode` inside handleApply (which holds "surgical" | "full").
+  // Two modes:
+  //   "auto":         on a fresh review, queue every finding flagged
+  //                   default_apply: true and fire one handleApply
+  //                   automatically (the user still sees the apply
+  //                   progress + applied changelog via the existing surface).
+  //   "approve_each": current behavior — user reviews findings, toggles
+  //                   which to include, hits Apply manually.
+  // Default: "auto" per the wiki spec. A restored saved trip carries its
+  // saved choice forward via initialReview.apply_mode_choice.
+  const [applyModeChoice, setApplyModeChoice] = useState(
+    initialReview?.apply_mode_choice === "approve_each" ? "approve_each" : "auto",
+  );
+  // Once-per-review guard so auto-apply can't double-fire on re-render or a
+  // brief status oscillation. Stores the review's generatedAt-or-verdict
+  // signature; reset on every fresh handleRunReview.
+  const autoApplySigRef = useRef("");
   const [error, setError] = useState("");
   // Honest partial-apply surface: when a surgical revision applies SOME but
   // not all selected findings, we never claim full success. `notice` carries
@@ -5026,6 +5292,12 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   const handleRunReview = async () => {
     if (selectedSources.length === 0) { setError("Pick at least one source."); return; }
     setStatus("running");
+    // #10 — a fresh review run should always land expanded so the user can
+    // see the new findings; the collapse only applies to post-Apply state.
+    setCollapsed(false);
+    // #8 part 2b — reset the auto-apply guard so the new review can auto-fire
+    // once it lands in "done" state (only when applyModeChoice === "auto").
+    autoApplySigRef.current = "";
     setError("");
     setProgress(0);
     setProgressLabel("Starting review…");
@@ -5122,6 +5394,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           review: parsed,
           applied_ids: [],
           generatedAt: new Date().toISOString(),
+          apply_mode_choice: applyModeChoice,
         });
       }
     } catch (err) {
@@ -5140,6 +5413,36 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       setElapsedSec(0);
     }
   };
+
+  // #8 Auto-run the expert review once a build completes, without waiting for a
+  // manual 'Run review' click. Guarded so it fires exactly once per distinct
+  // plan and never on a restored review (status already 'done') or while one is
+  // running. Uses the region-aware default sources already selected above. The
+  // manual button still works for re-runs / source changes. Mirrors the
+  // once-per-build guard pattern used by IntroductionAutoGenerator.
+  //
+  // #24 invariant (do not regress): this effect CANNOT extend the main build's
+  // streamBuildJob stall counter. ReviewPanel only mounts inside ItineraryView,
+  // which is only rendered after the wizard's handleBuild has resolved the main
+  // streamBuildJob promise and committed `rawData` to state. The review's own
+  // streamBuildJob call (handleRunReview → line ~5252) is a separate fetch with
+  // a separate AbortController and a separate stall watchdog. The two never
+  // share state — a slow review cannot make the main build appear stuck.
+  const autoRunSigRef = useRef("");
+  useEffect(() => {
+    if (!autoRun) return;
+    if (status !== "idle") return;            // don't fire over a restored/in-flight review
+    if (initialReview) return;                 // a recovered review is not a fresh build
+    if (!plan || !Array.isArray(plan.days) || plan.days.length === 0) return;
+    if (selectedSources.length === 0) return;
+    const sig = introPlanSignature(plan);      // stable per build (destination|days|first|last)
+    if (autoRunSigRef.current === sig) return; // already auto-ran for this build
+    autoRunSigRef.current = sig;
+    handleRunReview();
+    // handleRunReview is a stable closure recreated each render; we intentionally
+    // depend only on the trigger inputs, guarded by the signature ref above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRun, status, plan, initialReview, selectedSources.length]);
 
   const handleCancelReview = () => {
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} }
@@ -5282,6 +5585,11 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
         setPendingRetryIds([]);
         setStatus("applied");
         setTimeout(() => setStatus("done"), 2500);
+        // #10 — once an Apply fully lands, collapse the report so the revised
+        // plan is what the user sees first. A partial apply (the if-branch
+        // above) stays expanded so the "Re-plan to apply the rest" affordance
+        // remains visible without an extra tap.
+        setCollapsed(true);
       }
       if (typeof onPlanRevised === "function") {
         onPlanRevised(newPlan);
@@ -5293,6 +5601,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           applied_ids: newAppliedIds,
           generatedAt: new Date().toISOString(),
           last_mode: applyMode,
+          apply_mode_choice: applyModeChoice,
         });
       }
     } catch (err) {
@@ -5310,6 +5619,36 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       setElapsedSec(0);
     }
   };
+
+  // #8 part 2b — Auto-apply effect. When applyModeChoice === "auto" and a fresh
+  // review just landed in "done" state with no applies yet, queue every finding
+  // flagged default_apply: true and fire one handleApply automatically. The
+  // user still sees the apply progress card (status "applying") and the
+  // applied changelog afterwards via the existing surface. Guarded by
+  // autoApplySigRef so a re-render or status oscillation can't double-fire,
+  // and by appliedIds.length === 0 so a partial-apply retry cycle can't
+  // reawaken auto-apply. Placed AFTER handleApply's definition so the lint
+  // rule "Cannot access variable before it is declared" stays satisfied
+  // (handleApply is a const, not a hoisted function declaration).
+  useEffect(() => {
+    if (applyModeChoice !== "auto") return;
+    if (status !== "done") return;
+    if (!review || !Array.isArray(review.findings) || review.findings.length === 0) return;
+    if (appliedIds.length > 0) return;          // user (or a prior auto fire) already applied for this review
+    const defaultApply = review.findings.filter(f => f.default_apply && !appliedIds.includes(f.id));
+    if (defaultApply.length === 0) return;       // nothing flagged default_apply: true — nothing to auto-fire
+    // Stable per review: prefer generatedAt, fall back to the verdict hash.
+    const sig = (review.generatedAt || review.verdict || "").slice(0, 64);
+    if (!sig) return;
+    if (autoApplySigRef.current === sig) return; // already auto-applied for this review
+    autoApplySigRef.current = sig;
+    handleApply({ findingsOverride: defaultApply });
+    // handleApply is a stable closure recreated each render; the sig ref above
+    // guards against double-fire. applyState is intentionally NOT a dep — we
+    // pass the default-apply set explicitly via findingsOverride so a slow
+    // setApplyState propagation can't make us apply the wrong subset.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyModeChoice, status, review, appliedIds.length]);
 
   const togglePickerSource = (id) => {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -5359,7 +5698,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             {selectedSources.map(s => s.lens === "hyperlocal" ? (
               <span key={s.id} title={`Hyperlocal source for ${hyperlocalRegion?.label || "this destination"}`} style={{ fontSize: "10.5px", color: GOLD_DARK, background: GOLD_LIGHT, padding: "3px 9px", borderRadius: "999px", border: `0.5px solid ${GOLD}`, letterSpacing: "0.02em", fontWeight: 700, whiteSpace: "nowrap" }}>{s.name}</span>
             ) : (
-              <span key={s.id} style={{ fontSize: "10.5px", color: "#0F0F0F", background: GOLD, padding: "3px 9px", borderRadius: "999px", letterSpacing: "0.02em", fontWeight: 600, whiteSpace: "nowrap" }}>{s.name}</span>
+              <span key={s.id} style={{ fontSize: "10.5px", color: ON_NAVY, background: GOLD, padding: "3px 9px", borderRadius: "999px", letterSpacing: "0.02em", fontWeight: 600, whiteSpace: "nowrap" }}>{s.name}</span>
             ))}
             <button onClick={() => setPickerOpen(true)} style={{ fontSize: "10.5px", color: GOLD, background: "transparent", border: `0.5px dashed ${GOLD}`, padding: "3px 9px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", fontWeight: 600 }}>+ Change sources</button>
           </div>
@@ -5372,10 +5711,52 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "0 0 12px", fontStyle: "italic" }}>
             Why these? They cover taste (CN Traveler), food (Michelin), pacing (NYT 36 Hours), and ground-truth (Reddit + locals){hyperlocalRegion ? ", plus destination-specific local papers and the tourism board" : ""}. Add more for hotel-specific or scene-specific feedback.
           </p>
-          <button onClick={handleRunReview} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}>
+          {/* #8 part 2b — Apply-mode toggle. Sets what happens when findings
+              land: auto-apply the default-flagged ones in one pass (with the
+              changelog still visible), or approve each finding manually.
+              Default auto per the wiki spec; saved trips carry the user's
+              prior choice via initialReview.apply_mode_choice. */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px", padding: "8px 10px", marginBottom: "10px", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)" }}>
+            <p style={{ fontSize: "10.5px", color: "var(--color-text-secondary)", margin: 0, letterSpacing: "0.04em", textTransform: "uppercase", fontWeight: 600 }}>
+              When findings land
+            </p>
+            <div role="radiogroup" aria-label="Apply mode" style={{ display: "flex", gap: "4px" }}>
+              {[
+                { id: "auto", label: "Auto-apply", title: "As soon as the review lands, apply every recommended change in one pass. You'll see what changed in the changelog." },
+                { id: "approve_each", label: "Approve each", title: "Review findings one by one and pick which to apply." },
+              ].map(opt => {
+                const active = applyModeChoice === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setApplyModeChoice(opt.id)}
+                    title={opt.title}
+                    style={{
+                      fontSize: "10.5px",
+                      letterSpacing: "0.04em",
+                      fontWeight: active ? 700 : 500,
+                      color: active ? ON_NAVY : "var(--color-text-secondary)",
+                      background: active ? GOLD : "transparent",
+                      border: `0.5px solid ${active ? GOLD : "var(--color-border-secondary)"}`,
+                      borderRadius: "999px",
+                      padding: "4px 10px",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <button onClick={handleRunReview} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_NAVY }}>
             Run review (~45 sec)
           </button>
-          {error && <p style={{ fontSize: "11.5px", color: "#c0392b", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
+          {error && <p style={{ fontSize: "11.5px", color: "var(--color-text-danger)", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
         </div>
       )}
 
@@ -5389,7 +5770,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             </p>
           </div>
           <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 8px" }}>{progressLabel || "Working…"}</p>
-          <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
+          <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, var(--color-border-tertiary))", overflow: "hidden", position: "relative" }}>
             {progress > 0 ? (
               <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: GOLD, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
             ) : (
@@ -5402,19 +5783,62 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
         </div>
       )}
 
+      {/* #10 — Collapsed one-line summary after a successful Apply. Shown
+          when the user has applied at least one finding (so the plan on
+          screen is newer than the findings list above it). "Show details"
+          expands the full findings card back; "Revalidate" kicks off a fresh
+          review run. */}
+      {(status === "done" || status === "applied") && review && collapsed && (
+        <div style={{ ...cardStyleLocal, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", padding: "10px 14px" }}>
+          <p style={{ ...sectionLabel, margin: 0, color: "var(--color-text-secondary)" }}>
+            Expert review
+            {appliedIds.length > 0 && (
+              <span style={{ color: "var(--color-text-tertiary)", fontWeight: 500, letterSpacing: "normal", textTransform: "none" }}>
+                {`  ·  ${appliedIds.length} change${appliedIds.length === 1 ? "" : "s"} applied`}
+              </span>
+            )}
+          </p>
+          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+            <button
+              onClick={() => setCollapsed(false)}
+              style={{ fontSize: "10.5px", color: "var(--color-text-secondary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}
+            >
+              Show details
+            </button>
+            <button
+              onClick={() => { setStatus("idle"); setReview(null); setCollapsed(false); }}
+              style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}
+            >
+              Revalidate
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* DONE — verdict + findings */}
-      {(status === "done" || status === "applied") && review && (
+      {(status === "done" || status === "applied") && review && !collapsed && (
         <div style={cardStyleLocal}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: "8px", marginBottom: "8px" }}>
             <p style={{ ...sectionLabel, margin: 0 }}>Review by {selectedSources.length} source{selectedSources.length !== 1 ? "s" : ""}</p>
-            <button onClick={() => { setStatus("idle"); setReview(null); }} style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
-              Re-run review
-            </button>
+            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+              {appliedIds.length > 0 && (
+                <button
+                  onClick={() => setCollapsed(true)}
+                  style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}
+                  title="Collapse to a one-line summary"
+                >
+                  Collapse
+                </button>
+              )}
+              <button onClick={() => { setStatus("idle"); setReview(null); setCollapsed(false); }} style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
+                Re-run review
+              </button>
+            </div>
           </div>
           <p style={{ fontSize: "15px", color: "var(--color-text-primary)", margin: "0 0 10px", lineHeight: 1.5, fontFamily: "var(--font-serif)", fontStyle: "italic" }}>{review.verdict}</p>
           {findings.length > 0 && (
             <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 12px" }}>
-              {criticalCount > 0 && <span style={{ color: "#c0392b", fontWeight: 600 }}>{criticalCount} critical</span>}
+              {criticalCount > 0 && <span style={{ color: "var(--color-text-danger)", fontWeight: 600 }}>{criticalCount} critical</span>}
               {criticalCount > 0 && (suggestedCount + niceCount) > 0 && <span>  ·  </span>}
               {suggestedCount > 0 && <span>{suggestedCount} suggested</span>}
               {suggestedCount > 0 && niceCount > 0 && <span>  ·  </span>}
@@ -5441,7 +5865,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             // see at a glance that the panel is already set up to apply
             // everything. The actual revision still fires from the bottom CTA.
             return (
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", margin: "4px 0 6px", padding: "10px 12px", background: "var(--color-background-secondary, #fafafa)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", margin: "4px 0 6px", padding: "10px 12px", background: "var(--color-background-secondary, var(--color-background-secondary))", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)" }}>
                 <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.4, flex: "1 1 180px" }}>
                   {allChecked
                     ? `All ${applicable.length} change${applicable.length === 1 ? "" : "s"} selected. Hit Apply at the bottom to revise the plan.`
@@ -5467,7 +5891,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                         });
                       }}
                       title="Include every change"
-                      style={{ fontSize: "10.5px", color: "#0F0F0F", background: GOLD, border: `0.5px solid ${GOLD}`, padding: "4px 10px", borderRadius: "3px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}
+                      style={{ fontSize: "10.5px", color: ON_NAVY, background: GOLD, border: `0.5px solid ${GOLD}`, padding: "4px 10px", borderRadius: "3px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}
                     >
                       Include all
                     </button>
@@ -5514,7 +5938,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                   ~{revisionMode === "surgical" ? "30 sec" : "2 min"}
                 </span>
               </p>
-              <button onClick={handleApply} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "14px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}>
+              <button onClick={handleApply} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "14px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_NAVY }}>
                 {`→ Apply ${selectedForApply.length} change${selectedForApply.length === 1 ? "" : "s"}`}
               </button>
             </div>
@@ -5532,7 +5956,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             <p style={{ marginTop: "10px", fontSize: "12px", color: GOLD, textAlign: "center", fontWeight: 600 }}>✓ Changes applied to your plan.</p>
           )}
           {notice && status !== "applying" && (
-            <div style={{ marginTop: "10px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
+            <div style={{ marginTop: "10px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, var(--color-background-secondary))" }}>
               <p style={{ fontSize: "11.5px", color: "var(--color-text-primary)", margin: 0, lineHeight: 1.45 }}>{notice}</p>
               {pendingRetryIds.length > 0 && (
                 <button
@@ -5543,14 +5967,14 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                     setNotice("");
                     handleApply({ findingsOverride: retry, forceMode: "full" });
                   }}
-                  style={{ marginTop: "8px", width: "100%", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "10px 14px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#0F0F0F", color: GOLD }}
+                  style={{ marginTop: "8px", width: "100%", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "10px 14px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_NAVY }}
                 >
                   {`↻ Re-plan to apply the rest (${pendingRetryIds.length})`}
                 </button>
               )}
             </div>
           )}
-          {error && <p style={{ fontSize: "11.5px", color: "#c0392b", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
+          {error && <p style={{ fontSize: "11.5px", color: "var(--color-text-danger)", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
 
           {/* User-authored change request — lets the traveler ask for a
               specific swap on top of (or instead of) the panel findings. */}
@@ -5572,7 +5996,7 @@ function ReviewPickerModal({ selectedIds, onToggle, onClose }) {
   const lensOrder = ["editorial", "hotels", "restaurants", "local"];
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,15,15,0.6)", zIndex: 1000, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: "640px", maxHeight: "85vh", overflowY: "auto", background: "var(--color-background-primary, #fff)", borderTopLeftRadius: "16px", borderTopRightRadius: "16px", padding: "1.25rem 1.25rem 1.5rem", boxShadow: "0 -10px 40px rgba(0,0,0,0.25)" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: "640px", maxHeight: "85vh", overflowY: "auto", background: "var(--color-background-primary, var(--color-background-primary))", borderTopLeftRadius: "16px", borderTopRightRadius: "16px", padding: "1.25rem 1.25rem 1.5rem", boxShadow: "0 -10px 40px rgba(0,0,0,0.25)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "1rem" }}>
           <p style={{ fontSize: "15px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: 0, color: "var(--color-text-primary)" }}>Reviewer panel</p>
           <button onClick={onClose} style={{ background: "transparent", border: "none", color: GOLD, fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}>Done</button>
@@ -5588,7 +6012,7 @@ function ReviewPickerModal({ selectedIds, onToggle, onClose }) {
                 {sources.map(s => {
                   const on = selectedIds.includes(s.id);
                   return (
-                    <button key={s.id} onClick={() => onToggle(s.id)} style={{ fontSize: "11.5px", color: on ? "#0F0F0F" : GOLD, background: on ? GOLD : "transparent", border: `0.5px solid ${GOLD}`, padding: "6px 12px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", fontWeight: on ? 600 : 500, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>
+                    <button key={s.id} onClick={() => onToggle(s.id)} style={{ fontSize: "11.5px", color: on ? ON_NAVY : GOLD, background: on ? GOLD : "transparent", border: `0.5px solid ${GOLD}`, padding: "6px 12px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", fontWeight: on ? 600 : 500, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>
                       {on ? "✓ " : ""}{s.name}
                     </button>
                   );
@@ -5852,7 +6276,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
           </p>
         </div>
         <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 8px" }}>{progressLabel || "Working…"}</p>
-        <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
+        <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, var(--color-border-tertiary))", overflow: "hidden", position: "relative" }}>
           {progress > 0 ? (
             <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: GOLD, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
           ) : (
@@ -5982,7 +6406,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
           textTransform: "uppercase",
           cursor: text.trim() ? "pointer" : "not-allowed",
           fontFamily: "inherit",
-          background: text.trim() ? "#0F0F0F" : "var(--color-border-tertiary, #eee)",
+          background: text.trim() ? "var(--color-text-primary)" : "var(--color-border-tertiary, var(--color-border-tertiary))",
           color: text.trim() ? GOLD : "var(--color-text-tertiary)",
           opacity: text.trim() ? 1 : 0.7,
         }}
@@ -5992,14 +6416,14 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
           : target.mode === "surgical" ? "Apply change" : "Re-plan with this change"}
       </button>
 
-      {error && <p style={{ fontSize: "11.5px", color: "#c0392b", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
+      {error && <p style={{ fontSize: "11.5px", color: "var(--color-text-danger)", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
     </div>
   );
 }
 
 function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
   const sev = finding.severity || "suggested";
-  const sevColor = sev === "critical" ? "#c0392b" : sev === "suggested" ? GOLD : "#7a7a7a";
+  const sevColor = sev === "critical" ? "var(--color-text-danger)" : sev === "suggested" ? GOLD : "var(--color-text-secondary)";
   const sevLabel = sev === "critical" ? "Critical" : sev === "suggested" ? "Suggested" : "Nice";
   return (
     <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", padding: "12px 0 4px", opacity: alreadyApplied ? 0.55 : 1 }}>
@@ -6008,7 +6432,7 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "4px", alignItems: "baseline" }}>
             <span style={{ fontSize: "9.5px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: sevColor, padding: "2px 6px", border: `0.5px solid ${sevColor}`, borderRadius: "3px" }}>{sevLabel}</span>
-            {finding.target && <span style={{ fontSize: "10.5px", color: "var(--color-text-primary)", background: "var(--color-background-secondary, #fafafa)", padding: "2px 7px", borderRadius: "3px", border: "0.5px solid var(--color-border-tertiary)" }}>{formatFindingTarget(finding.target)}</span>}
+            {finding.target && <span style={{ fontSize: "10.5px", color: "var(--color-text-primary)", background: "var(--color-background-secondary, var(--color-background-secondary))", padding: "2px 7px", borderRadius: "3px", border: "0.5px solid var(--color-border-tertiary)" }}>{formatFindingTarget(finding.target)}</span>}
             {finding.source && <span style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", fontStyle: "italic" }}>via {finding.source}</span>}
           </div>
           <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.5 }}>{finding.summary}</p>
@@ -6041,7 +6465,8 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
                 borderRadius: "4px",
                 border: `0.5px solid ${checked ? GOLD : "var(--color-border-secondary)"}`,
                 background: checked ? GOLD : "transparent",
-                color: checked ? "#0F0F0F" : "var(--color-text-secondary)",
+                /* #23 checked = navy fill, so label must be LIGHT (was navy-on-navy = invisible). */
+                color: checked ? ON_NAVY : "var(--color-text-secondary)",
                 cursor: "pointer",
                 fontFamily: "inherit",
               }}
@@ -6057,104 +6482,23 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
 }
 
 // --------------------------------------------------------------------------
-// IntroductionPasteCard
+// IntroductionAutoGenerator (headless)
 //
-// Paste box on the result page for an externally-generated introduction. The
-// PDF renderer (renderIntroduction in itineraryPdf.js) reads two fields off
-// the plan:
+// Generates the trip introduction after a build via the lightweight
+// /api/introduction endpoint and persists it onto data.introduction through
+// onPlanRevised, so the PDF renderer (renderIntroduction in itineraryPdf.js)
+// can show it as the intro page. The PDF reads two fields off the plan:
 //   data.introduction.arc             — Part 1, The Arc of the Journey
 //   data.introduction.differentiators — Part 2, What Makes This Itinerary Different
 // or treats data.introduction.differentiators === 'NONE_FLAGGED' as the
 // honest-no-differentiators state.
 //
-// We removed the planner-side generation (PR #20) because adding ~600 output
-// tokens to the build was contributing to max_tokens truncations on big
-// trips. The intro is now produced by an external AI tool and pasted here.
-//
-// The card lifts state via onPlanRevised so the introduction persists with
-// the rest of the plan (auto-save, session recovery, saved trips). Same
-// lift idiom as ChangeRequestCard.
+// This component renders NOTHING on screen — the introduction is a PDF-only
+// artifact. (It previously also rendered as an on-screen paste/edit card on
+// the result page; that visible UI was removed by request — intro now appears
+// only at the top of the PDF.) Generation runs once per distinct build and
+// never clobbers an existing intro (guard lives in applyGeneratedIntroduction).
 // --------------------------------------------------------------------------
-// Build a ready-to-paste prompt for an external AI to generate the intro.
-// Includes trip facts (destination, dates, route, traveler count, style) plus
-// a per-day one-liner summary so the AI has enough context to write specific,
-// non-generic copy. Wraps everything in the user's spec language so the
-// output matches the format the paste card and PDF renderer expect.
-function buildIntroPromptForExternalAI(plan, inputs) {
-  const dest = (plan?.destination || "").toString().trim();
-  const cities = Array.isArray(plan?.cities) ? plan.cities : [];
-  const route = cities.length >= 2
-    ? cities.map(c => (c?.name || "").toString().trim()).filter(Boolean).join(" → ")
-    : "";
-  const startDate = (inputs?.basics?.startDate || "").toString().trim();
-  const endDate = (inputs?.basics?.endDate || "").toString().trim();
-  const nights = (inputs?.basics?.nights || "").toString().trim();
-  const travelers = (inputs?.basics?.travelers || "").toString().trim();
-  const style = Array.isArray(inputs?.basics?.style) ? inputs.basics.style.filter(Boolean).join(", ") : "";
-  const pace = (inputs?.basics?.pace || "").toString().trim();
-  const budget = (inputs?.basics?.budget || "").toString().trim();
-
-  const factLines = [
-    dest && `Destination: ${dest}`,
-    route && `Route: ${route}`,
-    nights && `Nights: ${nights}`,
-    startDate && endDate ? `Dates: ${startDate} — ${endDate}` : (startDate && `Start date: ${startDate}`),
-    travelers && `Travelers: ${travelers}`,
-    style && `Style: ${style}`,
-    pace && `Pace: ${pace}`,
-    budget && `Budget tier: ${budget}`,
-  ].filter(Boolean);
-
-  // Per-day one-liner: "Day 3 · Rovinj → Plitvice: Plitvice Lakes lower trails + Roxanich winery (Wed Aug 26)"
-  const days = Array.isArray(plan?.days) ? plan.days : [];
-  const dayLines = days.map((d, i) => {
-    const label = (d?.label || `Day ${i + 1}`).toString().trim();
-    const headline = (d?.headline || "").toString().trim();
-    // Pull the top 2-3 named items so the AI knows what's actually scheduled.
-    const items = Array.isArray(d?.items) ? d.items : [];
-    const namedItems = items
-      .filter(it => it && (it.type === "Activity" || it.type === "Dinner" || it.type === "Hotel"))
-      .map(it => (it.text || it.name || "").toString().trim())
-      .filter(Boolean)
-      .slice(0, 3)
-      .join("; ");
-    const tail = [headline, namedItems].filter(Boolean).join(" — ");
-    return `• ${label}${tail ? ": " + tail : ""}`;
-  });
-
-  const flagsLine = Array.isArray(plan?.flags) && plan.flags.length
-    ? `\nKey flags from the build: ${plan.flags.slice(0, 4).map(f => (f || "").toString().trim()).filter(Boolean).join(" | ")}`
-    : "";
-
-  return `Write a two-part Introduction page for the trip below. The output will be pasted into a trip itinerary PDF as page 2.
-
-TRIP FACTS:
-${factLines.join("\n")}
-
-ITINERARY (one line per day so you know what's actually scheduled — reference these specifically; do not invent new stops):
-${dayLines.join("\n")}${flagsLine}
-
-FORMAT (strict):
-
-Part 1 — The Arc of the Journey
-3–4 sentences, ~80–120 words. Explain why THIS specific route is sequenced the way it is and what the traveler moves through geographically, culturally, and atmospherically from first day to last. Build anticipation by giving the reader a mental map of the trip's shape. NOT a destination description, NOT a list of stops — a narrative arc grounded in the actual day-by-day routing above.
-
-Part 2 — What Makes This Itinerary Different
-ONE compact paragraph (not a bullet list), ~150–250 words. Weave 5–8 SPECIFIC moments, off-the-beaten-path stops, insider access, or sequencing choices a generic itinerary would miss. Name each one specifically using the actual restaurant / winery / hidden site / contact / sequencing decision from the itinerary above. Do not invent. Do not generalize. If the itinerary has no genuinely distinctive off-path elements, write exactly the literal string NONE_FLAGGED for Part 2 instead of fabricating distinction.
-
-TOTAL LENGTH: 350–450 words combined.
-
-VOICE: Second person ("you", "your group") or third person using traveler names. NEVER first person.
-
-BANNED phrases (do not use any of these): world-class, once-in-a-lifetime, breathtaking, incredible, amazing, unforgettable, magical, journey of a lifetime, hidden gem (as a phrase), bucket list. Use specific concrete language instead.
-
-OTHER RULES:
-• No passive voice. No bullet points. No bold markdown. No headers between the two parts — they sit as two paragraphs.
-• Tone: warm, confident, specific. Write as if a well-traveled friend who knows this destination deeply is telling another sophisticated traveler what makes this particular trip worth doing.
-• The travelers are sophisticated adults who appreciate knowing WHY each decision was made.
-
-OUTPUT EXACTLY two paragraphs separated by a single blank line. No labels, no headers, no preamble — just the prose.`;
-}
 
 // Stable signature for a built plan so the auto-generate effect fires once
 // per distinct build (and after a failed auto-attempt, doesn't retry in a
@@ -6166,30 +6510,294 @@ function introPlanSignature(plan) {
   return `${plan?.destination || ""}|${days.length}|${first}|${last}`;
 }
 
-function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
-  const existing = plan && plan.introduction;
-  const [open, setOpen] = useState(false);
-  const [arc, setArc] = useState(existing?.arc || "");
-  const [diff, setDiff] = useState(existing?.differentiators || "");
-  const [savedFlash, setSavedFlash] = useState(false);
-  const [copiedFlash, setCopiedFlash] = useState(false);
-  // Auto-generation state. "idle" | "loading" | "error".
-  const [genState, setGenState] = useState("idle");
-  const [genError, setGenError] = useState("");
-  // Tracks the plan signature we've already auto-attempted so the effect
-  // fires once per build and never auto-retries a failure (manual retry only).
+// #12 Headless flight-number resolver. Mirrors IntroductionAutoGenerator: a
+// post-build component that fills MISSING data on the canonical plan and
+// persists it via onPlanRevised so the PDF (and every consumer) sees it.
+//
+// Why this (not a card-level mutation): applyQualityLayer strips fabricated
+// model flight numbers and the rendered `data` is a re-derived copy, so an
+// in-place mutation in FlightCard never reaches the PDF. Persisting to the
+// CANONICAL plan (rawData) here, with a _scheduleVerified flag, survives the
+// re-memo and is exempted from the strip (see applyQualityLayer). Result: the
+// number the user sees on screen is the same one written into the plan and the
+// PDF — no export delay, no screen/PDF mismatch.
+//
+// Runs once per build, resolves only flights that have NO usable number, and
+// is fully resilient — any failure is silent and never touches the itinerary.
+function FlightNumberAutoResolver({ plan, onPlanRevised }) {
+  const attemptedRef = useRef("");
+  useEffect(() => {
+    const days = Array.isArray(plan?.days) ? plan.days : [];
+    if (days.length === 0 || typeof onPlanRevised !== "function") return;
+    const sig = introPlanSignature(plan);
+    if (attemptedRef.current === sig) return;
+    attemptedRef.current = sig;
+    let cancelled = false;
+
+    // Collect flights the resolver should act on. flightNeedsResolve
+    // classifies each as:
+    //   - "number": model omitted the number (full resolve, may also
+    //     backfill times)
+    //   - "times":  model emitted the number but missing one or both
+    //     clock times (Gap 2 — PR #84 used to bail entirely on these)
+    //   - null: skip entirely
+    // Collect targets the resolver can act on AND verify-mode flights
+    // we cannot reach the API for (missing airport code or unparseable
+    // day label). The latter MUST still get _scheduleVerified written
+    // so applyQualityLayer's strip doesn't null the model's number —
+    // that's the precondition-failure recurrence path. See peer-review
+    // note 'Possibility A' in this PR's description.
+    const targets = [];
+    const verifyTrustOnly = [];
+    days.forEach((d, di) => {
+      (Array.isArray(d.items) ? d.items : []).forEach((it, ii) => {
+        if (it?.type !== "Flight" || !it.flight) return;
+        const mode = flightNeedsResolve(it.flight);
+        if (!mode) return;
+        const fromCode = normalizeAirportCode(it.flight.from_airport);
+        const toCode = normalizeAirportCode(it.flight.to_airport);
+        const isoDate = parseDayLabelToISODate(d.label);
+        if (!fromCode || !toCode || !isoDate) {
+          // Precondition failure: cannot reach the API. For verify-mode
+          // (model emitted a complete-looking flight) AND times-mode
+          // (model emitted a number but no times), trust the model's
+          // number and mark _scheduleVerified so the strip exemption
+          // fires — better to show a potentially-wrong number than to
+          // strip it entirely and show nothing. Number-mode stays silent
+          // because there was no number to display in the first place.
+          if (mode === "verify" || mode === "times") {
+            verifyTrustOnly.push({ di, ii, mode });
+          }
+          return;
+        }
+        targets.push({ di, ii, fl: it.flight, fromCode, toCode, isoDate, mode });
+      });
+    });
+    if (targets.length === 0 && verifyTrustOnly.length === 0) return;
+
+    // Per-flight: call /api/flights-search with the airline filter;
+    // retry route-only when the filter returns zero rows (Gap 1
+    // recovery, see concepts/flight-resolver-gaps.md). Build the
+    // merge payload via the pure helpers in flightResolver.js;
+    // accumulate either a positive resolve or a _timesUnconfirmed
+    // fallback per target.
+    (async () => {
+      const resolved = [];
+      // Precondition-failure flights: write _scheduleVerified + _verifyTrusted.
+      // For times-mode (model gave a number but no clock times) also set
+      // _timesUnconfirmed so the PDF renders the honest "check with airline"
+      // fallback line rather than silently blank time rows. The _scheduleVerified
+      // guard in flightNeedsResolve would otherwise lock these out of future
+      // resolve attempts, so the fallback flag must be written here.
+      for (const vt of verifyTrustOnly) {
+        resolved.push({
+          di: vt.di,
+          ii: vt.ii,
+          merge: {
+            _scheduleVerified: true,
+            _verifyTrusted: true,
+            _resolveSource: "verify-precondition-skipped",
+            ...(vt.mode === "times" ? { _timesUnconfirmed: true } : {}),
+          },
+        });
+      }
+      for (const t of targets) {
+        const iata = resolveAirlineIata(t.fl.carrier);
+        const approx = parseClockToMinutes(t.fl.depart_time);
+        let pick = null;
+        let source = null;
+
+        // Attempt 1: airline-filtered query (existing behavior).
+        // Special case for verify-mode: prefer the row whose number
+        // exactly matches the model's emitted number first. If the
+        // exact number is in the airline-filtered pool, that's the
+        // confirmation case and we get _scheduleVerified without
+        // _autoResolvedFlightNumber. Otherwise fall back to the
+        // time-proximity pick (substitution case).
+        if (iata) {
+          try {
+            const params = new URLSearchParams({ date: t.isoDate, origin: t.fromCode, destination: t.toCode, airline: iata });
+            const res = await fetch(`/api/flights-search?${params}`);
+            const j = await res.json().catch(() => ({}));
+            if (j.ok && Array.isArray(j.flights) && j.flights.length > 0) {
+              if (t.mode === "verify" && t.fl.flight_number) {
+                const wanted = String(t.fl.flight_number).trim().toUpperCase();
+                const exact = j.flights.find(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase() === wanted);
+                pick = exact || pickFromPool({ flights: j.flights, airlineIata: iata, approxMinutes: approx, pickScheduledFlight });
+              } else {
+                pick = pickFromPool({ flights: j.flights, airlineIata: iata, approxMinutes: approx, pickScheduledFlight });
+              }
+              if (pick) source = "airline";
+            }
+          } catch {
+            // Silent — falls through to the route-only retry.
+          }
+        }
+
+        // Attempt 2: route-only retry when the airline-filter miss
+        // returned nothing. Recovers the false-negative case the
+        // production probe surfaced (EWR-LAX-AA returns 0 with the
+        // airline filter but 15 without). Carrier-match is enforced
+        // strictly in BOTH modes so we never lift cross-carrier times
+        // (the codeshare honesty rule applies to times the same way it
+        // applies to numbers — an AA flight cannot honestly inherit an
+        // NH redeye's clock times just because they share a route).
+        if (!pick) {
+          try {
+            const params = new URLSearchParams({ date: t.isoDate, origin: t.fromCode, destination: t.toCode });
+            const res = await fetch(`/api/flights-search?${params}`);
+            const j = await res.json().catch(() => ({}));
+            if (j.ok && Array.isArray(j.flights) && j.flights.length > 0) {
+              if (t.mode === "times" && t.fl.flight_number) {
+                // times-mode: ONLY accept the row whose number exactly
+                // matches the model's emitted number. No cross-carrier
+                // fallback — better to render an honest "check with
+                // airline" line than lift wrong-carrier times.
+                const wanted = String(t.fl.flight_number).trim().toUpperCase();
+                const exact = j.flights.find(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase() === wanted);
+                pick = exact || null;
+              } else if (t.mode === "verify" && t.fl.flight_number && iata) {
+                // verify-mode: model emitted a complete flight. First
+                // try the EXACT number match (confirmation case) so
+                // the merge can write _scheduleVerified without setting
+                // _autoResolvedFlightNumber. If the API doesn't have
+                // that exact number, fall back to a carrier-matched
+                // time-proximity pick (substitution case) so the
+                // schedule's number replaces the model's fabricated one.
+                // pre-filter by carrier IATA to guarantee no cross-carrier
+                // pick can sneak through (same rule PR #108 enforced).
+                const wanted = String(t.fl.flight_number).trim().toUpperCase();
+                const exact = j.flights.find(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase() === wanted);
+                if (exact) {
+                  pick = exact;
+                } else {
+                  const filtered = j.flights.filter(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase().startsWith(iata.toUpperCase()));
+                  if (filtered.length > 0) {
+                    pick = pickFromPool({ flights: filtered, airlineIata: iata, approxMinutes: approx, pickScheduledFlight });
+                  }
+                }
+              } else if (t.mode === "number" && iata) {
+                // number-mode: pre-filter the pool to carrier-matching
+                // rows before picking. pickFromPool's internal fallback
+                // (filtered empty → use full pool) would otherwise let a
+                // cross-carrier candidate through; buildMergePayload's
+                // downgrade would then lift its times onto the wrong-
+                // carrier flight. Filter here so the downgrade never has
+                // cross-carrier material to work with.
+                const filtered = j.flights.filter(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase().startsWith(iata.toUpperCase()));
+                if (filtered.length > 0) {
+                  pick = pickFromPool({ flights: filtered, airlineIata: iata, approxMinutes: approx, pickScheduledFlight });
+                }
+              } else {
+                // No carrier known (mode === "number" with no IATA, or
+                // any other path) → existing behavior. buildMergePayload
+                // still gates number-lifts on prefix match.
+                pick = pickFromPool({ flights: j.flights, airlineIata: null, approxMinutes: approx, pickScheduledFlight });
+              }
+              if (pick) source = "route-only";
+            }
+          } catch {
+            // Silent — falls through to the _timesUnconfirmed fallback.
+          }
+        }
+
+        if (pick) {
+          const merge = buildMergePayload({ mode: t.mode, pick, currentFlight: t.fl, source, airlineIata: iata });
+          if (merge) {
+            resolved.push({ di: t.di, ii: t.ii, merge });
+            continue;
+          }
+        }
+
+        // Verify-mode total miss: model emitted a complete flight but
+        // the schedule API couldn't confirm or substitute. We CANNOT
+        // call buildUnconfirmedTimesPayload here because the flight
+        // already has both times — that helper would return null, the
+        // resolver would push nothing, and applyQualityLayer's strip
+        // would null the model's number leaving the user with a blank.
+        // This is the exact recurrence we are closing. Instead, write
+        // a verify-trusted payload: keep the model's number and times,
+        // mark _scheduleVerified so applyQualityLayer's exemption
+        // protects the number, and tag _verifyTrusted so downstream
+        // tooling (PDF qualifier, future audits) can distinguish a
+        // truly schedule-confirmed flight from a fallback-trusted one.
+        if (t.mode === "verify" && t.fl.flight_number) {
+          resolved.push({
+            di: t.di,
+            ii: t.ii,
+            merge: {
+              _scheduleVerified: true,
+              _verifyTrusted: true,
+              _resolveSource: "verify-fallback",
+            },
+          });
+          continue;
+        }
+
+        // Total miss path for number/times modes: when even the route-only
+        // retry came up empty AND the flight has no times to begin with,
+        // persist _timesUnconfirmed so the PDF can render an honest line
+        // ("Times not yet confirmed — check with airline at booking")
+        // instead of a blank.
+        const fallback = buildUnconfirmedTimesPayload(t.fl);
+        if (fallback) resolved.push({ di: t.di, ii: t.ii, merge: fallback });
+      }
+
+      if (cancelled || resolved.length === 0) return;
+
+      // Build an immutable next plan with the resolved fields merged
+      // into the canonical plan via onPlanRevised. applyQualityLayer
+      // exempts _scheduleVerified numbers from the strip; PDF reads
+      // both _autoResolvedFlightNumber (for the "verify at booking"
+      // qualifier) and _timesUnconfirmed (for the honest-fallback line).
+      const nextDays = plan.days.map((d, di) => {
+        const hits = resolved.filter(r => r.di === di);
+        if (hits.length === 0) return d;
+        const items = d.items.map((it, ii) => {
+          const hit = hits.find(h => h.ii === ii);
+          if (!hit) return it;
+          return { ...it, flight: { ...it.flight, ...hit.merge } };
+        });
+        return { ...d, items };
+      });
+      onPlanRevised({ ...plan, days: nextDays });
+    })();
+
+    return () => { cancelled = true; attemptedRef.current = ""; };
+  }, [plan, onPlanRevised]);
+  return null;
+}
+
+function IntroductionAutoGenerator({ plan, inputs, onPlanRevised, onGeneratingChange }) {
+  // Tracks the plan signature we've already auto-attempted so the effect fires
+  // once per build and never auto-retries a failure.
   const autoAttemptedRef = useRef("");
 
+  // Lift the in-flight state out to the parent (ItineraryView) so the PDF
+  // download button can gate on it. We KEEP a local mirror so this component
+  // stays self-contained when no callback is provided (existing tests / any
+  // other mount site keep working). The parent reads it via onGeneratingChange.
+  // Failure flips it back to false the same as success — a silent server
+  // error must never leave the gate permanently closed.
+  const [isGenerating, setIsGenerating] = useState(false);
+  const reportGeneratingChange = useCallback((value) => {
+    setIsGenerating(value);
+    if (typeof onGeneratingChange === "function") onGeneratingChange(value);
+  }, [onGeneratingChange]);
+
   // Generate the introduction via the lightweight /api/introduction endpoint
-  // and persist it through the SAME onPlanRevised lift the paste box uses.
-  // `force` (explicit Generate / Regenerate click) overwrites any existing
-  // introduction; the passive auto-run leaves force false so a user-pasted /
-  // edited intro is never clobbered (guard lives in applyGeneratedIntroduction).
-  const generateIntro = useCallback(
-    async ({ force }) => {
-      if (!plan?.days || plan.days.length === 0) return;
-      setGenState("loading");
-      setGenError("");
+  // and persist it through onPlanRevised, only when the plan carries no
+  // introduction yet. Runs once per distinct build. Resilient by design — a
+  // failure here is silent and never touches the itinerary; the PDF simply
+  // renders without an intro.
+  useEffect(() => {
+    if (!shouldAutoGenerateIntroduction(plan)) return;
+    const sig = introPlanSignature(plan);
+    if (autoAttemptedRef.current === sig) return;
+    autoAttemptedRef.current = sig;
+    let cancelled = false;
+    reportGeneratingChange(true);
+    (async () => {
       try {
         const payload = shapeIntroRequest(plan, inputs);
         const res = await fetch("/api/introduction", {
@@ -6197,229 +6805,65 @@ function IntroductionPasteCard({ plan, inputs, onPlanRevised }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
+        if (!res.ok) return;
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          setGenError(data?.error?.message || `Couldn't generate the introduction (${res.status}).`);
-          setGenState("error");
-          return;
-        }
-        const next = applyGeneratedIntroduction(plan, data, { force });
-        if (next === plan) {
-          // No write happened. If there's still no intro, the response was
-          // unusable — surface an honest error. If an intro already exists,
-          // the no-clobber guard fired on a passive run; that's a quiet no-op.
-          if (!hasIntroduction(plan)) {
-            setGenError("The introduction service returned an empty result. Try again.");
-            setGenState("error");
-            return;
-          }
-          setGenState("idle");
-          return;
-        }
-        setArc(next.introduction.arc);
-        setDiff(next.introduction.differentiators);
-        onPlanRevised(next);
-        setGenState("idle");
-      } catch (err) {
-        setGenError(`Couldn't reach the introduction service. ${String(err?.message || err).slice(0, 80)}`);
-        setGenState("error");
+        // force:false — never clobber an existing (e.g. recovered) intro.
+        const next = applyGeneratedIntroduction(plan, data, { force: false });
+        if (!cancelled && next !== plan) onPlanRevised(next);
+      } catch {
+        // Swallow — a failed intro must never break the itinerary view.
+      } finally {
+        // ALWAYS release the gate — success, failure, AND cancellation. An
+        // earlier version skipped this on `cancelled` and that produced the
+        // PR #70 regression: if a ReviewPanel or ChangeRequestCard revision
+        // landed while /api/introduction was in flight, React's dep-change
+        // cleanup set cancelled=true, the gate-release was skipped, and the
+        // signature-deduped new run never flipped it either — leaving the
+        // parent's introIsGenerating permanently true and Save as PDF
+        // permanently disabled with "Preparing introduction…". setState on
+        // an unmounted child is a React 18 no-op; the parent setter is safe
+        // to call as long as the parent itself is still mounted (it is —
+        // only this child's effect re-ran).
+        reportGeneratingChange(false);
       }
-    },
-    [plan, inputs, onPlanRevised],
-  );
+    })();
+    return () => {
+      cancelled = true;
+      // Clear the signature attempt-ref so a cancelled run can be retried
+      // against the revised plan. Without this, when a ReviewPanel /
+      // ChangeRequestCard revision lands mid-flight, the new plan's effect
+      // run early-returns on the still-matching signature (revisions rarely
+      // change destination / day count / first / last label) and the
+      // revised itinerary ships with no introduction at all. Pair with the
+      // always-release-gate fix above so a cancelled run leaves the
+      // generator in a clean state, ready to re-attempt.
+      autoAttemptedRef.current = "";
+    };
+  }, [plan, inputs, onPlanRevised, reportGeneratingChange]);
 
-  // Auto-generate once after a build completes, only when the plan carries no
-  // introduction yet. A failure is recorded against the signature so it won't
-  // loop; the user retries via the explicit button. Resilient by design — a
-  // failure here never touches the itinerary.
-  useEffect(() => {
-    if (!shouldAutoGenerateIntroduction(plan)) return;
-    const sig = introPlanSignature(plan);
-    if (autoAttemptedRef.current === sig) return;
-    autoAttemptedRef.current = sig;
-    generateIntro({ force: false });
-  }, [plan, generateIntro]);
+  // Suppress unused-var warning — isGenerating is exposed via callback above
+  // and kept locally so consumers without a callback still get correct state.
+  void isGenerating;
 
-  if (!plan?.days || plan.days.length === 0) return null;
-
-  const handleCopyPrompt = async () => {
-    const prompt = buildIntroPromptForExternalAI(plan, inputs);
-    try {
-      await navigator.clipboard.writeText(prompt);
-      setCopiedFlash(true);
-      setTimeout(() => setCopiedFlash(false), 2200);
-    } catch {
-      // Fallback for browsers that block clipboard API (insecure context,
-      // older Safari, etc.). Open a new tab with the prompt selected so the
-      // user can still Cmd+A / Cmd+C it manually.
-      const w = window.open("", "_blank");
-      if (w) {
-        w.document.write(`<pre style="white-space:pre-wrap;font-family:system-ui;padding:24px;max-width:800px;margin:0 auto">${prompt.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</pre>`);
-        w.document.close();
-      }
-    }
-  };
-
-  const hasExisting = !!(existing && (existing.arc || existing.differentiators));
-  const cardStyle = {
-    border: `0.5px dashed ${GOLD}`,
-    borderRadius: "var(--border-radius-md)",
-    padding: "14px 16px",
-    marginBottom: "1.25rem",
-    background: "var(--color-background-primary)",
-  };
-  const labelStyle = { fontSize: "10.5px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" };
-
-  const handleSave = () => {
-    const arcTrim = arc.trim();
-    const diffTrim = diff.trim();
-    // Empty save = clear the introduction.
-    if (!arcTrim && !diffTrim) {
-      const next = { ...plan };
-      delete next.introduction;
-      onPlanRevised(next);
-    } else {
-      onPlanRevised({
-        ...plan,
-        introduction: { arc: arcTrim, differentiators: diffTrim },
-      });
-    }
-    setSavedFlash(true);
-    setTimeout(() => setSavedFlash(false), 1800);
-    setOpen(false);
-  };
-
-  // Collapsed teaser — two stacked affordances:
-  //   1) Copy prompt button (so user can hand the prompt to their external AI)
-  //   2) Click anywhere else to expand into the paste composer
-  if (!open) {
-    const loading = genState === "loading";
-    const teaserSubtext = loading
-      ? "Writing your introduction from the day-by-day routing…"
-      : hasExisting
-      ? "This intro will appear as page 2 of the PDF. Click to edit or replace it."
-      : "Generated automatically from your itinerary, or paste your own. The intro lands on page 2 of the PDF.";
-    return (
-      <div style={cardStyle}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
-          <button
-            onClick={() => setOpen(true)}
-            style={{ flex: 1, border: "none", background: "transparent", padding: "4px 0", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
-          >
-            <span style={labelStyle}>{loading ? "Introduction · generating" : hasExisting ? "Introduction · saved" : "Introduction"}</span>
-            <span style={{ display: "block", fontSize: "12.5px", color: "var(--color-text-secondary)", marginTop: "2px" }}>
-              {teaserSubtext}
-            </span>
-            {genState === "error" && (
-              <span style={{ display: "block", fontSize: "11.5px", color: "#8C1F1F", marginTop: "4px" }}>
-                {genError || "Couldn't generate the introduction."} You can retry, paste your own, or just export without it.
-              </span>
-            )}
-            {savedFlash && (
-              <span style={{ display: "block", fontSize: "11.5px", color: GOLD, marginTop: "4px" }}>✓ Saved — included on next PDF export.</span>
-            )}
-            {copiedFlash && (
-              <span style={{ display: "block", fontSize: "11.5px", color: GOLD, marginTop: "4px" }}>✓ Prompt copied — paste it into your AI now.</span>
-            )}
-          </button>
-          <div style={{ flex: "0 0 auto", display: "flex", gap: "8px" }}>
-            <button
-              onClick={(e) => { e.stopPropagation(); generateIntro({ force: true }); }}
-              disabled={loading}
-              title="Generate the introduction in-app from this itinerary's day-by-day routing."
-              style={{ border: `1px solid ${GOLD}`, background: GOLD, color: "#fff", padding: "7px 12px", borderRadius: "6px", cursor: loading ? "default" : "pointer", opacity: loading ? 0.6 : 1, fontFamily: "inherit", fontSize: "11.5px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", whiteSpace: "nowrap" }}
-            >
-              {loading ? "Generating…" : hasExisting || genState === "error" ? "Regenerate" : "Generate"}
-            </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); handleCopyPrompt(); }}
-              title="Copy a ready-made prompt for your external AI with all trip facts already filled in."
-              style={{ border: `1px solid ${GOLD}`, background: "transparent", color: GOLD, padding: "7px 12px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "11.5px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", whiteSpace: "nowrap" }}
-            >
-              Copy AI prompt
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Open composer
-  const textAreaStyle = {
-    width: "100%",
-    boxSizing: "border-box",
-    border: "1px solid var(--color-border-tertiary, #e3e3e3)",
-    borderRadius: "6px",
-    padding: "10px 12px",
-    fontFamily: "inherit",
-    fontSize: "13px",
-    lineHeight: "1.45",
-    color: "var(--color-text-primary)",
-    background: "var(--color-background-primary)",
-    resize: "vertical",
-  };
-
-  return (
-    <div style={cardStyle}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "10px", gap: "12px" }}>
-        <span style={labelStyle}>Paste introduction</span>
-        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-          <button
-            onClick={handleCopyPrompt}
-            title="Copy a ready-made prompt for your external AI with all trip facts already filled in."
-            style={{ border: `1px solid ${GOLD}`, background: "transparent", color: GOLD, padding: "5px 10px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" }}
-          >
-            Copy AI prompt
-          </button>
-          <button onClick={() => setOpen(false)} style={{ border: "none", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", fontSize: "12px" }}>× close</button>
-        </div>
-      </div>
-      {copiedFlash && (
-        <p style={{ fontSize: "11.5px", color: GOLD, margin: "0 0 8px" }}>✓ Prompt copied — paste it into your AI, then paste the two paragraphs back below.</p>
-      )}
-      <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 12px" }}>
-        Two flowing-prose paragraphs. Part 1 · Arc of the Journey (3–4 sentences, ~80–120 words). Part 2 · What Makes This Itinerary Different (one paragraph, ~150–250 words). 350–450 words total. No bullets, no superlatives. Leave Part 2 empty (or paste the literal word NONE_FLAGGED) to render an honest “no differentiators” note instead of fabricated content.
-      </p>
-      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 6px" }}>Part 1 · The Arc of the Journey</label>
-      <textarea
-        value={arc}
-        onChange={(e) => setArc(e.target.value)}
-        rows={4}
-        placeholder={"3–4 sentences explaining why this route is sequenced the way it is, what the traveler moves through from first day to last…"}
-        style={{ ...textAreaStyle, marginBottom: "12px" }}
-      />
-      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 6px" }}>Part 2 · What Makes This Itinerary Different</label>
-      <textarea
-        value={diff}
-        onChange={(e) => setDiff(e.target.value)}
-        rows={8}
-        placeholder={"One paragraph weaving in 5–8 specific moments, off-the-beaten-path stops, insider access, or sequencing choices that a generic itinerary would miss. Name each one specifically. Or paste NONE_FLAGGED."}
-        style={{ ...textAreaStyle, marginBottom: "12px" }}
-      />
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px" }}>
-        <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>
-          {(arc.trim().split(/\s+/).filter(Boolean).length + diff.trim().split(/\s+/).filter(Boolean).length)} words · target 350–450
-        </span>
-        <div style={{ display: "flex", gap: "8px" }}>
-          <button
-            onClick={() => { setArc(""); setDiff(""); }}
-            style={{ border: "1px solid var(--color-border-secondary)", background: "transparent", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", color: "var(--color-text-secondary)" }}
-          >
-            Clear
-          </button>
-          <button
-            onClick={handleSave}
-            style={{ border: `1px solid ${GOLD}`, background: GOLD, color: "#fff", padding: "6px 14px", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", fontWeight: 600 }}
-          >
-            Save introduction
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+  return null;
 }
 
-function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId: _savedTripId, onPlanRevised, onReviewChange, initialReview }) {
+function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId: _savedTripId, onPlanRevised, onReviewChange, initialReview, reviewerSourceIds, onReviewerSourcesChange }) {
+  // Whether IntroductionAutoGenerator's headless POST /api/introduction call
+  // is in flight. Lifted here so PrintButton can disable Save as PDF until
+  // the intro is either populated on the plan or the generator finishes/fails
+  // — closes the PR #69 race where a fast user gets a PDF with no intro page.
+  // The generator flips this back to false on both success and failure paths,
+  // so a silent /api/introduction error never permanently blocks the button.
+  const [introIsGenerating, setIntroIsGenerating] = useState(false);
+
+  // #8 Auto-run the expert review when a FRESH build lands. Per the chosen flow
+  // ("pre-build picker, then full auto"), a brand-new plan kicks off the review
+  // automatically; a RESTORED saved trip (initialReview present) does not — its
+  // review already ran and the user is just viewing it. ReviewPanel guards the
+  // actual fire once-per-build, so this is just the on/off intent.
+  const autoReview = !initialReview;
+
   // --- Menu modal state (lazy-fetch via /api/menu) ---
   // For large multi-city trips the build prompt now OMITS per-restaurant
   // menu data to keep the streaming response small (was 10-15k tokens of
@@ -6432,6 +6876,13 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   const [menuLoading, setMenuLoading] = useState(false);
   const [menuError, setMenuError] = useState("");
   const menuCacheRef = useRef(new Map());
+  // Request-id guard for openMenu — a fast user tapping View Menu on
+  // restaurant A then restaurant B before A's /api/menu resolves would
+  // otherwise see A's late payload land on B's modal (last-write-wins).
+  // Every openMenu / closeMenu call increments this; every async state
+  // write checks the captured id matches before mutating. Same pattern
+  // useLocalProviders already uses (reqRef on line 4631).
+  const menuReqRef = useRef(0);
   const destinationForMenu =
     inputs?.basics?.destination ||
     (Array.isArray(inputs?.basics?.cities) ? inputs.basics.cities.map(c => c?.name).filter(Boolean).join(" ") : "") ||
@@ -6439,6 +6890,10 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
     "";
   const openMenu = async (restaurant) => {
     if (!restaurant) return;
+    // Bump the request-id BEFORE any state writes so prior in-flight fetches
+    // (and any cached / model-supplied early returns from an earlier tap) can
+    // no longer mutate the current modal state.
+    const reqId = ++menuReqRef.current;
     setMenuRestaurant(restaurant);
     setMenuError("");
     // If the model already shipped a menu, no fetch needed.
@@ -6466,18 +6921,30 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         body: JSON.stringify({ name: restaurant.name, location: destinationForMenu, cuisine: restaurant.cuisine || "" }),
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) setMenuError(json?.error?.message || `Couldn't load the menu (${res.status}).`);
-      else if (json?.menu) {
+      // Always cache a successful response (even if a newer request has
+      // superseded this one) so future taps for the same restaurant hit the
+      // cache. But ONLY mutate the visible modal state when this fetch is
+      // still the current request.
+      if (res.ok && json?.menu) {
         menuCacheRef.current.set(cacheKey, { menu: json.menu });
-        setMenuData({ menu: json.menu });
-      } else setMenuError("Couldn't load the menu.");
+      }
+      if (menuReqRef.current !== reqId) return;
+      if (!res.ok) setMenuError(json?.error?.message || `Couldn't load the menu (${res.status}).`);
+      else if (json?.menu) setMenuData({ menu: json.menu });
+      else setMenuError("Couldn't load the menu.");
     } catch (err) {
+      if (menuReqRef.current !== reqId) return;
       setMenuError(`Couldn't reach the menu service. ${String(err?.message || err).slice(0, 80)}`);
     } finally {
-      setMenuLoading(false);
+      // Only clear the loading spinner if this is still the active request —
+      // a superseded fetch resolving must not flip a newer request's spinner.
+      if (menuReqRef.current === reqId) setMenuLoading(false);
     }
   };
   const closeMenu = () => {
+    // Bump the request-id so any in-flight /api/menu can no longer write
+    // back into the (now-dismissed) modal state.
+    menuReqRef.current++;
     setMenuRestaurant(null);
     setMenuData(null);
     setMenuError("");
@@ -6519,6 +6986,11 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   const cityByDay = (data.days || []).map(d => d.city || null);
   const isMultiCityPlan = Array.isArray(data.cities) && data.cities.length > 1;
   const legCities = useMemo(() => collectPlanLegCities(rawData), [rawData]);
+
+  // Warm the PDF module cache as soon as ItineraryView mounts so the dynamic
+  // import resolves instantly when the user clicks Export (jsPDF is ~500KB;
+  // pre-fetching it hides the cold-load latency behind normal reading time).
+  useEffect(() => { import("./pdf/itineraryPdf.js").catch(() => {}); }, []);
 
   // Local providers (private drivers/guides/tours/tastings). Lifted here so
   // both the "Local providers" tab and the PDF export read the same verified
@@ -6616,7 +7088,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
               </div>
               <p style={{ fontSize: "20px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 14px", color: "var(--color-text-primary)" }}>{menuRestaurant.name}</p>
               {menuLoading && <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontStyle: "italic" }}>Loading menu…</p>}
-              {menuError && <p role="alert" style={{ fontSize: "13px", color: "#8C1F1F", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{menuError}</p>}
+              {menuError && <p role="alert" style={{ fontSize: "13px", color: "var(--color-danger-hover)", background: "var(--color-danger-tint)", border: "0.5px solid var(--color-text-danger)", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{menuError}</p>}
               {!menuLoading && !menuError && <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontStyle: "italic" }}>No menu available.</p>}
             </div>
           </div>
@@ -6632,13 +7104,21 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       <TripHero data={data} />
       <QualityBadge qc={qc} />
 
-      {/* Introduction card — auto-generates the intro after build via the
-          separate lightweight /api/introduction call (the streaming planner
-          still does NOT generate it; removed in PR #20 for cost). The result
-          renders as page 2 of the PDF (see renderIntroduction). The manual
-          paste box stays as an override; inputs are passed so generation and
-          the "Copy AI prompt" button can include trip facts. */}
-      <IntroductionPasteCard plan={rawData} inputs={inputs} onPlanRevised={onPlanRevised} />
+      {/* Headless introduction generator — auto-generates the intro after build
+          via the separate lightweight /api/introduction call and persists it to
+          data.introduction so it renders at the top of the PDF (see
+          renderIntroduction). Renders nothing on screen by design: the intro is
+          a PDF-only artifact. inputs are passed so generation can include trip
+          facts. */}
+      <IntroductionAutoGenerator
+        plan={rawData}
+        inputs={inputs}
+        onPlanRevised={onPlanRevised}
+        onGeneratingChange={setIntroIsGenerating}
+      />
+      {/* #12 Resolve missing flight numbers from the live schedule and persist
+          them to the canonical plan so the PDF shows the same number as screen. */}
+      <FlightNumberAutoResolver plan={rawData} onPlanRevised={onPlanRevised} />
 
       {/* Professional review surface — user-initiated, sits between hero and the day-by-day content. */}
       <ReviewPanel
@@ -6647,6 +7127,9 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         onPlanRevised={onPlanRevised}
         onReviewChange={onReviewChange}
         initialReview={initialReview}
+        autoRun={autoReview}
+        externalSourceIds={reviewerSourceIds}
+        onSourcesChange={onReviewerSourcesChange}
       />
 
       {/* Always-visible traveler change request — same revision pipeline as
@@ -6686,7 +7169,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
             return (
               <div key={i}>
                 {showLegHeader && (
-                  <div style={{ margin: "0 0 14px", padding: "10px 12px", background: "#0F0F0F", color: "#FFFFFF", borderRadius: "var(--border-radius-md)", display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
+                  <div style={{ margin: "0 0 14px", padding: "10px 12px", background: "var(--color-text-primary)", color: "var(--color-background-primary)", borderRadius: "var(--border-radius-md)", display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
                     <span style={{ fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, color: GOLD }}>Leg {legIndex}</span>
                     <span style={{ fontSize: "15px", fontFamily: "var(--font-serif)", fontStyle: "italic", letterSpacing: "-0.2px" }}>{d.city}</span>
                   </div>
@@ -6726,7 +7209,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           title="Go back to the input form. Your trip details stay filled in."
         >← Back to inputs</button>
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
-        <PrintButton data={data} inputs={inputs} providers={providers} />
+        <PrintButton data={data} inputs={inputs} providers={providers} plan={rawData} introIsGenerating={introIsGenerating} />
         <PrintRidesButton data={data} inputs={inputs} />
         {/* Reset — surfaced here on Step 3 (results) so users don't have to
             navigate Home + scroll Step 1 to find it. Styled as a clear but
@@ -6795,6 +7278,7 @@ function collectVendorURLs(data) {
         push(c.booking_url);
       }
       if (it?.flight?.booking_url) push(it.flight.booking_url);
+      if (it?.hotel?.website) push(it.hotel.website); // #21 verify hotel sites too
     }
   }
   return Array.from(out);
@@ -7113,8 +7597,10 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
             height: isCompact ? "26px" : "32px",
             border: "none",
             borderRadius: "50%",
+            // #16/contrast: navy glyph on navy (uploading) or mid-slate fill was
+            // invisible / 2.5:1. Use a LIGHT glyph on the dark circle in both states.
             background: uploading ? GOLD : "var(--color-border-primary)",
-            color: uploading ? "#0F0F0F" : "var(--color-text-primary)",
+            color: "var(--color-background-primary)",
             cursor: uploading ? "wait" : "pointer",
             display: "flex",
             alignItems: "center",
@@ -7140,8 +7626,10 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
               height: isCompact ? "26px" : "32px",
               border: "none",
               borderRadius: "50%",
-              background: listening ? "#d11" : "var(--color-border-primary)",
-              color: listening ? "#fff" : "var(--color-text-primary)",
+              // #16/contrast: navy glyph on the mid-slate border-primary fill was
+              // only 2.5:1. Keep the slate circle but use a LIGHT glyph (~4.7:1).
+              background: listening ? "var(--color-text-danger)" : "var(--color-border-primary)",
+              color: "var(--color-background-primary)",
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
@@ -7169,7 +7657,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
                   : (hint || "")}
         </p>
         {!isCompact && (
-          <span style={{ fontSize: "11px", color: charCount > MAX - 200 ? "#d11" : "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: "11px", color: charCount > MAX - 200 ? "var(--color-text-danger)" : "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
             {charCount} / {MAX}
           </span>
         )}
@@ -7177,7 +7665,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
       {/* Upload error — separate row so it doesn't get squeezed by the char
           count. Red border to distinguish from the italic gray hint. */}
       {uploadError && (
-        <p role="alert" style={{ fontSize: "11.5px", color: "#c0392b", margin: 0, padding: "6px 10px", border: "0.5px solid #f0c4be", borderRadius: "4px", background: "#fdf3f1", lineHeight: 1.5 }}>
+        <p role="alert" style={{ fontSize: "11.5px", color: "var(--color-text-danger)", margin: 0, padding: "6px 10px", border: "0.5px solid var(--color-danger-tint)", borderRadius: "4px", background: "var(--color-danger-tint)", lineHeight: 1.5 }}>
           {uploadError}
         </p>
       )}
@@ -7185,7 +7673,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
           are not blockers; the rest of the text was extracted fine. Show as
           a soft amber note so the user knows to verify those bits. */}
       {!uploadError && uploadWarnings.length > 0 && (
-        <p style={{ fontSize: "11.5px", color: "#8A6500", margin: 0, padding: "6px 10px", border: "0.5px solid #efd9a4", borderRadius: "4px", background: "#fdf8ee", lineHeight: 1.5 }}>
+        <p style={{ fontSize: "11.5px", color: "var(--color-text-primary)", margin: 0, padding: "6px 10px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "var(--color-surface-2)", lineHeight: 1.5 }}>
           Heads up: {uploadWarnings.join(" · ")}
         </p>
       )}
@@ -7355,8 +7843,8 @@ function DateRangeInput({ startDate, endDate, onRangeChange }) {
     let bg = "transparent";
     let color = "var(--color-text-primary)";
     let weight = 400;
-    if (within) { bg = "rgba(196, 168, 98, 0.18)"; color = "var(--color-text-primary)"; }
-    if (isStart || isEnd) { bg = GOLD; color = "#fff"; weight = 600; }
+    if (within) { bg = "rgba(91, 101, 119, 0.18)"; color = "var(--color-text-primary)"; }
+    if (isStart || isEnd) { bg = GOLD; color = "var(--color-background-primary)"; weight = 600; }
     if (isPast) color = "var(--color-text-tertiary)";
     const borderRadius = isStart && isEnd ? "50%"
       : isStart ? "50% 0 0 50%"
@@ -7772,7 +8260,7 @@ function salvageTruncatedJSON(str) {
 //   scaled to the trip's expected duration (targetSec * 2.5) so multi-city
 //   trips that legitimately need 12-15 minutes of model output don't get
 //   guillotined by a 10-min ceiling.
-async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) {
+async function streamBuildJob(body, { signal, onJob, onDelta, onStallNotice, maxPollMs } = {}) {
   const resp = await fetch("/api/build", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -7811,6 +8299,38 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
   let doneSeen = false;
   let stopReason = null;
 
+  // #24 — Live-stream stall watchdog. The server emits {type:"ping"} every
+  // ~15 s so a healthy idle stream still resets the timer on every loop. If
+  // the stream goes truly silent (no deltas AND no pings) for more than
+  // LIVE_STALL_MS, we synthesize a StallError so the existing recoverable-
+  // drop path (shouldResumeViaPoll) breaks out of the read loop and the
+  // KV-poll fallback resumes the job. Without this, a half-closed TCP
+  // connection or a true upstream wedge blocked reader.read() indefinitely
+  // (the Sedona stall report) because no transport error ever surfaced.
+  //
+  // Threshold: 90 s. Server's HEARTBEAT_INTERVAL_MS is 15 s, so a quiet
+  // healthy stream emits a ping every ~15 s. 90 s = six missed heartbeats —
+  // well past anything transient and well below the KV-poll's 180 s budget,
+  // so we trip, resume via poll, and the user keeps moving.
+  const LIVE_STALL_MS = 90 * 1000;
+  let stallTimer = null;
+  function clearStallTimer() {
+    if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+  }
+  function readWithStallWatchdog() {
+    return new Promise((resolve, reject) => {
+      clearStallTimer();
+      stallTimer = setTimeout(() => {
+        stallTimer = null;
+        reject(new StallError("Live stream stalled — no events for 90s."));
+      }, LIVE_STALL_MS);
+      reader.read().then(
+        (res) => { clearStallTimer(); resolve(res); },
+        (err) => { clearStallTimer(); reject(err); },
+      );
+    });
+  }
+
   try {
     while (true) {
       if (signal?.aborted) {
@@ -7821,17 +8341,24 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
       }
       let value, done;
       try {
-        ({ value, done } = await reader.read());
+        ({ value, done } = await readWithStallWatchdog());
       } catch (readErr) {
-        // The live POST stream dropped mid-flight. Without this catch the
-        // reject propagated straight out of streamBuildJob, past the KV-poll
-        // fallback below (which only ran on a clean `done` break) — so a
-        // dropped surgical-revision stream was a hard failure even though the
-        // server job kept running and mirroring to KV. If we already have a
-        // jobId and the drop is a recognized transport error, fall through to
-        // resume via polling instead of failing. See shouldResumeViaPoll.
+        // The live POST stream dropped mid-flight OR our stall watchdog tripped
+        // (#24). Without this catch the reject propagated straight out of
+        // streamBuildJob, past the KV-poll fallback below (which only ran on a
+        // clean `done` break) — so a dropped surgical-revision stream was a
+        // hard failure even though the server job kept running and mirroring
+        // to KV. If we already have a jobId and the error is a recognized
+        // transport drop OR a StallError, fall through to resume via polling
+        // instead of failing. See shouldResumeViaPoll.
         if (readErr?.name === "AbortError") throw readErr;
-        if (shouldResumeViaPoll(readErr, { jobId, doneSeen })) break;
+        if (shouldResumeViaPoll(readErr, { jobId, doneSeen })) {
+          // Cancel the reader so its underlying connection is freed before we
+          // move to KV-poll mode — otherwise a stalled live stream can keep
+          // the fetch alive in the background until TCP eventually times out.
+          try { await reader.cancel(); } catch {}
+          break;
+        }
         throw readErr;
       }
       if (done) break;
@@ -7856,7 +8383,10 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
           // truncated regardless of how well it parses).
           stopReason = evt.reason;
         } else if (evt.type === "ping") {
-          // Server heartbeat — keeps NDJSON alive through long model pauses.
+          // Server heartbeat — keeps NDJSON alive through long model pauses,
+          // and (since #24) the surrounding readWithStallWatchdog already
+          // reset the live-stream stall timer when this event arrived, so a
+          // quiet-but-healthy stream isn't treated as wedged.
           continue;
         } else if (evt.type === "done") {
           doneSeen = true;
@@ -7867,7 +8397,16 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
       }
     }
   } finally {
+    clearStallTimer();
     try { reader.releaseLock(); } catch {}
+  }
+
+  // #24: if we broke out of the read loop via shouldResumeViaPoll (transport
+  // drop or stall watchdog) and we have a jobId to poll, surface a microcopy
+  // so the UI doesn't look dead during the transition to polling. Runs at
+  // most once per streamBuildJob invocation (this is the only call site).
+  if (!doneSeen && jobId && typeof onStallNotice === "function") {
+    try { onStallNotice("Live stream paused — polling for the result…"); } catch {}
   }
 
   // Stream ended without `done` — either a clean EOF or a mid-stream transport
@@ -7892,7 +8431,15 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
     // desserts + wine notes is one such block). 90s was tripping on healthy
     // builds; 180s gives real model pauses room while still catching truly
     // dead jobs.
-    const MAX_STALL_MS = 180 * 1000;
+    //
+    // #24: made adaptive. If the most recent KV status payload reports the
+    // job is still `running` server-side, extend to 300s so a genuinely heavy
+    // multi-city build that's slow but alive doesn't get killed by the
+    // client. Falls back to 180s when status is missing or anything other
+    // than `running`.
+    const MAX_STALL_MS_BASE = 180 * 1000;
+    const MAX_STALL_MS_ALIVE = 300 * 1000;
+    let lastServerStatus = null;
     const pollStart = Date.now();
     let lastProgressAt = Date.now();
     while (true) {
@@ -7904,8 +8451,9 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
       if (Date.now() - pollStart > MAX_POLL_MS) {
         throw new Error("Build is taking longer than expected. Tap Build again to retry.");
       }
-      if (Date.now() - lastProgressAt > MAX_STALL_MS) {
-        throw new Error("Build stalled — no new content for 3 minutes. The live stream likely dropped and KV mirroring is unavailable. Tap Build again to retry.");
+      const stallBudget = lastServerStatus === "running" ? MAX_STALL_MS_ALIVE : MAX_STALL_MS_BASE;
+      if (Date.now() - lastProgressAt > stallBudget) {
+        throw new Error("Build stalled — no new content from the server. Tap Build again to retry.");
       }
       let r;
       try {
@@ -7955,6 +8503,9 @@ async function streamBuildJob(body, { signal, onJob, onDelta, maxPollMs } = {}) 
       // sends message_delta. Read it on the final poll so resume-via-poll
       // clients get the same stop_reason signal as SSE-stream clients.
       if (data.stopReason && !stopReason) stopReason = data.stopReason;
+      // #24: track server-reported status so the adaptive stall budget above
+      // can extend when the job is provably still alive.
+      if (typeof data.status === "string") lastServerStatus = data.status;
       if (data.status === "done") return { jobId, toolJson, stopReason };
       if (data.status === "error") throw new Error(data.error || "Build failed on server.");
       await new Promise(r => setTimeout(r, POLL_MS));
@@ -8246,14 +8797,14 @@ function Sel({ value, onChange, opts, multi = false, placeholder = "No preferenc
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", padding: "6px 0", borderBottom: "0.5px solid var(--color-border-primary)" }}>
       <button type="button" onClick={clearAll}
-        style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${isNone ? GOLD : "var(--color-border-secondary)"}`, background: isNone ? `${GOLD}22` : "transparent", color: isNone ? GOLD : "var(--color-text-secondary)", fontWeight: isNone ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
+        style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${isNone ? GOLD : "var(--color-border-secondary)"}`, background: isNone ? "var(--color-surface-2)" : "transparent", color: isNone ? GOLD : "var(--color-text-secondary)", fontWeight: isNone ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
         {placeholder}
       </button>
       {opts.map(o => {
         const on = arr.includes(o);
         return (
           <button key={o} type="button" onClick={() => toggle(o)}
-            style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${on ? GOLD : "var(--color-border-secondary)"}`, background: on ? `${GOLD}22` : "transparent", color: on ? GOLD : "var(--color-text-primary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
+            style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${on ? GOLD : "var(--color-border-secondary)"}`, background: on ? "var(--color-surface-2)" : "transparent", color: on ? GOLD : "var(--color-text-primary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
             {o}
           </button>
         );
@@ -8267,6 +8818,29 @@ function Sel({ value, onChange, opts, multi = false, placeholder = "No preferenc
 function prefToText(v) {
   if (Array.isArray(v)) return v.length ? v.join(", ") : "No preference";
   return v || "No preference";
+}
+
+// #5 Dynamic build-time estimate. The old copy hard-coded "3 to 15 minutes".
+// Builds scale with trip length (more days = more items to verify), multi-city
+// (each leg adds geocoding + per-city searches), and the number of optional
+// output sections selected (each is extra generation + verification). We return
+// a coarse minute RANGE string. Until the user has entered enough to estimate,
+// callers fall back to a generic "can take more than 5 minutes" message.
+function estimateBuildMinutes({ nights, citiesCount = 1, outputsCount = 0 } = {}) {
+  const days = Math.max(1, Number(nights) || 0);
+  const cityN = Math.max(1, Number(citiesCount) || 1);
+  const addons = Math.max(0, Number(outputsCount) || 0);
+  // Base ~2 min, +~0.5 min/day, +~1 min per extra city, +~0.4 min per add-on.
+  const low = 2 + days * 0.5 + (cityN - 1) * 1 + addons * 0.4;
+  const high = low * 1.7 + 2;
+  const lo = Math.max(2, Math.round(low));
+  const hi = Math.max(lo + 2, Math.round(high));
+  return { lo, hi, text: `about ${lo}\u2013${hi} minutes` };
+}
+
+// True once the user has entered enough for a meaningful estimate.
+function canEstimateBuild(basics) {
+  return !!(basics && (Number(basics.nights) > 0 || (Array.isArray(basics.cities) && basics.cities.some(c => c && c.name))));
 }
 
 function TagInput({ placeholder, tags, setTags, suggestions = [] }) {
@@ -8537,6 +9111,7 @@ const HOTEL_ITEM_SCHEMA = {
     check_in_time: { type: "string", description: "e.g. '15:00'." },
     check_out_time: { type: "string", description: "e.g. '11:00'." },
     room_type: { type: "string" },
+    website: { type: "string", description: "Official hotel website URL — the property's actual homepage (e.g. https://www.ritzcarlton.com/...). URLs are HEAD-checked after generation; broken links auto-swap to a Google fallback. OMIT this field if you are not highly confident the URL is live. Do NOT fabricate URLs or guess a domain." },
     confirmation_note: { type: "string" },
   },
 };
@@ -9003,7 +9578,7 @@ function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
     inputs?.basics?.destination && `Destination: ${inputs.basics.destination}`,
     inputs?.basics?.nights && `${inputs.basics.nights} nights`,
     inputs?.basics?.travelers && `${inputs.basics.travelers}`,
-    inputs?.basics?.budget && `Budget: ${inputs.basics.budget}`,
+    (Array.isArray(inputs?.basics?.budget) ? inputs.basics.budget.length : inputs?.basics?.budget) && `Budget: ${prefToText(inputs.basics.budget)}`,
     inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
     inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
@@ -9074,7 +9649,7 @@ function buildRevisionSystemPromptSurgical(plan, findings, inputs) {
   const tripContext = [
     inputs?.basics?.destination && `Destination: ${inputs.basics.destination}`,
     inputs?.basics?.nights && `${inputs.basics.nights} nights`,
-    inputs?.basics?.budget && `Budget: ${inputs.basics.budget}`,
+    (Array.isArray(inputs?.basics?.budget) ? inputs.basics.budget.length : inputs?.basics?.budget) && `Budget: ${prefToText(inputs.basics.budget)}`,
     inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
     inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
@@ -9127,7 +9702,7 @@ function buildRevisionSystemPromptFull(plan, findings, inputs) {
     inputs?.basics?.destination && `Destination: ${inputs.basics.destination}`,
     inputs?.basics?.nights && `${inputs.basics.nights} nights`,
     inputs?.basics?.travelers && `${inputs.basics.travelers}`,
-    inputs?.basics?.budget && `Budget: ${inputs.basics.budget}`,
+    (Array.isArray(inputs?.basics?.budget) ? inputs.basics.budget.length : inputs?.basics?.budget) && `Budget: ${prefToText(inputs.basics.budget)}`,
     inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
     inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
@@ -9363,9 +9938,12 @@ function collectFindURLs(results) {
 // If RestaurantCard's typography or padding changes, this card should be
 // updated to match — they're meant to look like the same surface.
 function FindRestaurantCard({ restaurant, onOpenMenu }) {
+  // Hook MUST be called unconditionally — keep above the early return.
+  // See RestaurantCard for why we thread destination through.
+  const { destination: tripCity } = useURLVerify();
   if (!restaurant) return null;
   const r = restaurant;
-  const resv = reservationLink(r);
+  const resv = reservationLink(r, tripCity);
   const platformLabel = resv ? ({
     opentable: "OpenTable", resy: "Resy", tock: "Tock", yelp: "Yelp", phone: "Call",
   }[resv.platform] || "Reserve") : null;
@@ -9474,7 +10052,7 @@ function ActivityDetailsModal({ activity, details, loading, error, onClose }) {
           <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontStyle: "italic" }}>Loading details…</p>
         )}
         {error && (
-          <p role="alert" style={{ fontSize: "13px", color: "#8C1F1F", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{error}</p>
+          <p role="alert" style={{ fontSize: "13px", color: "var(--color-danger-hover)", background: "var(--color-danger-tint)", border: "0.5px solid var(--color-text-danger)", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{error}</p>
         )}
         {details && sections.map(([title, body]) => body && (
           <div key={title} style={{ marginBottom: "14px" }}>
@@ -9926,7 +10504,7 @@ function FindView({ embedded = false } = {}) {
         {!embedded && (
           <div style={{ paddingTop: "1.25rem", paddingBottom: "1rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
             <div>
-              <p style={{ fontSize: "10px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Trip Optimizer</p>
+              <img src="/rs3-wordmark.svg?v=3" alt="Route Smith" style={{ display: "block", height: vp.isMobile ? "28px" : "38px", width: "auto", margin: 0 }} />
               <p style={{ fontSize: "22px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "2px 0 0", color: "var(--color-text-primary)" }}>Find</p>
             </div>
             <a href="/" style={{ fontSize: "11px", color: GOLD, textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", padding: "10px 14px", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", display: "inline-flex", alignItems: "center", minHeight: "40px" }}>← Trip Builder</a>
@@ -9981,7 +10559,7 @@ function FindView({ embedded = false } = {}) {
             <button
               type="submit"
               disabled={loading || !location.trim()}
-              style={{ flex: 1, minWidth: "140px", fontSize: "13px", padding: "12px 18px", borderRadius: "var(--border-radius-md)", border: "none", background: loading || !location.trim() ? "var(--color-border-secondary)" : GOLD, color: loading || !location.trim() ? "var(--color-text-tertiary)" : "#0F0F0F", cursor: loading || !location.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
+              style={{ flex: 1, minWidth: "140px", fontSize: "13px", padding: "12px 18px", borderRadius: "var(--border-radius-md)", border: "none", background: loading || !location.trim() ? "var(--color-border-secondary)" : GOLD, color: loading || !location.trim() ? "var(--color-text-tertiary)" : ON_NAVY, cursor: loading || !location.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
             >{loading ? "Searching…" : "Search"}</button>
             {loading && (
               <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", letterSpacing: "0.04em", fontStyle: "italic" }}>This usually takes 20–40 seconds.</span>
@@ -9998,7 +10576,7 @@ function FindView({ embedded = false } = {}) {
 
         {/* Error banner */}
         {error && (
-          <div role="alert" style={{ padding: "10px 14px", marginBottom: "1rem", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", color: "#8C1F1F", fontSize: "13px", lineHeight: 1.5 }}>
+          <div role="alert" style={{ padding: "10px 14px", marginBottom: "1rem", background: "var(--color-danger-tint)", border: "0.5px solid var(--color-text-danger)", borderRadius: "var(--border-radius-md)", color: "var(--color-danger-hover)", fontSize: "13px", lineHeight: 1.5 }}>
             {error}
           </div>
         )}
@@ -10034,7 +10612,7 @@ function FindView({ embedded = false } = {}) {
 
         {/* Optional note from the model */}
         {results?.note && (
-          <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{results.note}</p>
+          <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{results.note}</p>
         )}
 
         {/* Ask the locals — opt-in retrieval pass. Hidden while a local-expert
@@ -10066,7 +10644,7 @@ function FindView({ embedded = false } = {}) {
 
         {/* Section toggle — only when both sections have results */}
         {showSectionToggle && (
-          <div style={{ position: "sticky", top: 0, background: "#F4F2EE", padding: "10px 0", marginBottom: "0.5rem", zIndex: 10, display: "flex", gap: "16px", fontSize: "12px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+          <div style={{ position: "sticky", top: 0, background: "var(--color-background-secondary)", padding: "10px 0", marginBottom: "0.5rem", zIndex: 10, display: "flex", gap: "16px", fontSize: "12px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
             <a href="#find-restaurants" style={{ color: "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Restaurants <span style={{ color: GOLD }}>({results.restaurants.length})</span></a>
             <a href="#find-activities" style={{ color: "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Activities <span style={{ color: GOLD }}>({results.activities.length})</span></a>
           </div>
@@ -10076,7 +10654,7 @@ function FindView({ embedded = false } = {}) {
         {loading && (
           <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "1rem" }}>
             {[0, 1, 2].map((i) => (
-              <div key={i} style={{ height: "82px", borderRadius: "var(--border-radius-md)", background: "linear-gradient(90deg, var(--color-background-secondary) 0%, #EBE7DF 50%, var(--color-background-secondary) 100%)", backgroundSize: "200% 100%", animation: "find-shimmer 1.4s linear infinite" }} />
+              <div key={i} style={{ height: "82px", borderRadius: "var(--border-radius-md)", background: "linear-gradient(90deg, var(--color-background-secondary) 0%, var(--color-surface-offset) 50%, var(--color-background-secondary) 100%)", backgroundSize: "200% 100%", animation: "find-shimmer 1.4s linear infinite" }} />
             ))}
             <style>{`@keyframes find-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }`}</style>
           </div>
@@ -10117,7 +10695,7 @@ function FindView({ embedded = false } = {}) {
             <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
               <h2 style={{ fontSize: "13px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.12em", textTransform: "uppercase", margin: 0 }}>Locally sourced</h2>
               {localExpertResults.localExpert?.source_set === "curated" && localExpertResults.localExpert?.status === "ok" && (
-                <span style={{ fontSize: "10.5px", padding: "2px 6px", background: GOLD, color: "#0F0F0F", borderRadius: "3px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>Curated</span>
+                <span style={{ fontSize: "10.5px", padding: "2px 6px", background: GOLD, color: ON_NAVY, borderRadius: "3px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>Curated</span>
               )}
               {localExpertResults.localExpert?.status === "ok" && localExpertResults.localExpert.sources?.length > 0 && (
                 <button
@@ -10144,7 +10722,7 @@ function FindView({ embedded = false } = {}) {
               </ul>
             )}
             {localExpertResults.note && (
-              <p style={{ fontSize: "12.5px", color: "var(--color-text-tertiary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{localExpertResults.note}</p>
+              <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 1rem", fontStyle: "italic", lineHeight: 1.55 }}>{localExpertResults.note}</p>
             )}
             {localExpertResults.restaurants?.length > 0 && (
               <div style={{ marginTop: "0.75rem" }}>
@@ -10182,7 +10760,7 @@ function FindView({ embedded = false } = {}) {
                 </div>
                 <p style={{ fontSize: "20px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 14px", color: "var(--color-text-primary)" }}>{menuRestaurant.name}</p>
                 {menuLoading && <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontStyle: "italic" }}>Loading menu…</p>}
-                {menuError && <p role="alert" style={{ fontSize: "13px", color: "#8C1F1F", background: "#FFF5F5", border: "0.5px solid #C92A2A", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{menuError}</p>}
+                {menuError && <p role="alert" style={{ fontSize: "13px", color: "var(--color-danger-hover)", background: "var(--color-danger-tint)", border: "0.5px solid var(--color-text-danger)", borderRadius: "var(--border-radius-md)", padding: "8px 12px" }}>{menuError}</p>}
               </div>
             </div>
           )
@@ -10222,6 +10800,293 @@ function FindView({ embedded = false } = {}) {
 // rules-of-hooks forbid returning before them.
 export { FindView };
 
+// #9 — First-visit App Intro overlay. Explains what RouteSmith is, what it
+// isn't, and how to add it to the home screen. Once-only per browser via
+// localStorage; suppressed when ?direct=1 is on the URL or the app is
+// running as an installed PWA. Pure gate logic lives in src/appIntro.js so
+// the dismissal, URL bypass, and platform detection are unit-testable.
+function AppIntroOverlay() {
+  // Render-stable gate: compute once on mount, never re-show within the
+  // same session even if the user opens another tab that dismisses it.
+  // useState lazy initializer so SSR / hydration mismatches don't trip.
+  const [visible, setVisible] = useState(() => shouldShowWelcome());
+  // Which A2HS panel is expanded. "" = none; "ios" / "android" / "desktop".
+  // Initialized from the user agent so the user sees their platform's
+  // instructions first without an extra tap. Desktop stays collapsed (the
+  // install flow is browser-specific and a generic panel is unhelpful).
+  const [a2hsOpen, setA2hsOpen] = useState(() => {
+    const p = detectPlatform(typeof navigator !== "undefined" ? navigator.userAgent : "");
+    return p === "ios" || p === "android" ? p : "";
+  });
+
+  const dismiss = useCallback(() => {
+    markWelcomeDismissed();
+    setVisible(false);
+  }, []);
+
+  // Lock body scroll while the overlay is up so background touches on
+  // mobile don't drift the wizard underneath. Restored on dismiss / unmount.
+  useEffect(() => {
+    if (!visible) return undefined;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [visible]);
+
+  // Escape key dismisses, matching modal conventions.
+  useEffect(() => {
+    if (!visible) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") dismiss(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [visible, dismiss]);
+
+  if (!visible) return null;
+
+  const OVERLAY_BG = "var(--color-background-secondary)";
+  const cardStyle = {
+    background: "var(--color-background-primary)",
+    border: "0.5px solid var(--color-border-secondary)",
+    borderRadius: "var(--border-radius-md)",
+    padding: "14px 16px",
+    marginBottom: "10px",
+  };
+  const cardLabel = {
+    fontSize: "10.5px",
+    color: "var(--color-text-primary)",
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    fontWeight: 700,
+    margin: "0 0 6px",
+  };
+  const cardBody = {
+    fontSize: "13px",
+    color: "var(--color-text-secondary)",
+    margin: 0,
+    lineHeight: 1.55,
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="app-intro-title"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: OVERLAY_BG,
+        zIndex: 9999,
+        overflowY: "auto",
+        WebkitOverflowScrolling: "touch",
+      }}
+    >
+      <button
+        type="button"
+        onClick={dismiss}
+        aria-label="Skip the intro and go straight to the planner"
+        style={{
+          position: "absolute",
+          top: "calc(env(safe-area-inset-top, 14px) + 14px)",
+          right: "18px",
+          background: "transparent",
+          border: "none",
+          color: "var(--color-text-tertiary)",
+          fontSize: "11px",
+          letterSpacing: "0.1em",
+          textTransform: "uppercase",
+          fontWeight: 600,
+          cursor: "pointer",
+          textDecoration: "underline",
+          fontFamily: "inherit",
+        }}
+      >
+        Skip
+      </button>
+
+      <div
+        style={{
+          position: "absolute",
+          top: "calc(env(safe-area-inset-top, 14px) + 14px)",
+          left: "22px",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "6px",
+          fontSize: "9.5px",
+          letterSpacing: "0.16em",
+          textTransform: "uppercase",
+          color: "var(--color-text-tertiary)",
+          fontWeight: 600,
+        }}
+      >
+        <span>Powered by</span>
+        <img
+          src="/brand-wordmark.png?v=2"
+          alt="Barrier Island Digital, LLC"
+          style={{ display: "block", height: "18px", width: "auto", opacity: 0.9 }}
+        />
+      </div>
+
+      <div
+        style={{
+          maxWidth: "640px",
+          margin: "0 auto",
+          padding: "calc(env(safe-area-inset-top, 14px) + 76px) 20px 32px",
+        }}
+      >
+        <div style={{ textAlign: "center", marginBottom: "24px" }}>
+          <img
+            src="/rs3-wordmark.svg?v=3"
+            alt="Route Smith"
+            style={{ display: "inline-block", height: "56px", width: "auto", margin: "0 0 10px" }}
+          />
+          <p
+            id="app-intro-title"
+            style={{
+              fontSize: "15px",
+              color: "var(--color-text-primary)",
+              margin: 0,
+              fontFamily: "var(--font-serif)",
+              fontStyle: "italic",
+              lineHeight: 1.4,
+            }}
+          >
+            An LLM-assisted itinerary builder for premium trips.
+          </p>
+        </div>
+
+        <div style={cardStyle}>
+          <p style={cardLabel}>What it is</p>
+          <p style={cardBody}>
+            Tell us where, when, and how you travel — get a day-by-day plan with flights, hotels, dining, activities, and the operational details you actually need: addresses, phone numbers, confirmation slots, weather windows, packing notes.
+          </p>
+        </div>
+
+        <div style={cardStyle}>
+          <p style={cardLabel}>What it isn&rsquo;t</p>
+          <p style={cardBody}>
+            Not a booking engine. We don&rsquo;t sell flights or hotels and we don&rsquo;t have live availability. Every recommendation is checked through a panel of expert sources, but you book directly with the operator. Treat dates, prices, and hours as starting points — confirm before you commit.
+          </p>
+        </div>
+
+        <div style={cardStyle}>
+          <p style={cardLabel}>How to use it</p>
+          <p style={cardBody}>
+            Build a plan, tweak it via the expert review or &ldquo;Suggest a change,&rdquo; save it to your device, and export as PDF for the trip. Nothing&rsquo;s stored on a server. You can come back any time and pick up where you left off.
+          </p>
+        </div>
+
+        <div style={cardStyle}>
+          <p style={cardLabel}>Add to your home screen</p>
+          <p style={{ ...cardBody, marginBottom: "10px" }}>
+            Travel apps get checked dozens of times per trip. Save Route Smith to your home screen so it&rsquo;s one tap away — it works offline once installed.
+          </p>
+          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: a2hsOpen ? "10px" : 0 }}>
+            {[
+              { id: "ios", label: "iPhone / iPad" },
+              { id: "android", label: "Android" },
+              { id: "desktop", label: "Desktop" },
+            ].map((opt) => {
+              const active = a2hsOpen === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  aria-expanded={active}
+                  aria-controls={`a2hs-panel-${opt.id}`}
+                  onClick={() => setA2hsOpen(active ? "" : opt.id)}
+                  style={{
+                    fontSize: "10.5px",
+                    letterSpacing: "0.04em",
+                    fontWeight: active ? 700 : 500,
+                    color: active ? "var(--color-background-primary)" : "var(--color-text-secondary)",
+                    background: active ? "var(--color-text-primary)" : "transparent",
+                    border: `0.5px solid ${active ? "var(--color-text-primary)" : "var(--color-border-secondary)"}`,
+                    borderRadius: "999px",
+                    padding: "4px 11px",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+          {a2hsOpen === "ios" && (
+            <ol
+              id="a2hs-panel-ios"
+              style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}
+            >
+              <li>Open this page in <strong>Safari</strong> (other iOS browsers can&rsquo;t install web apps).</li>
+              <li>Tap the <strong>Share</strong> icon at the bottom of the screen (the square with the up arrow).</li>
+              <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
+              <li>Tap <strong>Add</strong> in the top-right.</li>
+            </ol>
+          )}
+          {a2hsOpen === "android" && (
+            <ol
+              id="a2hs-panel-android"
+              style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}
+            >
+              <li>Open this page in <strong>Chrome</strong>, <strong>Edge</strong>, or <strong>Samsung Internet</strong>.</li>
+              <li>Tap the <strong>three-dot menu</strong> in the top-right corner.</li>
+              <li>Tap <strong>Add to Home screen</strong> (or <strong>Install app</strong> if you see it).</li>
+              <li>Tap <strong>Add</strong> to confirm.</li>
+            </ol>
+          )}
+          {a2hsOpen === "desktop" && (
+            <ol
+              id="a2hs-panel-desktop"
+              style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}
+            >
+              <li><strong>Chrome / Edge:</strong> look for the install icon in the URL bar (a small monitor with a down arrow) and click <strong>Install</strong>.</li>
+              <li><strong>Safari (macOS):</strong> File menu, then <strong>Add to Dock</strong>.</li>
+              <li><strong>Firefox:</strong> doesn&rsquo;t support PWA install; bookmark the page instead.</li>
+            </ol>
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={dismiss}
+          style={{
+            width: "100%",
+            border: "none",
+            borderRadius: "var(--border-radius-md)",
+            padding: "14px 18px",
+            fontSize: "12px",
+            fontWeight: 700,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            cursor: "pointer",
+            fontFamily: "inherit",
+            background: "var(--color-text-primary)",
+            color: "var(--color-background-primary)",
+            marginTop: "14px",
+          }}
+        >
+          Start planning
+        </button>
+
+        <p
+          style={{
+            textAlign: "center",
+            fontSize: "9.5px",
+            color: "var(--color-text-tertiary)",
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            marginTop: "18px",
+            marginBottom: 0,
+            fontWeight: 500,
+          }}
+        >
+          A travel companion crafted by Barrier Island Digital, LLC
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function TripOptimizer() {
 
   // Viewport awareness drives a few container widths so the wizard form
@@ -10238,7 +11103,7 @@ export default function TripOptimizer() {
 
   // BLANK = truly empty state. Used on every launch and on "Plan another trip".
   const BLANK = {
-    basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: "" },
+    basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: [] },
     flights: { homeAirport: "EWR", airline: "", cabin: "", flex: "", noFlight: false },
     hotel: { brand: ["Marriott / Bonvoy"], tier: "", mustHave: "" },
     transport: { type: [], company: "Hertz", vehicle: "" },
@@ -10360,6 +11225,21 @@ export default function TripOptimizer() {
   // Declared here (with the other input buckets, before the snapshot effect
   // that reads it) so the key set stays identical to outputDefs.
   const [outputs, setOut] = useState(() => resolveOutputs(recovered?.inputs?.outputs));
+  // #8 Reviewer source selection, LIFTED to wizard level so the user can pick
+  // expert-review sources BEFORE the build (the agreed "pre-build picker, then
+  // full auto" flow). Defaults mirror ReviewPanel exactly: the dflt sources +
+  // (if the destination matches a curated region) that region's hyperlocal set.
+  // Recovered trips reuse their saved review sources when present.
+  const [reviewerSourceIds, setReviewerSourceIds] = useState(() => {
+    const saved = recovered?.result?.review?.sources;
+    if (Array.isArray(saved) && saved.length) return saved;
+    const base = REVIEWER_SOURCES.filter(s => s.dflt).map(s => s.id);
+    const dest = recovered?.inputs?.basics?.destination
+      || (Array.isArray(recovered?.inputs?.basics?.cities) ? recovered.inputs.basics.cities.map(c => c?.name).filter(Boolean).join(" ") : "")
+      || "";
+    const region = matchHyperlocalRegion(dest);
+    return region ? Array.from(new Set([...base, ...region.sourceIds])) : base;
+  });
   // Pending state for the "Build from this" shortcut. extractingFromGuidelines
   // shows the spinner on the shortcut button; pendingBuildFromGuidelines fires
   // handleBuild on the NEXT render after setState flushes — we cannot call
@@ -10446,7 +11326,7 @@ export default function TripOptimizer() {
         nights: inferredNights || prev.nights,
         travelers: exBasics.travelers || prev.travelers,
         baseArea: exBasics.baseArea || prev.baseArea,
-        budget: exBasics.budget || prev.budget,
+        budget: exBasics.budget != null ? (Array.isArray(exBasics.budget) ? exBasics.budget : [exBasics.budget].filter(Boolean)) : prev.budget,
         style: (Array.isArray(exBasics.style) && exBasics.style.length) ? exBasics.style : prev.style,
         pace: exBasics.pace || prev.pace,
         // Mirror destination into cities[0].name so multi-city machinery
@@ -10774,6 +11654,23 @@ export default function TripOptimizer() {
   // live ONLY on the outputs screen, so reaching the details form — or even the
   // outputs screen — never starts a build until the user taps "Build itinerary".
   const [outputsStep, setOutputsStep] = useState(false);
+
+  // #20 Land at the TOP of the outputs screen whenever it opens. The five
+  // setOutputsStep(true) callers previously scrolled inline in the SAME tick as
+  // the state change — i.e. before the new (taller) screen painted — so the
+  // browser kept a stale offset and the user landed partway down (on the newly
+  // added Expert review sources card) instead of the Output sections card.
+  // Scrolling in an effect after the render lands it correctly, and fixes all
+  // entry points at once. (Same scroll-before-render class as the #2 fix.)
+  useEffect(() => {
+    if (!outputsStep) return;
+    // Defer past this render so the (taller) outputs screen has painted first;
+    // a 0ms timeout lands after layout. (rAF isn't in the lint globals here.)
+    const id = setTimeout(() => {
+      try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+    }, 0);
+    return () => clearTimeout(id);
+  }, [outputsStep]);
 
   // Itinerary is locked on; never let it be toggled into an empty build.
   const togOut = k => { if (k === "itinerary") return; setOut(o => ({ ...o, [k]: !o[k] })); };
@@ -11173,6 +12070,8 @@ TRIP REQUIREMENTS:
 • The exact required day count for this trip is given in the per-trip preamble below. Use the COMPUTED DATE TABLE for every day's weekday and date — do not compute weekdays yourself.
 • Each day MUST include: label, headline (the one-line "if you only do one thing" call), weather (seasonal expectation, NOT a live forecast), and items[].
 • Each day's items[] needs at least 3 items — a typical full day is: morning Activity, midday Activity, evening Dinner. Arrival/departure days also include Flight + Hotel.
+• DAY-SCOPED REQUESTS — HONOR LITERALLY (overrides the pacing default for the named day only): If the traveler specifies how many activities a SPECIFIC day should have (e.g. "one activity on Tuesday", "just one thing on Day 3", "keep the 14th light", "only golf on Saturday"), that count applies to THAT DAY ALONE. Do NOT propagate it to other days and do NOT back-fill the rest of the trip to match it. Days the traveler did not constrain keep the normal pacing for the stated Pace setting. On a day the traveler asked to keep light, the "at least 3 items" guideline YIELDS: that day may legitimately be just one Activity + Dinner (and Flight/Hotel on arrival/departure days). Never inflate a deliberately light day back up to hit the item minimum, and never spread one day's requested activity across every day.
+• TRIP-TOTAL REQUESTS — HONOR LITERALLY AS A WHOLE-TRIP CAP (overrides the per-day pacing default for every day): If the traveler specifies how many activities the ENTIRE TRIP should have (e.g. "2 activities for the trip", "just 3 things total", "only 2 activities the whole stay", "keep it to 4 activities across the week", "minimal — one activity per couple of days"), that count is the SUM across all days, NOT a per-day target. Do NOT multiply it by the day count. Do NOT schedule one activity on every day to satisfy a trip-total ask. Place those N activities on the N most appropriate days (using the same "single most appropriate day" logic as the activities POOL) and leave the other days with NO Activity items — those days are legitimately just morning ambiance + Dinner (plus Flight/Hotel on arrival/departure days), and the "at least 3 items" guideline YIELDS for them the same way it yields on a day-scoped light day. Never spread a trip-total of N activities across more than N days, and never inflate the unconstrained days back to a full pacing default to compensate — a trip-total cap means the traveler explicitly chose a quieter trip.
 • EVERY item in items[] MUST have a "time" field (24h local time, e.g. '08:30', '14:00', '19:30'). Items should appear in chronological order within each day. This is what turns the day into a real time-based itinerary instead of a vague list.
 • Use realistic times: dinner 19:00–20:30, breakfast 07:30–09:00, lunch 12:00–13:30 (only when explicitly asked — see MEAL POLICY below). Activities sized to their duration (museum 2h, hike 3–4h, gallery walk 90min). Add end_time when helpful.
 • TIME FORMAT IN PROSE: The structured "time"/"end_time" fields stay 24h as specified above — the app converts them for display. But in all human-readable prose you write (headlines, why-blurbs, notes, confirmation_notes, flags, tonight, and any recommended/arrival/pickup time mentioned in text), write clock times in 12-hour AM/PM format (e.g. "7:00 PM", never "19:00"). Never use 24-hour/military time in prose.
@@ -11290,7 +12189,7 @@ Otherwise, when the user did NOT state a number, set "flight_number": null. Do N
 • If the user's preferred airline doesn't fly nonstop but a competitor does, mention the competitor nonstop in flags[] AND use the competitor as the carrier — do not falsely claim the preferred airline operates a nonstop it doesn't actually fly.
 
 HOTEL ITEMS:
-• Use a Hotel-type item on arrival day (check-in) and departure day (check-out). Populate the "hotel" object with name, address, phone (formatted, tappable), check_in_time, check_out_time, room_type, confirmation_note.
+• Use a Hotel-type item on arrival day (check-in) and departure day (check-out). Populate the "hotel" object with name, address, phone (formatted, tappable), check_in_time, check_out_time, room_type, website, confirmation_note. For website: include the property's official site URL only when you genuinely know it (e.g. https://www.fourseasons.com/...) — it powers the "Website ↗" button on the hotel card next to Maps/Call. Do NOT fabricate URLs; omit if uncertain. A confirmation pass fills in missing hotel websites where possible.
 • The phone field is critical — it becomes a tappable "Call hotel" CTA in the app.
 
 RESTAURANTS:
@@ -11301,7 +12200,7 @@ RESTAURANTS:
 • If you genuinely do NOT know a restaurant's open_days, omit the field entirely (do not guess). The renderer treats missing open_days as 'assume open' rather than 'closed every day', but you should set closure_note to 'Confirm hours — closure day uncertain' as a safety hint to the traveler.
 • Many fine-dining spots close Mon or Tue. If you're unsure of a closure day, put "Confirm hours — closure day uncertain" in closure_note. The post-build hours check catches real closure-day misses; this is just a quality signal.
 • Always include a same-tier backup in the same neighborhood / cuisine family. Populate open_days on the backup too when you know it — the verifier checks both.
-• reservation.platform: opentable for most US/UK/EU fine dining; resy for trendy NYC/LA/Miami; tock for tasting menus; phone with a phone number for hole-in-the-walls; walkin if no reservations. Include the canonical url when you know it. (A server-side pass grounds platform + url on the actual current booking system after the build, so honest best-guess is fine — just don't fabricate URLs.)
+• reservation.platform: opentable for most US/UK/EU fine dining; resy for trendy NYC/LA/Miami; tock for tasting menus; phone with a phone number for hole-in-the-walls; walkin if no reservations. Include the canonical url when you know it. (A server-side pass grounds platform + url on the actual current booking system after the build, so honest best-guess is fine — just don't fabricate URLs.) IMPORTANT: many famous restaurant names are reused across cities (there is a Per Se in New York AND a Per Se Social Corner in Vancouver; a Carbone in NYC, Miami, Las Vegas, and Dallas; a Le Bernardin in NYC AND a Le Bernardin in Paris). If you're not 100% certain a specific reservation.url points to the venue IN THIS CITY, omit reservation.url entirely — the app will build a safe platform search URL from reservation.platform. A wrong-city URL is worse than no URL.
 • contact.website: include the restaurant's official site URL when you genuinely know it (e.g. https://thecompoundrestaurant.com). The website button is rendered next to Reserve so travelers can see menus, photos, and verify hours directly. Do NOT fabricate URLs — omit the field if uncertain. A separate confirmation pass fills in missing websites where possible.
 • The 'menu' field on the restaurant schema is reserved for legacy use. DO NOT populate it for new builds — the View Menu button on every card lazy-fetches it from /api/menu, which is grounded on the restaurant's actual current offerings. Emitting menus inline wastes ~500 tokens per restaurant and adds 30-60 seconds to multi-day builds.
 
@@ -11359,7 +12258,18 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
       ? `\nFIELD EMISSION ORDER OVERRIDE — MULTI-CITY: this is a multi-city trip. Insert a cities[] field between meta and days in the tool input, so the order becomes: destination, meta, cities, days, logistics, flags, planb, snobs, tonight.`
       : "";
 
-    const dynamicPreamble = `PER-TRIP REQUIREMENTS (these are the trip-specific values + overrides referenced by the static rulebook above — follow them strictly):${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}
+    // Activity-count hard cap. Deterministic classifier scans the
+    // narrative + guidelines for phrasings the static TRIP-TOTAL
+    // REQUESTS rule (above) might miss. When detected, inject a
+    // machine-readable hard cap so the model has zero room to default
+    // to per-day pacing. Closes the recurrence reported 2026-06-30 PM
+    // ("one activity during the entire itinerary" → model gave one
+    // per day). Post-build enforcement in applyQualityLayer is the
+    // suspenders.
+    const _activityCountConstraint = classifyActivityCountConstraint({ narrative, guidelines });
+    const _activityCountRuleBlock = renderActivityCountPromptRule(_activityCountConstraint) || "";
+
+    const dynamicPreamble = `PER-TRIP REQUIREMENTS (these are the trip-specific values + overrides referenced by the static rulebook above — follow them strictly):${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}${_activityCountRuleBlock}
 ${_destinationFactsBlock}
 
 ${totalDaysLine}${_multiCityFieldOrder}${multiCityBlock}${_marqueePreamble}${_airportPreamble}${_routePreamble}`;
@@ -11415,13 +12325,13 @@ Start date: ${formatDateForDisplay(basics.startDate) || basics.startDate}${basic
 Return date: ${formatDateForDisplay(basics.endDate) || basics.endDate}` : ""}
 Nights: ${isMultiCity ? totalNightsFromCities : basics.nights}${isMultiCity ? "  (" + cities.map(c => `${c.nights} in ${c.name}`).join(" + ") + ")" : ""}
 Travelers: ${basics.travelers}
-Style: ${prefToText(basics.style)} · Pace: ${basics.pace || "No preference"} · Budget: ${basics.budget || "No preference"}
+Style: ${prefToText(basics.style)} · Pace: ${basics.pace || "No preference"} · Budget: ${prefToText(basics.budget)}
 ${flights.noFlight ? `Transportation mode: GROUND ONLY (${groundModeText}). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the ${trainAllowed ? "drive or rail" : "drive"} journey from the user's origin to the destination, with realistic time + distance.` : `Home airport: ${flights.homeAirport} (use IATA ${extractAirportCode(flights.homeAirport)} on Flight items) · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin || "no preference"}`}
 Hotel brand: ${prefToText(hotel.brand)}${hotel.tier ? ` · ${hotel.tier}` : ""} · Must-haves: ${hotel.mustHave || "none"}
 Transport: ${prefToText(transport.type)}${transport.company ? ` · ${transport.company}` : ""}
 Cuisine: ${dining.cuisine || "local"} · Dinner budget: ${prefToText(dining.budget)}
 Restaurants requested: ${restaurants.length ? restaurants.join(", ") : "suggest"}
-Activities requested: ${activities.length ? activities.join(", ") : "suggest based on style"}
+Activities requested${activities.length ? " (this is a POOL to draw from — place each on the SINGLE most appropriate day; do NOT schedule the same activity on multiple days, and do NOT treat this list as a per-day quota)" : ""}: ${activities.length ? activities.join(", ") : "suggest based on style"}
 Interests: ${interests.text || "not specified"} · Level: ${interests.level || "No preference"}
 Include sections: ${active}
 ${guidelines && guidelines.trim() ? `
@@ -11803,8 +12713,10 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // "Still building" notice scales with expected build time so we don't
     // claim a 3-city plan is slow at 90s when 4-5 min is normal.
     const slowNoticeMs = Math.max(90000, Math.round(targetSec * 1000 * 0.75));
+    // #17 Derive the "still building" range from the trip's own targetSec so it
+    // never contradicts the hero/in-build estimate with a hardcoded "2-3 min".
     const typicalMin = Math.max(2, Math.round(targetSec / 60));
-    const typicalRange = citiesCount > 1 ? `${typicalMin}–${typicalMin + 2} minutes` : "2–3 minutes";
+    const typicalRange = `${typicalMin}–${typicalMin + 2} minutes`;
     const slowNotice = setTimeout(() => {
       setLoadingMsg(prev => prev.includes("still building") ? prev : `Still building — detailed plans typically take ${typicalRange}…`);
     }, slowNoticeMs);
@@ -12185,6 +13097,10 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       maxPollMs: maxPollMsForTrip,
       onJob,
       onDelta: () => {},
+      // #24: surface a microcopy when the live stream stalls and we fall over
+      // to KV polling. The build keeps progressing server-side; the UI just
+      // tells the user we're switching transports so it doesn't look hung.
+      onStallNotice: (msg) => { try { setLoadingMsg(msg); } catch {} },
     });
     // A chunk that ends on max_tokens is truncated regardless of how well its
     // JSON parses — its tail days/items may be cut off. Fail loudly (surface
@@ -12757,7 +13673,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       try {
         const retrieveCtrl = new AbortController();
         const retrieveTimeout = setTimeout(() => retrieveCtrl.abort(), 18000);
-        const defaultSourceIds = REVIEWER_SOURCES.filter(s => s.dflt).map(s => s.id);
+        // #8 Use the user's PRE-BUILD picked reviewer sources (lifted to wizard
+        // state) instead of the hardcoded defaults. Falls back to the dflt set if
+        // somehow empty, so the pre-build local-knowledge pass always has sources.
+        const preBuildSourceIds = (Array.isArray(reviewerSourceIds) && reviewerSourceIds.length)
+          ? reviewerSourceIds
+          : REVIEWER_SOURCES.filter(s => s.dflt).map(s => s.id);
         const retrieveResp = await fetch("/api/review-retrieve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -12766,7 +13687,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             destination: destForRetrieve,
             restaurants: Array.isArray(restaurants) ? restaurants.slice(0, 6) : [],
             activities: Array.isArray(activities) ? activities.slice(0, 4) : [],
-            sources: defaultSourceIds,
+            sources: preBuildSourceIds,
           }),
         });
         clearTimeout(retrieveTimeout);
@@ -13101,12 +14022,17 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   return (
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)" }}>
 
+      {/* #9 — First-visit App Intro overlay. Self-gated; renders null when
+          already dismissed, when ?direct=1 is on the URL, or when running
+          as an installed PWA. Sits above the wizard chrome at z-index 9999. */}
+      <AppIntroOverlay />
+
       <div style={{ padding: vp.isMobile ? "1.5rem 0 1.25rem" : "2rem 0 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}>
         <div style={{ maxWidth: colMaxWidth, margin: "0 auto", padding: vp.isMobile ? "0 1rem" : "0 1.5rem" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
           <div style={{ minWidth: 0, flex: 1 }}>
             <p style={{ fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 8px", color: "var(--color-text-secondary)" }}>Travel planning</p>
-            <p style={{ fontSize: "28px", fontWeight: "400", margin: "0 0 10px", color: "var(--color-text-primary)", letterSpacing: "-0.5px", fontFamily: "var(--font-serif)", fontStyle: "italic" }}>Trip Optimizer</p>
+            <img src="/rs3-wordmark.svg?v=3" alt="Route Smith" style={{ display: "block", height: vp.isMobile ? "44px" : "64px", width: "auto", margin: "0 0 10px" }} />
             <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
               <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Powered by</span>
               <img
@@ -13116,6 +14042,33 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               />
             </div>
           </div>
+          {/* #1 Hero Reset — always available on the hero so the user can start
+              fresh without hunting for the in-form reset. Destructive, so it
+              confirms first; resets form, plan, review state, and outputs. */}
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm("Start over? This clears the current trip details, the built itinerary, and resets section choices.")) {
+                resetFormToBlank();
+                setOut(resolveOutputs(null));
+                setResult(null);
+                setCurrentSavedTripId(null);
+                setReviewState(null);
+                setOutputsStep(false);
+                setStep(1);
+                try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+              }
+            }}
+            aria-label="Reset and start over"
+            title="Clear everything and start a fresh trip"
+            style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: "6px", background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", fontWeight: 500, whiteSpace: "nowrap" }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 12a9 9 0 1 0 3-6.7" />
+              <path d="M3 3v5h5" />
+            </svg>
+            <span>Reset</span>
+          </button>
         </div>
         <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "14px 0 18px" }} />
 
@@ -13135,7 +14088,18 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.45, maxWidth: "52ch" }}>
               {findOnly
                 ? "Skip the wizard. Type a city, get hand-picked restaurants and activities in about a minute, with locals' picks auto-added."
-                : "Day-by-day itinerary with hotels, restaurants, activities, transport. 3 to 15 minutes depending on trip size."}
+                : (() => {
+                    const base = "Day-by-day itinerary with hotels, restaurants, activities, transport. ";
+                    if (canEstimateBuild(basics)) {
+                      const { text } = estimateBuildMinutes({
+                        nights: basics.nights,
+                        citiesCount: (cities && cities.length) || 1,
+                        outputsCount: Object.values(outputs || {}).filter(Boolean).length,
+                      });
+                      return base + `Estimated ${text} for this trip — larger trips take longer.`;
+                    }
+                    return base + "Can take more than 5 minutes depending on trip size.";
+                  })()}
             </p>
           </div>
           <button
@@ -13161,7 +14125,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           >
             <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-primary)", letterSpacing: "0.02em", whiteSpace: "nowrap" }}>Find local info only</span>
             <span aria-hidden="true" style={{ width: "34px", height: "20px", borderRadius: "999px", background: findOnly ? GOLD : "var(--color-border-secondary)", position: "relative", transition: "background 0.15s", flexShrink: 0 }}>
-              <span style={{ position: "absolute", top: "2px", left: findOnly ? "16px" : "2px", width: "16px", height: "16px", borderRadius: "50%", background: "#fff", transition: "left 0.15s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)" }} />
+              <span style={{ position: "absolute", top: "2px", left: findOnly ? "16px" : "2px", width: "16px", height: "16px", borderRadius: "50%", background: "var(--color-background-primary)", transition: "left 0.15s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)" }} />
             </span>
           </button>
         </div>
@@ -13221,7 +14185,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                     type="button"
                     onClick={navHandler}
                     title={`Go to ${s}`}
-                    style={{ background: "transparent", border: "none", padding: "2px 0", cursor: "pointer", color: textColor, fontSize: "inherit", letterSpacing: "inherit", textTransform: "inherit", fontFamily: "inherit", textDecoration: "underline", textDecorationColor: "rgba(196, 168, 98, 0.4)", textUnderlineOffset: "3px" }}
+                    style={{ background: "transparent", border: "none", padding: "2px 0", cursor: "pointer", color: textColor, fontSize: "inherit", letterSpacing: "inherit", textTransform: "inherit", fontFamily: "inherit", textDecoration: "underline", textDecorationColor: "rgba(91, 101, 119, 0.4)", textUnderlineOffset: "3px" }}
                   >{s}</button>
                 ) : (
                   <span style={{ color: textColor, fontWeight: isCurrent ? 600 : 400 }}>{s}</span>
@@ -13297,12 +14261,23 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                   placeholder={"e.g. United UA 57 EWR→CDG Sept 12 dep 18:55, return UA 58 Sept 19. Staying at Le Bristol Paris Sept 12–19, conf #BRST44A21. Dinners: Le Comptoir du Relais night 1, Le Cinq for anniversary on the 14th (already booked, 8pm), Frenchie night 3. Want a private driver from arrival through departure. Wife has a knee injury — no long walks or stairs-heavy days. Home by 9pm. Skip the Louvre, we've done it."}
                 />
               </Field>
-              {/* "Build from this →" shortcut. Appears when the box has enough
-                  text to be worth extracting from (~80 chars). Click → extract
-                  fields from narrative → jump straight to build. The full
-                  guidelines text still flows through to the build prompt as
-                  SOURCE OF TRUTH, so nothing is lost in translation. */}
-              {(guidelines || "").trim().length >= 80 && (
+              {/* "Build from this →" shortcut. Appears when the box looks like
+                  a real trip prompt: ≥ 20 chars AND ≥ 4 whitespace-separated
+                  tokens. Covers short brain-dumps like "3 nights in Saratoga.
+                  High end. October" (39 chars / 7 tokens) while still hiding
+                  the button for one-word fragments or random scribbles.
+                  Click → extract fields from narrative → jump straight to
+                  build. The full guidelines text still flows through to the
+                  build prompt as SOURCE OF TRUTH, so nothing is lost in
+                  translation. /api/extract-trip returns a 422 (already
+                  surfaced inline below) if it can't find a destination, so a
+                  generous client gate is safe. */}
+              {(() => {
+                const t = (guidelines || "").trim();
+                if (t.length < 20) return false;
+                const tokens = t.split(/\s+/).filter(Boolean).length;
+                return tokens >= 4;
+              })() && (
                 <div style={{ marginTop: "14px", display: "flex", flexDirection: "column", alignItems: "stretch", gap: "6px" }}>
                   <button
                     type="button"
@@ -13320,7 +14295,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                       width: "100%",
                       fontFamily: "inherit",
                       background: GOLD,
-                      color: "#1a1a1a",
+                      color: ON_NAVY,
                       opacity: (extractingFromGuidelines || loading) ? 0.6 : 1,
                     }}
                     aria-label="Build the trip directly from this narrative"
@@ -13332,7 +14307,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                       (or a network blip) used to dim the button and vanish
                       with no feedback. Render error here so the user sees it. */}
                   {error && (
-                    <p role="alert" style={{ fontSize: "12px", color: "var(--color-text-danger, #c0392b)", margin: 0, textAlign: "center", lineHeight: 1.5 }}>{error}</p>
+                    <p role="alert" style={{ fontSize: "12px", color: "var(--color-text-danger, var(--color-text-danger))", margin: 0, textAlign: "center", lineHeight: 1.5 }}>{error}</p>
                   )}
                   <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, textAlign: "center", fontStyle: "italic", lineHeight: 1.5 }}>
                     Skip the form — we'll extract destination, dates, and details and build straight from your narrative.
@@ -13441,8 +14416,8 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               )}
             </div>
 
-            <button disabled={!ready} onClick={() => { if (ready) { setOutputsStep(false); setStep(2); } }}
-              style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: ready ? "pointer" : "not-allowed", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: ready ? "var(--color-text-primary)" : "var(--color-border-secondary)", color: "var(--color-background-primary)", opacity: ready ? 1 : 0.5 }}>
+            <button disabled={!ready} onClick={() => { if (ready) { setOutputsStep(false); setStep(2); /* #2: always land at the top of Details (Trip style) on every viewport. Without this, mobile kept the prior scroll offset and opened partway down at Flights while desktop showed the top. */ try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } } }}
+              style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: ready ? "pointer" : "not-allowed", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: ready ? "var(--color-text-primary)" : "var(--color-surface-offset)", color: ready ? "var(--color-background-primary)" : "var(--color-text-tertiary)", opacity: ready ? 1 : 0.7 }}>
               Continue — Add Details →
             </button>
             <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "8px", textAlign: "center", minHeight: "16px", fontStyle: "italic" }}>
@@ -13522,7 +14497,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               <Field label="Style" hint="Tap one or more"><Sel multi value={basics.style} onChange={e => setB({ ...basics, style: e.target.value })} opts={["Cultural / sightseeing","Golf / sport","Food & wine","Beach / relaxation","Adventure / outdoor","Mixed"]} /></Field>
               <div style={{ ...g2r, marginTop: "16px" }}>
                 <Field label="Pace"><Sel value={basics.pace} onChange={e => setB({ ...basics, pace: e.target.value })} opts={["Relaxed (1–2 things/day)","Moderate (2–3 things/day)","Full (3–4 things/day)"]} /></Field>
-                <Field label="Budget"><Sel value={basics.budget} onChange={e => setB({ ...basics, budget: e.target.value })} opts={["$$ — value","$$$ — mid range","$$$$ — luxury","$$$$$ — ultra high end"]} /></Field>
+                <Field label="Budget" hint="Tap one or more"><Sel multi value={basics.budget} onChange={e => setB({ ...basics, budget: e.target.value })} opts={["$$ — value","$$$ — mid range","$$$$ — luxury","$$$$$ — ultra high end"]} /></Field>
               </div>
             </div>
 
@@ -13591,7 +14566,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
             {/* Primary CTA off the Details screen — pure navigation to the
                 Outputs screen. It does NOT start a build (see Issue 1). */}
-            <button onClick={() => { setOutputsStep(true); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }}
+            <button onClick={() => { setOutputsStep(true); /* #20 scroll handled by the outputsStep effect (after render) */ }}
               style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
               Jump to select outputs →
             </button>
@@ -13605,6 +14580,34 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               <p style={ctStyle}>{`Output sections  ·  ${activeCount} of 12 active`}</p>
               {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} disabled={k === "itinerary"} />)}
             </div>
+
+            {/* #8 Pre-build expert-review source picker. The review runs
+                automatically after the build (#8 part 1); choosing the sources
+                HERE means the pre-build local-knowledge pass and the auto-review
+                both use exactly what the user wants. Selected = navy pill w/
+                light label (ON_NAVY, avoiding the navy-on-navy contrast bug). */}
+            {!findOnly && (
+              <div style={cardStyleR}>
+                <p style={ctStyle}>{`Expert review sources  ·  ${reviewerSourceIds.length} selected`}</p>
+                <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 10px", lineHeight: 1.4 }}>
+                  After the build, a panel of these sources reviews your plan and suggests fixes. Tap to add or remove.
+                </p>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {REVIEWER_SOURCES.filter(s => s.lens !== "hyperlocal").map(s => {
+                    const on = reviewerSourceIds.includes(s.id);
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        title={s.blurb}
+                        onClick={() => setReviewerSourceIds(prev => prev.includes(s.id) ? prev.filter(x => x !== s.id) : [...prev, s.id])}
+                        style={{ fontSize: "11px", padding: "6px 12px", borderRadius: "999px", border: `0.5px solid ${on ? "var(--color-text-primary)" : "var(--color-border-secondary)"}`, background: on ? "var(--color-text-primary)" : "transparent", color: on ? ON_NAVY : "var(--color-text-secondary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", whiteSpace: "nowrap" }}
+                      >{on ? "\u2713 " : ""}{s.name}</button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             <div style={{ display: "flex", gap: "10px", marginTop: "0.5rem" }}>
               <button onClick={() => { setOutputsStep(false); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }} disabled={loading} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", opacity: loading ? 0.5 : 1 }}>← Back</button>
@@ -13634,7 +14637,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 Continue rewrites form state and arms the build; Edit narrative
                 bounces back to step 1 unchanged. */}
             {pendingNameChecks && pendingNameChecks.checks.length > 0 && (
-              <div style={{ marginTop: "14px", padding: "14px 16px", border: `1px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", background: "#FFFCF4" }}>
+              <div style={{ marginTop: "14px", padding: "14px 16px", border: `1px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
                 <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Please confirm</p>
                 <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 12px", lineHeight: 1.5 }}>
                   A couple of names in your narrative aren't a clean match. Pick the right one so we don't silently substitute the wrong property.
@@ -13646,7 +14649,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                     resolutions: { ...prev.resolutions, [i]: { ...resolution, ...patch } },
                   } : prev);
                   return (
-                    <div key={i} style={{ marginBottom: "14px", paddingBottom: "12px", borderBottom: i < pendingNameChecks.checks.length - 1 ? "1px solid #F0E8D2" : "none" }}>
+                    <div key={i} style={{ marginBottom: "14px", paddingBottom: "12px", borderBottom: i < pendingNameChecks.checks.length - 1 ? "1px solid var(--color-surface-2)" : "none" }}>
                       <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 4px", textTransform: "uppercase", letterSpacing: "0.08em" }}>{c.kind}</p>
                       <p style={{ fontSize: "14px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>
                         You wrote: <span style={{ fontStyle: "italic" }}>“{c.original}”</span>
@@ -13674,7 +14677,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                             placeholder="Type the correct name"
                             onChange={(e) => setRes({ choice: "custom", value: e.target.value })}
                             onFocus={() => setRes({ choice: "custom" })}
-                            style={{ flex: 1, fontSize: "13px", padding: "6px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "#fff", fontFamily: "inherit", color: "var(--color-text-primary)", outline: "none" }}
+                            style={{ flex: 1, fontSize: "13px", padding: "6px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "var(--color-background-primary)", fontFamily: "inherit", color: "var(--color-text-primary)", outline: "none" }}
                           />
                         </label>
                       </div>
@@ -13684,14 +14687,14 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 <div style={{ display: "flex", gap: "10px", marginTop: "8px" }}>
                   <button onClick={cancelNameChecks} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>← Edit narrative
                   </button>
-                  <button onClick={confirmNameChecks} style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: GOLD, color: "#1a1a1a" }}>
+                  <button onClick={confirmNameChecks} style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: GOLD, color: ON_NAVY }}>
                     Continue →
                   </button>
                 </div>
               </div>
             )}
             {(loading || extractingFromGuidelines) && (
-              <div ref={progressPanelRef} style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, #fafafa)" }}>
+              <div ref={progressPanelRef} style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, var(--color-background-secondary))" }}>
                 {/* Progress bar honesty.
                     Once progress pegs at ≥95% the percentage is no longer
                     informative — the time-based estimator has saturated and
@@ -13727,7 +14730,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                           In long-tail mode show the indeterminate stripe so
                           the bar visibly KEEPS MOVING instead of sitting
                           frozen at 95%. */}
-                      <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, #eee)", overflow: "hidden", position: "relative" }}>
+                      <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, var(--color-border-tertiary))", overflow: "hidden", position: "relative" }}>
                         {longTail ? (
                           <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
                         ) : progress > 0 ? (
@@ -13749,8 +14752,21 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 )}
               </div>
             )}
-            {error && <p style={{ fontSize: "12px", color: "var(--color-text-danger, #c0392b)", marginTop: "8px", textAlign: "center" }}>{error}</p>}
-            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>{isMultiCity && cities.length >= 3 ? "Typical 3‑city plan: 5–7 minutes. Stays building if you switch tabs." : isMultiCity ? "Typical multi‑city plan: 3–5 minutes. Stays building if you switch tabs." : "Typical plan: 2–3 minutes. Stays building if you switch tabs."}</p>
+            {error && <p style={{ fontSize: "12px", color: "var(--color-text-danger, var(--color-text-danger))", marginTop: "8px", textAlign: "center" }}>{error}</p>}
+            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>{(() => {
+              // #17 Use the SAME dynamic estimate as the hero (estimateBuildMinutes)
+              // so the in-build caption never contradicts the pre-build figure.
+              // Falls back to the generic message if we somehow can't estimate.
+              if (canEstimateBuild(basics)) {
+                const { text } = estimateBuildMinutes({
+                  nights: basics.nights,
+                  citiesCount: (cities && cities.length) || 1,
+                  outputsCount: Object.values(outputs || {}).filter(Boolean).length,
+                });
+                return `Estimated ${text} for this trip. Stays building if you switch tabs.`;
+              }
+              return "Can take more than 5 minutes. Stays building if you switch tabs.";
+            })()}</p>
             </>
             )}
           </div>
@@ -13798,6 +14814,8 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             onPlanRevised={handlePlanRevised}
             onReviewChange={handleReviewChange}
             initialReview={reviewState}
+            reviewerSourceIds={reviewerSourceIds}
+            onReviewerSourcesChange={setReviewerSourceIds}
           />
         )}
 

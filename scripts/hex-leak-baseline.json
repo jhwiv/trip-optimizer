@@ -1,0 +1,4 @@
+{
+  "_comment": "Ceiling for hex color literals in src/App.jsx, enforced by scripts/audit-hex-leaks.js. Set to the current post-exclusion count (5) plus headroom of 2. The 5 counted leaks are intentional and cannot be tokenized in this pass: the #e3eef0 Hotel-badge background (and its TODO comment) awaiting a future --color-accent-tint token, plus three #ffffff literals in the html2canvas/jsPDF export path (DOM-capture bg, html2canvas backgroundColor, and a canvas 2D ctx.fillStyle) which feed a rasterizer that cannot resolve CSS custom properties. Never raise it without justification.",
+  "maxHexLiterals": 7
+}

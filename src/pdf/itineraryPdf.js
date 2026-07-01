@@ -34,11 +34,11 @@ const COLOR = {
   ink: [17, 17, 17],          // body text
   inkSoft: [85, 85, 85],      // secondary
   inkFaint: [140, 140, 140],  // meta / footer
-  gold: [201, 169, 97],       // #C9A961 brand accent
+  gold: [180, 130, 40],       // warm amber-gold accent (links, headers, rules)
   rule: [220, 220, 220],      // dividers
   ruleSoft: [240, 240, 240],  // row separators
   warn: [180, 90, 40],        // ⚠︎ markers
-  bgChip: [248, 244, 232],    // pale gold tint for chips
+  bgChip: [255, 248, 225],    // warm pale gold tint for chips
 };
 
 const FONT = {
@@ -504,8 +504,9 @@ function titleCase(s) {
 // -----------------------------------------------------------------------------
 // COVER PAGE
 // -----------------------------------------------------------------------------
-function renderCover(cur, data, inputs, _opts) {
+function renderCover(cur, data, inputs, opts = {}) {
   const { pdf } = cur;
+  const { coverPhoto } = opts;
   // Title text. For a multi-city trip the destination field becomes a long
   // "A -> B -> C -> ..." chain which sets unevenly at 26pt and screams
   // "unformatted code". If we have a structured cities array, use the first
@@ -524,9 +525,20 @@ function renderCover(cur, data, inputs, _opts) {
   }
   const meta = safe(data?.meta || "");
 
-  // Compact top — tightened from 14mm to 8mm so the cover packs more onto
-  // page 1 (user feedback: too much white space).
-  cur.space(8);
+  // Cover photo hero — full-width image at the top of the cover page.
+  // Renders only when a data URL was fetched by the caller; silently skipped
+  // when the /api/destination-photo request failed or returned nothing.
+  if (coverPhoto) {
+    const photoW = PAGE.width - PAGE.marginX * 2;
+    const photoH = 52; // mm — tall enough for visual impact, fits with content below
+    try {
+      pdf.addImage(coverPhoto, "JPEG", PAGE.marginX, cur.state.y, photoW, photoH, undefined, "FAST");
+      cur.state.y += photoH + 6;
+    } catch { /* addImage failure silently falls through to text-only cover */ }
+  } else {
+    // No photo: use the compact vertical spacing from before.
+    cur.space(8);
+  }
 
   // Eyebrow
   pdf.setFont(FONT.sans, "bold");
@@ -1035,8 +1047,18 @@ function renderLinkLine(cur, label, value, url, x, maxW) {
 
 function renderFlightBlock(cur, fl, x, maxW) {
   // Single combined headline line: "United UA 1234 · EWR 8:45 AM → ABQ 11:20 AM · 4h 35m"
+  // Ident: a schedule-resolved number (e.g. "UA1792") already carries its own
+  // carrier prefix and is self-labeled, so pairing it with fl.carrier would
+  // double-prefix it ("United UA1792"). Mirror the on-screen title logic: show
+  // the number alone when it's self-prefixed/auto-resolved; otherwise pair
+  // carrier + number.
+  const _fn = fl.flight_number ? String(fl.flight_number).trim() : "";
+  const _selfPrefixed = fl._autoResolvedFlightNumber || /^[A-Z0-9]{2}\s?\d{1,4}$/.test(_fn);
+  const ident = _fn
+    ? (_selfPrefixed ? _fn : [fl.carrier, _fn].filter(Boolean).join(" "))
+    : (fl.carrier || "");
   const headline = [
-    [fl.carrier, fl.flight_number].filter(Boolean).join(" "),
+    ident,
     [fl.from_airport, to12h(fl.depart_time)].filter(Boolean).join(" "),
     "→",
     [fl.to_airport, to12h(fl.arrive_time)].filter(Boolean).join(" "),
@@ -1046,6 +1068,20 @@ function renderFlightBlock(cur, fl, x, maxW) {
   if (headline) renderDetailLine(cur, "Flight", headline, x, maxW);
   if (fl.cabin) renderDetailLine(cur, "Cabin", fl.cabin, x, maxW);
   if (fl.aircraft) renderDetailLine(cur, "Aircraft", fl.aircraft, x, maxW);
+  // #12 Honesty qualifier: a schedule-resolved (not user-confirmed) number is
+  // the scheduled operating flight, not a guaranteed booking — say so, matching
+  // the on-screen "verify" framing.
+  if (fl.flight_number && fl._autoResolvedFlightNumber && !fl._userSuppliedFlightNumber) {
+    renderDetailLine(cur, "Verify", "Flight number is the scheduled operating flight — confirm at booking.", x, maxW);
+  }
+  // #12 follow-up: when both /api/flights-search attempts (airline-filtered
+  // + route-only retry) missed AND the model also omitted clock times, the
+  // resolver flags the flight with _timesUnconfirmed so the PDF can render
+  // an honest line in place of the blank we used to leave behind. See
+  // docs/wiki/concepts/flight-resolver-gaps.md.
+  if (fl._timesUnconfirmed && !(fl.depart_time && fl.arrive_time)) {
+    renderDetailLine(cur, "Times", "Not yet confirmed — check with airline at booking.", x, maxW);
+  }
   if (fl.confirmation_note) renderDetailLine(cur, "Note", fl.confirmation_note, x, maxW);
   const bookUrl = carrierBookUrl(fl.carrier);
   if (bookUrl) renderLinkLine(cur, "Book", bookUrl, bookUrl, x, maxW);
@@ -1570,7 +1606,7 @@ function renderFooters(pdf, opts) {
 // PUBLIC ENTRYPOINT
 // -----------------------------------------------------------------------------
 export async function buildItineraryPdf(data, inputs, options = {}) {
-  const { setStatus, buildId, providers } = options;
+  const { setStatus, buildId, providers, coverPhoto } = options;
   if (setStatus) setStatus("Loading PDF engine…");
 
   const jsPDFModule = await import("jspdf");
@@ -1592,7 +1628,7 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
   const cur = makeCursor(pdf);
 
   // 1. Cover
-  renderCover(cur, data, inputs, { buildId });
+  renderCover(cur, data, inputs, { buildId, coverPhoto });
 
   // 2. Introduction page — a dedicated full page after the cover and before
   // the Day-by-Day section. Skipped silently if data.introduction is missing

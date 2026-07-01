@@ -90,8 +90,12 @@ const defaultOutputsMatch = OUTPUTS_SRC.match(/DEFAULT_OUTPUTS\s*=\s*Object\.fre
 assert("DEFAULT_OUTPUTS literal found in outputsState.js", !!defaultOutputsMatch, "could not locate DEFAULT_OUTPUTS");
 const defaultsBody = defaultOutputsMatch ? defaultOutputsMatch[1] : "";
 assert("DEFAULT_OUTPUTS: itinerary defaults true", outputDefault(defaultsBody, "itinerary") === "true", `got: ${outputDefault(defaultsBody, "itinerary")}`);
+// #4: preselect all sections EXCEPT the last two in display order
+// (badges, pronunciation). Everything else defaults ON.
+const DEFAULT_OFF = ["badges", "pronunciation"];
 for (const key of OUTPUT_KEYS.filter(k => k !== "itinerary")) {
-  assert(`DEFAULT_OUTPUTS: ${key} defaults false`, outputDefault(defaultsBody, key) === "false", `got: ${outputDefault(defaultsBody, key)}`);
+  const want = DEFAULT_OFF.includes(key) ? "false" : "true";
+  assert(`DEFAULT_OUTPUTS: ${key} defaults ${want}`, outputDefault(defaultsBody, key) === want, `got: ${outputDefault(defaultsBody, key)}`);
 }
 // App.jsx must restore outputs from the recovered snapshot (not hardcode them)
 // so a remount keeps the user's selection — guard against a regression back to

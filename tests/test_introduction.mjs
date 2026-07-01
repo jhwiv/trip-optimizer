@@ -11,6 +11,7 @@ import {
   shapeIntroRequest,
   normalizeIntroduction,
   applyGeneratedIntroduction,
+  isPdfDownloadReady,
 } from "../src/introduction.js";
 
 let passed = 0, failed = 0;
@@ -136,6 +137,70 @@ assert("apply canonicalizes NONE_FLAGGED", nf.introduction.differentiators === N
 
 // default options (no opts arg) behaves as force:false
 assert("default opts = no force (no clobber)", applyGeneratedIntroduction(userPlan, gen) === userPlan);
+
+// ---- isPdfDownloadReady (PDF download gate) ------------------------------
+// State-exposure path behind PR #69 race fix: the IntroductionAutoGenerator
+// now lifts its isGenerating boolean via onGeneratingChange and the Save as
+// PDF button is gated by this pure helper. The button stays disabled with a
+// "Preparing introduction…" label while the headless POST /api/introduction
+// call is in flight, and falls open the moment the intro is populated OR the
+// generator finishes (success OR failure) so a silent server error never
+// permanently blocks the PDF.
+console.log("=== isPdfDownloadReady ===");
+
+// Intro populated — always ready, regardless of isGenerating (covers the
+// success path the moment onPlanRevised lands the new plan on the parent).
+const planWithIntro = { ...samplePlan, introduction: { arc: "populated", differentiators: "" } };
+assert(
+  "ready when intro is populated and generator idle",
+  (() => { const g = isPdfDownloadReady({ plan: planWithIntro, isGenerating: false }); return g.ready === true && g.label === ""; })(),
+);
+assert(
+  "ready when intro is populated even if isGenerating flag still true (race-safe)",
+  isPdfDownloadReady({ plan: planWithIntro, isGenerating: true }).ready === true,
+);
+assert(
+  "NONE_FLAGGED diff counts as a populated intro (PDF will render honest no-diffs note)",
+  isPdfDownloadReady({ plan: { ...samplePlan, introduction: { arc: "a", differentiators: NONE_FLAGGED } }, isGenerating: false }).ready === true,
+);
+
+// Gate CLOSED only while the generator is in flight on an intro-less plan.
+const gateClosed = isPdfDownloadReady({ plan: samplePlan, isGenerating: true });
+assert("not ready while generating on an intro-less plan", gateClosed.ready === false);
+assert("label is the 'Preparing introduction…' copy when gated", gateClosed.label === "Preparing introduction…");
+
+// Gate releases on generator FAILURE — isGenerating false + still no intro.
+// This is the critical "never permanently block the PDF" guarantee: a silent
+// /api/introduction error leaves the plan introduction-less but the gate is
+// open so the user can still ship the PDF (it will just have no intro page).
+assert(
+  "ready when generator finished (failure path: no intro, not generating)",
+  isPdfDownloadReady({ plan: samplePlan, isGenerating: false }).ready === true,
+);
+assert(
+  "label is empty when ready (button shows 'Save as PDF', not the gated label)",
+  isPdfDownloadReady({ plan: samplePlan, isGenerating: false }).label === "",
+);
+
+// Plans that don't need an intro (no days) — always ready, no gating needed.
+assert(
+  "ready when plan has no days (auto-gen disabled) and not generating",
+  isPdfDownloadReady({ plan: { destination: "X", days: [] }, isGenerating: false }).ready === true,
+);
+
+// Defensive defaults — the helper must not throw on missing args or junk.
+assert(
+  "no args -> ready (helper never throws, defaults to open gate)",
+  isPdfDownloadReady().ready === true,
+);
+assert(
+  "null plan + not generating -> ready",
+  isPdfDownloadReady({ plan: null, isGenerating: false }).ready === true,
+);
+assert(
+  "null plan + generating -> still gated (covers very first render before plan settles)",
+  isPdfDownloadReady({ plan: null, isGenerating: true }).ready === false,
+);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

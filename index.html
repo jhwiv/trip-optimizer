@@ -10,7 +10,7 @@
 
     <!-- PWA: installable home-screen app -->
     <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="theme-color" content="#C4A862" />
+    <meta name="theme-color" content="#1c2840" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=2" />
     <link rel="icon" type="image/png" sizes="64x64" href="/favicon-64.png?v=2" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2" />
@@ -21,22 +21,64 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Trip" />
 
-    <title>Trip Optimizer</title>
+    <title>Route Smith</title>
     <style>
       :root {
         --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
         --font-serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
         --color-background-primary: #FFFFFF;
-        --color-background-secondary: #F2EFEA;
-        --color-text-primary: #0F0F0F;
-        --color-text-secondary: #3D3D3D;
-        --color-text-tertiary: #6A6A6A;
-        --color-text-danger: #B23A2A;
-        --color-border-primary: #6A6A6A;
-        --color-border-secondary: #B8B3AA;
-        --color-border-tertiary: #D8D3C9;
+        --color-background-secondary: #f8f7f3;
+        --color-text-primary: #1c2840;
+        --color-text-secondary: #5b6577;
+        --color-text-tertiary: #9aa1ad;
+        --color-text-danger: #9b3a2e;
+        --color-border-primary: #5b6577;
+        --color-border-secondary: #dcd8cf;
+        --color-border-tertiary: #e6e3da;
+
+        /* BID core additions */
+        --color-accent: #3f7d86;
+        --color-accent-hover: #316169;
+        /* --color-gold retired (branding sweep): accents now navy/silver. Alias kept as navy so any stray reference renders on-palette. */
+        --color-gold: #1c2840;
+        --color-cream: #f2f0ea;
+        --color-surface-2: #f2f0ea;
+        --color-surface-offset: #eceae3;
+
+        /* Semantic states */
+        --color-warning: #874a14;
+        --color-warning-hover: #7a3d00;
+        --color-warning-tint: #f1e3cf;
+        --color-danger-hover: #7e2a23;
+        --color-danger-tint: #f3e0db;
+
+        /* Badge categoricals */
+        --color-info: #2f5d83;
+        --color-info-tint: #e5edf5;
+        --color-success: #446b54;
+        --color-success-tint: #e3ede6;
+        --color-category-purple: #6b4a7d;
+        --color-category-purple-tint: #ede8f1;
+        --color-category-rose: #8a4760;
+        --color-category-rose-tint: #f0e3e9;
+
         --border-radius-md: 4px;
         --border-radius-lg: 6px;
+      }
+      :root[data-theme="dark"] {
+        --color-background-primary: #171c28;
+        --color-background-secondary: #10141d;
+        --color-text-primary: #e7e9ee;
+        --color-text-secondary: #9aa3b4;
+        --color-text-tertiary: #5f6878;
+        --color-text-danger: #d97565;
+        --color-border-primary: #9aa3b4;
+        --color-border-secondary: #2c3344;
+        --color-border-tertiary: #262d3b;
+        --color-accent: #5fa3ac;
+        --color-accent-hover: #79bcc5;
+        /* --color-gold retired (branding sweep) — dark theme alias = light text navy-grey. */
+        --color-gold: #e7e9ee;
       }
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       /* Aggressive horizontal containment for iOS Chrome.
@@ -52,7 +94,7 @@
       }
       body {
         font-family: var(--font-sans);
-        background: #F4F2EE;
+        background: var(--color-background-secondary);
         color: var(--color-text-primary);
         min-height: 100vh;
         -webkit-text-size-adjust: 100%;
@@ -85,7 +127,7 @@
       }
       input::placeholder {
         font-style: italic;
-        color: #8C8880;
+        color: var(--color-text-tertiary);
       }
       /* Native date picker calendar icon — give it a clear gold tint and pointer cursor */
       input[type="date"]::-webkit-calendar-picker-indicator {
@@ -102,7 +144,7 @@
         top: 100%;
         left: 0;
         right: 0;
-        background: #FFFFFF;
+        background: var(--color-background-primary);
         border: 0.5px solid var(--color-border-secondary);
         border-radius: var(--border-radius-md);
         margin-top: 4px;
@@ -120,8 +162,8 @@
       }
       .city-suggestion:last-child { border-bottom: none; }
       .city-suggestion:hover, .city-suggestion.active {
-        background: #F5EDD6;
-        color: #0F0F0F;
+        background: var(--color-cream);
+        color: var(--color-text-primary);
       }
       .city-suggestion .country {
         color: var(--color-text-tertiary);
