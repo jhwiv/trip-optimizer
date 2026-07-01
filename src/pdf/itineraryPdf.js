@@ -34,11 +34,11 @@ const COLOR = {
   ink: [17, 17, 17],          // body text
   inkSoft: [85, 85, 85],      // secondary
   inkFaint: [140, 140, 140],  // meta / footer
-  gold: [28, 40, 64],         // navy accent (--color-text-primary); gold retired in branding sweep
+  gold: [180, 130, 40],       // warm amber-gold accent (links, headers, rules)
   rule: [220, 220, 220],      // dividers
   ruleSoft: [240, 240, 240],  // row separators
   warn: [180, 90, 40],        // ⚠︎ markers
-  bgChip: [242, 240, 234],    // neutral silver-grey tint for chips (was pale gold)
+  bgChip: [255, 248, 225],    // warm pale gold tint for chips
 };
 
 const FONT = {
@@ -504,8 +504,9 @@ function titleCase(s) {
 // -----------------------------------------------------------------------------
 // COVER PAGE
 // -----------------------------------------------------------------------------
-function renderCover(cur, data, inputs, _opts) {
+function renderCover(cur, data, inputs, opts = {}) {
   const { pdf } = cur;
+  const { coverPhoto } = opts;
   // Title text. For a multi-city trip the destination field becomes a long
   // "A -> B -> C -> ..." chain which sets unevenly at 26pt and screams
   // "unformatted code". If we have a structured cities array, use the first
@@ -524,9 +525,20 @@ function renderCover(cur, data, inputs, _opts) {
   }
   const meta = safe(data?.meta || "");
 
-  // Compact top — tightened from 14mm to 8mm so the cover packs more onto
-  // page 1 (user feedback: too much white space).
-  cur.space(8);
+  // Cover photo hero — full-width image at the top of the cover page.
+  // Renders only when a data URL was fetched by the caller; silently skipped
+  // when the /api/destination-photo request failed or returned nothing.
+  if (coverPhoto) {
+    const photoW = PAGE.width - PAGE.marginX * 2;
+    const photoH = 52; // mm — tall enough for visual impact, fits with content below
+    try {
+      pdf.addImage(coverPhoto, "JPEG", PAGE.marginX, cur.state.y, photoW, photoH, undefined, "FAST");
+      cur.state.y += photoH + 6;
+    } catch { /* addImage failure silently falls through to text-only cover */ }
+  } else {
+    // No photo: use the compact vertical spacing from before.
+    cur.space(8);
+  }
 
   // Eyebrow
   pdf.setFont(FONT.sans, "bold");
@@ -1594,7 +1606,7 @@ function renderFooters(pdf, opts) {
 // PUBLIC ENTRYPOINT
 // -----------------------------------------------------------------------------
 export async function buildItineraryPdf(data, inputs, options = {}) {
-  const { setStatus, buildId, providers } = options;
+  const { setStatus, buildId, providers, coverPhoto } = options;
   if (setStatus) setStatus("Loading PDF engine…");
 
   const jsPDFModule = await import("jspdf");
@@ -1616,7 +1628,7 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
   const cur = makeCursor(pdf);
 
   // 1. Cover
-  renderCover(cur, data, inputs, { buildId });
+  renderCover(cur, data, inputs, { buildId, coverPhoto });
 
   // 2. Introduction page — a dedicated full page after the cover and before
   // the Day-by-Day section. Skipped silently if data.introduction is missing
