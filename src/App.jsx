@@ -3631,6 +3631,58 @@ function hardReloadNow() {
   window.location.replace(url.toString());
 }
 
+function WebExportSection({ data, inputs }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleExport = async () => {
+    if (busy) return;
+    setBusy(true); setError(""); setDone(false);
+    try {
+      const { downloadWebApp } = await import("./webExport.js");
+      downloadWebApp(data, inputs);
+      setDone(true);
+      setTimeout(() => setDone(false), 4000);
+    } catch (err) {
+      console.error("Web export failed", err);
+      setError("Export failed. Try again.");
+      setTimeout(() => setError(""), 5000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="no-print" style={{ marginTop: "2.5rem", padding: "24px", background: "var(--color-background-primary)", border: `1.5px solid ${ACCENT}`, borderRadius: "var(--border-radius-lg)" }}>
+      <p style={{ fontSize: "10px", color: ACCENT, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" }}>Export for web</p>
+      <p style={{ fontSize: "14px", fontFamily: "var(--font-serif)", fontStyle: "italic", fontWeight: 500, color: "var(--color-text-primary)", margin: "0 0 8px", lineHeight: 1.35 }}>Turn this itinerary into a standalone web app</p>
+      <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 18px", lineHeight: 1.6 }}>
+        Downloads a self-contained HTML file — beautiful day-by-day site ready to open in any browser, share with your client, or hand off to a developer as a starting point for a custom build.
+      </p>
+      <button
+        onClick={handleExport}
+        disabled={busy}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: "8px",
+          background: busy ? "var(--color-surface-offset)" : ACCENT,
+          color: busy ? "var(--color-text-tertiary)" : "var(--color-background-primary)",
+          border: "none", borderRadius: "var(--border-radius-md)",
+          padding: "12px 20px", fontSize: "11px", fontWeight: 600,
+          letterSpacing: "0.1em", textTransform: "uppercase",
+          cursor: busy ? "not-allowed" : "pointer", fontFamily: "inherit",
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" /><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+        </svg>
+        {busy ? "Preparing…" : done ? "Downloaded ✓" : "Export itinerary as web app"}
+      </button>
+      {error && <p style={{ fontSize: "11.5px", color: "var(--color-text-danger)", marginTop: "8px" }}>{error}</p>}
+    </div>
+  );
+}
+
 function PrintButton({ data, inputs, providers, plan, introIsGenerating }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
@@ -7210,6 +7262,8 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           <EssentialsView data={data} />
         </Section>
       )}
+
+      <WebExportSection data={data} inputs={inputs} />
 
       <div className="no-print" style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "0.5rem" }}>
         {onEditTrip && (
