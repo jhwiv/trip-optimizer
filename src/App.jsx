@@ -6516,16 +6516,15 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         const isoDate = parseDayLabelToISODate(d.label);
         if (!fromCode || !toCode || !isoDate) {
           // Precondition failure: cannot reach the API. For verify-mode
-          // (model emitted a complete-looking flight), trust the model
-          // and mark _scheduleVerified so the strip exemption fires.
-          // Worst case the model's number is wrong, but that's still
-          // better than rendering nothing at all — the user can verify
-          // at booking via the live-status panel.
-          if (mode === "verify") {
+          // (model emitted a complete-looking flight) AND times-mode
+          // (model emitted a number but no times), trust the model's
+          // number and mark _scheduleVerified so the strip exemption
+          // fires — better to show a potentially-wrong number than to
+          // strip it entirely and show nothing. Number-mode stays silent
+          // because there was no number to display in the first place.
+          if (mode === "verify" || mode === "times") {
             verifyTrustOnly.push({ di, ii });
           }
-          // number/times modes with bad preconditions stay silent —
-          // there was never a number to display.
           return;
         }
         targets.push({ di, ii, fl: it.flight, fromCode, toCode, isoDate, mode });
