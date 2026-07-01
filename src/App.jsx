@@ -6583,13 +6583,22 @@ function introPlanSignature(plan) {
 // is fully resilient — any failure is silent and never touches the itinerary.
 function FlightNumberAutoResolver({ plan, onPlanRevised }) {
   const attemptedRef = useRef("");
+  // Keep a ref to the latest onPlanRevised so the effect only re-runs when
+  // the plan changes, not on every parent render that creates a new callback
+  // reference. Without this, any re-render of the parent (including the one
+  // caused by IntroductionAutoGenerator writing the intro text) would cancel
+  // the in-flight API fetch via the effect cleanup, preventing _scheduleVerified
+  // from ever being committed.
+  const onPlanRevisedRef = useRef(onPlanRevised);
+  useLayoutEffect(() => { onPlanRevisedRef.current = onPlanRevised; });
   useEffect(() => {
     const days = Array.isArray(plan?.days) ? plan.days : [];
-    if (days.length === 0 || typeof onPlanRevised !== "function") return;
+    if (days.length === 0 || typeof onPlanRevisedRef.current !== "function") return;
     const sig = introPlanSignature(plan);
     if (attemptedRef.current === sig) return;
     attemptedRef.current = sig;
     let cancelled = false;
+    let settled = false; // true once onPlanRevised has been called with the result
 
     // Collect flights the resolver should act on. flightNeedsResolve
     // classifies each as:
@@ -6791,11 +6800,32 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
           continue;
         }
 
-        // Total miss path for number/times modes: when even the route-only
-        // retry came up empty AND the flight has no times to begin with,
-        // persist _timesUnconfirmed so the PDF can render an honest line
-        // ("Times not yet confirmed — check with airline at booking")
-        // instead of a blank.
+        // Times-mode total miss: model emitted a number but no times,
+        // and the schedule API couldn't supply times either. Must write
+        // _scheduleVerified so applyQualityLayer's strip exemption keeps
+        // the model's number visible — without it the strip nulls the
+        // number and the user sees nothing. _timesUnconfirmed tells the
+        // PDF to render an honest "check with airline" line in place of
+        // blank clock rows.
+        if (t.mode === "times" && t.fl.flight_number) {
+          resolved.push({
+            di: t.di,
+            ii: t.ii,
+            merge: {
+              _scheduleVerified: true,
+              _verifyTrusted: true,
+              _timesUnconfirmed: true,
+              _resolveSource: "times-fallback",
+            },
+          });
+          continue;
+        }
+
+        // Total miss for number-mode: model emitted no number and the API
+        // couldn't find one. If the flight also has no times, persist
+        // _timesUnconfirmed so the PDF renders an honest fallback line
+        // instead of blank rows. No _scheduleVerified needed — there is
+        // no number to protect from the strip.
         const fallback = buildUnconfirmedTimesPayload(t.fl);
         if (fallback) resolved.push({ di: t.di, ii: t.ii, merge: fallback });
       }
@@ -6817,11 +6847,17 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         });
         return { ...d, items };
       });
-      onPlanRevised({ ...plan, days: nextDays });
+      onPlanRevisedRef.current({ ...plan, days: nextDays });
+      settled = true;
     })();
 
-    return () => { cancelled = true; attemptedRef.current = ""; };
-  }, [plan, onPlanRevised]);
+    // Only reset attemptedRef when cancelled before committing — this allows
+    // a retry on the next effect run. If the async already committed
+    // (settled === true), keep the ref so the next run (triggered by the plan
+    // object-reference change from setResult) hits the sig-match early return
+    // instead of firing a redundant API call.
+    return () => { cancelled = true; if (!settled) attemptedRef.current = ""; };
+  }, [plan]);
   return null;
 }
 
@@ -11290,6 +11326,11 @@ export default function TripOptimizer() {
   const [progressLabel, setProgressLabel] = useState("");
   const [elapsedSec, setElapsedSec] = useState(0);
   const [result, setResult] = useState(recovered?.result || null);
+  // Ref always mirrors the latest result so handlePlanRevised can read
+  // result._review without closing over result (which would make useCallback
+  // produce a new reference on every plan change).
+  const resultRef = useRef(result);
+  useLayoutEffect(() => { resultRef.current = result; });
   const [error, setError] = useState("");
   const abortRef = useRef(null);
   // Points at the streaming-progress panel (rendered in step 2 while
@@ -11607,7 +11648,7 @@ export default function TripOptimizer() {
 
   // Saved trips list — hydrated from localStorage. Refreshed on save/delete/open.
   const [savedTrips, setSavedTrips] = useState(() => loadSavedTrips());
-  const refreshSavedTrips = () => setSavedTrips(loadSavedTrips());
+  const refreshSavedTrips = useCallback(() => setSavedTrips(loadSavedTrips()), []);
   const handleOpenSavedTrip = (entry) => {
     if (!entry || !entry.inputs || !entry.result) return;
     const i = entry.inputs;
@@ -14098,11 +14139,14 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   // plan (either surgically patched or fully re-planned). We replace the
   // displayed result and, if this plan came from a saved trip entry, also
   // persist the new plan into that entry so re-opening preserves the edits.
-  const handlePlanRevised = (newPlan) => {
+  const handlePlanRevised = useCallback((newPlan) => {
     if (!newPlan) return;
     // Carry over any pre-existing _review marker; ReviewPanel will overwrite
-    // it shortly via onReviewChange.
-    const merged = reviewState ? { ...newPlan, _review: reviewState } : newPlan;
+    // it shortly via onReviewChange. Reading it from the result ref avoids
+    // closing over reviewState (which changes on every review update and would
+    // make handlePlanRevised a new reference, defeating the useCallback).
+    const prevReview = resultRef.current?._review;
+    const merged = prevReview ? { ...newPlan, _review: prevReview } : newPlan;
     setResult(merged);
     if (currentSavedTripId) {
       const list = loadSavedTrips();
@@ -14110,7 +14154,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       writeSavedTrips(next);
       refreshSavedTrips();
     }
-  };
+  }, [currentSavedTripId, refreshSavedTrips]);
 
   // Called by ReviewPanel whenever review state changes (sources/findings/
   // applied_ids). We attach it to the current result as _review and persist
