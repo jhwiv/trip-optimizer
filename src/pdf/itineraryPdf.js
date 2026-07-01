@@ -532,7 +532,8 @@ function renderCover(cur, data, inputs, opts = {}) {
     const photoW = PAGE.width - PAGE.marginX * 2;
     const photoH = 52; // mm — tall enough for visual impact, fits with content below
     try {
-      pdf.addImage(coverPhoto, "JPEG", PAGE.marginX, cur.state.y, photoW, photoH, undefined, "FAST");
+      const imgFormat = coverPhoto.match(/^data:image\/(\w+);/)?.[1]?.toUpperCase() ?? "JPEG";
+      pdf.addImage(coverPhoto, imgFormat, PAGE.marginX, cur.state.y, photoW, photoH, undefined, "FAST");
       cur.state.y += photoH + 6;
     } catch { /* addImage failure silently falls through to text-only cover */ }
   } else {
