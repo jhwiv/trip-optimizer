@@ -5256,7 +5256,7 @@ function TripSectionView({ tab, data, inputs, onOpenMenu, providers }) {
 // All result/state writes go up through onPlanRevised / onReviewChange so the
 // parent (TripOptimizer) can persist them into saved trips.
 // ============================================================================
-function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false, externalSourceIds, onSourcesChange, onRunEnd }) {
+function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false, externalSourceIds, onSourcesChange, onRunEnd, onProgressChange }) {
   // --- review state ------------------------------------------------------
   // 'idle' — banner card with picker
   // 'running' — review in flight
@@ -5365,6 +5365,14 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       });
     }
   }, [review]);
+
+  // Lift review progress to the parent overlay via onProgressChange.
+  useEffect(() => {
+    if (typeof onProgressChange !== "function") return;
+    const running = status === "running" || status === "applying";
+    onProgressChange({ running, progress, label: progressLabel, elapsedSec });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, progress, progressLabel, elapsedSec]);
 
   const selectedSources = REVIEWER_SOURCES.filter(s => selectedIds.includes(s.id));
   const findings = Array.isArray(review?.findings) ? review.findings : [];
@@ -6983,7 +6991,7 @@ function IntroductionAutoGenerator({ plan, inputs, onPlanRevised, onGeneratingCh
   return null;
 }
 
-function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId: _savedTripId, onPlanRevised, onReviewChange, initialReview, reviewerSourceIds, onReviewerSourcesChange }) {
+function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId: _savedTripId, onPlanRevised, onReviewChange, initialReview, reviewerSourceIds, onReviewerSourcesChange, onReviewProgress }) {
   // Whether IntroductionAutoGenerator's headless POST /api/introduction call
   // is in flight. Lifted here so PrintButton can disable Save as PDF until
   // the intro is either populated on the plan or the generator finishes/fails
@@ -7284,6 +7292,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         externalSourceIds={reviewerSourceIds}
         onSourcesChange={onReviewerSourcesChange}
         onRunEnd={clearAutoReviewRunning}
+        onProgressChange={onReviewProgress}
       />
 
       {!autoReviewRunning && !initialReview && (
@@ -11279,6 +11288,128 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
   );
 }
 
+function BuildAndReviewOverlay({
+  loading,
+  buildProgress,
+  buildProgressLabel,
+  loadingMsg,
+  buildElapsedSec,
+  onCancelBuild,
+  reviewRunning,
+  reviewProgress,
+  reviewProgressLabel,
+  reviewElapsedSec,
+  destination,
+}) {
+  const visible = loading || reviewRunning;
+  if (!visible) return null;
+
+  const buildDone = !loading && reviewRunning;
+
+  const fmtElapsed = (sec) =>
+    sec > 0 ? `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}` : "";
+
+  const buildLongTail = buildProgress >= 0.95;
+  const buildElapsedTxt = fmtElapsed(buildElapsedSec);
+  const buildRightLabel = buildDone
+    ? "Done"
+    : buildLongTail
+      ? (buildElapsedTxt ? `still building · ${buildElapsedTxt}` : "still building…")
+      : `${buildProgress > 0 ? `${Math.round(buildProgress * 100)}%` : ""}${buildElapsedTxt ? ` · ${buildElapsedTxt}` : ""}`.trim();
+
+  const reviewElapsedTxt = fmtElapsed(reviewElapsedSec);
+  const reviewRightLabel = reviewRunning
+    ? `${reviewProgress > 0 ? `${Math.round(reviewProgress * 100)}%` : ""}${reviewElapsedTxt ? ` · ${reviewElapsedTxt}` : ""}`.trim()
+    : "";
+
+  const renderBar = (prog, done, active) => (
+    <div style={{ height: "4px", borderRadius: "2px", background: "var(--color-border-tertiary)", overflow: "hidden", position: "relative" }}>
+      {done ? (
+        <div style={{ position: "absolute", inset: 0, background: ACCENT }} />
+      ) : active && (prog >= 0.95 || prog === 0) ? (
+        <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: ACCENT, animation: "slideBar 1.6s ease-in-out infinite" }} />
+      ) : prog > 0 ? (
+        <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(prog * 100)}%`, background: ACCENT, transition: "width 0.3s ease-out", borderRadius: "2px" }} />
+      ) : (
+        <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "8%", background: "var(--color-border-secondary)", borderRadius: "2px" }} />
+      )}
+    </div>
+  );
+
+  return (
+    <>
+      <div style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.45)", backdropFilter: "blur(2px)" }} />
+      <div style={{
+        position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 9999,
+        maxWidth: "540px", margin: "0 auto",
+        background: "var(--color-background-primary)",
+        borderRadius: "16px 16px 0 0",
+        padding: "24px 24px 40px",
+        boxShadow: "0 -8px 40px rgba(0,0,0,0.3)",
+      }}>
+        <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.13em", textTransform: "uppercase", margin: "0 0 22px" }}>
+          Building your trip{destination ? ` · ${destination}` : ""}
+        </p>
+
+        {/* Stage 1: Initial build */}
+        <div style={{ marginBottom: "18px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "4px" }}>
+            <p style={{ fontSize: "12px", fontWeight: 600, color: buildDone ? "var(--color-text-tertiary)" : "var(--color-text-primary)", margin: 0 }}>
+              {buildDone ? "✓ Initial build" : "① Initial build"}
+            </p>
+            {buildRightLabel && (
+              <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums" }}>
+                {buildRightLabel}
+              </p>
+            )}
+          </div>
+          {!buildDone && (
+            <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 6px", minHeight: "16px", lineHeight: 1.4 }}>
+              {buildProgressLabel || loadingMsg || "Working…"}
+            </p>
+          )}
+          {renderBar(buildProgress, buildDone, loading)}
+        </div>
+
+        {/* Stage 2: Expert review */}
+        <div style={{ marginBottom: "22px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "4px" }}>
+            <p style={{ fontSize: "12px", fontWeight: 600, color: reviewRunning ? "var(--color-text-primary)" : "var(--color-text-tertiary)", margin: 0 }}>
+              ② Expert review
+            </p>
+            {reviewRightLabel && (
+              <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums" }}>
+                {reviewRightLabel}
+              </p>
+            )}
+          </div>
+          {reviewRunning && (
+            <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 6px", minHeight: "16px", lineHeight: 1.4 }}>
+              {reviewProgressLabel || "Reviewing your plan…"}
+            </p>
+          )}
+          {renderBar(reviewProgress, false, reviewRunning)}
+        </div>
+
+        {loading && (
+          <button
+            onClick={onCancelBuild}
+            style={{
+              width: "100%", border: "0.5px solid var(--color-border-secondary)",
+              borderRadius: "var(--border-radius-md)", padding: "10px 16px",
+              fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase",
+              cursor: "pointer", fontFamily: "inherit",
+              background: "transparent", color: "var(--color-text-secondary)",
+            }}
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
 export default function TripOptimizer() {
 
   // Viewport awareness drives a few container widths so the wizard form
@@ -11367,6 +11498,12 @@ export default function TripOptimizer() {
   const [progress, setProgress] = useState(0);          // 0–1 estimated fraction
   const [progressLabel, setProgressLabel] = useState("");
   const [elapsedSec, setElapsedSec] = useState(0);
+  // Review-phase overlay state — lifted from ReviewPanel so the unified
+  // build+review progress card at the App level can show review progress.
+  const [reviewPhaseRunning, setReviewPhaseRunning] = useState(false);
+  const [reviewPhaseProgress, setReviewPhaseProgress] = useState(0);
+  const [reviewPhaseLabel, setReviewPhaseLabel] = useState("");
+  const [reviewPhaseElapsed, setReviewPhaseElapsed] = useState(0);
   const [result, setResult] = useState(recovered?.result || null);
   // Ref always mirrors the latest result so handlePlanRevised can read
   // result._review without closing over result (which would make useCallback
@@ -13130,6 +13267,10 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
       // Success — clear the stored active job so we don't auto-resume it.
       try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+      // Pre-arm review-phase overlay so it shows immediately when the
+      // ReviewPanel auto-runs; prevents the card from flickering closed
+      // between the build ending and the review's onProgressChange firing.
+      setReviewPhaseRunning(true);
       // Fresh build is a brand-new plan, not yet saved — reset associations.
       setCurrentSavedTripId(null);
       setReviewState(null);
@@ -14959,65 +15100,11 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 </div>
               </>
             )}
-            {(loading || extractingFromGuidelines) && (
-              <div ref={progressPanelRef} style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, var(--color-background-secondary))" }}>
-                {/* Progress bar honesty.
-                    Once progress pegs at ≥95% the percentage is no longer
-                    informative — the time-based estimator has saturated and
-                    we genuinely don't know how much longer the model needs.
-                    Showing "95%" frozen for 2–3 minutes reads as a hang.
-                    Switch to "still building · m:ss" with an indeterminate
-                    moving stripe so the user knows the build is alive and
-                    we're being honest about not knowing the ETA. */}
-                {(() => {
-                  const longTail = progress >= 0.95;
-                  const elapsedTxt = elapsedSec > 0
-                    ? `${Math.floor(elapsedSec/60)}:${String(elapsedSec%60).padStart(2,'0')}`
-                    : "";
-                  return (
-                    <>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px", gap: "10px" }}>
-                        <p style={{ fontSize: "12px", color: "var(--color-text-primary)", margin: 0, fontWeight: 500, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {/* Single source of truth: stream-driven progressLabel wins
-                             whenever it has real content ("Day 4 of 8 · dining",
-                             "Insider notes & Plan B…"). Otherwise fall back to the
-                             phase cycler (loadingMsg). progressLabel is intentionally
-                             blank for placeholder states so we never show two
-                             contradictory strings simultaneously. */}
-                          {progressLabel || loadingMsg || "Working…"}
-                        </p>
-                        <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-                          {longTail
-                            ? (elapsedTxt ? `still building · ${elapsedTxt}` : "still building…")
-                            : `${progress > 0 ? `${Math.round(progress * 100)}%` : ""}${elapsedTxt ? `  ·  ${elapsedTxt}` : ""}`}
-                        </p>
-                      </div>
-                      {/* In normal mode show the real progress bar.
-                          In long-tail mode show the indeterminate stripe so
-                          the bar visibly KEEPS MOVING instead of sitting
-                          frozen at 95%. */}
-                      <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, var(--color-border-tertiary))", overflow: "hidden", position: "relative" }}>
-                        {longTail ? (
-                          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: ACCENT, animation: "slideBar 1.6s ease-in-out infinite" }} />
-                        ) : progress > 0 ? (
-                          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: ACCENT, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
-                        ) : (
-                          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: ACCENT, animation: "slideBar 1.6s ease-in-out infinite" }} />
-                        )}
-                      </div>
-                    </>
-                  );
-                })()}
-                {/* Sub-line: show loadingMsg (phase) only when progressLabel is
-                   driving the header. That way the user always sees BOTH the
-                   data-driven detail ("Day 4 of 8 · dining") AND the broader
-                   phase context ("Picking restaurants…"), but never two
-                   conflicting versions of the same thing. */}
-                {progressLabel && loadingMsg && progressLabel !== loadingMsg && (
-                  <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "6px 0 0" }}>{loadingMsg}</p>
-                )}
-              </div>
-            )}
+            {/* Scroll anchor: when build starts the overlay pops up but we still
+                scroll the page so the user can see the "Your trip" summary card
+                under the overlay. The ref points here; BuildAndReviewOverlay is
+                the visible progress surface. */}
+            {(loading || extractingFromGuidelines) && <div ref={progressPanelRef} style={{ marginTop: "8px" }} />}
             {error && <p style={{ fontSize: "12px", color: "var(--color-text-danger, var(--color-text-danger))", marginTop: "8px", textAlign: "center" }}>{error}</p>}
             <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "10px", textAlign: "center", fontStyle: "italic" }}>{(() => {
               // #17 Use the SAME dynamic estimate as the hero (estimateBuildMinutes)
@@ -15082,6 +15169,18 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             initialReview={reviewState}
             reviewerSourceIds={reviewerSourceIds}
             onReviewerSourcesChange={setReviewerSourceIds}
+            onReviewProgress={(state) => {
+              setReviewPhaseRunning(state.running);
+              if (state.running) {
+                setReviewPhaseProgress(state.progress);
+                setReviewPhaseLabel(state.label);
+                setReviewPhaseElapsed(state.elapsedSec);
+              } else {
+                setReviewPhaseProgress(0);
+                setReviewPhaseLabel("");
+                setReviewPhaseElapsed(0);
+              }
+            }}
           />
         )}
 
@@ -15126,6 +15225,20 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
       </div>
       )}
+
+      <BuildAndReviewOverlay
+        loading={loading}
+        buildProgress={progress}
+        buildProgressLabel={progressLabel}
+        loadingMsg={loadingMsg}
+        buildElapsedSec={elapsedSec}
+        onCancelBuild={() => abortRef.current?.abort()}
+        reviewRunning={reviewPhaseRunning}
+        reviewProgress={reviewPhaseProgress}
+        reviewProgressLabel={reviewPhaseLabel}
+        reviewElapsedSec={reviewPhaseElapsed}
+        destination={basics?.destination || ""}
+      />
     </div>
   );
 }
