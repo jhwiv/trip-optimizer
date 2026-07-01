@@ -4,6 +4,19 @@ This file tells any AI agent (or contributor) working on this repo what
 the non-negotiable behavior rules are. Read it before changing any code
 that touches venue data, dates, prompts, or PDF export.
 
+## BRANCH / DEPLOY RULES — READ FIRST
+
+**`master` is the production branch.** Cloudflare Pages deploys to routesmith.ai
+from `master` only. `main` does NOT deploy anywhere and must not be used.
+
+Rules for every session:
+1. Base feature branches off `master`, not `main`.
+2. When work is done, merge / push to `master`.
+3. Never push only to `main` — nothing will deploy.
+4. If the session harness assigns a `claude/…` feature branch, that branch must
+   eventually be merged into `master` (not `main`) before the session ends.
+5. `main` is a stale branch pending deletion — ignore it.
+
 ## VENUE VERIFICATION — HARD RULE
 
 Never emit a venue, address, phone, opening hours, price, or day-of-week that has not been
