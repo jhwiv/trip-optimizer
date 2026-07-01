@@ -10841,27 +10841,33 @@ function AppIntroOverlay() {
 
   if (!visible) return null;
 
-  const OVERLAY_BG = "var(--color-background-secondary)";
+  // Deep midnight-navy gradient with a teal horizon glow — evokes ocean at dusk.
+  const HERO_BG = [
+    "radial-gradient(ellipse 110% 55% at 50% 108%, rgba(49,97,105,0.68) 0%, transparent 65%)",
+    "radial-gradient(ellipse 70% 40% at 90% 0%, rgba(63,125,134,0.2) 0%, transparent 55%)",
+    "linear-gradient(170deg, #0b1826 0%, #0d2133 50%, #091b2a 100%)",
+  ].join(", ");
+
   const cardStyle = {
     background: "var(--color-background-primary)",
     border: "0.5px solid var(--color-border-secondary)",
     borderRadius: "var(--border-radius-md)",
-    padding: "14px 16px",
+    padding: "16px 18px",
     marginBottom: "10px",
   };
   const cardLabel = {
-    fontSize: "10.5px",
-    color: "var(--color-text-primary)",
-    letterSpacing: "0.14em",
+    fontSize: "10px",
+    color: "var(--color-accent-hover)",
+    letterSpacing: "0.16em",
     textTransform: "uppercase",
     fontWeight: 700,
-    margin: "0 0 6px",
+    margin: "0 0 7px",
   };
   const cardBody = {
     fontSize: "13px",
     color: "var(--color-text-secondary)",
     margin: 0,
-    lineHeight: 1.55,
+    lineHeight: 1.6,
   };
 
   return (
@@ -10869,217 +10875,256 @@ function AppIntroOverlay() {
       role="dialog"
       aria-modal="true"
       aria-labelledby="app-intro-title"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: OVERLAY_BG,
-        zIndex: 9999,
-        overflowY: "auto",
-        WebkitOverflowScrolling: "touch",
-      }}
+      style={{ position: "fixed", inset: 0, zIndex: 9999, overflowY: "auto", WebkitOverflowScrolling: "touch" }}
     >
-      <button
-        type="button"
-        onClick={dismiss}
-        aria-label="Skip the intro and go straight to the planner"
-        style={{
-          position: "absolute",
-          top: "calc(env(safe-area-inset-top, 14px) + 14px)",
-          right: "18px",
-          background: "transparent",
-          border: "none",
-          color: "var(--color-text-tertiary)",
-          fontSize: "11px",
-          letterSpacing: "0.1em",
-          textTransform: "uppercase",
-          fontWeight: 600,
-          cursor: "pointer",
-          textDecoration: "underline",
-          fontFamily: "inherit",
-        }}
-      >
-        Skip
-      </button>
-
+      {/* ── HERO ──────────────────────────────────────────────────────── */}
       <div
         style={{
+          minHeight: "100svh",
+          background: HERO_BG,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          position: "relative",
+          padding: "90px 28px 80px",
+          textAlign: "center",
+        }}
+      >
+        {/* Skip */}
+        <button
+          type="button"
+          onClick={dismiss}
+          aria-label="Skip the intro and go straight to the planner"
+          style={{
+            position: "absolute",
+            top: "calc(env(safe-area-inset-top, 14px) + 14px)",
+            right: "20px",
+            background: "transparent",
+            border: "none",
+            color: "rgba(255,255,255,0.38)",
+            fontSize: "11px",
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+            fontWeight: 600,
+            cursor: "pointer",
+            fontFamily: "inherit",
+            padding: 0,
+          }}
+        >
+          Skip
+        </button>
+
+        {/* Powered by */}
+        <div style={{
           position: "absolute",
-          top: "calc(env(safe-area-inset-top, 14px) + 14px)",
+          top: "calc(env(safe-area-inset-top, 14px) + 18px)",
           left: "22px",
           display: "inline-flex",
           alignItems: "center",
           gap: "6px",
-          fontSize: "9.5px",
-          letterSpacing: "0.16em",
+          fontSize: "9px",
+          letterSpacing: "0.18em",
           textTransform: "uppercase",
-          color: "var(--color-text-tertiary)",
+          color: "rgba(255,255,255,0.3)",
           fontWeight: 600,
-        }}
-      >
-        <span>Powered by</span>
-        <img
-          src="/brand-wordmark.png?v=2"
-          alt="Barrier Island Digital, LLC"
-          style={{ display: "block", height: "18px", width: "auto", opacity: 0.9 }}
-        />
-      </div>
-
-      <div
-        style={{
-          maxWidth: "640px",
-          margin: "0 auto",
-          padding: "calc(env(safe-area-inset-top, 14px) + 76px) 20px 32px",
-        }}
-      >
-        <div style={{ textAlign: "center", marginBottom: "24px" }}>
+        }}>
+          <span>Powered by</span>
           <img
-            src="/rs3-wordmark.svg?v=3"
-            alt="Route Smith"
-            style={{ display: "inline-block", height: "56px", width: "auto", margin: "0 0 10px" }}
+            src="/brand-wordmark.png?v=2"
+            alt="Barrier Island Digital, LLC"
+            style={{ display: "block", height: "15px", width: "auto", opacity: 0.4, filter: "brightness(0) invert(1)" }}
           />
-          <p
-            id="app-intro-title"
-            style={{
-              fontSize: "15px",
-              color: "var(--color-text-primary)",
-              margin: 0,
-              fontFamily: "var(--font-serif)",
-              fontStyle: "italic",
-              lineHeight: 1.4,
-            }}
-          >
-            An LLM-assisted itinerary builder for premium trips.
-          </p>
         </div>
 
-        <div style={cardStyle}>
-          <p style={cardLabel}>What it is</p>
-          <p style={cardBody}>
-            Tell us where, when, and how you travel — get a day-by-day plan with flights, hotels, dining, activities, and the operational details you actually need: addresses, phone numbers, confirmation slots, weather windows, packing notes.
-          </p>
-        </div>
+        {/* Wordmark — white via CSS filter */}
+        <img
+          src="/rs3-wordmark.svg?v=3"
+          alt="Route Smith"
+          style={{
+            display: "inline-block",
+            height: "clamp(52px, 8vw, 76px)",
+            width: "auto",
+            filter: "brightness(0) invert(1)",
+            opacity: 0.95,
+            marginBottom: "24px",
+          }}
+        />
 
-        <div style={cardStyle}>
-          <p style={cardLabel}>What it isn&rsquo;t</p>
-          <p style={cardBody}>
-            Not a booking engine. We don&rsquo;t sell flights or hotels and we don&rsquo;t have live availability. Every recommendation is checked through a panel of expert sources, but you book directly with the operator. Treat dates, prices, and hours as starting points — confirm before you commit.
-          </p>
-        </div>
+        {/* Tagline */}
+        <p
+          id="app-intro-title"
+          style={{
+            fontFamily: "var(--font-serif)",
+            fontStyle: "italic",
+            fontWeight: 400,
+            fontSize: "clamp(19px, 3.2vw, 27px)",
+            color: "rgba(255,255,255,0.78)",
+            letterSpacing: "0.01em",
+            lineHeight: 1.45,
+            margin: "0 0 48px",
+            maxWidth: "500px",
+          }}
+        >
+          Journeys planned to the last detail.
+        </p>
 
-        <div style={cardStyle}>
-          <p style={cardLabel}>How to use it</p>
-          <p style={cardBody}>
-            Build a plan, tweak it via the expert review or &ldquo;Suggest a change,&rdquo; save it to your device, and export as PDF for the trip. Nothing&rsquo;s stored on a server. You can come back any time and pick up where you left off.
-          </p>
-        </div>
-
-        <div style={cardStyle}>
-          <p style={cardLabel}>Add to your home screen</p>
-          <p style={{ ...cardBody, marginBottom: "10px" }}>
-            Travel apps get checked dozens of times per trip. Save Route Smith to your home screen so it&rsquo;s one tap away — it works offline once installed.
-          </p>
-          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: a2hsOpen ? "10px" : 0 }}>
-            {[
-              { id: "ios", label: "iPhone / iPad" },
-              { id: "android", label: "Android" },
-              { id: "desktop", label: "Desktop" },
-            ].map((opt) => {
-              const active = a2hsOpen === opt.id;
-              return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  aria-expanded={active}
-                  aria-controls={`a2hs-panel-${opt.id}`}
-                  onClick={() => setA2hsOpen(active ? "" : opt.id)}
-                  style={{
-                    fontSize: "10.5px",
-                    letterSpacing: "0.04em",
-                    fontWeight: active ? 700 : 500,
-                    color: active ? "var(--color-background-primary)" : "var(--color-text-secondary)",
-                    background: active ? "var(--color-text-primary)" : "transparent",
-                    border: `0.5px solid ${active ? "var(--color-text-primary)" : "var(--color-border-secondary)"}`,
-                    borderRadius: "999px",
-                    padding: "4px 11px",
-                    cursor: "pointer",
-                    fontFamily: "inherit",
-                  }}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
-          {a2hsOpen === "ios" && (
-            <ol
-              id="a2hs-panel-ios"
-              style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}
-            >
-              <li>Open this page in <strong>Safari</strong> (other iOS browsers can&rsquo;t install web apps).</li>
-              <li>Tap the <strong>Share</strong> icon at the bottom of the screen (the square with the up arrow).</li>
-              <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
-              <li>Tap <strong>Add</strong> in the top-right.</li>
-            </ol>
-          )}
-          {a2hsOpen === "android" && (
-            <ol
-              id="a2hs-panel-android"
-              style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}
-            >
-              <li>Open this page in <strong>Chrome</strong>, <strong>Edge</strong>, or <strong>Samsung Internet</strong>.</li>
-              <li>Tap the <strong>three-dot menu</strong> in the top-right corner.</li>
-              <li>Tap <strong>Add to Home screen</strong> (or <strong>Install app</strong> if you see it).</li>
-              <li>Tap <strong>Add</strong> to confirm.</li>
-            </ol>
-          )}
-          {a2hsOpen === "desktop" && (
-            <ol
-              id="a2hs-panel-desktop"
-              style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}
-            >
-              <li><strong>Chrome / Edge:</strong> look for the install icon in the URL bar (a small monitor with a down arrow) and click <strong>Install</strong>.</li>
-              <li><strong>Safari (macOS):</strong> File menu, then <strong>Add to Dock</strong>.</li>
-              <li><strong>Firefox:</strong> doesn&rsquo;t support PWA install; bookmark the page instead.</li>
-            </ol>
-          )}
-        </div>
-
+        {/* CTA — ghost button, premium on dark */}
         <button
           type="button"
           onClick={dismiss}
           style={{
-            width: "100%",
-            border: "none",
-            borderRadius: "var(--border-radius-md)",
-            padding: "14px 18px",
-            fontSize: "12px",
+            padding: "14px 40px",
+            borderRadius: "3px",
+            border: "1.5px solid rgba(255,255,255,0.48)",
+            background: "rgba(255,255,255,0.07)",
+            color: "rgba(255,255,255,0.9)",
+            fontSize: "11.5px",
             fontWeight: 700,
-            letterSpacing: "0.12em",
+            letterSpacing: "0.14em",
             textTransform: "uppercase",
             cursor: "pointer",
             fontFamily: "inherit",
-            background: "var(--color-text-primary)",
-            color: "var(--color-background-primary)",
-            marginTop: "14px",
           }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.14)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.75)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.07)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.48)"; }}
         >
-          Start planning
+          Begin planning
         </button>
 
-        <p
-          style={{
+        {/* Scroll hint */}
+        <p style={{
+          position: "absolute",
+          bottom: "22px",
+          left: 0,
+          right: 0,
+          margin: 0,
+          textAlign: "center",
+          color: "rgba(255,255,255,0.22)",
+          fontSize: "11px",
+          letterSpacing: "0.08em",
+          userSelect: "none",
+          pointerEvents: "none",
+        }}>
+          ↓ &nbsp; How it works
+        </p>
+      </div>
+
+      {/* ── INFO ──────────────────────────────────────────────────────── */}
+      <div style={{ background: "var(--color-background-secondary)", padding: "52px 20px 44px" }}>
+        <div style={{ maxWidth: "640px", margin: "0 auto" }}>
+
+          <div style={cardStyle}>
+            <p style={cardLabel}>What you get</p>
+            <p style={cardBody}>
+              A day-by-day itinerary built around how you actually travel — flights, hotels, dining, activities, and the operational detail you need on the ground: addresses, phone numbers, confirmation windows, weather windows, packing notes.
+            </p>
+          </div>
+
+          <div style={cardStyle}>
+            <p style={cardLabel}>How it works</p>
+            <p style={cardBody}>
+              Tell us where, when, and how you travel. The planner builds a full itinerary, every venue verified against live sources. Tweak it via expert review or &ldquo;Suggest a change,&rdquo; then export as a PDF for the trip. Book directly with the operator — hours and prices should always be confirmed before travel.
+            </p>
+          </div>
+
+          <div style={cardStyle}>
+            <p style={cardLabel}>On your device</p>
+            <p style={{ ...cardBody, marginBottom: "10px" }}>
+              Nothing is stored on a server — your plan lives on your device. Save Route Smith to your home screen for one-tap access; it works offline once installed.
+            </p>
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: a2hsOpen ? "10px" : 0 }}>
+              {[
+                { id: "ios", label: "iPhone / iPad" },
+                { id: "android", label: "Android" },
+                { id: "desktop", label: "Desktop" },
+              ].map((opt) => {
+                const active = a2hsOpen === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    aria-expanded={active}
+                    aria-controls={`a2hs-panel-${opt.id}`}
+                    onClick={() => setA2hsOpen(active ? "" : opt.id)}
+                    style={{
+                      fontSize: "10.5px",
+                      letterSpacing: "0.04em",
+                      fontWeight: active ? 700 : 500,
+                      color: active ? "var(--color-background-primary)" : "var(--color-text-secondary)",
+                      background: active ? "var(--color-accent)" : "transparent",
+                      border: `0.5px solid ${active ? "var(--color-accent)" : "var(--color-border-secondary)"}`,
+                      borderRadius: "999px",
+                      padding: "4px 11px",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            {a2hsOpen === "ios" && (
+              <ol id="a2hs-panel-ios" style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}>
+                <li>Open this page in <strong>Safari</strong> (other iOS browsers can&rsquo;t install web apps).</li>
+                <li>Tap the <strong>Share</strong> icon at the bottom of the screen (the square with the up arrow).</li>
+                <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
+                <li>Tap <strong>Add</strong> in the top-right.</li>
+              </ol>
+            )}
+            {a2hsOpen === "android" && (
+              <ol id="a2hs-panel-android" style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}>
+                <li>Open this page in <strong>Chrome</strong>, <strong>Edge</strong>, or <strong>Samsung Internet</strong>.</li>
+                <li>Tap the <strong>three-dot menu</strong> in the top-right corner.</li>
+                <li>Tap <strong>Add to Home screen</strong> (or <strong>Install app</strong> if you see it).</li>
+                <li>Tap <strong>Add</strong> to confirm.</li>
+              </ol>
+            )}
+            {a2hsOpen === "desktop" && (
+              <ol id="a2hs-panel-desktop" style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}>
+                <li><strong>Chrome / Edge:</strong> look for the install icon in the URL bar and click <strong>Install</strong>.</li>
+                <li><strong>Safari (macOS):</strong> File menu, then <strong>Add to Dock</strong>.</li>
+                <li><strong>Firefox:</strong> doesn&rsquo;t support PWA install; bookmark the page instead.</li>
+              </ol>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={dismiss}
+            style={{
+              width: "100%",
+              border: "none",
+              borderRadius: "var(--border-radius-md)",
+              padding: "15px 18px",
+              fontSize: "12px",
+              fontWeight: 700,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              background: "var(--color-text-primary)",
+              color: "var(--color-background-primary)",
+              marginTop: "14px",
+            }}
+          >
+            Start planning
+          </button>
+
+          <p style={{
             textAlign: "center",
             fontSize: "9.5px",
             color: "var(--color-text-tertiary)",
             letterSpacing: "0.14em",
             textTransform: "uppercase",
-            marginTop: "18px",
+            marginTop: "20px",
             marginBottom: 0,
             fontWeight: 500,
-          }}
-        >
-          A travel companion crafted by Barrier Island Digital, LLC
-        </p>
+          }}>
+            A travel companion crafted by Barrier Island Digital, LLC
+          </p>
+        </div>
       </div>
     </div>
   );
