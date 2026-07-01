@@ -38,16 +38,15 @@ function urlSearchFallback(name, destination) {
   return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
 }
 
-// --color-gold retired (branding sweep). These constants now resolve to the
-// navy/silver palette. GOLD = navy (accents, borders, eyebrows, rules).
-// GOLD_LIGHT = silver-grey surface (was cream). GOLD_DARK = navy (unchanged).
-// Where GOLD was used as a solid FILL, those sites set their own light text
-// color so navy fill stays readable; see ON_NAVY constant below.
-const GOLD = "var(--color-text-primary)";
-const GOLD_LIGHT = "var(--color-surface-2)";
-const GOLD_DARK = "var(--color-text-primary)";
-// Text/icon color to use ON a navy (GOLD) fill so it stays legible.
-const ON_NAVY = "var(--color-background-primary)";
+// Teal accent palette — matches the CSS custom properties in index.html.
+// ACCENT     = teal (#3f7d86) for borders, eyebrows, active states.
+// ACCENT_LIGHT = pale teal tint for chip/pill backgrounds.
+// ACCENT_DARK  = deeper teal (#316169) for text on light surfaces.
+// ON_ACCENT    = white, for text/icons rendered on a solid ACCENT fill.
+const ACCENT = "var(--color-accent)";
+const ACCENT_LIGHT = "var(--color-accent-tint)";
+const ACCENT_DARK = "var(--color-accent-hover)";
+const ON_ACCENT = "var(--color-background-primary)";
 
 // --------------------------------------------------------------------------
 // Anthropic prompt-caching helper.
@@ -1124,7 +1123,7 @@ function LiveFlightStatus({ ident, isoDate, userSupplied }) {
   const pillBg = status.cancelled ? "var(--color-warning)"
     : level === "done" ? "var(--color-text-secondary)"
     : level === "delayed" || (status.delayMinutes && status.delayMinutes > 15) ? "var(--color-warning)"
-    : level === "inair" ? GOLD
+    : level === "inair" ? ACCENT
     : "var(--color-success)";
   const pillLabel = status.cancelled ? "CANCELLED" : (status.status || "").toUpperCase();
   // Pick the freshest out/in times available (actual > estimated > scheduled).
@@ -1137,7 +1136,7 @@ function LiveFlightStatus({ ident, isoDate, userSupplied }) {
   return (
     <div style={{ marginTop: "10px", paddingTop: "8px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px", flexWrap: "wrap" }}>
-        <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase" }}>Live status</span>
+        <span style={{ fontSize: "9.5px", fontWeight: 700, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase" }}>Live status</span>
         <span style={{ fontSize: "10px", fontWeight: 700, color: "var(--color-background-primary)", background: pillBg, padding: "2px 7px", borderRadius: "3px", letterSpacing: "0.08em" }}>{pillLabel}</span>
         {typeof status.delayMinutes === "number" && status.delayMinutes > 0 && !status.cancelled && (
           <span style={{ fontSize: "11px", color: "var(--color-warning)", fontWeight: 600 }}>
@@ -1351,7 +1350,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
         <p style={{ fontSize: "11px", color: "var(--color-warning)", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 500, padding: "6px 8px", background: "rgba(184,92,0,0.06)", borderLeft: "2px solid var(--color-warning)", borderRadius: "2px" }}>⚠︎ {overrideBanner}</p>
       )}
       {airportBanner && (
-        <p style={{ fontSize: "11px", color: "var(--color-text-primary)", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 600, padding: "6px 8px", background: "rgba(91, 101, 119,0.18)", borderLeft: `2px solid ${GOLD}`, borderRadius: "2px" }}>✈ {airportBanner}</p>
+        <p style={{ fontSize: "11px", color: "var(--color-text-primary)", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 600, padding: "6px 8px", background: "rgba(91, 101, 119,0.18)", borderLeft: `2px solid ${ACCENT}`, borderRadius: "2px" }}>✈ {airportBanner}</p>
       )}
       <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "2px 0 6px", letterSpacing: "0.02em" }}>
         {f.depart_time ? `Approx depart ${formatTime(f.depart_time)}` : ""}{f.arrive_time ? ` · arrive ${formatTime(f.arrive_time)}` : ""}{f.duration ? `  ·  ${f.duration}` : ""}  ·  {stopLabel}
@@ -1370,14 +1369,14 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
         </div>
       )}
       {Array.isArray(f.lounge_access) && f.lounge_access.length > 0 && (
-        <div style={{ margin: "6px 0 4px", padding: "7px 9px", background: "rgba(91, 101, 119,0.08)", border: `0.5px solid ${GOLD}`, borderRadius: "4px" }}>
-          <p style={{ fontSize: "10.5px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px" }}>Lounge access</p>
+        <div style={{ margin: "6px 0 4px", padding: "7px 9px", background: "rgba(91, 101, 119,0.08)", border: `0.5px solid ${ACCENT}`, borderRadius: "4px" }}>
+          <p style={{ fontSize: "10.5px", fontWeight: 700, color: ACCENT_DARK, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px" }}>Lounge access</p>
           {f.lounge_access.map((lg, i) => (
             <div key={i} style={{ margin: i === 0 ? "3px 0" : "6px 0 3px", fontSize: "11.5px", color: "var(--color-text-primary)", lineHeight: 1.4, paddingTop: i === 0 ? 0 : 5, borderTop: i === 0 ? "none" : "0.5px dashed rgba(91, 101, 119,0.25)" }}>
               <span style={{ fontWeight: 600 }}>{lg.name}</span>
-              {i === 0 && f.lounge_access.length > 1 ? <span style={{ marginLeft: 6, fontSize: "9.5px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.06em", textTransform: "uppercase" }}>Closest to gate</span> : null}
+              {i === 0 && f.lounge_access.length > 1 ? <span style={{ marginLeft: 6, fontSize: "9.5px", fontWeight: 700, color: ACCENT_DARK, letterSpacing: "0.06em", textTransform: "uppercase" }}>Closest to gate</span> : null}
               {lg.terminal ? <span style={{ display: "block", color: "var(--color-text-secondary)", fontSize: "11px" }}>{lg.terminal}</span> : null}
-              {lg.gate_proximity ? <span style={{ display: "block", color: GOLD_DARK, fontSize: "10.5px", fontWeight: 600 }}>{lg.gate_proximity}</span> : null}
+              {lg.gate_proximity ? <span style={{ display: "block", color: ACCENT_DARK, fontSize: "10.5px", fontWeight: 600 }}>{lg.gate_proximity}</span> : null}
               {lg.access ? <span style={{ display: "block", color: "var(--color-text-secondary)", fontSize: "11px" }}>Access: {lg.access}</span> : null}
               {lg.notes ? <span style={{ display: "block", color: "var(--color-text-tertiary)", fontSize: "10.5px", fontStyle: "italic" }}>{lg.notes}</span> : null}
             </div>
@@ -1408,8 +1407,8 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
       )}
       {/* Confirmed flight — shown after user taps a row from the picker */}
       {lockedFlight && (
-        <div style={{ marginTop: "10px", borderTop: `0.5px solid ${GOLD}`, paddingTop: "8px" }}>
-          <p style={{ fontSize: "10.5px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 8px" }}>Flight selected</p>
+        <div style={{ marginTop: "10px", borderTop: `0.5px solid ${ACCENT}`, paddingTop: "8px" }}>
+          <p style={{ fontSize: "10.5px", fontWeight: 700, color: ACCENT_DARK, letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 8px" }}>Flight selected</p>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "8px" }}>
             <span style={{ fontSize: "15px", fontWeight: 800, color: "var(--color-text-primary)", letterSpacing: "0.02em" }}>{lockedFlight.flightNumber}</span>
             <span style={{ fontSize: "13.5px", color: "var(--color-text-secondary)" }}>
@@ -1422,7 +1421,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
             <button onClick={() => setLockedFlight(null)} style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-tertiary)", cursor: "pointer", letterSpacing: "0.04em", textTransform: "uppercase", fontWeight: 500, fontFamily: "inherit" }}>Change</button>
             {bookUrl && (
               <a href={bookUrl} target="_blank" rel="noopener noreferrer"
-                 style={{ fontSize: "11px", padding: "4px 10px", borderRadius: "20px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD_DARK, textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>
+                 style={{ fontSize: "11px", padding: "4px 10px", borderRadius: "20px", border: `0.5px solid ${ACCENT}`, background: "transparent", color: ACCENT_DARK, textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>
                 Book · {bookHost}
               </a>
             )}
@@ -1439,7 +1438,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
             <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "6px 0 0", fontStyle: "italic" }}>{schedError}</p>
           )}
           {schedFlights && schedFlights.length > 0 && (
-            <div style={{ marginTop: "4px", borderTop: `0.5px solid ${GOLD}`, paddingTop: "8px" }}>
+            <div style={{ marginTop: "4px", borderTop: `0.5px solid ${ACCENT}`, paddingTop: "8px" }}>
               {/* Time-of-day filter pills */}
               <div style={{ display: "flex", gap: "5px", marginBottom: "8px", flexWrap: "wrap" }}>
                 {["morning", "afternoon", "evening", "all"].map(bucket => {
@@ -1452,7 +1451,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
                   const active = timeFilter === bucket;
                   return (
                     <button key={bucket} onClick={() => setTimeFilter(bucket)}
-                      style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: `0.5px solid ${active ? GOLD : "var(--color-border-secondary)"}`, background: active ? GOLD : "transparent", color: active ? ON_NAVY : "var(--color-text-tertiary)", cursor: "pointer", fontWeight: active ? 700 : 400, letterSpacing: "0.04em", textTransform: "capitalize", fontFamily: "inherit" }}>
+                      style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: `0.5px solid ${active ? ACCENT : "var(--color-border-secondary)"}`, background: active ? ACCENT : "transparent", color: active ? ON_ACCENT : "var(--color-text-tertiary)", cursor: "pointer", fontWeight: active ? 700 : 400, letterSpacing: "0.04em", textTransform: "capitalize", fontFamily: "inherit" }}>
                       {label}
                     </button>
                   );
@@ -1460,7 +1459,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
               </div>
               {filteredFlights && filteredFlights.length === 0 && (
                 <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "0 0 6px", fontStyle: "italic" }}>
-                  No {timeFilter} flights · <button onClick={() => setTimeFilter("all")} style={{ background: "none", border: "none", color: GOLD_DARK, cursor: "pointer", fontSize: "11px", fontWeight: 600, padding: 0, fontFamily: "inherit" }}>see all</button>
+                  No {timeFilter} flights · <button onClick={() => setTimeFilter("all")} style={{ background: "none", border: "none", color: ACCENT_DARK, cursor: "pointer", fontSize: "11px", fontWeight: 600, padding: 0, fontFamily: "inherit" }}>see all</button>
                 </p>
               )}
               {filteredFlights && filteredFlights.map((fl, i) => (
@@ -1587,9 +1586,9 @@ function DayBlock({ day, dayIndex, onOpenMenu, legCity, onSwapItem }) {
   const dateTag = labelParts[1] || "";
   const themeTag = labelParts.slice(2).join(" · ") || "";
   return (
-    <div id={`day-${dayIndex + 1}`} style={{ scrollMarginTop: "60px", borderLeft: `2px solid ${GOLD}`, paddingLeft: "1rem", marginBottom: "1.75rem", borderRadius: 0 }}>
+    <div id={`day-${dayIndex + 1}`} style={{ scrollMarginTop: "60px", borderLeft: `2px solid ${ACCENT}`, paddingLeft: "1rem", marginBottom: "1.75rem", borderRadius: 0 }}>
       <div style={{ marginBottom: "10px" }}>
-        <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", margin: "0 0 2px" }}>{dayTag}{dateTag ? `  ·  ${dateTag}` : ""}</p>
+        <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.14em", textTransform: "uppercase", margin: "0 0 2px" }}>{dayTag}{dateTag ? `  ·  ${dateTag}` : ""}</p>
         {themeTag && <p style={{ fontSize: "16px", fontWeight: 500, color: "var(--color-text-primary)", margin: "0 0 4px", letterSpacing: "-0.1px", lineHeight: 1.3 }}>{themeTag}</p>}
         {day?.headline && (
           <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "4px 0 6px", fontStyle: "italic", lineHeight: 1.5 }}>— {day.headline}</p>
@@ -1881,7 +1880,7 @@ function ContactBlock({ contact, name }) {
         </p>
       )}
       {c.booking_note && (
-        <p style={{ fontSize: "11px", color: GOLD_DARK, margin: "4px 0 6px", fontStyle: "italic" }}>✎ {c.booking_note}</p>
+        <p style={{ fontSize: "11px", color: ACCENT_DARK, margin: "4px 0 6px", fontStyle: "italic" }}>✎ {c.booking_note}</p>
       )}
       {hasAnyAction && (
         <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "8px" }}>
@@ -1889,10 +1888,10 @@ function ContactBlock({ contact, name }) {
             <a href={telUrl} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "none", background: "var(--color-text-primary)", color: "var(--color-background-primary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>Call</a>
           )}
           {showBooking && (
-            <a href={bookingHref} target="_blank" rel="noopener noreferrer" title={bookingDead ? "Original booking link could not be verified — search for it on Google" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: `0.5px solid ${bookingDead ? GOLD_DARK : GOLD}`, background: bookingDead ? "transparent" : GOLD, color: bookingDead ? GOLD_DARK : ON_NAVY, textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>{bookingDead ? "Search ↗" : "Book ↗"}</a>
+            <a href={bookingHref} target="_blank" rel="noopener noreferrer" title={bookingDead ? "Original booking link could not be verified — search for it on Google" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: `0.5px solid ${bookingDead ? ACCENT_DARK : ACCENT}`, background: bookingDead ? "transparent" : ACCENT, color: bookingDead ? ACCENT_DARK : ON_ACCENT, textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>{bookingDead ? "Search ↗" : "Book ↗"}</a>
           )}
           {showWebsite && (
-            <a href={websiteHref} target="_blank" rel="noopener noreferrer" title={websiteDead ? "Original site link could not be verified — search for the official site" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: websiteDead ? GOLD_DARK : "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>{websiteDead ? "Find site ↗" : "Website ↗"}</a>
+            <a href={websiteHref} target="_blank" rel="noopener noreferrer" title={websiteDead ? "Original site link could not be verified — search for the official site" : undefined} style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: websiteDead ? ACCENT_DARK : "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>{websiteDead ? "Find site ↗" : "Website ↗"}</a>
           )}
           {mapsUrl && (
             <a href={mapsUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}>Directions</a>
@@ -1900,7 +1899,7 @@ function ContactBlock({ contact, name }) {
         </div>
       )}
       {verifyReady && (websiteDead || bookingDead) && (
-        <p style={{ fontSize: "10px", color: GOLD_DARK, margin: "6px 0 0", fontStyle: "italic", letterSpacing: "0.02em" }}>
+        <p style={{ fontSize: "10px", color: ACCENT_DARK, margin: "6px 0 0", fontStyle: "italic", letterSpacing: "0.02em" }}>
           ⚠ {websiteDead && bookingDead ? "Both links" : websiteDead ? "Site link" : "Booking link"} could not be verified — using a search instead.
         </p>
       )}
@@ -1989,13 +1988,13 @@ function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
         type="button"
         onClick={handleToggle}
         aria-expanded={open}
-        style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: open ? GOLD : "transparent", color: open ? ON_NAVY : GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}
+        style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${ACCENT}`, background: open ? ACCENT : "transparent", color: open ? ON_ACCENT : ACCENT, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}
       >{open ? "Close" : `↻ ${label}`}</button>
       {open && (
         <div style={{ marginTop: "10px" }}>
           {loading && (
             <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", fontStyle: "italic", margin: 0 }}>
-              <span style={{ display: "inline-block", width: "10px", height: "10px", marginRight: "7px", border: `2px solid ${GOLD}`, borderTopColor: "transparent", borderRadius: "50%", animation: "swap-spin 0.7s linear infinite", verticalAlign: "middle" }} />
+              <span style={{ display: "inline-block", width: "10px", height: "10px", marginRight: "7px", border: `2px solid ${ACCENT}`, borderTopColor: "transparent", borderRadius: "50%", animation: "swap-spin 0.7s linear infinite", verticalAlign: "middle" }} />
               Finding {isRestaurant ? "restaurants" : "activities"} in {city}…
               <style>{"@keyframes swap-spin { to { transform: rotate(360deg); } }"}</style>
             </p>
@@ -2029,7 +2028,7 @@ function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
                         <button
                           type="button"
                           onClick={() => handleUse(a)}
-                          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: GOLD, color: ON_NAVY, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap" }}
+                          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: "none", background: ACCENT, color: ON_ACCENT, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap" }}
                         >Use this</button>
                       </div>
                     </div>
@@ -2063,7 +2062,7 @@ function ActivityCard({ time, end_time, item, dayLabel, swapControl }) {
         {time && <TimePill time={time} end_time={end_time} />}
         <Badge type={item.type || "Activity"} />
         {dayLabel && (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{dayLabel}</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, color: ACCENT, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{dayLabel}</span>
         )}
       </div>
       <p style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.3 }}>{head}</p>
@@ -2115,7 +2114,7 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
           <span style={{ fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", whiteSpace: "nowrap" }}>No backup</span>
         )}
         {r._isReturnVisit && !isClosed && (
-          <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: `0.5px solid ${GOLD}`, borderRadius: "3px", whiteSpace: "nowrap" }}>Return visit</span>
+          <span style={{ fontSize: "9.5px", fontWeight: 700, color: ACCENT, letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", border: `0.5px solid ${ACCENT}`, borderRadius: "3px", whiteSpace: "nowrap" }}>Return visit</span>
         )}
       </div>
       {(r.neighborhood || r.cuisine || r.price_range) && (
@@ -2156,7 +2155,7 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
             instantly; otherwise the parent lazy-fetches via /api/menu. */}
         <button
           onClick={() => onOpenMenu(r)}
-          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}
+          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${ACCENT}`, background: "transparent", color: ACCENT, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}
         >View Menu</button>
         {r.contact?.website && (
           <a
@@ -2238,7 +2237,7 @@ function MenuModal({ restaurant, onClose }) {
         style={{ background: "var(--color-background-primary)", maxWidth: "640px", width: "100%", maxHeight: "90vh", overflowY: "auto", borderRadius: "16px 16px 0 0", padding: "22px 22px 32px", boxShadow: "0 -8px 32px rgba(0,0,0,0.25)" }}
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
-          <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Menu</p>
+          <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Menu</p>
           <button
             onClick={onClose}
             aria-label="Close menu"
@@ -2254,7 +2253,7 @@ function MenuModal({ restaurant, onClose }) {
         {m.style_note && <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 14px", fontStyle: "italic", lineHeight: 1.55 }}>{m.style_note}</p>}
         {sections.map(([title, items]) => Array.isArray(items) && items.length > 0 && (
           <div key={title} style={{ marginBottom: "14px" }}>
-            <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 8px", paddingBottom: "6px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{title}</p>
+            <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 8px", paddingBottom: "6px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{title}</p>
             {items.map((it, i) => {
               if (typeof it === "string") {
                 return <p key={i} style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 6px", lineHeight: 1.5 }}>{it}</p>;
@@ -2280,7 +2279,7 @@ function MenuModal({ restaurant, onClose }) {
 function Section({ title, children }) {
   return (
     <div style={{ marginBottom: "1.5rem" }}>
-      <p style={{ fontSize: "11px", fontWeight: "600", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px", paddingBottom: "8px", borderBottom: `0.5px solid var(--color-border-tertiary)` }}>{title}</p>
+      <p style={{ fontSize: "11px", fontWeight: "600", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px", paddingBottom: "8px", borderBottom: `0.5px solid var(--color-border-tertiary)` }}>{title}</p>
       {children}
     </div>
   );
@@ -2289,9 +2288,9 @@ function Section({ title, children }) {
 function tonightPriority(s) {
   const t = (s || "").trim();
   if (/^⚠/.test(t) || /^must today/i.test(t)) return { rank: 0, label: "Must today", color: "var(--color-warning)", bg: "var(--color-warning-tint)" };
-  if (/^this week/i.test(t) || /^·\s*this week/i.test(t)) return { rank: 1, label: "This week", color: GOLD_DARK, bg: GOLD_LIGHT };
+  if (/^this week/i.test(t) || /^·\s*this week/i.test(t)) return { rank: 1, label: "This week", color: ACCENT_DARK, bg: ACCENT_LIGHT };
   if (/^anytime/i.test(t)) return { rank: 2, label: "Anytime", color: "var(--color-text-secondary)", bg: "var(--color-background-secondary)" };
-  return { rank: 1, label: null, color: GOLD_DARK, bg: GOLD_LIGHT };
+  return { rank: 1, label: null, color: ACCENT_DARK, bg: ACCENT_LIGHT };
 }
 function stripTonightPrefix(s) {
   return (s || "")
@@ -3265,7 +3264,7 @@ function QualityBadge({ qc }) {
   if (!qc || (qc.fixes.length === 0 && qc.warnings.length === 0)) return null;
   return (
     <div style={{ marginTop: "1rem", marginBottom: "1.25rem", padding: "10px 12px", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary)" }}>
-      <p style={{ fontSize: "10px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" }}>Quality check</p>
+      <p style={{ fontSize: "10px", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" }}>Quality check</p>
       {qc.fixes.length > 0 && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 4px", lineHeight: 1.5 }}>
           ✓ Auto-fixed {qc.fixes.length} item{qc.fixes.length === 1 ? "" : "s"}: {qc.fixes.slice(0, 2).join("; ")}{qc.fixes.length > 2 ? `; +${qc.fixes.length - 2} more` : ""}.
@@ -3325,9 +3324,9 @@ function SaveTripButton({ inputs, result, onSaved }) {
       onClick={handleClick}
       className="no-print"
       style={{
-        background: justSaved ? GOLD : "var(--color-background-primary)",
+        background: justSaved ? ACCENT : "var(--color-background-primary)",
         color: justSaved ? "var(--color-text-primary)" : "var(--color-text-primary)",
-        border: `0.5px solid ${justSaved ? GOLD : "var(--color-border-secondary)"}`,
+        border: `0.5px solid ${justSaved ? ACCENT : "var(--color-border-secondary)"}`,
         borderRadius: "var(--border-radius-md)",
         padding: "10px 16px",
         fontSize: "11px",
@@ -3353,9 +3352,9 @@ function SaveTripButton({ inputs, result, onSaved }) {
 function SavedTripsPanel({ trips, onOpen, onDelete }) {
   if (!trips || trips.length === 0) return null;
   return (
-    <div style={{ marginBottom: "1.25rem", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "14px 16px", background: "var(--color-background-primary)" }}>
+    <div style={{ marginBottom: "1.25rem", border: `0.5px solid ${ACCENT}`, borderRadius: "var(--border-radius-md)", padding: "14px 16px", background: "var(--color-background-primary)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "10px" }}>
-        <p style={{ fontSize: "10.5px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: 0 }}>Saved trips</p>
+        <p style={{ fontSize: "10.5px", color: ACCENT, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: 0 }}>Saved trips</p>
         <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: 0 }}>{trips.length} saved</p>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: "0" }}>
@@ -3847,7 +3846,7 @@ function PrintRidesButton({ data, inputs }) {
         className="no-print"
         style={{
           background: "transparent",
-          border: `0.5px solid ${GOLD}`,
+          border: `0.5px solid ${ACCENT}`,
           borderRadius: "var(--border-radius-md)",
           padding: "10px 16px",
           fontSize: "11px",
@@ -3855,7 +3854,7 @@ function PrintRidesButton({ data, inputs }) {
           textTransform: "uppercase",
           cursor: "pointer",
           fontFamily: "inherit",
-          color: GOLD,
+          color: ACCENT,
           fontWeight: 600,
           display: "inline-flex",
           alignItems: "center",
@@ -3879,7 +3878,7 @@ function PrintRidesButton({ data, inputs }) {
       */}
       <div id="rides-print-root" className="rides-print-only" aria-hidden="true">
         <div style={{ padding: "24px 28px", fontFamily: "Georgia, 'Times New Roman', serif", color: "var(--color-text-primary)" }}>
-          <div style={{ borderBottom: `2px solid ${GOLD}`, paddingBottom: "10px", marginBottom: "18px" }}>
+          <div style={{ borderBottom: `2px solid ${ACCENT}`, paddingBottom: "10px", marginBottom: "18px" }}>
             <div style={{ fontSize: "10px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-text-secondary)", marginBottom: "4px" }}>Driver itinerary — share with chauffeur</div>
             <div style={{ fontSize: "22px", fontStyle: "italic", marginBottom: "6px" }}>{tripTitle}</div>
             <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
@@ -3895,7 +3894,7 @@ function PrintRidesButton({ data, inputs }) {
                 <div style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--color-text-secondary)", fontWeight: 700 }}>
                   Ride {i + 1} · {r.dayLabel}{r.city ? ` · ${r.city}` : ""}
                 </div>
-                <div style={{ fontSize: "15px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.02em" }}>
+                <div style={{ fontSize: "15px", fontWeight: 700, color: ACCENT_DARK, letterSpacing: "0.02em" }}>
                   {formatTime(r.time)}{r.end_time ? ` – ${formatTime(r.end_time)}` : ""}
                 </div>
               </div>
@@ -3919,7 +3918,7 @@ function PrintRidesButton({ data, inputs }) {
                 <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "3px", fontStyle: "italic" }}>{r.why}</div>
               )}
               {(r.contact?.phone || r.contact?.booking_note) && (
-                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "6px", borderLeft: `3px solid ${GOLD}`, paddingLeft: "8px" }}>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "6px", borderLeft: `3px solid ${ACCENT}`, paddingLeft: "8px" }}>
                   {r.contact?.phone && (<><strong>Operator phone:</strong> {r.contact.phone}<br /></>)}
                   {r.contact?.booking_note && (<><strong>Notes:</strong> {r.contact.booking_note}</>)}
                 </div>
@@ -3927,7 +3926,7 @@ function PrintRidesButton({ data, inputs }) {
             </div>
           ))}
 
-          <div style={{ marginTop: "22px", paddingTop: "12px", borderTop: `1px dashed ${GOLD}`, fontSize: "10.5px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+          <div style={{ marginTop: "22px", paddingTop: "12px", borderTop: `1px dashed ${ACCENT}`, fontSize: "10.5px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
             <div><strong>Passenger:</strong> {passengerName}</div>
             <div style={{ marginTop: "3px" }}>Generated by Trip Optimizer — verify each pickup time + address with the driver 24 hours ahead. Times shown are local to the destination.</div>
           </div>
@@ -4005,7 +4004,7 @@ function TripHero({ data }) {
 
   return (
     <div style={{ marginBottom: "1.5rem" }}>
-      <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "600", margin: "0 0 6px" }}>Your trip</p>
+      <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "600", margin: "0 0 6px" }}>Your trip</p>
       <p style={{ fontSize: "24px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)", letterSpacing: "-0.4px", lineHeight: 1.15 }}>{data.destination}</p>
       <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "0 0 14px" }}>{data.meta}</p>
 
@@ -4039,13 +4038,13 @@ function TripHero({ data }) {
       )}
 
       {Array.isArray(data.cities) && data.cities.length > 1 && (
-        <div style={{ marginBottom: "14px", padding: "12px 14px", border: `1px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
-          <p style={{ fontSize: "10px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 8px" }}>Trip route · {data.cities.length} cities</p>
+        <div style={{ marginBottom: "14px", padding: "12px 14px", border: `1px solid ${ACCENT}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
+          <p style={{ fontSize: "10px", color: ACCENT, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 8px" }}>Trip route · {data.cities.length} cities</p>
           {data.cities.map((c, i) => (
             <div key={i} style={{ borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none", paddingTop: i > 0 ? "8px" : 0, marginTop: i > 0 ? "8px" : 0 }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "baseline" }}>
                 <span style={{ fontSize: "13.5px", color: "var(--color-text-primary)", fontWeight: 500 }}>
-                  <span style={{ color: GOLD, fontWeight: 700, marginRight: "6px" }}>{i + 1}.</span>{c.name}
+                  <span style={{ color: ACCENT, fontWeight: 700, marginRight: "6px" }}>{i + 1}.</span>{c.name}
                 </span>
                 <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", letterSpacing: "0.04em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{c.nights} {Number(c.nights) === 1 ? "night" : "nights"}{c.days_range ? ` · ${c.days_range}` : ""}</span>
               </div>
@@ -4109,7 +4108,7 @@ function FlightsView({ data }) {
   }
   return (
     <div>
-      <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Flights · {flights.length}</p>
+      <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Flights · {flights.length}</p>
       {flights.map(({ item, day, dayIndex }, i) => (
         <div key={i} style={{ marginBottom: "10px" }}>
           <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>{dayShort(day, dayIndex)}</p>
@@ -4145,7 +4144,7 @@ function LodgingView({ data }) {
   }
   return (
     <div>
-      <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Lodging · {hotels.length}</p>
+      <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Lodging · {hotels.length}</p>
       {hotels.map(({ item, day, dayIndex }, i) => (
         <div key={i} style={{ marginBottom: "10px" }}>
           <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>From {dayShort(day, dayIndex)}</p>
@@ -4177,13 +4176,13 @@ function TransportView({ data }) {
   }
   return (
     <div>
-      <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Ground transport · {transport.length}</p>
+      <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Ground transport · {transport.length}</p>
       {transport.map(({ item, day, dayIndex }, i) => (
         <div key={i} style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
             {item.time && <TimePill time={item.time} end_time={item.end_time} />}
             <Badge type="Transport" />
-            <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{dayShort(day, dayIndex)}</span>
+            <span style={{ fontSize: "9.5px", fontWeight: 700, color: ACCENT, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{dayShort(day, dayIndex)}</span>
           </div>
           <p style={{ fontSize: "13.5px", color: "var(--color-text-primary)", margin: "0 0 6px", lineHeight: 1.5 }}>{item.text}</p>
           {item.location && <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: "0 0 6px" }}>{item.location}</p>}
@@ -4321,7 +4320,7 @@ function DiningBrowseChips({ data, inputs }) {
           fontWeight: 700,
           letterSpacing: "0.14em",
           textTransform: "uppercase",
-          color: GOLD_DARK,
+          color: ACCENT_DARK,
         }}
       >
         Find your own · {displayLabel}
@@ -4433,7 +4432,7 @@ function DiningView({ data, inputs, onOpenMenu }) {
   });
   return (
     <div>
-      <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Dining · {meals.length} reservations</p>
+      <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Dining · {meals.length} reservations</p>
       <DiningBrowseChips data={data} inputs={inputs} />
       {Array.from(byDay.values()).map(({ day, dayIndex, items }, di) => (
         <div key={di} style={{ marginBottom: "14px" }}>
@@ -4483,7 +4482,7 @@ function ActivitiesView({ data }) {
   });
   return (
     <div>
-      <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Activities · {acts.length}</p>
+      <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Activities · {acts.length}</p>
       {Array.from(byDay.values()).map(({ day, dayIndex, items }, di) => (
         <div key={di} style={{ marginBottom: "14px" }}>
           <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.1em", textTransform: "uppercase", margin: "0 0 8px", fontWeight: 600, paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{dayShort(day, dayIndex)}</p>
@@ -4523,7 +4522,7 @@ function CategoryView({ data, onOpenMenu }) {
     <div>
       {groups.map((group) => (
         <div key={group.category} style={{ marginBottom: "22px" }}>
-          <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px", paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{group.label} · {group.items.length}</p>
+          <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px", paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{group.label} · {group.items.length}</p>
           {group.items.map((entry, i) => (
             <div key={i} style={{ marginBottom: "10px" }}>
               <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>{contextLabel(entry)}</p>
@@ -4568,7 +4567,7 @@ function CategoryView({ data, onOpenMenu }) {
 // the parent re-rendered. Now stable across renders.
 function EssentialsSectionHeading({ children }) {
   return (
-    <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "18px 0 10px" }}>{children}</p>
+    <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "18px 0 10px" }}>{children}</p>
   );
 }
 
@@ -4633,7 +4632,7 @@ function EssentialsView({ data }) {
             <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "4px" }}>
               {data.pack.map((p, i) => (
                 <div key={i} style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", display: "flex", gap: "8px", lineHeight: 1.5 }}>
-                  <span style={{ color: GOLD, flex: "0 0 auto" }}>✓</span><span>{p}</span>
+                  <span style={{ color: ACCENT, flex: "0 0 auto" }}>✓</span><span>{p}</span>
                 </div>
               ))}
             </div>
@@ -4837,7 +4836,7 @@ function useLocalProviders(plan, inputs, legCities, active) {
   return { relevantIds, byCategory, status, error, errorIds, ensureLoaded };
 }
 
-// One provider card. Reuses the gold verify-chip visual language from the
+// One provider card. Reuses the teal verify-chip visual language from the
 // restaurant cards. The verify label is computed in localProviders.js from the
 // pipeline's real verification state — we never upgrade it here.
 function ProviderCard({ item }) {
@@ -4859,7 +4858,7 @@ function ProviderCard({ item }) {
           href={item.url || item.verifyUrl}
           target="_blank"
           rel="noopener noreferrer"
-          style={{ fontSize: "11px", color: GOLD, textDecoration: "underline", fontWeight: 500 }}
+          style={{ fontSize: "11px", color: ACCENT, textDecoration: "underline", fontWeight: 500 }}
         >{item.url ? "Visit website →" : "Check listing →"}</a>
       )}
     </div>
@@ -4992,7 +4991,7 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
     <>
       {/* Two-row sticky nav, modeled after zurich-weekend.com / maritimesgrandloop.com.
          Both rows WRAP so every tab is visible without horizontal scroll. Active tab
-         gets the warm gold pill. Tabs are rendered ABOVE the hero by the parent so
+         gets the teal accent pill. Tabs are rendered ABOVE the hero by the parent so
          the hero itself stays compact. */}
       <div className="no-print" style={{ position: "sticky", top: 0, zIndex: 6, background: "var(--color-background-primary)", paddingTop: "8px", paddingBottom: "10px", marginBottom: "14px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
         {/* Row 1 — #11 B-prime: 5 primaries + 'More ▾' overflow.
@@ -5014,12 +5013,12 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
                   textTransform: "uppercase",
                   fontWeight: 700,
                   /* #23 active = navy fill, so label must be LIGHT (was navy-on-navy = invisible). */
-                  color: active ? ON_NAVY : "var(--color-text-secondary)",
+                  color: active ? ON_ACCENT : "var(--color-text-secondary)",
                   padding: "6px 12px",
                   border: active ? "none" : "0.5px solid var(--color-border-secondary)",
                   borderRadius: "20px",
                   whiteSpace: "nowrap",
-                  background: active ? GOLD : "var(--color-background-primary)",
+                  background: active ? ACCENT : "var(--color-background-primary)",
                   cursor: "pointer",
                   fontFamily: "inherit",
                   lineHeight: 1.2,
@@ -5043,12 +5042,12 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
                   letterSpacing: "0.10em",
                   textTransform: "uppercase",
                   fontWeight: 700,
-                  color: overflowActive ? ON_NAVY : "var(--color-text-secondary)",
+                  color: overflowActive ? ON_ACCENT : "var(--color-text-secondary)",
                   padding: "6px 12px",
                   border: overflowActive ? "none" : "0.5px solid var(--color-border-secondary)",
                   borderRadius: "20px",
                   whiteSpace: "nowrap",
-                  background: overflowActive ? GOLD : "var(--color-background-primary)",
+                  background: overflowActive ? ACCENT : "var(--color-background-primary)",
                   cursor: "pointer",
                   fontFamily: "inherit",
                   lineHeight: 1.2,
@@ -5086,8 +5085,8 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
                           fontSize: "11.5px",
                           letterSpacing: "0.04em",
                           fontWeight: active ? 700 : 500,
-                          color: active ? ON_NAVY : "var(--color-text-primary)",
-                          background: active ? GOLD : "transparent",
+                          color: active ? ON_ACCENT : "var(--color-text-primary)",
+                          background: active ? ACCENT : "transparent",
                           border: "none",
                           borderRadius: "6px",
                           padding: "8px 12px",
@@ -5119,12 +5118,12 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
                     textTransform: "uppercase",
                     fontWeight: 600,
                     /* #23 active = navy fill, label must be LIGHT (was navy-on-navy). */
-                    color: active ? ON_NAVY : "var(--color-text-secondary)",
+                    color: active ? ON_ACCENT : "var(--color-text-secondary)",
                     padding: "4px 9px",
                     border: active ? "none" : "0.5px solid var(--color-border-secondary)",
                     borderRadius: "3px",
                     whiteSpace: "nowrap",
-                    background: active ? GOLD : "var(--color-background-primary)",
+                    background: active ? ACCENT : "var(--color-background-primary)",
                     cursor: "pointer",
                     fontFamily: "inherit",
                     lineHeight: 1.2,
@@ -5663,8 +5662,8 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   };
 
   // ----- shared styles ---------------------------------------------------
-  const cardStyleLocal = { border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "14px 16px", marginBottom: "1.25rem", background: "var(--color-background-primary)" };
-  const sectionLabel = { fontSize: "10.5px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" };
+  const cardStyleLocal = { border: `0.5px solid ${ACCENT}`, borderRadius: "var(--border-radius-md)", padding: "14px 16px", marginBottom: "1.25rem", background: "var(--color-background-primary)" };
+  const sectionLabel = { fontSize: "10.5px", color: ACCENT, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" };
 
   // ----- render ----------------------------------------------------------
   return (
@@ -5691,19 +5690,19 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
             {/* Pill rendering: hyperlocal sources get a slightly different
-                visual treatment (lighter background, gold border + bold name)
+                visual treatment (lighter background, teal border + bold name)
                 so the user can SEE that the picker auto-added a destination-
                 specific layer on top of the generic defaults. Standard pills
-                keep the solid-gold treatment. */}
+                keep the solid teal treatment. */}
             {selectedSources.map(s => s.lens === "hyperlocal" ? (
-              <span key={s.id} title={`Hyperlocal source for ${hyperlocalRegion?.label || "this destination"}`} style={{ fontSize: "10.5px", color: GOLD_DARK, background: GOLD_LIGHT, padding: "3px 9px", borderRadius: "999px", border: `0.5px solid ${GOLD}`, letterSpacing: "0.02em", fontWeight: 700, whiteSpace: "nowrap" }}>{s.name}</span>
+              <span key={s.id} title={`Hyperlocal source for ${hyperlocalRegion?.label || "this destination"}`} style={{ fontSize: "10.5px", color: ACCENT_DARK, background: ACCENT_LIGHT, padding: "3px 9px", borderRadius: "999px", border: `0.5px solid ${ACCENT}`, letterSpacing: "0.02em", fontWeight: 700, whiteSpace: "nowrap" }}>{s.name}</span>
             ) : (
-              <span key={s.id} style={{ fontSize: "10.5px", color: ON_NAVY, background: GOLD, padding: "3px 9px", borderRadius: "999px", letterSpacing: "0.02em", fontWeight: 600, whiteSpace: "nowrap" }}>{s.name}</span>
+              <span key={s.id} style={{ fontSize: "10.5px", color: ON_ACCENT, background: ACCENT, padding: "3px 9px", borderRadius: "999px", letterSpacing: "0.02em", fontWeight: 600, whiteSpace: "nowrap" }}>{s.name}</span>
             ))}
-            <button onClick={() => setPickerOpen(true)} style={{ fontSize: "10.5px", color: GOLD, background: "transparent", border: `0.5px dashed ${GOLD}`, padding: "3px 9px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", fontWeight: 600 }}>+ Change sources</button>
+            <button onClick={() => setPickerOpen(true)} style={{ fontSize: "10.5px", color: ACCENT, background: "transparent", border: `0.5px dashed ${ACCENT}`, padding: "3px 9px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", fontWeight: 600 }}>+ Change sources</button>
           </div>
           {hyperlocalRegion && selectedSources.some(s => s.lens === "hyperlocal") && (
-            <p style={{ fontSize: "10.5px", color: GOLD_DARK, margin: "0 0 8px", fontWeight: 600, lineHeight: 1.4 }}>
+            <p style={{ fontSize: "10.5px", color: ACCENT_DARK, margin: "0 0 8px", fontWeight: 600, lineHeight: 1.4 }}>
               <span aria-hidden="true">◉ </span>
               Hyperlocal sources auto-added for {hyperlocalRegion.label}.
             </p>
@@ -5738,9 +5737,9 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                       fontSize: "10.5px",
                       letterSpacing: "0.04em",
                       fontWeight: active ? 700 : 500,
-                      color: active ? ON_NAVY : "var(--color-text-secondary)",
-                      background: active ? GOLD : "transparent",
-                      border: `0.5px solid ${active ? GOLD : "var(--color-border-secondary)"}`,
+                      color: active ? ON_ACCENT : "var(--color-text-secondary)",
+                      background: active ? ACCENT : "transparent",
+                      border: `0.5px solid ${active ? ACCENT : "var(--color-border-secondary)"}`,
                       borderRadius: "999px",
                       padding: "4px 10px",
                       cursor: "pointer",
@@ -5753,7 +5752,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
               })}
             </div>
           </div>
-          <button onClick={handleRunReview} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_NAVY }}>
+          <button onClick={handleRunReview} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "12px 18px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_ACCENT }}>
             Run review (~45 sec)
           </button>
           {error && <p style={{ fontSize: "11.5px", color: "var(--color-text-danger)", margin: "8px 0 0", textAlign: "center" }}>{error}</p>}
@@ -5772,9 +5771,9 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
           <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 8px" }}>{progressLabel || "Working…"}</p>
           <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, var(--color-border-tertiary))", overflow: "hidden", position: "relative" }}>
             {progress > 0 ? (
-              <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: GOLD, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
+              <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: ACCENT, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
             ) : (
-              <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
+              <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: ACCENT, animation: "slideBar 1.6s ease-in-out infinite" }} />
             )}
           </div>
           <button onClick={handleCancelReview} style={{ marginTop: "10px", width: "100%", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "9px 16px", fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "transparent", color: "var(--color-text-primary)" }}>
@@ -5877,7 +5876,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                   {allChecked ? (
                     // Inert state: don't show a broken-looking grayed button.
                     // A simple checkmark pill communicates 'this is already done'.
-                    <span style={{ fontSize: "10.5px", color: GOLD, background: "transparent", border: `0.5px solid ${GOLD}`, padding: "4px 10px", borderRadius: "3px", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}>
+                    <span style={{ fontSize: "10.5px", color: ACCENT, background: "transparent", border: `0.5px solid ${ACCENT}`, padding: "4px 10px", borderRadius: "3px", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}>
                       ✓ All included
                     </span>
                   ) : (
@@ -5891,7 +5890,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                         });
                       }}
                       title="Include every change"
-                      style={{ fontSize: "10.5px", color: ON_NAVY, background: GOLD, border: `0.5px solid ${GOLD}`, padding: "4px 10px", borderRadius: "3px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}
+                      style={{ fontSize: "10.5px", color: ON_ACCENT, background: ACCENT, border: `0.5px solid ${ACCENT}`, padding: "4px 10px", borderRadius: "3px", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}
                     >
                       Include all
                     </button>
@@ -5931,14 +5930,14 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
               still show a disabled-looking hint so the user knows where the
               actual trigger lives. */}
           {selectedForApply.length > 0 ? (
-            <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: `1px solid ${GOLD}` }}>
+            <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: `1px solid ${ACCENT}` }}>
               <p style={{ fontSize: "11.5px", color: "var(--color-text-primary)", margin: "0 0 8px", fontWeight: 600 }}>
                 {selectedForApply.length} change{selectedForApply.length === 1 ? "" : "s"} selected ·&nbsp;
-                <span style={{ color: GOLD, fontWeight: 700 }}>
+                <span style={{ color: ACCENT, fontWeight: 700 }}>
                   ~{revisionMode === "surgical" ? "30 sec" : "2 min"}
                 </span>
               </p>
-              <button onClick={handleApply} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "14px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_NAVY }}>
+              <button onClick={handleApply} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "14px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_ACCENT }}>
                 {`→ Apply ${selectedForApply.length} change${selectedForApply.length === 1 ? "" : "s"}`}
               </button>
             </div>
@@ -5953,7 +5952,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             </div>
           )}
           {status === "applied" && (
-            <p style={{ marginTop: "10px", fontSize: "12px", color: GOLD, textAlign: "center", fontWeight: 600 }}>✓ Changes applied to your plan.</p>
+            <p style={{ marginTop: "10px", fontSize: "12px", color: ACCENT, textAlign: "center", fontWeight: 600 }}>✓ Changes applied to your plan.</p>
           )}
           {notice && status !== "applying" && (
             <div style={{ marginTop: "10px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, var(--color-background-secondary))" }}>
@@ -5967,7 +5966,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
                     setNotice("");
                     handleApply({ findingsOverride: retry, forceMode: "full" });
                   }}
-                  style={{ marginTop: "8px", width: "100%", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "10px 14px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_NAVY }}
+                  style={{ marginTop: "8px", width: "100%", border: `0.5px solid ${ACCENT}`, borderRadius: "var(--border-radius-md)", padding: "10px 14px", fontSize: "11px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: ON_ACCENT }}
                 >
                   {`↻ Re-plan to apply the rest (${pendingRetryIds.length})`}
                 </button>
@@ -5990,7 +5989,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   );
 }
 
-// Picker modal — bottom-sheet style on mobile. Multi-select gold chips,
+// Picker modal — bottom-sheet style on mobile. Multi-select teal chips,
 // grouped by lens. Tap a chip to toggle. Tap Done to close.
 function ReviewPickerModal({ selectedIds, onToggle, onClose }) {
   const lensOrder = ["editorial", "hotels", "restaurants", "local"];
@@ -5999,20 +5998,20 @@ function ReviewPickerModal({ selectedIds, onToggle, onClose }) {
       <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: "640px", maxHeight: "85vh", overflowY: "auto", background: "var(--color-background-primary, var(--color-background-primary))", borderTopLeftRadius: "16px", borderTopRightRadius: "16px", padding: "1.25rem 1.25rem 1.5rem", boxShadow: "0 -10px 40px rgba(0,0,0,0.25)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "1rem" }}>
           <p style={{ fontSize: "15px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: 0, color: "var(--color-text-primary)" }}>Reviewer panel</p>
-          <button onClick={onClose} style={{ background: "transparent", border: "none", color: GOLD, fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}>Done</button>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: ACCENT, fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}>Done</button>
         </div>
         {lensOrder.map(lensId => {
           const lens = REVIEWER_LENSES.find(l => l.id === lensId);
           const sources = REVIEWER_SOURCES.filter(s => s.lens === lensId);
           return (
             <div key={lensId} style={{ marginBottom: "1.1rem" }}>
-              <p style={{ fontSize: "10.5px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 3px" }}>{lens.label}</p>
+              <p style={{ fontSize: "10.5px", color: ACCENT, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 3px" }}>{lens.label}</p>
               <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 8px", fontStyle: "italic", lineHeight: 1.5 }}>{lens.why}</p>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
                 {sources.map(s => {
                   const on = selectedIds.includes(s.id);
                   return (
-                    <button key={s.id} onClick={() => onToggle(s.id)} style={{ fontSize: "11.5px", color: on ? ON_NAVY : GOLD, background: on ? GOLD : "transparent", border: `0.5px solid ${GOLD}`, padding: "6px 12px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", fontWeight: on ? 600 : 500, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>
+                    <button key={s.id} onClick={() => onToggle(s.id)} style={{ fontSize: "11.5px", color: on ? ON_ACCENT : ACCENT, background: on ? ACCENT : "transparent", border: `0.5px solid ${ACCENT}`, padding: "6px 12px", borderRadius: "999px", cursor: "pointer", fontFamily: "inherit", fontWeight: on ? 600 : 500, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>
                       {on ? "✓ " : ""}{s.name}
                     </button>
                   );
@@ -6239,14 +6238,14 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
   if (!plan?.days || plan.days.length === 0) return null;
 
   const cardStyle = {
-    border: `0.5px dashed ${GOLD}`,
+    border: `0.5px dashed ${ACCENT}`,
     borderRadius: "var(--border-radius-md)",
     padding: "14px 16px",
     marginBottom: variant === "toplevel" ? "1.25rem" : "0",
     marginTop: variant === "review" ? "14px" : "0",
     background: "var(--color-background-primary)",
   };
-  const labelStyle = { fontSize: "10.5px", color: GOLD, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" };
+  const labelStyle = { fontSize: "10.5px", color: ACCENT, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" };
 
   // Collapsed teaser
   if (!open && status === "idle") {
@@ -6259,7 +6258,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
               Want a different hotel, restaurant, activity, or pacing? Tell us what to change.
             </span>
           </span>
-          <span style={{ flex: "0 0 auto", fontSize: "18px", color: GOLD, fontWeight: 300 }}>+</span>
+          <span style={{ flex: "0 0 auto", fontSize: "18px", color: ACCENT, fontWeight: 300 }}>+</span>
         </button>
       </div>
     );
@@ -6278,9 +6277,9 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
         <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 8px" }}>{progressLabel || "Working…"}</p>
         <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, var(--color-border-tertiary))", overflow: "hidden", position: "relative" }}>
           {progress > 0 ? (
-            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: GOLD, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
+            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: ACCENT, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
           ) : (
-            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
+            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: ACCENT, animation: "slideBar 1.6s ease-in-out infinite" }} />
           )}
         </div>
         <button onClick={handleCancel} style={{ marginTop: "10px", width: "100%", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "9px 16px", fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "transparent", color: "var(--color-text-primary)" }}>
@@ -6294,7 +6293,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
   if (status === "done") {
     return (
       <div style={cardStyle}>
-        <p style={{ margin: 0, fontSize: "13px", color: GOLD, textAlign: "center", fontWeight: 600 }}>✓ Change applied to your plan.</p>
+        <p style={{ margin: 0, fontSize: "13px", color: ACCENT, textAlign: "center", fontWeight: 600 }}>✓ Change applied to your plan.</p>
       </div>
     );
   }
@@ -6330,9 +6329,9 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
                 letterSpacing: "0.04em",
                 padding: "5px 11px",
                 borderRadius: "999px",
-                border: `0.5px solid ${active ? GOLD_DARK : "var(--color-border-secondary)"}`,
-                background: active ? GOLD_LIGHT : "transparent",
-                color: active ? GOLD_DARK : "var(--color-text-primary)",
+                border: `0.5px solid ${active ? ACCENT_DARK : "var(--color-border-secondary)"}`,
+                background: active ? ACCENT_LIGHT : "transparent",
+                color: active ? ACCENT_DARK : "var(--color-text-primary)",
                 cursor: "pointer",
                 fontFamily: "inherit",
               }}
@@ -6407,7 +6406,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
           cursor: text.trim() ? "pointer" : "not-allowed",
           fontFamily: "inherit",
           background: text.trim() ? "var(--color-text-primary)" : "var(--color-border-tertiary, var(--color-border-tertiary))",
-          color: text.trim() ? GOLD : "var(--color-text-tertiary)",
+          color: text.trim() ? ACCENT : "var(--color-text-tertiary)",
           opacity: text.trim() ? 1 : 0.7,
         }}
       >
@@ -6423,7 +6422,7 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
 
 function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
   const sev = finding.severity || "suggested";
-  const sevColor = sev === "critical" ? "var(--color-text-danger)" : sev === "suggested" ? GOLD : "var(--color-text-secondary)";
+  const sevColor = sev === "critical" ? "var(--color-text-danger)" : sev === "suggested" ? ACCENT : "var(--color-text-secondary)";
   const sevLabel = sev === "critical" ? "Critical" : sev === "suggested" ? "Suggested" : "Nice";
   return (
     <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", padding: "12px 0 4px", opacity: alreadyApplied ? 0.55 : 1 }}>
@@ -6436,13 +6435,13 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
             {finding.source && <span style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", fontStyle: "italic" }}>via {finding.source}</span>}
           </div>
           <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.5 }}>{finding.summary}</p>
-          {finding.action && <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.5 }}><span style={{ color: GOLD, fontWeight: 600, marginRight: "4px" }}>→</span>{finding.action}</p>}
+          {finding.action && <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.5 }}><span style={{ color: ACCENT, fontWeight: 600, marginRight: "4px" }}>→</span>{finding.action}</p>}
           {alreadyApplied ? (
-            <p style={{ marginTop: "8px", fontSize: "11px", color: GOLD, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", margin: "8px 0 0" }}>✓ Already applied</p>
+            <p style={{ marginTop: "8px", fontSize: "11px", color: ACCENT, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", margin: "8px 0 0" }}>✓ Already applied</p>
           ) : (
             // Toggle button. Labels describe the CURRENT STATE so the user can
             // tell at a glance which findings are queued. When checked = the
-            // finding is in the apply-queue (filled gold pill, '✓ Will apply').
+            // finding is in the apply-queue (filled teal pill, '✓ Will apply').
             // When unchecked = not queued (outlined, '+ Apply this change'
             // — the verb is the action a click takes). After picking one or
             // more, the bottom 'Apply quick edits' / 'Apply — full re-plan'
@@ -6463,10 +6462,10 @@ function FindingCard({ finding, checked, alreadyApplied, onToggle }) {
                 textTransform: "uppercase",
                 padding: "6px 12px",
                 borderRadius: "4px",
-                border: `0.5px solid ${checked ? GOLD : "var(--color-border-secondary)"}`,
-                background: checked ? GOLD : "transparent",
+                border: `0.5px solid ${checked ? ACCENT : "var(--color-border-secondary)"}`,
+                background: checked ? ACCENT : "transparent",
                 /* #23 checked = navy fill, so label must be LIGHT (was navy-on-navy = invisible). */
-                color: checked ? ON_NAVY : "var(--color-text-secondary)",
+                color: checked ? ON_ACCENT : "var(--color-text-secondary)",
                 cursor: "pointer",
                 fontFamily: "inherit",
               }}
@@ -7048,8 +7047,8 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
             alignItems: "center",
             gap: "6px",
             background: "transparent",
-            color: GOLD,
-            border: `0.5px solid ${GOLD}`,
+            color: ACCENT,
+            border: `0.5px solid ${ACCENT}`,
             borderRadius: "var(--border-radius-md)",
             padding: "7px 12px",
             fontSize: "11px",
@@ -7083,7 +7082,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           <div onClick={closeMenu} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 1000, padding: 0 }}>
             <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Menu" style={{ background: "var(--color-background-primary)", maxWidth: "640px", width: "100%", maxHeight: "90vh", overflowY: "auto", borderRadius: "16px 16px 0 0", padding: "22px 22px 32px", boxShadow: "0 -8px 32px rgba(0,0,0,0.25)" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
-                <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Menu</p>
+                <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Menu</p>
                 <button onClick={closeMenu} aria-label="Close menu" style={{ background: "transparent", border: "none", fontSize: "22px", color: "var(--color-text-secondary)", cursor: "pointer", padding: "4px 8px", lineHeight: 1 }}>×</button>
               </div>
               <p style={{ fontSize: "20px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 14px", color: "var(--color-text-primary)" }}>{menuRestaurant.name}</p>
@@ -7170,7 +7169,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
               <div key={i}>
                 {showLegHeader && (
                   <div style={{ margin: "0 0 14px", padding: "10px 12px", background: "var(--color-text-primary)", color: "var(--color-background-primary)", borderRadius: "var(--border-radius-md)", display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
-                    <span style={{ fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, color: GOLD }}>Leg {legIndex}</span>
+                    <span style={{ fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, color: ACCENT }}>Leg {legIndex}</span>
                     <span style={{ fontSize: "15px", fontFamily: "var(--font-serif)", fontStyle: "italic", letterSpacing: "-0.2px" }}>{d.city}</span>
                   </div>
                 )}
@@ -7199,7 +7198,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         {onEditTrip && (
           <button
             onClick={onEditTrip}
-            style={{ background: "transparent", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", color: GOLD, fontWeight: 500 }}
+            style={{ background: "transparent", border: `0.5px solid ${ACCENT}`, borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", color: ACCENT, fontWeight: 500 }}
             title="Go back to the input form with this trip's details still filled in — tweak dates, cities, or anything else and rebuild."
           >✎ Edit trip details</button>
         )}
@@ -7534,7 +7533,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
           // Visible drop-target outline only when the browser reports a
           // drag actually entered. Avoids the box jumping when the user
           // is just hovering with the mouse without a payload.
-          outline: isDragging ? `2px dashed ${GOLD}` : "none",
+          outline: isDragging ? `2px dashed ${ACCENT}` : "none",
           outlineOffset: "2px",
           borderRadius: isCompact ? "4px" : "8px",
         }}
@@ -7599,7 +7598,7 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
             borderRadius: "50%",
             // #16/contrast: navy glyph on navy (uploading) or mid-slate fill was
             // invisible / 2.5:1. Use a LIGHT glyph on the dark circle in both states.
-            background: uploading ? GOLD : "var(--color-border-primary)",
+            background: uploading ? ACCENT : "var(--color-border-primary)",
             color: "var(--color-background-primary)",
             cursor: uploading ? "wait" : "pointer",
             display: "flex",
@@ -7844,7 +7843,7 @@ function DateRangeInput({ startDate, endDate, onRangeChange }) {
     let color = "var(--color-text-primary)";
     let weight = 400;
     if (within) { bg = "rgba(91, 101, 119, 0.18)"; color = "var(--color-text-primary)"; }
-    if (isStart || isEnd) { bg = GOLD; color = "var(--color-background-primary)"; weight = 600; }
+    if (isStart || isEnd) { bg = ACCENT; color = "var(--color-background-primary)"; weight = 600; }
     if (isPast) color = "var(--color-text-tertiary)";
     const borderRadius = isStart && isEnd ? "50%"
       : isStart ? "50% 0 0 50%"
@@ -7864,7 +7863,7 @@ function DateRangeInput({ startDate, endDate, onRangeChange }) {
           width: "100%",
           background: bg,
           color,
-          border: isToday && !isStart && !isEnd && !within ? `1px solid ${GOLD}` : "none",
+          border: isToday && !isStart && !isEnd && !within ? `1px solid ${ACCENT}` : "none",
           borderRadius,
           cursor: "pointer",
           fontFamily: "inherit",
@@ -8797,14 +8796,14 @@ function Sel({ value, onChange, opts, multi = false, placeholder = "No preferenc
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", padding: "6px 0", borderBottom: "0.5px solid var(--color-border-primary)" }}>
       <button type="button" onClick={clearAll}
-        style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${isNone ? GOLD : "var(--color-border-secondary)"}`, background: isNone ? "var(--color-surface-2)" : "transparent", color: isNone ? GOLD : "var(--color-text-secondary)", fontWeight: isNone ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
+        style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${isNone ? ACCENT : "var(--color-border-secondary)"}`, background: isNone ? "var(--color-surface-2)" : "transparent", color: isNone ? ACCENT : "var(--color-text-secondary)", fontWeight: isNone ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
         {placeholder}
       </button>
       {opts.map(o => {
         const on = arr.includes(o);
         return (
           <button key={o} type="button" onClick={() => toggle(o)}
-            style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${on ? GOLD : "var(--color-border-secondary)"}`, background: on ? "var(--color-surface-2)" : "transparent", color: on ? GOLD : "var(--color-text-primary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
+            style={{ fontSize: "11px", padding: "5px 9px", borderRadius: "12px", border: `0.5px solid ${on ? ACCENT : "var(--color-border-secondary)"}`, background: on ? "var(--color-surface-2)" : "transparent", color: on ? ACCENT : "var(--color-text-primary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit" }}>
             {o}
           </button>
         );
@@ -8941,13 +8940,13 @@ function Toggle({ label, desc, checked, onChange, disabled }) {
         <div style={{ fontSize: "13px", color: "var(--color-text-primary)" }}>{label}{disabled && <span style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginLeft: "8px", fontStyle: "italic" }}>always included</span>}</div>
         {desc && <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{desc}</div>}
       </div>
-      <input type="checkbox" checked={checked} onChange={onChange} disabled={disabled} style={{ accentColor: GOLD, width: "15px", height: "15px", cursor: disabled ? "not-allowed" : "pointer", flexShrink: 0 }} />
+      <input type="checkbox" checked={checked} onChange={onChange} disabled={disabled} style={{ accentColor: ACCENT, width: "15px", height: "15px", cursor: disabled ? "not-allowed" : "pointer", flexShrink: 0 }} />
     </div>
   );
 }
 
 const cardStyle = { background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem 1.5rem", marginBottom: "1rem" };
-const ctStyle = { fontSize: "11px", fontWeight: "500", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 1.1rem", paddingBottom: "10px", borderBottom: "0.5px solid var(--color-border-tertiary)" };
+const ctStyle = { fontSize: "11px", fontWeight: "500", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 1.1rem", paddingBottom: "10px", borderBottom: "0.5px solid var(--color-border-tertiary)" };
 const g2 = { display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: "20px", marginBottom: "16px" };
 const g3 = { display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)", gap: "14px", marginBottom: "16px" };
 
@@ -9968,7 +9967,7 @@ function FindRestaurantCard({ restaurant, onOpenMenu }) {
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px", marginBottom: hasContact ? "4px" : 0 }}>
         <button
           onClick={() => onOpenMenu(r)}
-          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}
+          style={{ fontSize: "11px", padding: "7px 12px", borderRadius: "4px", border: `0.5px solid ${ACCENT}`, background: "transparent", color: ACCENT, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500 }}
         >View Menu</button>
         {resv && (
           <a
@@ -10040,7 +10039,7 @@ function ActivityDetailsModal({ activity, details, loading, error, onClose }) {
         style={{ background: "var(--color-background-primary)", maxWidth: "640px", width: "100%", maxHeight: "90vh", overflowY: "auto", borderRadius: "16px 16px 0 0", padding: "22px 22px 32px", boxShadow: "0 -8px 32px rgba(0,0,0,0.25)" }}
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
-          <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Details</p>
+          <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Details</p>
           <button
             onClick={onClose}
             aria-label="Close details"
@@ -10056,13 +10055,13 @@ function ActivityDetailsModal({ activity, details, loading, error, onClose }) {
         )}
         {details && sections.map(([title, body]) => body && (
           <div key={title} style={{ marginBottom: "14px" }}>
-            <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 6px", paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{title}</p>
+            <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 6px", paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>{title}</p>
             <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: 0, lineHeight: 1.55 }}>{body}</p>
           </div>
         ))}
         {details && Array.isArray(details.nearby_pairings) && details.nearby_pairings.length > 0 && (
           <div style={{ marginBottom: "14px" }}>
-            <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 6px", paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Pair it with</p>
+            <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 6px", paddingBottom: "4px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Pair it with</p>
             <ul style={{ margin: 0, paddingLeft: "20px" }}>
               {details.nearby_pairings.map((p, i) => (
                 <li key={i} style={{ fontSize: "13px", color: "var(--color-text-primary)", marginBottom: "4px", lineHeight: 1.5 }}>{p}</li>
@@ -10090,7 +10089,7 @@ function FindActivityCard({ activity, onOpenDetails }) {
         <button
           type="button"
           onClick={() => onOpenDetails(activity)}
-          style={{ fontSize: "11px", padding: "6px 12px", borderRadius: "4px", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, marginLeft: "auto" }}
+          style={{ fontSize: "11px", padding: "6px 12px", borderRadius: "4px", border: `0.5px solid ${ACCENT}`, background: "transparent", color: ACCENT, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, marginLeft: "auto" }}
         >More details →</button>
       </div>
     </div>
@@ -10507,7 +10506,7 @@ function FindView({ embedded = false } = {}) {
               <img src="/rs3-wordmark.svg?v=3" alt="Route Smith" style={{ display: "block", height: vp.isMobile ? "28px" : "38px", width: "auto", margin: 0 }} />
               <p style={{ fontSize: "22px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "2px 0 0", color: "var(--color-text-primary)" }}>Find</p>
             </div>
-            <a href="/" style={{ fontSize: "11px", color: GOLD, textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", padding: "10px 14px", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", display: "inline-flex", alignItems: "center", minHeight: "40px" }}>← Trip Builder</a>
+            <a href="/" style={{ fontSize: "11px", color: ACCENT, textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", padding: "10px 14px", border: `0.5px solid ${ACCENT}`, borderRadius: "var(--border-radius-md)", display: "inline-flex", alignItems: "center", minHeight: "40px" }}>← Trip Builder</a>
           </div>
         )}
 
@@ -10559,7 +10558,7 @@ function FindView({ embedded = false } = {}) {
             <button
               type="submit"
               disabled={loading || !location.trim()}
-              style={{ flex: 1, minWidth: "140px", fontSize: "13px", padding: "12px 18px", borderRadius: "var(--border-radius-md)", border: "none", background: loading || !location.trim() ? "var(--color-border-secondary)" : GOLD, color: loading || !location.trim() ? "var(--color-text-tertiary)" : ON_NAVY, cursor: loading || !location.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
+              style={{ flex: 1, minWidth: "140px", fontSize: "13px", padding: "12px 18px", borderRadius: "var(--border-radius-md)", border: "none", background: loading || !location.trim() ? "var(--color-border-secondary)" : ACCENT, color: loading || !location.trim() ? "var(--color-text-tertiary)" : ON_ACCENT, cursor: loading || !location.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}
             >{loading ? "Searching…" : "Search"}</button>
             {loading && (
               <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", letterSpacing: "0.04em", fontStyle: "italic" }}>This usually takes 20–40 seconds.</span>
@@ -10605,7 +10604,7 @@ function FindView({ embedded = false } = {}) {
             <a
               href="#top"
               onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-              style={{ color: GOLD, textDecoration: "none", fontSize: "11px", letterSpacing: "0.06em", textTransform: "uppercase", whiteSpace: "nowrap" }}
+              style={{ color: ACCENT, textDecoration: "none", fontSize: "11px", letterSpacing: "0.06em", textTransform: "uppercase", whiteSpace: "nowrap" }}
             >Edit</a>
           </div>
         )}
@@ -10618,7 +10617,7 @@ function FindView({ embedded = false } = {}) {
         {/* Ask the locals — opt-in retrieval pass. Hidden while a local-expert
             result is already on the page; user can clear and re-ask if needed. */}
         {results && !localExpertResults && !askingLocals && (
-          <div style={{ marginBottom: "1rem", padding: "12px 14px", border: `0.5px dashed ${GOLD}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
+          <div style={{ marginBottom: "1rem", padding: "12px 14px", border: `0.5px dashed ${ACCENT}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
             <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
               <div style={{ flex: 1, minWidth: "200px" }}>
                 <p style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 2px", letterSpacing: "0.02em" }}>Want a hyperlocal second opinion?</p>
@@ -10628,7 +10627,7 @@ function FindView({ embedded = false } = {}) {
                 type="button"
                 onClick={onAskLocals}
                 disabled={askingLocals}
-                style={{ fontSize: "12px", padding: "10px 16px", borderRadius: "var(--border-radius-md)", border: `0.5px solid ${GOLD}`, background: "transparent", color: GOLD, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600, minHeight: "44px", whiteSpace: "nowrap" }}
+                style={{ fontSize: "12px", padding: "10px 16px", borderRadius: "var(--border-radius-md)", border: `0.5px solid ${ACCENT}`, background: "transparent", color: ACCENT, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600, minHeight: "44px", whiteSpace: "nowrap" }}
               >Ask the locals →</button>
             </div>
           </div>
@@ -10636,17 +10635,17 @@ function FindView({ embedded = false } = {}) {
 
         {/* Asking-the-locals progress */}
         {askingLocals && (
-          <div style={{ marginBottom: "1rem", padding: "12px 14px", border: `0.5px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", background: GOLD_LIGHT, display: "flex", alignItems: "center", gap: "10px" }}>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: GOLD_DARK, letterSpacing: "0.04em" }}>Asking the locals…</span>
-            <span style={{ fontSize: "11px", color: GOLD_DARK }}>Querying regional press, local forums, and area guides.</span>
+          <div style={{ marginBottom: "1rem", padding: "12px 14px", border: `0.5px solid ${ACCENT}`, borderRadius: "var(--border-radius-md)", background: ACCENT_LIGHT, display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: ACCENT_DARK, letterSpacing: "0.04em" }}>Asking the locals…</span>
+            <span style={{ fontSize: "11px", color: ACCENT_DARK }}>Querying regional press, local forums, and area guides.</span>
           </div>
         )}
 
         {/* Section toggle — only when both sections have results */}
         {showSectionToggle && (
           <div style={{ position: "sticky", top: 0, background: "var(--color-background-secondary)", padding: "10px 0", marginBottom: "0.5rem", zIndex: 10, display: "flex", gap: "16px", fontSize: "12px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-            <a href="#find-restaurants" style={{ color: "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Restaurants <span style={{ color: GOLD }}>({results.restaurants.length})</span></a>
-            <a href="#find-activities" style={{ color: "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Activities <span style={{ color: GOLD }}>({results.activities.length})</span></a>
+            <a href="#find-restaurants" style={{ color: "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Restaurants <span style={{ color: ACCENT }}>({results.restaurants.length})</span></a>
+            <a href="#find-activities" style={{ color: "var(--color-text-primary)", textDecoration: "none", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Activities <span style={{ color: ACCENT }}>({results.activities.length})</span></a>
           </div>
         )}
 
@@ -10666,7 +10665,7 @@ function FindView({ embedded = false } = {}) {
             column rather than cramming. */}
         {hasRestaurants && (
           <section id="find-restaurants" style={{ marginTop: "1.25rem", scrollMarginTop: "60px" }}>
-            <h2 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Restaurants in {results.queryUsed.location} ({results.restaurants.length})</h2>
+            <h2 style={{ fontSize: "11px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Restaurants in {results.queryUsed.location} ({results.restaurants.length})</h2>
             <div style={{ display: "grid", gridTemplateColumns: vp.isAtLeastDesktop ? "repeat(auto-fit, minmax(360px, 1fr))" : "1fr", gap: "12px" }}>
               {results.restaurants.map((r, i) => (
                 <FindRestaurantCard key={`${r.name}-${i}`} restaurant={r} onOpenMenu={onOpenMenu} />
@@ -10678,7 +10677,7 @@ function FindView({ embedded = false } = {}) {
         {/* Activities section — same grid treatment as restaurants. */}
         {hasActivities && (
           <section id="find-activities" style={{ marginTop: "1.25rem", scrollMarginTop: "60px" }}>
-            <h2 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Activities in {results.queryUsed.location} ({results.activities.length})</h2>
+            <h2 style={{ fontSize: "11px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Activities in {results.queryUsed.location} ({results.activities.length})</h2>
             <div style={{ display: "grid", gridTemplateColumns: vp.isAtLeastDesktop ? "repeat(auto-fit, minmax(360px, 1fr))" : "1fr", gap: "12px" }}>
               {results.activities.map((a, i) => (
                 <FindActivityCard key={`${a.text}-${i}`} activity={a} onOpenDetails={onOpenDetails} />
@@ -10691,17 +10690,17 @@ function FindView({ embedded = false } = {}) {
             Independent from the standard section above; its own header,
             its own badge, its own restaurants and activities lists. */}
         {localExpertResults && (
-          <section style={{ marginTop: "2rem", paddingTop: "1.25rem", borderTop: `1px solid ${GOLD}` }}>
+          <section style={{ marginTop: "2rem", paddingTop: "1.25rem", borderTop: `1px solid ${ACCENT}` }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
-              <h2 style={{ fontSize: "13px", fontWeight: 700, color: GOLD_DARK, letterSpacing: "0.12em", textTransform: "uppercase", margin: 0 }}>Locally sourced</h2>
+              <h2 style={{ fontSize: "13px", fontWeight: 700, color: ACCENT_DARK, letterSpacing: "0.12em", textTransform: "uppercase", margin: 0 }}>Locally sourced</h2>
               {localExpertResults.localExpert?.source_set === "curated" && localExpertResults.localExpert?.status === "ok" && (
-                <span style={{ fontSize: "10.5px", padding: "2px 6px", background: GOLD, color: ON_NAVY, borderRadius: "3px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>Curated</span>
+                <span style={{ fontSize: "10.5px", padding: "2px 6px", background: ACCENT, color: ON_ACCENT, borderRadius: "3px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 }}>Curated</span>
               )}
               {localExpertResults.localExpert?.status === "ok" && localExpertResults.localExpert.sources?.length > 0 && (
                 <button
                   type="button"
                   onClick={() => setSourcesExpanded((v) => !v)}
-                  style={{ background: "transparent", border: "none", color: GOLD_DARK, textDecoration: "underline", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", padding: 0 }}
+                  style={{ background: "transparent", border: "none", color: ACCENT_DARK, textDecoration: "underline", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", padding: 0 }}
                 >{localExpertResults.localExpert.sources.length} source{localExpertResults.localExpert.sources.length === 1 ? "" : "s"} consulted {sourcesExpanded ? "▲" : "▼"}</button>
               )}
               {localExpertResults.localExpert?.status === "no_results" && (
@@ -10712,7 +10711,7 @@ function FindView({ embedded = false } = {}) {
               )}
             </div>
             {sourcesExpanded && localExpertResults.localExpert?.sources?.length > 0 && (
-              <ul style={{ margin: "0 0 12px", padding: "0 0 0 18px", fontSize: "11.5px", color: GOLD_DARK }}>
+              <ul style={{ margin: "0 0 12px", padding: "0 0 0 18px", fontSize: "11.5px", color: ACCENT_DARK }}>
                 {localExpertResults.localExpert.sources.map((s) => (
                   <li key={s.source_id} style={{ marginBottom: "2px" }}>
                     {s.source_name}{" "}
@@ -10726,7 +10725,7 @@ function FindView({ embedded = false } = {}) {
             )}
             {localExpertResults.restaurants?.length > 0 && (
               <div style={{ marginTop: "0.75rem" }}>
-                <h3 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Restaurants ({localExpertResults.restaurants.length})</h3>
+                <h3 style={{ fontSize: "11px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Restaurants ({localExpertResults.restaurants.length})</h3>
                 <div style={{ display: "grid", gridTemplateColumns: vp.isAtLeastDesktop ? "repeat(auto-fit, minmax(360px, 1fr))" : "1fr", gap: "12px" }}>
                   {localExpertResults.restaurants.map((r, i) => (
                     <FindRestaurantCard key={`le-${r.name}-${i}`} restaurant={r} onOpenMenu={onOpenMenu} />
@@ -10736,7 +10735,7 @@ function FindView({ embedded = false } = {}) {
             )}
             {localExpertResults.activities?.length > 0 && (
               <div style={{ marginTop: "1.25rem" }}>
-                <h3 style={{ fontSize: "11px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Activities ({localExpertResults.activities.length})</h3>
+                <h3 style={{ fontSize: "11px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px", paddingBottom: "8px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>Activities ({localExpertResults.activities.length})</h3>
                 <div style={{ display: "grid", gridTemplateColumns: vp.isAtLeastDesktop ? "repeat(auto-fit, minmax(360px, 1fr))" : "1fr", gap: "12px" }}>
                   {localExpertResults.activities.map((a, i) => (
                     <FindActivityCard key={`le-${a.text}-${i}`} activity={a} onOpenDetails={onOpenDetails} />
@@ -10755,7 +10754,7 @@ function FindView({ embedded = false } = {}) {
             <div onClick={onCloseMenu} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 1000, padding: 0 }}>
               <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Menu" style={{ background: "var(--color-background-primary)", maxWidth: "640px", width: "100%", maxHeight: "90vh", overflowY: "auto", borderRadius: "16px 16px 0 0", padding: "22px 22px 32px", boxShadow: "0 -8px 32px rgba(0,0,0,0.25)" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
-                  <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Menu</p>
+                  <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600, margin: 0 }}>Menu</p>
                   <button onClick={onCloseMenu} aria-label="Close menu" style={{ background: "transparent", border: "none", fontSize: "22px", color: "var(--color-text-secondary)", cursor: "pointer", padding: "4px 8px", lineHeight: 1 }}>×</button>
                 </div>
                 <p style={{ fontSize: "20px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 14px", color: "var(--color-text-primary)" }}>{menuRestaurant.name}</p>
@@ -10783,7 +10782,7 @@ function FindView({ embedded = false } = {}) {
             <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Powered by</span>
             <img src="/brand-wordmark.png?v=2" alt="Barrier Island Digital, LLC" style={{ display: "block", height: "22px", width: "auto", opacity: 0.9 }} />
           </div>
-          <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "4px 0 0" }} />
+          <hr style={{ border: "none", borderTop: `1px solid ${ACCENT}`, width: "32px", margin: "4px 0 0" }} />
           <span style={{ color: "var(--color-text-tertiary)", fontSize: "10px", letterSpacing: "0.06em", marginTop: "2px" }}>
             build {(typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "dev"}
           </span>
@@ -14070,7 +14069,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             <span>Reset</span>
           </button>
         </div>
-        <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "14px 0 18px" }} />
+        <hr style={{ border: "none", borderTop: `1px solid ${ACCENT}`, width: "32px", margin: "14px 0 18px" }} />
 
         {/* Single primary surface (full trip build) with a mode toggle for
             find-only. The toggle lives here — outside the wizard module — so
@@ -14079,7 +14078,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             header never reads as an orphaned card. */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px", flexWrap: "wrap" }}>
           <div style={{ minWidth: 0, flex: "1 1 280px" }}>
-            <p style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, color: GOLD_DARK, margin: "0 0 6px" }}>
+            <p style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, color: ACCENT_DARK, margin: "0 0 6px" }}>
               {findOnly ? "Find local info only" : "Full itinerary build"}
             </p>
             <p style={{ fontSize: "16px", fontWeight: 600, color: "var(--color-text-primary)", margin: "0 0 4px", lineHeight: 1.3 }}>
@@ -14114,9 +14113,9 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               alignItems: "center",
               gap: "10px",
               padding: "10px 14px",
-              border: `1px solid ${findOnly ? GOLD : "var(--color-border-secondary)"}`,
+              border: `1px solid ${findOnly ? ACCENT : "var(--color-border-secondary)"}`,
               borderRadius: "var(--border-radius-md)",
-              background: findOnly ? GOLD_LIGHT : "var(--color-background-primary)",
+              background: findOnly ? ACCENT_LIGHT : "var(--color-background-primary)",
               cursor: "pointer",
               fontFamily: "inherit",
               minHeight: "44px",
@@ -14124,7 +14123,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             }}
           >
             <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-primary)", letterSpacing: "0.02em", whiteSpace: "nowrap" }}>Find local info only</span>
-            <span aria-hidden="true" style={{ width: "34px", height: "20px", borderRadius: "999px", background: findOnly ? GOLD : "var(--color-border-secondary)", position: "relative", transition: "background 0.15s", flexShrink: 0 }}>
+            <span aria-hidden="true" style={{ width: "34px", height: "20px", borderRadius: "999px", background: findOnly ? ACCENT : "var(--color-border-secondary)", position: "relative", transition: "background 0.15s", flexShrink: 0 }}>
               <span style={{ position: "absolute", top: "2px", left: findOnly ? "16px" : "2px", width: "16px", height: "16px", borderRadius: "50%", background: "var(--color-background-primary)", transition: "left 0.15s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)" }} />
             </span>
           </button>
@@ -14156,7 +14155,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         {/* Step pills double as navigation — a tap jumps to that step,
             including back to Step 3 once a plan has been built. The Your
             plan pill is only navigable when a result exists; Essentials
-            and Details are always navigable. Current step is bold + gold,
+            and Details are always navigable. Current step is bold + teal,
             other navigable steps render as buttons styled like text. */}
         <div style={{ display: "flex", alignItems: "center", gap: "7px", marginBottom: "1.75rem", fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--color-text-secondary)", flexWrap: "wrap" }}>
           {["Essentials", "Details", "Your plan"].map((s, i) => {
@@ -14165,9 +14164,9 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             // Step 3 is only navigable when a plan exists. Steps 1 & 2 are
             // always navigable so the user can revisit inputs at any time.
             const isNavigable = !isCurrent && (targetStep < 3 || (targetStep === 3 && !!result));
-            const dotColor = step >= targetStep ? GOLD : "var(--color-border-secondary)";
+            const dotColor = step >= targetStep ? ACCENT : "var(--color-border-secondary)";
             const textColor = isCurrent
-              ? GOLD
+              ? ACCENT
               : (step > targetStep || isNavigable ? "var(--color-text-primary)" : "var(--color-text-tertiary)");
             const navHandler = () => {
               if (!isNavigable) return;
@@ -14222,8 +14221,8 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                       alignItems: "center",
                       gap: "6px",
                       background: "transparent",
-                      color: GOLD,
-                      border: `0.5px solid ${GOLD}`,
+                      color: ACCENT,
+                      border: `0.5px solid ${ACCENT}`,
                       borderRadius: "var(--border-radius-md)",
                       padding: "7px 12px",
                       fontSize: "11px",
@@ -14252,7 +14251,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 budget posture, anchor rhythm), narrative is the SPECIFICS
                 (confirmation numbers, named guides, exact hotels). Both flow
                 into the prompt; guidelines render first. */}
-            <div style={{ ...cardStyleR, borderLeft: `2px solid ${GOLD}`, marginBottom: "1.25rem" }}>
+            <div style={{ ...cardStyleR, borderLeft: `2px solid ${ACCENT}`, marginBottom: "1.25rem" }}>
               <p style={ctStyle}>Trip guidelines</p>
               <Field label="Tell the planner everything you already know about this trip" hint="Type or dictate. Dump anything that matters: booked flights with numbers and times, hotel names, restaurants with reservation times, named drivers or guides, anniversary or kids' ages, mobility notes, pacing preferences, things to avoid. The planner reads this as the source of truth — every named flight, hotel, and restaurant is used EXACTLY, not substituted.">
                 <NarrativeBox
@@ -14294,8 +14293,8 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                       cursor: (extractingFromGuidelines || loading) ? "not-allowed" : "pointer",
                       width: "100%",
                       fontFamily: "inherit",
-                      background: GOLD,
-                      color: ON_NAVY,
+                      background: ACCENT,
+                      color: ON_ACCENT,
                       opacity: (extractingFromGuidelines || loading) ? 0.6 : 1,
                     }}
                     aria-label="Build the trip directly from this narrative"
@@ -14330,7 +14329,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                     {cities.map((c, i) => (
                       <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
                         {isMultiCity && (
-                          <span style={{ fontSize: "9.5px", fontWeight: 700, color: GOLD, letterSpacing: "0.08em", textTransform: "uppercase", padding: "6px 0 0", whiteSpace: "nowrap", flex: "0 0 auto" }}>Leg {i + 1}</span>
+                          <span style={{ fontSize: "9.5px", fontWeight: 700, color: ACCENT, letterSpacing: "0.08em", textTransform: "uppercase", padding: "6px 0 0", whiteSpace: "nowrap", flex: "0 0 auto" }}>Leg {i + 1}</span>
                         )}
                         <div style={{ flex: "1 1 auto", minWidth: 0 }}>
                           <CityAutocomplete value={c.name} onChange={e => updateCity(i, { name: e.target.value })} placeholder={i === 0 ? "Start typing a city…" : "Next city…"} />
@@ -14346,7 +14345,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                       </div>
                     ))}
                     {cities.length < 3 && (
-                      <button onClick={addCity} style={{ background: "none", border: `0.5px dashed ${GOLD}`, color: GOLD, fontSize: "10.5px", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", padding: "7px 10px", borderRadius: "4px", cursor: "pointer", alignSelf: "flex-start", fontFamily: "inherit" }}>+ Add city{cities.length === 1 ? " (multi-city trip)" : ""}</button>
+                      <button onClick={addCity} style={{ background: "none", border: `0.5px dashed ${ACCENT}`, color: ACCENT, fontSize: "10.5px", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", padding: "7px 10px", borderRadius: "4px", cursor: "pointer", alignSelf: "flex-start", fontFamily: "inherit" }}>+ Add city{cities.length === 1 ? " (multi-city trip)" : ""}</button>
                     )}
                   </div>
                 </Field>
@@ -14358,7 +14357,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                     <AirportAutocomplete value={flights.homeAirport} onChange={e => setF({ ...flights, homeAirport: e.target.value })} placeholder="e.g. EWR" />
                   )}
                   <label style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px", fontSize: "11px", color: "var(--color-text-secondary)", cursor: "pointer", fontFamily: "inherit" }}>
-                    <input type="checkbox" checked={!!flights.noFlight} onChange={e => setF({ ...flights, noFlight: e.target.checked, homeAirport: e.target.checked ? "" : flights.homeAirport, airline: e.target.checked ? "" : flights.airline, cabin: e.target.checked ? "" : flights.cabin })} style={{ accentColor: GOLD, margin: 0, cursor: "pointer" }} />
+                    <input type="checkbox" checked={!!flights.noFlight} onChange={e => setF({ ...flights, noFlight: e.target.checked, homeAirport: e.target.checked ? "" : flights.homeAirport, airline: e.target.checked ? "" : flights.airline, cabin: e.target.checked ? "" : flights.cabin })} style={{ accentColor: ACCENT, margin: 0, cursor: "pointer" }} />
                     <span>Not flying (driving / train)</span>
                   </label>
                 </Field>
@@ -14405,7 +14404,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                     </span>
                   )}
                 </span>
-                <span style={{ flex: "0 0 auto", fontSize: "18px", color: GOLD, fontWeight: 300 }}>
+                <span style={{ flex: "0 0 auto", fontSize: "18px", color: ACCENT, fontWeight: 300 }}>
                   {step1OutputsOpen ? "−" : "+"}
                 </span>
               </button>
@@ -14585,7 +14584,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 automatically after the build (#8 part 1); choosing the sources
                 HERE means the pre-build local-knowledge pass and the auto-review
                 both use exactly what the user wants. Selected = navy pill w/
-                light label (ON_NAVY, avoiding the navy-on-navy contrast bug). */}
+                light label (ON_ACCENT, avoiding the navy-on-navy contrast bug). */}
             {!findOnly && (
               <div style={cardStyleR}>
                 <p style={ctStyle}>{`Expert review sources  ·  ${reviewerSourceIds.length} selected`}</p>
@@ -14601,7 +14600,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                         type="button"
                         title={s.blurb}
                         onClick={() => setReviewerSourceIds(prev => prev.includes(s.id) ? prev.filter(x => x !== s.id) : [...prev, s.id])}
-                        style={{ fontSize: "11px", padding: "6px 12px", borderRadius: "999px", border: `0.5px solid ${on ? "var(--color-text-primary)" : "var(--color-border-secondary)"}`, background: on ? "var(--color-text-primary)" : "transparent", color: on ? ON_NAVY : "var(--color-text-secondary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", whiteSpace: "nowrap" }}
+                        style={{ fontSize: "11px", padding: "6px 12px", borderRadius: "999px", border: `0.5px solid ${on ? "var(--color-text-primary)" : "var(--color-border-secondary)"}`, background: on ? "var(--color-text-primary)" : "transparent", color: on ? ON_ACCENT : "var(--color-text-secondary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", whiteSpace: "nowrap" }}
                       >{on ? "\u2713 " : ""}{s.name}</button>
                     );
                   })}
@@ -14637,8 +14636,8 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 Continue rewrites form state and arms the build; Edit narrative
                 bounces back to step 1 unchanged. */}
             {pendingNameChecks && pendingNameChecks.checks.length > 0 && (
-              <div style={{ marginTop: "14px", padding: "14px 16px", border: `1px solid ${GOLD}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
-                <p style={{ fontSize: "10.5px", fontWeight: 600, color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Please confirm</p>
+              <div style={{ marginTop: "14px", padding: "14px 16px", border: `1px solid ${ACCENT}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
+                <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Please confirm</p>
                 <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 12px", lineHeight: 1.5 }}>
                   A couple of names in your narrative aren't a clean match. Pick the right one so we don't silently substitute the wrong property.
                 </p>
@@ -14659,17 +14658,17 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                       )}
                       <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                         <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
-                          <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === "original"} onChange={() => setRes({ choice: "original" })} style={{ accentColor: GOLD, margin: 0 }} />
+                          <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === "original"} onChange={() => setRes({ choice: "original" })} style={{ accentColor: ACCENT, margin: 0 }} />
                           <span>Use exactly as written: <span style={{ fontStyle: "italic" }}>“{c.original}”</span></span>
                         </label>
                         {Array.isArray(c.candidates) && c.candidates.map((cand, ci) => (
                           <label key={ci} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
-                            <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === `candidate:${ci}`} onChange={() => setRes({ choice: `candidate:${ci}` })} style={{ accentColor: GOLD, margin: 0 }} />
+                            <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === `candidate:${ci}`} onChange={() => setRes({ choice: `candidate:${ci}` })} style={{ accentColor: ACCENT, margin: 0 }} />
                             <span>{cand}</span>
                           </label>
                         ))}
                         <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
-                          <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === "custom"} onChange={() => setRes({ choice: "custom" })} style={{ accentColor: GOLD, margin: 0 }} />
+                          <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === "custom"} onChange={() => setRes({ choice: "custom" })} style={{ accentColor: ACCENT, margin: 0 }} />
                           <span>Something else:</span>
                           <input
                             type="text"
@@ -14687,7 +14686,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 <div style={{ display: "flex", gap: "10px", marginTop: "8px" }}>
                   <button onClick={cancelNameChecks} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>← Edit narrative
                   </button>
-                  <button onClick={confirmNameChecks} style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: GOLD, color: ON_NAVY }}>
+                  <button onClick={confirmNameChecks} style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: ACCENT, color: ON_ACCENT }}>
                     Continue →
                   </button>
                 </div>
@@ -14732,11 +14731,11 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                           frozen at 95%. */}
                       <div style={{ height: "5px", borderRadius: "3px", background: "var(--color-border-tertiary, var(--color-border-tertiary))", overflow: "hidden", position: "relative" }}>
                         {longTail ? (
-                          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
+                          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: ACCENT, animation: "slideBar 1.6s ease-in-out infinite" }} />
                         ) : progress > 0 ? (
-                          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: GOLD, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
+                          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`, background: ACCENT, transition: "width 0.3s ease-out", borderRadius: "3px" }} />
                         ) : (
-                          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: GOLD, animation: "slideBar 1.6s ease-in-out infinite" }} />
+                          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: ACCENT, animation: "slideBar 1.6s ease-in-out infinite" }} />
                         )}
                       </div>
                     </>
@@ -14823,17 +14822,17 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           <>
             <hr style={{ border: "none", borderTop: "0.5px solid var(--color-border-tertiary)", margin: "1.75rem 0" }} />
             <div style={{ border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem 1.5rem", background: "var(--color-background-primary)" }}>
-              <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 5px" }}>Your trip</p>
+              <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 5px" }}>Your trip</p>
               <p style={{ fontSize: "20px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)" }}>{basics.destination || "Destination not set"}</p>
               <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: "1.6" }}>
                 {[basics.baseArea, (basics.startDate && basics.endDate) ? `${formatDateForDisplay(basics.startDate)} – ${formatDateForDisplay(basics.endDate)}` : formatDateForDisplay(basics.startDate), basics.nights ? `${basics.nights} nights` : null, flights.homeAirport ? `from ${extractAirportCode(flights.homeAirport) || flights.homeAirport}` : null].filter(Boolean).join("  ·  ") || "Complete the form above"}
               </p>
               {(restaurants.length > 0 || activities.length > 0) && (
                 <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: "10px", marginTop: "12px" }}>
-                  <p style={{ fontSize: "11px", color: GOLD, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: "500", marginBottom: "5px" }}>Added</p>
+                  <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: "500", marginBottom: "5px" }}>Added</p>
                   {[...restaurants, ...activities].map(t => (
                     <p key={t} style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "3px", display: "flex", gap: "6px" }}>
-                      <span style={{ color: GOLD }}>—</span>{t}
+                      <span style={{ color: ACCENT }}>—</span>{t}
                     </p>
                   ))}
                 </div>
@@ -14852,7 +14851,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               style={{ display: "block", height: "22px", width: "auto", opacity: 0.9 }}
             />
           </div>
-          <hr style={{ border: "none", borderTop: `1px solid ${GOLD}`, width: "32px", margin: "4px 0 0" }} />
+          <hr style={{ border: "none", borderTop: `1px solid ${ACCENT}`, width: "32px", margin: "4px 0 0" }} />
           <span style={{ color: "var(--color-text-tertiary)", fontSize: "10px", letterSpacing: "0.06em", marginTop: "2px" }}>
             build {(typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "dev"}
           </span>
