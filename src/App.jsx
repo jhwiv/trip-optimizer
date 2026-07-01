@@ -3462,7 +3462,7 @@ async function fetchCoverPhoto(destination) {
 // page breaks, and a clean editorial layout. The legacy DOM-screenshot path
 // is preserved below as a fallback for the unlikely case the new builder
 // throws on malformed data.
-async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers } = {}) {
+async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers, coverPhoto: preloadedCoverPhoto } = {}) {
   setStatus("Preparing…");
   // Pre-export gate — see CLAUDE.md "VENUE VERIFICATION — HARD RULE".
   // Block PDF generation if any venue still carries a severity:'block'
@@ -3492,14 +3492,15 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers
       const destination = data?.destination ||
         (Array.isArray(data?.cities) && data.cities.length > 0 && data.cities[0]?.name) || "";
 
-      // Run the module import and the cover-photo fetch in parallel so neither
-      // stalls waiting for the other. The preload useEffect in ItineraryView
-      // means the import typically resolves instantly from cache; the photo
-      // fetch (up to 10 s with its AbortController) is the real variable cost.
-      setStatus("Fetching cover photo…");
+      // Module import resolves instantly from cache (preload useEffect in
+      // ItineraryView fires on mount). Cover photo reuses the hero image
+      // already fetched for TripHero; only falls back to a network fetch if
+      // that pre-fetch hasn't resolved yet (e.g. user clicks Export very fast).
       const [{ buildItineraryPdf }, coverPhoto] = await Promise.all([
         import("./pdf/itineraryPdf.js"),
-        fetchCoverPhoto(destination),
+        preloadedCoverPhoto != null
+          ? Promise.resolve(preloadedCoverPhoto)
+          : (setStatus("Fetching cover photo…"), fetchCoverPhoto(destination)),
       ]);
 
       const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers, coverPhoto });
@@ -3683,7 +3684,7 @@ function WebExportSection({ data, inputs }) {
   );
 }
 
-function PrintButton({ data, inputs, providers, plan, introIsGenerating }) {
+function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPhoto }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -3714,7 +3715,7 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating }) {
         const loaded = await providers.ensureLoaded();
         providersForPdf = { ...providers, byCategory: loaded || providers.byCategory };
       }
-      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers: providersForPdf });
+      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers: providersForPdf, coverPhoto });
     } catch (err) {
       console.error("PDF save failed", err);
       if (isStaleChunkError(err)) {
@@ -4984,7 +4985,7 @@ function LocalProvidersView({ providers }) {
 // Tabbed shell. Row 1 of the sticky nav is the day-tab strip (Overview only,
 // now an interactive filter — click to focus a single day, "All" to see them
 // all). Row 2 is the section/reference strip. Default tab is "Overview".
-function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showProviders, onOpenMenu: _onOpenMenu }) {
+function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showProviders, onOpenMenu: _onOpenMenu, onBack }) {
   const days = data.days || [];
   // Compute counts so we can show e.g. "Dining · 12" inline.
   const counts = useMemo(() => {
@@ -5159,6 +5160,34 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
               )}
             </div>
           )}
+          {typeof onBack === "function" && (
+            <button
+              type="button"
+              onClick={onBack}
+              aria-label="Return to home"
+              title="Return to home (your trip plan stays saved)"
+              style={{
+                marginLeft: "auto",
+                flex: "0 0 auto",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "30px",
+                height: "30px",
+                background: "transparent",
+                color: "var(--color-text-tertiary)",
+                border: "0.5px solid var(--color-border-secondary)",
+                borderRadius: "50%",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 10.5 12 3l9 7.5" />
+                <path d="M5 9.5V21h14V9.5" />
+              </svg>
+            </button>
+          )}
         </div>
         {/* Row 2 — day filter (Overview only). "All" + one pill per day; click to focus that day. WRAPS. */}
         {tab === "overview" && days.length >= 2 && (
@@ -5223,7 +5252,7 @@ function TripSectionView({ tab, data, inputs, onOpenMenu, providers }) {
 // All result/state writes go up through onPlanRevised / onReviewChange so the
 // parent (TripOptimizer) can persist them into saved trips.
 // ============================================================================
-function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false, externalSourceIds, onSourcesChange }) {
+function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false, externalSourceIds, onSourcesChange, onRunEnd }) {
   // --- review state ------------------------------------------------------
   // 'idle' — banner card with picker
   // 'running' — review in flight
@@ -5445,6 +5474,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       setApplyState(fresh);
       setAppliedIds([]);
       setStatus("done");
+      if (typeof onRunEnd === "function") onRunEnd();
       if (typeof onReviewChange === "function") {
         onReviewChange({
           sources: selectedIds,
@@ -5460,6 +5490,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       } else {
         setError(cleanErrorMessage(err?.message, "Review failed."));
       }
+      if (typeof onRunEnd === "function") onRunEnd();
       setStatus("idle");
     } finally {
       clearInterval(elapsedTimer);
@@ -5503,6 +5534,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
 
   const handleCancelReview = () => {
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} }
+    if (typeof onRunEnd === "function") onRunEnd();
   };
 
   const handleApply = async ({ findingsOverride, forceMode } = {}) => {
@@ -6583,13 +6615,23 @@ function introPlanSignature(plan) {
 // is fully resilient — any failure is silent and never touches the itinerary.
 function FlightNumberAutoResolver({ plan, onPlanRevised }) {
   const attemptedRef = useRef("");
+  // Keep a ref to the latest onPlanRevised so the effect doesn't re-run on
+  // every parent render (only when plan changes). The commit uses a functional
+  // update (prev => ...) so React accumulates concurrent writes correctly —
+  // the intro generator and resolver can both commit in the same automatic-
+  // batching window without clobbering each other.
+  const onPlanRevisedRef = useRef(onPlanRevised);
+  useLayoutEffect(() => {
+    onPlanRevisedRef.current = onPlanRevised;
+  });
   useEffect(() => {
     const days = Array.isArray(plan?.days) ? plan.days : [];
-    if (days.length === 0 || typeof onPlanRevised !== "function") return;
+    if (days.length === 0 || typeof onPlanRevisedRef.current !== "function") return;
     const sig = introPlanSignature(plan);
     if (attemptedRef.current === sig) return;
     attemptedRef.current = sig;
     let cancelled = false;
+    let settled = false; // true once onPlanRevised has been called with the result
 
     // Collect flights the resolver should act on. flightNeedsResolve
     // classifies each as:
@@ -6791,37 +6833,67 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
           continue;
         }
 
-        // Total miss path for number/times modes: when even the route-only
-        // retry came up empty AND the flight has no times to begin with,
-        // persist _timesUnconfirmed so the PDF can render an honest line
-        // ("Times not yet confirmed — check with airline at booking")
-        // instead of a blank.
+        // Times-mode total miss: model emitted a number but no times,
+        // and the schedule API couldn't supply times either. Must write
+        // _scheduleVerified so applyQualityLayer's strip exemption keeps
+        // the model's number visible — without it the strip nulls the
+        // number and the user sees nothing. _timesUnconfirmed tells the
+        // PDF to render an honest "check with airline" line in place of
+        // blank clock rows.
+        if (t.mode === "times" && t.fl.flight_number) {
+          resolved.push({
+            di: t.di,
+            ii: t.ii,
+            merge: {
+              _scheduleVerified: true,
+              _verifyTrusted: true,
+              _timesUnconfirmed: true,
+              _resolveSource: "times-fallback",
+            },
+          });
+          continue;
+        }
+
+        // Total miss for number-mode: model emitted no number and the API
+        // couldn't find one. If the flight also has no times, persist
+        // _timesUnconfirmed so the PDF renders an honest fallback line
+        // instead of blank rows. No _scheduleVerified needed — there is
+        // no number to protect from the strip.
         const fallback = buildUnconfirmedTimesPayload(t.fl);
         if (fallback) resolved.push({ di: t.di, ii: t.ii, merge: fallback });
       }
 
       if (cancelled || resolved.length === 0) return;
 
-      // Build an immutable next plan with the resolved fields merged
-      // into the canonical plan via onPlanRevised. applyQualityLayer
-      // exempts _scheduleVerified numbers from the strip; PDF reads
-      // both _autoResolvedFlightNumber (for the "verify at booking"
-      // qualifier) and _timesUnconfirmed (for the honest-fallback line).
-      const nextDays = plan.days.map((d, di) => {
-        const hits = resolved.filter(r => r.di === di);
-        if (hits.length === 0) return d;
-        const items = d.items.map((it, ii) => {
-          const hit = hits.find(h => h.ii === ii);
-          if (!hit) return it;
-          return { ...it, flight: { ...it.flight, ...hit.merge } };
+      // Commit via a functional update so React accumulates this write with
+      // any concurrent IntroductionAutoGenerator commit in the same automatic-
+      // batching window. Both use functional updates → React chains them:
+      // updater2(updater1(prev)) — neither clobbers the other's fields.
+      // The day/item indices in resolved[] remain valid because concurrent
+      // writes (intro text, review state) never add or remove days or items.
+      onPlanRevisedRef.current(prevPlan => {
+        const nextDays = prevPlan.days.map((d, di) => {
+          const hits = resolved.filter(r => r.di === di);
+          if (hits.length === 0) return d;
+          const items = d.items.map((it, ii) => {
+            const hit = hits.find(h => h.ii === ii);
+            if (!hit) return it;
+            return { ...it, flight: { ...it.flight, ...hit.merge } };
+          });
+          return { ...d, items };
         });
-        return { ...d, items };
+        return { ...prevPlan, days: nextDays };
       });
-      onPlanRevised({ ...plan, days: nextDays });
+      settled = true;
     })();
 
-    return () => { cancelled = true; attemptedRef.current = ""; };
-  }, [plan, onPlanRevised]);
+    // Only reset attemptedRef when cancelled before committing — this allows
+    // a retry on the next effect run. If the async already committed
+    // (settled === true), keep the ref so the next run (triggered by the plan
+    // object-reference change from setResult) hits the sig-match early return
+    // instead of firing a redundant API call.
+    return () => { cancelled = true; if (!settled) attemptedRef.current = ""; };
+  }, [plan]);
   return null;
 }
 
@@ -6864,9 +6936,11 @@ function IntroductionAutoGenerator({ plan, inputs, onPlanRevised, onGeneratingCh
         });
         if (!res.ok) return;
         const data = await res.json().catch(() => ({}));
-        // force:false — never clobber an existing (e.g. recovered) intro.
-        const next = applyGeneratedIntroduction(plan, data, { force: false });
-        if (!cancelled && next !== plan) onPlanRevised(next);
+        // Commit via functional update so React accumulates this write with any
+        // concurrent FlightNumberAutoResolver commit in the same automatic-
+        // batching window. Both use functional updates → React chains them,
+        // so neither clobbers the other's fields (force:false still applies).
+        if (!cancelled) onPlanRevised(prevPlan => applyGeneratedIntroduction(prevPlan, data, { force: false }));
       } catch {
         // Swallow — a failed intro must never break the itinerary view.
       } finally {
@@ -6931,6 +7005,14 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   // review already ran and the user is just viewing it. ReviewPanel guards the
   // actual fire once-per-build, so this is just the on/off intent.
   const autoReview = !initialReview;
+  // While the initial auto-review is running, hide the itinerary content so
+  // the review progress card appears in the same visual area as the build
+  // progress bar that preceded it. Initialised to `autoReview` so fresh builds
+  // start in "review running" state; cleared to false once the review finishes,
+  // fails, or is cancelled. Never re-enabled — only the first auto-run gets
+  // the overlay; user-triggered re-runs show the review card inline as usual.
+  const [autoReviewRunning, setAutoReviewRunning] = useState(autoReview);
+  const clearAutoReviewRunning = useCallback(() => setAutoReviewRunning(false), []);
 
   // --- Menu modal state (lazy-fetch via /api/menu) ---
   // For large multi-city trips the build prompt now OMITS per-restaurant
@@ -7035,17 +7117,25 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   const [tab, setTab] = useState(initialTab);
   // Day filter for Overview tab. -1 = "All days" (default). 0..N = focus that day.
   const [dayFilter, setDayFilter] = useState(-1);
+  // Ref attached to the top of the tab-content area so tab changes scroll there,
+  // not to the page top (which lands above the hero and leaves content off-screen).
+  const sectionContentRef = useRef(null);
+  const scrollToContent = () => {
+    if (typeof window !== "undefined" && sectionContentRef.current) {
+      const el = sectionContentRef.current;
+      const rect = el.getBoundingClientRect();
+      // Offset for the sticky TripTabs bar (~88px, two rows). Scroll so content
+      // appears just below it rather than hidden under it.
+      window.scrollTo({ top: window.scrollY + rect.top - 96, behavior: "smooth" });
+    }
+  };
   const handleTabChange = (next) => {
     setTab(next);
-    if (typeof window !== "undefined") {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
+    scrollToContent();
   };
   const handleDayFilterChange = (idx) => {
     setDayFilter(idx);
-    if (typeof window !== "undefined") {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
+    scrollToContent();
   };
   // Apply the pass-three quality layer once before render. This dedupes
   // restaurants, fills verify microcopy, and computes a QC summary.
@@ -7058,7 +7148,10 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   // Warm the PDF module cache as soon as ItineraryView mounts so the dynamic
   // import resolves instantly when the user clicks Export (jsPDF is ~500KB;
   // pre-fetching it hides the cold-load latency behind normal reading time).
-  useEffect(() => { import("./pdf/itineraryPdf.js").catch(() => {}); }, []);
+  useEffect(() => {
+    import("./pdf/itineraryPdf.js").catch(() => {});
+    import("jspdf").catch(() => {});
+  }, []);
 
   // Local providers (private drivers/guides/tours/tastings). Lifted here so
   // both the "Local providers" tab and the PDF export read the same verified
@@ -7103,38 +7196,6 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   return (
     <URLVerifyContext.Provider value={verifyContextValue}>
     <div id="trip-print-root">
-      <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", marginBottom: "0.75rem" }}>
-        <button
-          type="button"
-          onClick={() => {
-            if (typeof onBack === "function") onBack();
-          }}
-          aria-label="Return to home"
-          title="Return to home (your trip plan stays saved)"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "6px",
-            background: "transparent",
-            color: ACCENT,
-            border: `0.5px solid ${ACCENT}`,
-            borderRadius: "var(--border-radius-md)",
-            padding: "7px 12px",
-            fontSize: "11px",
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            cursor: "pointer",
-            fontFamily: "inherit",
-            fontWeight: 500,
-          }}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M3 10.5 12 3l9 7.5" />
-            <path d="M5 9.5V21h14V9.5" />
-          </svg>
-          <span>Home</span>
-        </button>
-      </div>
       <InputSummary inputs={inputs} />
       {/* Menu modal renders MenuModal once data is available (either model-
           supplied at build time or lazy-fetched via /api/menu). While the
@@ -7164,13 +7225,15 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       })()}
 
       {/* Sticky two-row tab nav lives ABOVE the hero so the hero stays compact and every
-         tab is reachable at a glance — modeled after zurich-weekend.com / maritimesgrandloop.com. */}
-      {data.days && data.days.length > 0 && (
-        <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} showProviders={providers.relevantIds.length > 0} onOpenMenu={openMenu} />
+         tab is reachable at a glance — modeled after zurich-weekend.com / maritimesgrandloop.com.
+         Hidden during the initial auto-review so the review progress card sits at the top of
+         the page in the same visual slot as the build progress bar that preceded it. */}
+      {!autoReviewRunning && data.days && data.days.length > 0 && (
+        <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} showProviders={providers.relevantIds.length > 0} onOpenMenu={openMenu} onBack={onBack} />
       )}
 
-      <TripHero data={data} coverPhotoUrl={heroPhotoUrl} />
-      <QualityBadge qc={qc} />
+      {!autoReviewRunning && <TripHero data={data} coverPhotoUrl={heroPhotoUrl} />}
+      {!autoReviewRunning && <QualityBadge qc={qc} />}
 
       {/* Headless introduction generator — auto-generates the intro after build
           via the separate lightweight /api/introduction call and persists it to
@@ -7188,29 +7251,22 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           them to the canonical plan so the PDF shows the same number as screen. */}
       <FlightNumberAutoResolver plan={rawData} onPlanRevised={onPlanRevised} />
 
-      {/* Professional review surface — user-initiated, sits between hero and the day-by-day content. */}
+      {/* Professional review surface. During the initial auto-run (autoReviewRunning),
+          only this component is visible — TripHero/sections are hidden below so the
+          review progress card occupies the same visual slot as the build progress bar. */}
       <ReviewPanel
         plan={rawData}
         inputs={inputs}
         onPlanRevised={onPlanRevised}
-        onReviewChange={onReviewChange}
+        onReviewChange={(state) => { clearAutoReviewRunning(); onReviewChange(state); }}
         initialReview={initialReview}
         autoRun={autoReview}
         externalSourceIds={reviewerSourceIds}
         onSourcesChange={onReviewerSourcesChange}
+        onRunEnd={clearAutoReviewRunning}
       />
 
-      {/* Always-visible traveler change request — same revision pipeline as
-          the review panel, but doesn't require running a review first.
-
-          GATED: when the user has already run a review, the ReviewPanel
-          renders its OWN embedded ChangeRequestCard (variant="review")
-          inside its findings footer. Showing both at the same time
-          produced a confusing duplicate "Suggest a change" pair stacked
-          on top of each other (user-reported screenshot 2026-06-08).
-          Hide this toplevel one whenever a review is present so only
-          ONE change-request affordance is visible at a time. */}
-      {!initialReview && (
+      {!autoReviewRunning && !initialReview && (
         <ChangeRequestCard
           plan={rawData}
           inputs={inputs}
@@ -7219,13 +7275,14 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         />
       )}
 
-      {data.days && data.days.length > 0 && tab !== "overview" && (
+      <div ref={sectionContentRef}>
+      {!autoReviewRunning && data.days && data.days.length > 0 && tab !== "overview" && (
         <Section title={({ flights: "Flights", lodging: "Lodging", transport: "Ground transport", dining: "Dining", activities: "Activities", category: "By category", providers: "Local providers", essentials: "Essentials" }[tab] || "")}>
           <TripSectionView tab={tab} data={data} inputs={inputs} onOpenMenu={openMenu} providers={providers} />
         </Section>
       )}
 
-      {data.days && data.days.length > 0 && tab === "overview" && (
+      {!autoReviewRunning && data.days && data.days.length > 0 && tab === "overview" && (
         <Section title={dayFilter >= 0 && data.days[dayFilter] ? `Day ${dayFilter + 1} · ${dayShort(data.days[dayFilter], dayFilter)}` : "Day-by-day"}>
           {data.days.map((d, i) => {
             // Day filter: if dayFilter >= 0, only render that one day.
@@ -7248,6 +7305,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           })}
         </Section>
       )}
+      </div>
 
       {/* Trip reference footer — surfaces the non-itinerary blocks (Tonight,
           Weather & pack, Heads up, Plan B, Snob's guide) inline on Overview so
@@ -7257,15 +7315,15 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           on Overview, and only when such content actually exists in the plan —
           dayFilter focuses a single day, so suppress it then to keep that view
           scoped to one day. */}
-      {data.days && data.days.length > 0 && tab === "overview" && dayFilter < 0 && hasEssentialsContent(data) && (
+      {!autoReviewRunning && data.days && data.days.length > 0 && tab === "overview" && dayFilter < 0 && hasEssentialsContent(data) && (
         <Section title="Trip reference">
           <EssentialsView data={data} />
         </Section>
       )}
 
-      <WebExportSection data={data} inputs={inputs} />
+      {!autoReviewRunning && <WebExportSection data={data} inputs={inputs} />}
 
-      <div className="no-print" style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "0.5rem" }}>
+      {!autoReviewRunning && <div className="no-print" style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "0.5rem" }}>
         {onEditTrip && (
           <button
             onClick={onEditTrip}
@@ -7273,13 +7331,8 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
             title="Go back to the input form with this trip's details still filled in — tweak dates, cities, or anything else and rebuild."
           >✎ Edit trip details</button>
         )}
-        <button
-          onClick={onBack}
-          style={{ background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", color: "var(--color-text-secondary)" }}
-          title="Go back to the input form. Your trip details stay filled in."
-        >← Back to inputs</button>
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
-        <PrintButton data={data} inputs={inputs} providers={providers} plan={rawData} introIsGenerating={introIsGenerating} />
+        <PrintButton data={data} inputs={inputs} providers={providers} plan={rawData} introIsGenerating={introIsGenerating} coverPhoto={heroPhotoUrl} />
         <PrintRidesButton data={data} inputs={inputs} />
         {/* Reset — surfaced here on Step 3 (results) so users don't have to
             navigate Home + scroll Step 1 to find it. Styled as a clear but
@@ -7320,7 +7373,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
             <span>Start over</span>
           </button>
         )}
-      </div>
+      </div>}
     </div>
     </URLVerifyContext.Provider>
   );
@@ -10875,27 +10928,83 @@ export { FindView };
 // localStorage; suppressed when ?direct=1 is on the URL or the app is
 // running as an installed PWA. Pure gate logic lives in src/appIntro.js so
 // the dismissal, URL bypass, and platform detection are unit-testable.
+// Seven destination slides for the landing page carousel. Each slide is a
+// pure CSS gradient — no external image dependencies, works offline, fast.
+const HERO_SLIDES = [
+  {
+    dest: "Amalfi Coast",
+    region: "Campania, Italy",
+    tagline: "Where limestone cliffs meet the Tyrrhenian Sea",
+    fact: "The scenic SS163 coastal road was carved from sheer cliff faces in the 1850s — a decade-long feat that transformed the region into one of Europe’s most storied drives.",
+    gradient: "linear-gradient(150deg, #1a3a4a 0%, #2d7a8a 40%, #e8724a 72%, #c94a2a 100%)",
+    accent: "#f0a07a",
+  },
+  {
+    dest: "Kyoto",
+    region: "Kansai, Japan",
+    tagline: "Seventeen centuries of imperial elegance",
+    fact: "Kyoto holds 17 UNESCO World Heritage Sites — more than any other city in Japan — spanning Zen gardens, golden pavilions, and shrines predating the printing press.",
+    gradient: "linear-gradient(150deg, #1c0a2e 0%, #4a1a5e 40%, #c85fa4 72%, #ff9a9e 100%)",
+    accent: "#f0b8d8",
+  },
+  {
+    dest: "Patagonia",
+    region: "Southern Chile & Argentina",
+    tagline: "The end of the world, magnificently preserved",
+    fact: "Torres del Paine’s granite towers were shaped over 12 million years of glaciation and rise nearly 9,000 feet. The park receives fewer annual visitors than some city museums host in a week.",
+    gradient: "linear-gradient(150deg, #03045e 0%, #0077b6 40%, #00b4d8 72%, #90e0ef 100%)",
+    accent: "#90e0ef",
+  },
+  {
+    dest: "Marrakech",
+    region: "Morocco",
+    tagline: "A living labyrinth of color and craft",
+    fact: "The Chouara tannery has operated in the same location since the 11th century, using techniques nearly unchanged for a thousand years — pomegranate juice and pigeon dung still soften the hides.",
+    gradient: "linear-gradient(150deg, #264653 0%, #c25b4e 40%, #e76f51 72%, #f4a261 100%)",
+    accent: "#f4d090",
+  },
+  {
+    dest: "New York City",
+    region: "United States",
+    tagline: "Forty-eight hours is never enough. It never is.",
+    fact: "More than 800 languages are spoken in New York City — the highest linguistic diversity of any urban area on Earth. You can hear them all on a single subway ride.",
+    gradient: "linear-gradient(150deg, #0b0c2a 0%, #1a2a5e 40%, #3d5a80 72%, #e9c46a 100%)",
+    accent: "#e9c46a",
+  },
+  {
+    dest: "Maldives",
+    region: "Indian Ocean",
+    tagline: "Overwater bungalows. Zero agenda.",
+    fact: "The Maldives is the lowest-lying nation on Earth — its highest natural point sits 2.4 metres above sea level, making every sunrise over the lagoon feel borrowed from the sea.",
+    gradient: "linear-gradient(150deg, #073b4c 0%, #118ab2 40%, #06d6a0 72%, #ffd166 100%)",
+    accent: "#7eefd8",
+  },
+  {
+    dest: "Scottish Highlands",
+    region: "Scotland",
+    tagline: "Mist, myth, and a dram by the fire",
+    fact: "Loch Ness holds more fresh water than all the lakes of England and Wales combined. Its depths have never been fully charted, and neither has its grip on the imagination.",
+    gradient: "linear-gradient(150deg, #1a3a2a 0%, #2e4a3e 40%, #6b3fa0 72%, #9b8ec4 100%)",
+    accent: "#c4b5e4",
+  },
+];
+
 function AppIntroOverlay() {
-  // Render-stable gate: compute once on mount, never re-show within the
-  // same session even if the user opens another tab that dismisses it.
-  // useState lazy initializer so SSR / hydration mismatches don't trip.
   const [visible, setVisible] = useState(() => shouldShowWelcome());
-  // Which A2HS panel is expanded. "" = none; "ios" / "android" / "desktop".
-  // Initialized from the user agent so the user sees their platform's
-  // instructions first without an extra tap. Desktop stays collapsed (the
-  // install flow is browser-specific and a generic panel is unhelpful).
   const [a2hsOpen, setA2hsOpen] = useState(() => {
     const p = detectPlatform(typeof navigator !== "undefined" ? navigator.userAgent : "");
     return p === "ios" || p === "android" ? p : "";
   });
+  // Carousel state
+  const [slideIdx, setSlideIdx] = useState(0);
+  const [paused, setPaused] = useState(false);
 
   const dismiss = useCallback(() => {
     markWelcomeDismissed();
     setVisible(false);
   }, []);
 
-  // Lock body scroll while the overlay is up so background touches on
-  // mobile don't drift the wizard underneath. Restored on dismiss / unmount.
+  // Lock body scroll while overlay is up.
   useEffect(() => {
     if (!visible) return undefined;
     const prev = document.body.style.overflow;
@@ -10903,7 +11012,7 @@ function AppIntroOverlay() {
     return () => { document.body.style.overflow = prev; };
   }, [visible]);
 
-  // Escape key dismisses, matching modal conventions.
+  // Escape key dismisses.
   useEffect(() => {
     if (!visible) return undefined;
     const onKey = (e) => { if (e.key === "Escape") dismiss(); };
@@ -10911,14 +11020,17 @@ function AppIntroOverlay() {
     return () => window.removeEventListener("keydown", onKey);
   }, [visible, dismiss]);
 
-  if (!visible) return null;
+  // Auto-advance every 5 s; pause on hover.
+  useEffect(() => {
+    if (!visible || paused) return undefined;
+    const t = setInterval(() => setSlideIdx(s => (s + 1) % HERO_SLIDES.length), 5000);
+    return () => clearInterval(t);
+  }, [visible, paused]);
 
-  // Deep midnight-navy gradient with a teal horizon glow — evokes ocean at dusk.
-  const HERO_BG = [
-    "radial-gradient(ellipse 110% 55% at 50% 108%, rgba(49,97,105,0.68) 0%, transparent 65%)",
-    "radial-gradient(ellipse 70% 40% at 90% 0%, rgba(63,125,134,0.2) 0%, transparent 55%)",
-    "linear-gradient(170deg, #0b1826 0%, #0d2133 50%, #091b2a 100%)",
-  ].join(", ");
+  const prevSlide = () => setSlideIdx(s => (s - 1 + HERO_SLIDES.length) % HERO_SLIDES.length);
+  const nextSlide = () => setSlideIdx(s => (s + 1) % HERO_SLIDES.length);
+
+  if (!visible) return null;
 
   const cardStyle = {
     background: "var(--color-background-primary)",
@@ -10935,12 +11047,7 @@ function AppIntroOverlay() {
     fontWeight: 700,
     margin: "0 0 7px",
   };
-  const cardBody = {
-    fontSize: "13px",
-    color: "var(--color-text-secondary)",
-    margin: 0,
-    lineHeight: 1.6,
-  };
+  const cardBody = { fontSize: "13px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.6 };
 
   return (
     <div
@@ -10949,189 +11056,143 @@ function AppIntroOverlay() {
       aria-labelledby="app-intro-title"
       style={{ position: "fixed", inset: 0, zIndex: 9999, overflowY: "auto", WebkitOverflowScrolling: "touch" }}
     >
-      {/* ── HERO ──────────────────────────────────────────────────────── */}
+      {/* ── CAROUSEL HERO (full viewport height) ─────────────────────── */}
       <div
-        style={{
-          minHeight: "100svh",
-          background: HERO_BG,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          position: "relative",
-          padding: "90px 28px 80px",
-          textAlign: "center",
-        }}
+        style={{ position: "relative", height: "100svh", overflow: "hidden" }}
+        onMouseEnter={() => setPaused(true)}
+        onMouseLeave={() => setPaused(false)}
       >
-        {/* Skip */}
-        <button
-          type="button"
-          onClick={dismiss}
-          aria-label="Skip the intro and go straight to the planner"
-          style={{
-            position: "absolute",
-            top: "calc(env(safe-area-inset-top, 14px) + 14px)",
-            right: "20px",
-            background: "transparent",
-            border: "none",
-            color: "rgba(255,255,255,0.38)",
-            fontSize: "11px",
-            letterSpacing: "0.1em",
-            textTransform: "uppercase",
-            fontWeight: 600,
-            cursor: "pointer",
-            fontFamily: "inherit",
-            padding: 0,
-          }}
-        >
+        {/* Slide stack — crossfade via opacity transition */}
+        {HERO_SLIDES.map((slide, i) => (
+          <div
+            key={i}
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: slide.gradient,
+              opacity: i === slideIdx ? 1 : 0,
+              transition: "opacity 1s ease-in-out",
+              pointerEvents: i === slideIdx ? "auto" : "none",
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "flex-end",
+              padding: "0 0 100px",
+            }}
+          >
+            {/* Bottom-to-top dark scrim for text legibility */}
+            <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to top, rgba(0,0,0,0.62) 0%, rgba(0,0,0,0.1) 55%, transparent 100%)" }} />
+            {/* Slide text */}
+            <div style={{ position: "relative", zIndex: 1, padding: "0 28px 0 32px", maxWidth: "680px" }}>
+              <p style={{ fontSize: "10px", color: slide.accent, letterSpacing: "0.22em", textTransform: "uppercase", margin: "0 0 6px", fontWeight: 700 }}>
+                {slide.region}
+              </p>
+              <h2
+                id={i === slideIdx ? "app-intro-title" : undefined}
+                style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: "clamp(34px, 7vw, 58px)", color: "#fff", margin: "0 0 10px", lineHeight: 1.1, fontWeight: 400 }}
+              >
+                {slide.dest}
+              </h2>
+              <p style={{ fontSize: "clamp(13px, 2.2vw, 17px)", color: "rgba(255,255,255,0.78)", margin: "0 0 18px", lineHeight: 1.5, fontStyle: "italic" }}>
+                {slide.tagline}
+              </p>
+              <div style={{ background: "rgba(0,0,0,0.35)", backdropFilter: "blur(6px)", border: "0.5px solid rgba(255,255,255,0.15)", borderRadius: "8px", padding: "10px 14px", maxWidth: "520px" }}>
+                <p style={{ fontSize: "11.5px", color: "rgba(255,255,255,0.72)", margin: 0, lineHeight: 1.65 }}>
+                  <span style={{ color: slide.accent, fontWeight: 600 }}>Did you know · </span>
+                  {slide.fact}
+                </p>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {/* ── CHROME (constant, above all slides) ───────────────────── */}
+
+        {/* Powered by — top left */}
+        <div style={{ position: "absolute", top: "calc(env(safe-area-inset-top,14px) + 18px)", left: "22px", zIndex: 10, display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "9px", letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", fontWeight: 600 }}>
+          <span>Powered by</span>
+          <img src="/brand-wordmark.png?v=2" alt="Barrier Island Digital, LLC" style={{ display: "block", height: "15px", width: "auto", opacity: 0.4, filter: "brightness(0) invert(1)" }} />
+        </div>
+
+        {/* Skip — top right */}
+        <button type="button" onClick={dismiss} aria-label="Skip intro and go to the planner"
+          style={{ position: "absolute", top: "calc(env(safe-area-inset-top,14px) + 14px)", right: "20px", zIndex: 10, background: "rgba(0,0,0,0.28)", border: "0.5px solid rgba(255,255,255,0.22)", borderRadius: "20px", padding: "5px 14px", color: "rgba(255,255,255,0.65)", fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
           Skip
         </button>
 
-        {/* Powered by */}
-        <div style={{
-          position: "absolute",
-          top: "calc(env(safe-area-inset-top, 14px) + 18px)",
-          left: "22px",
-          display: "inline-flex",
-          alignItems: "center",
-          gap: "6px",
-          fontSize: "9px",
-          letterSpacing: "0.18em",
-          textTransform: "uppercase",
-          color: "rgba(255,255,255,0.3)",
-          fontWeight: 600,
-        }}>
-          <span>Powered by</span>
-          <img
-            src="/brand-wordmark.png?v=2"
-            alt="Barrier Island Digital, LLC"
-            style={{ display: "block", height: "15px", width: "auto", opacity: 0.4, filter: "brightness(0) invert(1)" }}
-          />
+        {/* RouteSmith wordmark + tagline — centered */}
+        <div style={{ position: "absolute", top: "clamp(80px, 16%, 130px)", left: 0, right: 0, zIndex: 10, display: "flex", flexDirection: "column", alignItems: "center", pointerEvents: "none" }}>
+          <img src="/rs3-wordmark.svg?v=3" alt="Route Smith" style={{ height: "clamp(42px, 6vw, 62px)", width: "auto", filter: "brightness(0) invert(1)", opacity: 0.92 }} />
+          <p style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", color: "rgba(255,255,255,0.55)", fontSize: "clamp(12px, 1.8vw, 16px)", margin: "10px 0 0", letterSpacing: "0.02em" }}>
+            Journeys planned to the last detail.
+          </p>
         </div>
 
-        {/* Wordmark — white via CSS filter */}
-        <img
-          src="/rs3-wordmark.svg?v=3"
-          alt="Route Smith"
-          style={{
-            display: "inline-block",
-            height: "clamp(52px, 8vw, 76px)",
-            width: "auto",
-            filter: "brightness(0) invert(1)",
-            opacity: 0.95,
-            marginBottom: "24px",
-          }}
-        />
-
-        {/* Tagline */}
-        <p
-          id="app-intro-title"
-          style={{
-            fontFamily: "var(--font-serif)",
-            fontStyle: "italic",
-            fontWeight: 400,
-            fontSize: "clamp(19px, 3.2vw, 27px)",
-            color: "rgba(255,255,255,0.78)",
-            letterSpacing: "0.01em",
-            lineHeight: 1.45,
-            margin: "0 0 48px",
-            maxWidth: "500px",
-          }}
+        {/* Begin planning button — bottom right */}
+        <button type="button" onClick={dismiss}
+          style={{ position: "absolute", bottom: "clamp(52px, 8%, 72px)", right: "32px", zIndex: 10, padding: "12px 28px", borderRadius: "3px", border: "1.5px solid rgba(255,255,255,0.5)", background: "rgba(255,255,255,0.12)", backdropFilter: "blur(4px)", color: "#fff", fontSize: "11.5px", fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}
+          onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.22)"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.12)"; }}
         >
-          Journeys planned to the last detail.
-        </p>
-
-        {/* CTA — ghost button, premium on dark */}
-        <button
-          type="button"
-          onClick={dismiss}
-          style={{
-            padding: "14px 40px",
-            borderRadius: "3px",
-            border: "1.5px solid rgba(255,255,255,0.48)",
-            background: "rgba(255,255,255,0.07)",
-            color: "rgba(255,255,255,0.9)",
-            fontSize: "11.5px",
-            fontWeight: 700,
-            letterSpacing: "0.14em",
-            textTransform: "uppercase",
-            cursor: "pointer",
-            fontFamily: "inherit",
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.14)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.75)"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.07)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.48)"; }}
-        >
-          Begin planning
+          Begin planning →
         </button>
 
+        {/* Prev arrow */}
+        <button type="button" onClick={prevSlide} aria-label="Previous destination"
+          style={{ position: "absolute", left: "14px", top: "50%", transform: "translateY(-50%)", zIndex: 10, background: "rgba(0,0,0,0.28)", border: "0.5px solid rgba(255,255,255,0.2)", borderRadius: "50%", width: "38px", height: "38px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "rgba(255,255,255,0.8)", fontSize: "22px", lineHeight: 1, fontFamily: "inherit", padding: 0 }}>
+          ‹
+        </button>
+
+        {/* Next arrow */}
+        <button type="button" onClick={nextSlide} aria-label="Next destination"
+          style={{ position: "absolute", right: "14px", top: "50%", transform: "translateY(-50%)", zIndex: 10, background: "rgba(0,0,0,0.28)", border: "0.5px solid rgba(255,255,255,0.2)", borderRadius: "50%", width: "38px", height: "38px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "rgba(255,255,255,0.8)", fontSize: "22px", lineHeight: 1, fontFamily: "inherit", padding: 0 }}>
+          ›
+        </button>
+
+        {/* Dot indicators */}
+        <div style={{ position: "absolute", bottom: "22px", left: 0, right: 0, zIndex: 10, display: "flex", justifyContent: "center", alignItems: "center", gap: "8px" }}>
+          {HERO_SLIDES.map((_, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => setSlideIdx(i)}
+              aria-label={`Go to slide ${i + 1}`}
+              style={{ width: i === slideIdx ? "22px" : "8px", height: "8px", borderRadius: "4px", background: i === slideIdx ? "#fff" : "rgba(255,255,255,0.38)", border: "none", cursor: "pointer", padding: 0, transition: "all 0.35s ease" }}
+            />
+          ))}
+        </div>
+
         {/* Scroll hint */}
-        <p style={{
-          position: "absolute",
-          bottom: "22px",
-          left: 0,
-          right: 0,
-          margin: 0,
-          textAlign: "center",
-          color: "rgba(255,255,255,0.22)",
-          fontSize: "11px",
-          letterSpacing: "0.08em",
-          userSelect: "none",
-          pointerEvents: "none",
-        }}>
+        <p style={{ position: "absolute", bottom: "22px", left: 0, right: 0, margin: 0, textAlign: "center", color: "rgba(255,255,255,0)", fontSize: "11px", pointerEvents: "none", userSelect: "none" }} aria-hidden="true">
           ↓ &nbsp; How it works
         </p>
       </div>
 
-      {/* ── INFO ──────────────────────────────────────────────────────── */}
+      {/* ── INFO (scrollable below carousel) ─────────────────────────── */}
       <div style={{ background: "var(--color-background-secondary)", padding: "52px 20px 44px" }}>
         <div style={{ maxWidth: "640px", margin: "0 auto" }}>
-
           <div style={cardStyle}>
             <p style={cardLabel}>What you get</p>
             <p style={cardBody}>
               A day-by-day itinerary built around how you actually travel — flights, hotels, dining, activities, and the operational detail you need on the ground: addresses, phone numbers, confirmation windows, weather windows, packing notes.
             </p>
           </div>
-
           <div style={cardStyle}>
             <p style={cardLabel}>How it works</p>
             <p style={cardBody}>
               Tell us where, when, and how you travel. The planner builds a full itinerary, every venue verified against live sources. Tweak it via expert review or &ldquo;Suggest a change,&rdquo; then export as a PDF for the trip. Book directly with the operator — hours and prices should always be confirmed before travel.
             </p>
           </div>
-
           <div style={cardStyle}>
             <p style={cardLabel}>On your device</p>
             <p style={{ ...cardBody, marginBottom: "10px" }}>
               Nothing is stored on a server — your plan lives on your device. Save Route Smith to your home screen for one-tap access; it works offline once installed.
             </p>
             <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: a2hsOpen ? "10px" : 0 }}>
-              {[
-                { id: "ios", label: "iPhone / iPad" },
-                { id: "android", label: "Android" },
-                { id: "desktop", label: "Desktop" },
-              ].map((opt) => {
+              {[{ id: "ios", label: "iPhone / iPad" }, { id: "android", label: "Android" }, { id: "desktop", label: "Desktop" }].map((opt) => {
                 const active = a2hsOpen === opt.id;
                 return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    aria-expanded={active}
-                    aria-controls={`a2hs-panel-${opt.id}`}
-                    onClick={() => setA2hsOpen(active ? "" : opt.id)}
-                    style={{
-                      fontSize: "10.5px",
-                      letterSpacing: "0.04em",
-                      fontWeight: active ? 700 : 500,
-                      color: active ? "var(--color-background-primary)" : "var(--color-text-secondary)",
-                      background: active ? "var(--color-accent)" : "transparent",
-                      border: `0.5px solid ${active ? "var(--color-accent)" : "var(--color-border-secondary)"}`,
-                      borderRadius: "999px",
-                      padding: "4px 11px",
-                      cursor: "pointer",
-                      fontFamily: "inherit",
-                    }}
-                  >
+                  <button key={opt.id} type="button" aria-expanded={active} aria-controls={`a2hs-panel-${opt.id}`} onClick={() => setA2hsOpen(active ? "" : opt.id)}
+                    style={{ fontSize: "10.5px", letterSpacing: "0.04em", fontWeight: active ? 700 : 500, color: active ? "var(--color-background-primary)" : "var(--color-text-secondary)", background: active ? "var(--color-accent)" : "transparent", border: `0.5px solid ${active ? "var(--color-accent)" : "var(--color-border-secondary)"}`, borderRadius: "999px", padding: "4px 11px", cursor: "pointer", fontFamily: "inherit" }}>
                     {opt.label}
                   </button>
                 );
@@ -11161,39 +11222,11 @@ function AppIntroOverlay() {
               </ol>
             )}
           </div>
-
-          <button
-            type="button"
-            onClick={dismiss}
-            style={{
-              width: "100%",
-              border: "none",
-              borderRadius: "var(--border-radius-md)",
-              padding: "15px 18px",
-              fontSize: "12px",
-              fontWeight: 700,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              cursor: "pointer",
-              fontFamily: "inherit",
-              background: "var(--color-text-primary)",
-              color: "var(--color-background-primary)",
-              marginTop: "14px",
-            }}
-          >
+          <button type="button" onClick={dismiss}
+            style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "15px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", marginTop: "14px" }}>
             Start planning
           </button>
-
-          <p style={{
-            textAlign: "center",
-            fontSize: "9.5px",
-            color: "var(--color-text-tertiary)",
-            letterSpacing: "0.14em",
-            textTransform: "uppercase",
-            marginTop: "20px",
-            marginBottom: 0,
-            fontWeight: 500,
-          }}>
+          <p style={{ textAlign: "center", fontSize: "9.5px", color: "var(--color-text-tertiary)", letterSpacing: "0.14em", textTransform: "uppercase", marginTop: "20px", marginBottom: 0, fontWeight: 500 }}>
             A travel companion crafted by Barrier Island Digital, LLC
           </p>
         </div>
@@ -11290,6 +11323,9 @@ export default function TripOptimizer() {
   const [progressLabel, setProgressLabel] = useState("");
   const [elapsedSec, setElapsedSec] = useState(0);
   const [result, setResult] = useState(recovered?.result || null);
+  // Ref always mirrors the latest result so handlePlanRevised can read
+  // result._review without closing over result (which would make useCallback
+  // produce a new reference on every plan change).
   const [error, setError] = useState("");
   const abortRef = useRef(null);
   // Points at the streaming-progress panel (rendered in step 2 while
@@ -11607,7 +11643,7 @@ export default function TripOptimizer() {
 
   // Saved trips list — hydrated from localStorage. Refreshed on save/delete/open.
   const [savedTrips, setSavedTrips] = useState(() => loadSavedTrips());
-  const refreshSavedTrips = () => setSavedTrips(loadSavedTrips());
+  const refreshSavedTrips = useCallback(() => setSavedTrips(loadSavedTrips()), []);
   const handleOpenSavedTrip = (entry) => {
     if (!entry || !entry.inputs || !entry.result) return;
     const i = entry.inputs;
@@ -14094,23 +14130,25 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     ["pronunciation","Pronunciation guide","Phonetic hints on unfamiliar place names"],
   ];
 
-  // Called by ReviewPanel when the user applies revisions and we have a new
-  // plan (either surgically patched or fully re-planned). We replace the
-  // displayed result and, if this plan came from a saved trip entry, also
-  // persist the new plan into that entry so re-opening preserves the edits.
-  const handlePlanRevised = (newPlan) => {
-    if (!newPlan) return;
-    // Carry over any pre-existing _review marker; ReviewPanel will overwrite
-    // it shortly via onReviewChange.
-    const merged = reviewState ? { ...newPlan, _review: reviewState } : newPlan;
-    setResult(merged);
-    if (currentSavedTripId) {
-      const list = loadSavedTrips();
-      const next = list.map(t => t.id === currentSavedTripId ? { ...t, result: merged } : t);
-      writeSavedTrips(next);
-      refreshSavedTrips();
-    }
-  };
+  // Called by any component that needs to revise the canonical plan:
+  // ReviewPanel apply (full replace), FlightNumberAutoResolver (functional
+  // update with _scheduleVerified), IntroductionAutoGenerator (functional
+  // update with introduction). Callers that need race-free concurrent writes
+  // pass a function — React accumulates functional updates in the same batch,
+  // so two concurrent callers never clobber each other's fields. Callers that
+  // do a full replace pass a plain object (ReviewPanel, ChangeRequestCard).
+  //
+  // _review is carried over from prev (functional update gives us prev for
+  // free, eliminating the old resultRef read and keeping the callback stable).
+  const handlePlanRevised = useCallback((newPlanOrFn) => {
+    if (!newPlanOrFn) return;
+    setResult(prev => {
+      const newPlan = typeof newPlanOrFn === "function" ? newPlanOrFn(prev) : newPlanOrFn;
+      if (!newPlan || newPlan === prev) return prev;
+      const prevReview = prev?._review;
+      return prevReview ? { ...newPlan, _review: prevReview } : newPlan;
+    });
+  }, []);
 
   // Called by ReviewPanel whenever review state changes (sources/findings/
   // applied_ids). We attach it to the current result as _review and persist
@@ -14128,6 +14166,18 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       refreshSavedTrips();
     }
   };
+
+  // Persist plan revisions to the saved-trip entry. Separated from
+  // handlePlanRevised so functional-update callers (resolver, intro generator)
+  // that can't compute the new value synchronously still get persistence —
+  // the effect always fires after the render with the correct accumulated state.
+  useEffect(() => {
+    if (!result || !currentSavedTripId) return;
+    const list = loadSavedTrips();
+    const next = list.map(t => t.id === currentSavedTripId ? { ...t, result } : t);
+    writeSavedTrips(next);
+    refreshSavedTrips();
+  }, [result, currentSavedTripId, refreshSavedTrips]);
 
   // Phones can't fit the 2- and 3-column form grids without overflowing a
   // ~390px viewport, so collapse them to a single column on mobile. Desktop
@@ -14572,16 +14622,9 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", gap: "10px" }}>
               <button
                 type="button"
-                onClick={() => {
-                  if (window.confirm("Return to the start? Your current trip details will be cleared.")) {
-                    resetFormToBlank();
-                    setCurrentSavedTripId(null);
-                    setReviewState(null);
-                    setStep(1);
-                  }
-                }}
-                aria-label="Return to the start"
-                title="Return to the start"
+                onClick={() => setStep(1)}
+                aria-label="Back to Essentials"
+                title="Back to Essentials"
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -14777,67 +14820,90 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 Every venue verified open · Plans draw on Michelin, Condé Nast Traveler, NYT&nbsp;36&nbsp;Hours, Eater, and more
               </p>
             )}
-            {/* Uncertain-name confirmation. Renders between extraction and
-                build when the extractor flagged ambiguous names. Each check
-                lets the user pick: original / a candidate / custom text.
-                Continue rewrites form state and arms the build; Edit narrative
-                bounces back to step 1 unchanged. */}
+            {/* Uncertain-name confirmation. Surfaces as a modal card so the
+                question is impossible to miss regardless of scroll position. */}
             {pendingNameChecks && pendingNameChecks.checks.length > 0 && (
-              <div style={{ marginTop: "14px", padding: "14px 16px", border: `1px solid ${ACCENT}`, borderRadius: "var(--border-radius-md)", background: "var(--color-background-primary)" }}>
-                <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Please confirm</p>
-                <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 12px", lineHeight: 1.5 }}>
-                  A couple of names in your narrative aren't a clean match. Pick the right one so we don't silently substitute the wrong property.
-                </p>
-                {pendingNameChecks.checks.map((c, i) => {
-                  const resolution = pendingNameChecks.resolutions[i] || { choice: "original", value: "" };
-                  const setRes = (patch) => setPendingNameChecks((prev) => prev ? {
-                    ...prev,
-                    resolutions: { ...prev.resolutions, [i]: { ...resolution, ...patch } },
-                  } : prev);
-                  return (
-                    <div key={i} style={{ marginBottom: "14px", paddingBottom: "12px", borderBottom: i < pendingNameChecks.checks.length - 1 ? "1px solid var(--color-surface-2)" : "none" }}>
-                      <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 4px", textTransform: "uppercase", letterSpacing: "0.08em" }}>{c.kind}</p>
-                      <p style={{ fontSize: "14px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>
-                        You wrote: <span style={{ fontStyle: "italic" }}>“{c.original}”</span>
-                      </p>
-                      {c.reason && (
-                        <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.5 }}>{c.reason}</p>
-                      )}
-                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                        <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
-                          <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === "original"} onChange={() => setRes({ choice: "original" })} style={{ accentColor: ACCENT, margin: 0 }} />
-                          <span>Use exactly as written: <span style={{ fontStyle: "italic" }}>“{c.original}”</span></span>
-                        </label>
-                        {Array.isArray(c.candidates) && c.candidates.map((cand, ci) => (
-                          <label key={ci} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
-                            <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === `candidate:${ci}`} onChange={() => setRes({ choice: `candidate:${ci}` })} style={{ accentColor: ACCENT, margin: 0 }} />
-                            <span>{cand}</span>
+              <>
+                {/* Backdrop */}
+                <div
+                  onClick={cancelNameChecks}
+                  style={{ position: “fixed”, inset: 0, background: “rgba(0,0,0,0.45)”, zIndex: 800, backdropFilter: “blur(2px)” }}
+                />
+                {/* Card */}
+                <div
+                  role=”dialog”
+                  aria-modal=”true”
+                  aria-label=”Confirm venue names”
+                  style={{
+                    position: “fixed”,
+                    top: “50%”,
+                    left: “50%”,
+                    transform: “translate(-50%, -50%)”,
+                    zIndex: 801,
+                    width: “min(540px, 92vw)”,
+                    maxHeight: “88vh”,
+                    overflowY: “auto”,
+                    background: “var(--color-background-primary)”,
+                    border: `1px solid ${ACCENT}`,
+                    borderRadius: “var(--border-radius-md)”,
+                    padding: “20px 22px”,
+                    boxShadow: “0 24px 64px rgba(0,0,0,0.28)”,
+                  }}
+                >
+                  <p style={{ fontSize: “10.5px”, fontWeight: 600, color: ACCENT, letterSpacing: “0.12em”, textTransform: “uppercase”, margin: “0 0 6px” }}>Confirm before building</p>
+                  <p style={{ fontSize: “13px”, color: “var(--color-text-primary)”, margin: “0 0 16px”, lineHeight: 1.5 }}>
+                    A name in your narrative isn&rsquo;t a clean match. Pick the right one so we don&rsquo;t silently use the wrong property.
+                  </p>
+                  {pendingNameChecks.checks.map((c, i) => {
+                    const resolution = pendingNameChecks.resolutions[i] || { choice: “original”, value: “” };
+                    const setRes = (patch) => setPendingNameChecks((prev) => prev ? {
+                      ...prev,
+                      resolutions: { ...prev.resolutions, [i]: { ...resolution, ...patch } },
+                    } : prev);
+                    return (
+                      <div key={i} style={{ marginBottom: “16px”, paddingBottom: “14px”, borderBottom: i < pendingNameChecks.checks.length - 1 ? “0.5px solid var(--color-border-tertiary)” : “none” }}>
+                        <p style={{ fontSize: “11px”, color: “var(--color-text-secondary)”, margin: “0 0 4px”, textTransform: “uppercase”, letterSpacing: “0.08em” }}>{c.kind}</p>
+                        <p style={{ fontSize: “14px”, color: “var(--color-text-primary)”, margin: “0 0 4px”, fontWeight: 500 }}>
+                          You wrote: <span style={{ fontStyle: “italic” }}>&ldquo;{c.original}&rdquo;</span>
+                        </p>
+                        {c.reason && (
+                          <p style={{ fontSize: “12px”, color: “var(--color-text-secondary)”, margin: “0 0 10px”, lineHeight: 1.5 }}>{c.reason}</p>
+                        )}
+                        <div style={{ display: “flex”, flexDirection: “column”, gap: “8px” }}>
+                          <label style={{ display: “flex”, alignItems: “center”, gap: “8px”, fontSize: “13px”, cursor: “pointer” }}>
+                            <input type=”radio” name={`namecheck-${i}`} checked={resolution.choice === “original”} onChange={() => setRes({ choice: “original” })} style={{ accentColor: ACCENT, margin: 0 }} />
+                            <span>Use exactly as written: <span style={{ fontStyle: “italic” }}>&ldquo;{c.original}&rdquo;</span></span>
                           </label>
-                        ))}
-                        <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
-                          <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === "custom"} onChange={() => setRes({ choice: "custom" })} style={{ accentColor: ACCENT, margin: 0 }} />
-                          <span>Something else:</span>
-                          <input
-                            type="text"
-                            value={resolution.value || ""}
-                            placeholder="Type the correct name"
-                            onChange={(e) => setRes({ choice: "custom", value: e.target.value })}
-                            onFocus={() => setRes({ choice: "custom" })}
-                            style={{ flex: 1, fontSize: "13px", padding: "6px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "var(--color-background-primary)", fontFamily: "inherit", color: "var(--color-text-primary)", outline: "none" }}
-                          />
-                        </label>
+                          {Array.isArray(c.candidates) && c.candidates.map((cand, ci) => (
+                            <label key={ci} style={{ display: “flex”, alignItems: “center”, gap: “8px”, fontSize: “13px”, cursor: “pointer” }}>
+                              <input type=”radio” name={`namecheck-${i}`} checked={resolution.choice === `candidate:${ci}`} onChange={() => setRes({ choice: `candidate:${ci}` })} style={{ accentColor: ACCENT, margin: 0 }} />
+                              <span>{cand}</span>
+                            </label>
+                          ))}
+                          <label style={{ display: “flex”, alignItems: “center”, gap: “8px”, fontSize: “13px”, cursor: “pointer” }}>
+                            <input type=”radio” name={`namecheck-${i}`} checked={resolution.choice === “custom”} onChange={() => setRes({ choice: “custom” })} style={{ accentColor: ACCENT, margin: 0 }} />
+                            <span>Something else:</span>
+                            <input
+                              type=”text”
+                              value={resolution.value || “”}
+                              placeholder=”Type the correct name”
+                              onChange={(e) => setRes({ choice: “custom”, value: e.target.value })}
+                              onFocus={() => setRes({ choice: “custom” })}
+                              style={{ flex: 1, fontSize: “13px”, padding: “6px 8px”, border: “0.5px solid var(--color-border-secondary)”, borderRadius: “4px”, background: “var(--color-background-primary)”, fontFamily: “inherit”, color: “var(--color-text-primary)”, outline: “none” }}
+                            />
+                          </label>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
-                <div style={{ display: "flex", gap: "10px", marginTop: "8px" }}>
-                  <button onClick={cancelNameChecks} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>← Edit narrative
-                  </button>
-                  <button onClick={confirmNameChecks} style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: ACCENT, color: ON_ACCENT }}>
-                    Continue →
-                  </button>
+                    );
+                  })}
+                  <div style={{ display: “flex”, gap: “10px”, marginTop: “4px” }}>
+                    <button onClick={cancelNameChecks} style={{ background: “transparent”, color: “var(--color-text-secondary)”, border: “0.5px solid var(--color-border-secondary)”, borderRadius: “var(--border-radius-md)”, padding: “10px 16px”, fontSize: “11px”, letterSpacing: “0.08em”, textTransform: “uppercase”, cursor: “pointer”, fontFamily: “inherit”, whiteSpace: “nowrap” }}>← Edit narrative</button>
+                    <button onClick={confirmNameChecks} style={{ flex: 1, border: “none”, borderRadius: “var(--border-radius-md)”, padding: “13px 20px”, fontSize: “11px”, fontWeight: 500, letterSpacing: “0.1em”, textTransform: “uppercase”, cursor: “pointer”, fontFamily: “inherit”, background: ACCENT, color: ON_ACCENT }}>
+                      Continue →
+                    </button>
+                  </div>
                 </div>
-              </div>
+              </>
             )}
             {(loading || extractingFromGuidelines) && (
               <div ref={progressPanelRef} style={{ marginTop: "12px", padding: "12px 14px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", background: "var(--color-background-secondary, var(--color-background-secondary))" }}>

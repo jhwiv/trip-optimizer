@@ -5,7 +5,7 @@
 
 // localStorage key. Versioned so a future major change to the intro copy can
 // trigger a re-show without colliding with the prior generation.
-export const WELCOME_STORAGE_KEY = "routesmith-welcomed-v1";
+export const WELCOME_STORAGE_KEY = "routesmith-welcomed-v2";
 
 // Decide whether to show the welcome overlay on this load. Returns true when:
 //   - localStorage doesn't carry a prior dismissal for this key, AND
