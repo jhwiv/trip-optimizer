@@ -1,6 +1,10 @@
 # Flight-number / flight-times resolver gaps (#12 follow-up)
 
-**Status:** RESOLVED 2026-06-30 PM via PR #106 (gap fixes) + PR #108 (cross-carrier times-lift fix discovered during live verification). See handoff.md § Active Investigation. Awaiting real-trip live probe by user. This page kept for the diagnosis, probe data, and the lesson about live-probing after merge.
+**Status:** FULLY CLOSED 2026-07-01. Three waves of fixes shipped:
+- PR #106 + #108 — Gap 1 (API false-negative) and Gap 2 (resolver bailed on complete flights). See original diagnosis below.
+- PR #111 — Added "verify" mode to `flightNeedsResolve` so model-complete flights are confirmed against the schedule and get `_scheduleVerified` written.
+- PR #114 — Extracted `buildFlightCardTitle` from FlightCard's inline title logic; the inline code only read `_userSuppliedFlightNumber` and ignored `_scheduleVerified`, causing FlightCard to show "United · EWR → SFO" while the Overview showed "United UA 337 · EWR → SFO". Confirmed root cause: two render surfaces reading the same plan data, but FlightCard's title composer had stale flag gating.
+- **Post-PR #114 audit (2026-07-01):** PDF renderer at `itineraryPdf.js:1043` confirmed CORRECT — reads `fl.flight_number` directly from the `data` object (applyQualityLayer output), which preserves schedule-verified numbers via the `_scheduleVerified` exemption. No PDF fix needed. The inline strip in App.jsx wired to import `applyFlightNumberStrip` from `src/flightNumberStrip.js` (single source of truth; eliminates drift). New `tests/test_title_pipeline.mjs` (20 assertions) closes the specific test gap that allowed the PR #114 root cause to exist: tests strip output → `buildFlightCardTitle` → asserts title text.
 **Surfaced:** User report 2026-06-30 PM ("flight numbers and times sometimes missing — feels like a fix that gets reverted")
 **Severity:** Medium (intermittent; primary PDF data quality)
 

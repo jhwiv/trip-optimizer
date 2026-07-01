@@ -43,14 +43,24 @@
 //              OR substitutes the schedule's number if the model's was
 //              fabricated OR falls back to _timesUnconfirmed if the
 //              schedule API can't help.
-//   null     — user-supplied with complete fields. Skip entirely — user
-//              facts always win and the strip's user-supplied exception
-//              already keeps the number safe.
+//   null     — skip entirely. Two cases:
+//              • user-supplied with complete fields (user facts always
+//                win; the strip's _userSuppliedFlightNumber exemption
+//                already keeps the number safe).
+//              • _scheduleVerified === true (flight was already confirmed
+//                by a prior resolver run; skipping prevents the infinite
+//                cleanup→restart loop that the resolver's own
+//                onPlanRevised call would otherwise trigger).
 //
 // Also returns null for malformed inputs so the caller can treat the
 // classification as a single "should-skip" check.
 export function flightNeedsResolve(fl) {
   if (!fl || typeof fl !== "object") return null;
+  // Already confirmed against the live schedule — skip so the resolver's own
+  // onPlanRevised write doesn't kick off an infinite cleanup→restart loop.
+  // The flag is cleared when the plan is replaced (auto-apply, ReviewPanel
+  // revision), letting the resolver re-run on the fresh plan.
+  if (fl._scheduleVerified === true) return null;
   const num = typeof fl.flight_number === "string" ? fl.flight_number.trim() : "";
   const hasNum = num.length > 0 || fl._userSuppliedFlightNumber === true;
   const depart = typeof fl.depart_time === "string" ? fl.depart_time.trim() : "";

@@ -59,6 +59,16 @@ console.log("=== flightNeedsResolve — classification ===");
   assert("model emits everything → 'verify' (must confirm against live schedule)",
     flightNeedsResolve({ flight_number: "UA1792", depart_time: "8:30 AM", arrive_time: "11:30 AM" }) === "verify");
 
+  // Already schedule-verified → null. Prevents the infinite cleanup→restart loop
+  // caused by the resolver's own onPlanRevised write changing rawData and
+  // triggering its own cleanup. Once _scheduleVerified is set the number is
+  // safe from the strip and the resolver has nothing left to do.
+  assert("_scheduleVerified → null (skip; already confirmed, stops infinite loop)",
+    flightNeedsResolve({ flight_number: "UA1792", depart_time: "8:30 AM", arrive_time: "11:30 AM", _scheduleVerified: true }) === null);
+  // _scheduleVerified without a number still skips (nothing to display).
+  assert("_scheduleVerified + no number → null",
+    flightNeedsResolve({ _scheduleVerified: true }) === null);
+
   // User-supplied with both times → null (skip; trust the user even if number is blank).
   assert("user supplied + both times → null (skip)",
     flightNeedsResolve({ _userSuppliedFlightNumber: true, depart_time: "8:30 AM", arrive_time: "11:30 AM" }) === null);

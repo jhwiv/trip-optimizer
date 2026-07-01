@@ -11,6 +11,7 @@ import { relevantProviderCategories, bucketProviders, providerCategoryMeta } fro
 import { resolveOutputs } from "./outputsState.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnconfirmedTimesPayload } from "./flightResolver.js";
+import { applyFlightNumberStrip } from "./flightNumberStrip.js";
 import { classifyActivityCountConstraint, renderActivityCountPromptRule, enforceTripTotalActivityCap } from "./activityCountConstraint.js";
 import { buildFlightCardTitle } from "./flightCardTitle.js";
 import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, isPdfDownloadReady } from "./introduction.js";
@@ -2722,30 +2723,9 @@ function applyQualityLayer(input, inputs) {
   const fixes = [];
   const warnings = [];
 
-  // Build a set of flight numbers the USER explicitly stated in their narrative
-  // or guidelines. These are facts, not LLM guesses, and we must NOT strip them.
-  // Matches: "flight 1039", "UA 1039", "UA1039", "United 1039", "#1039", and bare
-  // numbers near the word "flight" / a known carrier word.
-  const userFlightNumbers = new Set();
-  {
-    const blob = `${inputs?.narrative || ""}\n${inputs?.guidelines || ""}`;
-    // Pattern A: explicit airline code + number (UA1039 / UA 1039 / B6 47).
-    for (const m of blob.matchAll(/\b([A-Z]{2})\s*0*(\d{1,4})\b/g)) {
-      userFlightNumbers.add(`${m[1]}${m[2]}`);
-      userFlightNumbers.add(m[2]); // bare digits too, for cross-checking
-    }
-    // Pattern B: "flight 1039", "flight #1039", "on 1039" near "flight".
-    for (const m of blob.matchAll(/\bflight\s*#?\s*0*(\d{1,4})\b/gi)) {
-      userFlightNumbers.add(m[1]);
-    }
-    // Pattern C: airline name followed by a number (United 1039, Delta 47).
-    for (const m of blob.matchAll(/\b(united|delta|american|jetblue|southwest|alaska|air\s*france|klm|lufthansa|swiss|british\s*airways|virgin|iberia|ana|japan\s*airlines|jal|cathay|korean|aer\s*lingus|ita|sas|scandinavian)\s+#?\s*0*(\d{1,4})\b/gi)) {
-      userFlightNumbers.add(m[2]);
-    }
-  }
-
   // Deep-clone the bits we'll touch so renderer mutation is safe.
-  const days = Array.isArray(input.days)
+  // `let` so the strip step below can replace days with the helper's output.
+  let days = Array.isArray(input.days)
     ? input.days.map(d => ({ ...d, items: Array.isArray(d.items) ? d.items.map(it => ({ ...it, restaurant: it.restaurant ? { ...it.restaurant } : it.restaurant, flight: it.flight ? { ...it.flight } : it.flight })) : d.items }))
     : input.days;
 
@@ -2891,83 +2871,15 @@ function applyQualityLayer(input, inputs) {
     });
   }
 
-  // 2b. UNIVERSAL flight-number strip. The model cannot be trusted to know
-  // specific published flight numbers — even for routes it gets the carrier
-  // right on, the number is usually fabricated. Strip every flight_number
-  // unconditionally and force the renderer to surface a "Look up actual
-  // flight" CTA. This is route-agnostic and applies to every flight, every
-  // trip, no allowlist required.
-  //
-  // EXCEPTION: if the user literally told us the flight number in their
-  // narrative or guidelines ("depart on flight 1039", "return on UA1040"),
-  // that's a USER FACT, not an LLM guess. We KEEP it, normalize the format,
-  // and let the live-status panel show real AeroAPI data for it.
-  if (Array.isArray(days)) {
-    days.forEach((day, dayIdx) => {
-      (day.items || []).forEach(item => {
-        if (item.type !== "Flight" || !item.flight) return;
-        const f = item.flight;
-        // #12 Keep schedule-verified numbers as-is. These were resolved from the
-        // live flight schedule (FlightNumberAutoResolver) and persisted to the
-        // canonical plan — they are NOT model guesses, so the strip below must
-        // not remove them. Without this exemption the resolver's number would be
-        // wiped on the next applyQualityLayer recompute and never reach the PDF.
-        if (f._scheduleVerified && f.flight_number && String(f.flight_number).trim() !== "") return;
-        if (f.flight_number != null && String(f.flight_number).trim() !== "") {
-          // Pull out just the digits to see if the user stated this number.
-          const digitsMatch = String(f.flight_number).match(/(\d{1,4})/);
-          const digits = digitsMatch ? String(parseInt(digitsMatch[1], 10)) : null;
-          const matchesUser = digits && (
-            userFlightNumbers.has(digits) ||
-            (f.carrier && userFlightNumbers.has(
-              `${(f.carrier.match(/\b([A-Z]{2})\b/) || [])[1] || ""}${digits}`
-            ))
-          );
-          if (matchesUser) {
-            // User-confirmed flight number — keep it. Normalize to plain digits
-            // for now; parseFlightIdent will compose carrier + digits at render.
-            f.flight_number = digits;
-            f._userSuppliedFlightNumber = true;
-            fixes.push(`Day ${dayIdx + 1} flight: kept user-supplied flight number ${f.carrier || ""}${digits}`);
-          } else {
-            f._originalFlightNumber = f.flight_number;
-            f.flight_number = null;
-            f._flightNumberStripped = true;
-            fixes.push(`Day ${dayIdx + 1} flight: removed model-supplied flight number — look up live schedule`);
-          }
-        } else if (userFlightNumbers.size > 0) {
-          // Model didn't emit a number but the user named some. Attach one
-          // based on direction. We previously gated on `f.carrier` being
-          // present, but the model sometimes omits both number AND carrier
-          // when it follows the "don't emit flight_number" instruction too
-          // aggressively — we should still back-fill the user-stated number
-          // because that's a USER FACT, and the live-status panel can still
-          // resolve carrier from the number prefix.
-          const userNums = Array.from(userFlightNumbers).filter(n => /^\d+$/.test(n));
-          if (userNums.length >= 1 && userNums.length <= 2) {
-            // Detect outbound vs return by ROUTE direction first (more
-            // reliable than day index, since the return might fall on the
-            // second-to-last day if the flight is in the morning). Falls
-            // back to day-index heuristic when route info is missing.
-            const homeCode = (inputs?.flights?.homeAirport || "").toUpperCase().match(/\b([A-Z]{3})\b/)?.[1];
-            let isReturnLeg;
-            if (homeCode && f.to_airport) {
-              isReturnLeg = String(f.to_airport).toUpperCase() === homeCode;
-            } else if (homeCode && f.from_airport) {
-              isReturnLeg = String(f.from_airport).toUpperCase() !== homeCode;
-            } else {
-              isReturnLeg = dayIdx === (days.length - 1);
-            }
-            const chosen = isReturnLeg && userNums.length > 1
-              ? userNums[userNums.length - 1]
-              : userNums[0];
-            f.flight_number = chosen;
-            f._userSuppliedFlightNumber = true;
-            fixes.push(`Day ${dayIdx + 1} flight: filled in user-supplied flight number ${f.carrier || ""}${chosen}`);
-          }
-        }
-      });
-    });
+  // 2b. UNIVERSAL flight-number strip. Logic lives in src/flightNumberStrip.js
+  // (the single source of truth, tested in tests/test_flight_number_strip.mjs).
+  // Importing here instead of duplicating prevents drift between the inline
+  // block and the extracted helper — the past history where they diverged and
+  // tests passed while production broke.
+  {
+    const { days: stripped, fixes: sFixes } = applyFlightNumberStrip(days, inputs);
+    days = stripped;
+    fixes.push(...sFixes);
   }
 
   // 2c. KNOWN_NONSTOPS carrier-correction (route-specific bonus layer). If the
@@ -6604,16 +6516,15 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         const isoDate = parseDayLabelToISODate(d.label);
         if (!fromCode || !toCode || !isoDate) {
           // Precondition failure: cannot reach the API. For verify-mode
-          // (model emitted a complete-looking flight), trust the model
-          // and mark _scheduleVerified so the strip exemption fires.
-          // Worst case the model's number is wrong, but that's still
-          // better than rendering nothing at all — the user can verify
-          // at booking via the live-status panel.
-          if (mode === "verify") {
+          // (model emitted a complete-looking flight) AND times-mode
+          // (model emitted a number but no times), trust the model's
+          // number and mark _scheduleVerified so the strip exemption
+          // fires — better to show a potentially-wrong number than to
+          // strip it entirely and show nothing. Number-mode stays silent
+          // because there was no number to display in the first place.
+          if (mode === "verify" || mode === "times") {
             verifyTrustOnly.push({ di, ii });
           }
-          // number/times modes with bad preconditions stay silent —
-          // there was never a number to display.
           return;
         }
         targets.push({ di, ii, fl: it.flight, fromCode, toCode, isoDate, mode });

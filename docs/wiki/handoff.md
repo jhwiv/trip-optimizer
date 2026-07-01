@@ -1,4 +1,4 @@
-# Trip Optimizer (RouteSmith) — Handoff (2026-06-30, 7:48 PM EDT)
+# Trip Optimizer (RouteSmith) — Handoff (2026-07-01)
 
 > One-page state of the world. Read this first when picking up Trip Optimizer / RouteSmith in a new thread. Then read `index.md` for the rest of the wiki.
 
@@ -9,16 +9,28 @@
 - **Hosting:** Cloudflare Pages + Pages Functions; Anthropic Sonnet 4.5 for builds; Perplexity Sonar for retrieval; KV (`JOBS`) for cache/job state
 - **CI gates (all required on every PR to master):** Unit tests (`tests/run-all.mjs`), ESLint (0 errors), Vite build, Hex-leak baseline, Contrast audit (WCAG AA). Cloudflare Pages preview + Cursor Bugbot are non-blocking.
 
-## ACTIVE INVESTIGATION — RESOLVED 2026-06-30 PM
+## Flight-number investigation — FULLY CLOSED 2026-07-01
 
-**Flight numbers and times sometimes missing from the build + PDF.** Closed via two PRs in sequence on 2026-06-30:
+**Seven PRs, one root cause per PR. All render surfaces audited. Pipeline sealed.**
 
-- **PR #106** (commit `490bc3c`, merged 2026-06-30 ~3:50 PM EDT) shipped the four-case fix from the diagnosis page in [`concepts/flight-resolver-gaps.md`](concepts/flight-resolver-gaps.md): times-only backfill on `flightNeedsResolve === "times"`, airline-filter → route-only retry, honest `_timesUnconfirmed` PDF fallback, and `tests/test_flight_resolver.mjs` (60 assertions over 4 scenarios).
-- **PR #108** (commit `73190cb`, merged 2026-06-30 ~4:38 PM EDT) closed a latent cross-carrier times-lift bug discovered while verifying #106 against live production. Production probe of `EWR-LAX` route-only returned 15 rows from UA/TP/NH/VA/NZ codeshares with **zero AA**; the old route-only retry fell back to `pickFromPool(..., airlineIata: null, ...)` and lifted NH7235 redeye times onto an AA200 flight. Fix: in times-mode, ONLY accept exact `flightNumber` match (no cross-carrier fallback); in number-mode, pre-filter the route-only pool by carrier IATA prefix before `pickFromPool`. Adds Scenario E (+6 assertions, now 66 flight-resolver tests).
+| PR | What it fixed | Gap it left |
+|---|---|---|
+| #84 | Resolver → `_scheduleVerified` → strip exemption → canonical plan persistence | Resolver skipped model-complete flights; verify mode missing |
+| #106 | Gap 1 (API false-negative → route-only retry) + Gap 2 (times-only backfill) | Cross-carrier times-lift in route-only retry |
+| #108 | Cross-carrier times-lift: strict carrier match in route-only retry | Model-complete flights still skipped resolver, strip nulled their numbers |
+| #111 | Universal verify mode in `flightNeedsResolve`; all three completion branches write `_scheduleVerified` | FlightCard's inline title code only read `_userSuppliedFlightNumber`, ignored `_scheduleVerified` |
+| #114 | Extracted `buildFlightCardTitle`; title precedence now: user-supplied → schedule-verified → autoFlight → carrier-only | Strip and `flightNumberStrip.js` maintained as two copies; no pipeline-to-title integration test |
 
-**Live verification on www.routesmith.ai:** index bundle `index-2-vNTVcg.js` (646,762 bytes) carries `_timesUnconfirmed`, `_resolveSource`, `route-only`, the new carrier-prefix pre-filter, plus the existing #12 fix. PDF chunk `itineraryPdf-BKPJEUmF.js` carries the "Not yet confirmed — check with airline at booking" fallback line.
+**2026-07-01 clean-slate audit + follow-up fixes (this session):**
 
-**Still needs a real-trip live probe by user:** build EWR-LAX AA200 and confirm the PDF renders the honest fallback line (not bogus NH times). Regression-check Denver UA (Scenario 1 happy path) and JAC-FLG UA (Scenario 3 true-miss → fallback).
+- **PDF confirmed correct:** `renderFlightBlock` at `itineraryPdf.js:1043` reads `fl.flight_number` directly from `data` (applyQualityLayer output). Since the strip's `_scheduleVerified` exemption preserves verified numbers in `data`, the PDF sees them. No fix needed.
+- **Strip drift eliminated:** `applyQualityLayer` now imports and calls `applyFlightNumberStrip` from `src/flightNumberStrip.js` instead of inlining a duplicate. Single source of truth; tests and production can't diverge.
+- **Pipeline-to-title test added:** `tests/test_title_pipeline.mjs` (20 assertions) tests strip output → `buildFlightCardTitle` → rendered title text. Scenario 1 is the exact EWR-SFO recurrence guard. This is the test that, had it existed earlier, would have caught the PR #114 root cause.
+
+**Still needs user's real-trip visual verification:**
+- Build EWR-SFO UA round-trip → confirm all three surfaces agree: Overview card, day-by-day FlightCard title, PDF flight line.
+- Build EWR-LAX AA → confirm honest fallback line (not bogus NH times).
+- Build Denver UA → happy-path regression check.
 
 ## Update-list status
 
@@ -39,7 +51,7 @@ The original 15-item list grew to 24 via live testing. Working in waves, one foc
 | 9 | App intro (A2HS, what it is/isn't, how-to) | ✅ Merged + verified live | #102 |
 | 10 | Collapse expert-review section to one line after Apply | ✅ Merged + verified live | #100 |
 | 11 | Overview/cards → tabbed view | ✅ Merged + verified live (B-prime: 5 primaries + More ▾ overflow) | #107 |
-| 12 | PDF missing flight numbers (+ slow) | ✅ Merged + verified live. PR #83 reverted → PR #84 the correct base fix → PR #106 covered the two diagnosis gaps → PR #108 closed the cross-carrier times-lift latent bug → PR #111 closed the EWR-SFO complete-flight recurrence with universal verify mode (the structural end to the recurrence pattern). Perf still untouched per instruction. | #84 + #106 + #108 + #111 |
+| 12 | PDF missing flight numbers (+ slow) | ✅ Merged + verified live. PR #83 reverted → #84 canonical plan persistence + strip exemption → #106 gap fixes (times backfill + retry) → #108 cross-carrier strict match → #111 universal verify mode → #114 FlightCard title reads `_scheduleVerified`. 2026-07-01 audit confirmed PDF correct; strip drift eliminated (now imports helper); pipeline-to-title integration test added. Awaiting user's real-trip visual verification (EWR-SFO, EWR-LAX AA, Denver). Perf untouched per instruction. | #84 + #106 + #108 + #111 + #114 |
 | 13 | Remove gold; navy + silver palette | ✅ Merged + verified live | #79 |
 | 14 | Day-scoped activity count ("1 activity on one day" → 1 every day) | ✅ Merged + verified live | #81 |
 | 15 | Toggle: narrate build request vs manual dropdowns | ⬜ Not started | — |
@@ -140,7 +152,7 @@ Live build on www.routesmith.ai, narrative: "only ONE activity on Day 3, keep it
 
 1. Read this `handoff.md`, then `index.md`, then relevant `concepts/*`.
 2. Cross-reference long-term memory for preferences not captured here.
-3. Flight-numbers investigation is closed — see PR #108 entry. Wait for user to live-probe EWR-LAX AA200 in a real build before treating #12 as fully sealed.
+3. Flight-numbers investigation is closed structurally. **Ask user to run the three visual checks** (EWR-SFO round-trip, EWR-LAX AA, Denver) and confirm all three render surfaces (Overview card, FlightCard title, PDF) agree. If any surface fails, the fix is in that surface's specific code path — the data pipeline is now clean.
 4. Resume remaining list in user's preferred order: #7 → #15 → #22 (awaiting user re-test).
 5. One focused PR at a time, green CI, verify live after merge. **No code without user "go".**
 6. Update this wiki in the same PR that changes meaningful state.
