@@ -3,9 +3,9 @@
 // -----------------------------------------------------------------------------
 // Why this exists:
 //   The legacy PDF was an html2canvas raster screenshot of the live UI — dark
-//   mode bleed, gold-on-dark, narrow column, no hyperlinks, fuzzy text. This
-//   module ignores the DOM entirely and lays out a sharp, hyperlinked, multi-
-//   page document directly from the trip plan data using jsPDF text/line APIs.
+//   mode bleed, narrow column, no hyperlinks, fuzzy text. This module ignores
+//   the DOM entirely and lays out a sharp, hyperlinked, multi-page document
+//   directly from the trip plan data using jsPDF text/line APIs.
 //
 // Public API:
 //   buildItineraryPdf(data, inputs, { setStatus, buildId }) -> jsPDF instance
@@ -13,7 +13,7 @@
 // The caller is responsible for saving with the desired filename.
 //
 // Layout:
-//   • Cover page   — destination title, meta line, gold rule, "What you told us"
+//   • Cover page   — destination title, meta line, teal accent rule, "What you told us"
 //                    summary (compact two-column key/value), generated date.
 //   • Day pages    — one chunk per day (page-breaks naturally), headline +
 //                    weather + chronological items table with type-specific
@@ -23,7 +23,7 @@
 //   • Footer       — page number + brand + build id on every page.
 //
 // Hyperlinks: phones (tel:), addresses (Google Maps search), and any website /
-// booking_url / reservation.url are rendered as clickable gold underlined text
+// booking_url / reservation.url are rendered as clickable teal underlined text
 // via pdf.textWithLink().
 // =============================================================================
 
@@ -34,11 +34,11 @@ const COLOR = {
   ink: [17, 17, 17],          // body text
   inkSoft: [85, 85, 85],      // secondary
   inkFaint: [140, 140, 140],  // meta / footer
-  gold: [180, 130, 40],       // warm amber-gold accent (links, headers, rules)
+  accent: [49, 97, 105],      // teal accent — matches --color-accent-hover (#316169)
   rule: [220, 220, 220],      // dividers
   ruleSoft: [240, 240, 240],  // row separators
   warn: [180, 90, 40],        // ⚠︎ markers
-  bgChip: [255, 248, 225],    // warm pale gold tint for chips
+  bgChip: [232, 244, 246],    // pale teal tint for chips
 };
 
 const FONT = {
@@ -60,7 +60,7 @@ const PAGE = {
 // IMPORTANT: jsPDF's built-in fonts (Helvetica/Times) use WinAnsi encoding,
 // which CANNOT render Unicode arrows, geometric shapes, or emoji. They print
 // as garbled glyph IDs. Stick to ASCII (or Latin-1) for type icons. The
-// aesthetic is built from typography (small caps + gold accents) instead of
+// aesthetic is built from typography (small caps + teal accents) instead of
 // pictograms.
 
 // Sanitize free text to glyphs that jsPDF's built-in WinAnsi fonts can render.
@@ -265,7 +265,7 @@ function makeCursor(pdf) {
     pdf.setCharSpace(0); // never leak
   }
 
-  // Linked text — gold + underline, registered as a clickable PDF annotation.
+  // Linked text — teal + underline, registered as a clickable PDF annotation.
   function link(label, url, opts = {}) {
     if (!label || !url) return;
     const {
@@ -287,8 +287,8 @@ function makeCursor(pdf) {
     ensureSpace(lines.length * lineH + space);
     state.y += space;
 
-    setColor(COLOR.gold);
-    setDraw(COLOR.gold);
+    setColor(COLOR.accent);
+    setDraw(COLOR.accent);
     pdf.setCharSpace(0);
     for (const line of lines) {
       const w = pdf.getTextWidth(line);
@@ -317,9 +317,9 @@ function makeCursor(pdf) {
     state.y += space;
   }
 
-  // Inline gold accent rule used under section headers.
+  // Inline teal accent rule used under section headers.
   function accentRule(width = 36) {
-    setDraw(COLOR.gold);
+    setDraw(COLOR.accent);
     pdf.setLineWidth(0.6);
     pdf.line(PAGE.marginX, state.y, PAGE.marginX + width, state.y);
     state.y += 2;
@@ -383,7 +383,7 @@ function makeCursor(pdf) {
     state.y += rowGap;
   }
 
-  // Bullet item: gold dot + wrapped text.
+  // Bullet item: teal dot + wrapped text.
   function bullet(label, opts = {}) {
     const {
       size = 10,
@@ -401,7 +401,7 @@ function makeCursor(pdf) {
     state.y += pre;
 
     // Bullet dot
-    setFill(COLOR.gold);
+    setFill(COLOR.accent);
     pdf.circle(PAGE.marginX + 1.2, state.y + lineH * 0.5, 0.7, "F");
 
     setColor(COLOR.ink);
@@ -430,7 +430,7 @@ function makeCursor(pdf) {
         x = PAGE.marginX;
       }
       setFill(COLOR.bgChip);
-      setDraw(COLOR.gold);
+      setDraw(COLOR.accent);
       pdf.setLineWidth(0.2);
       pdf.roundedRect(x, state.y, w, lineH - 0.5, 1.2, 1.2, "FD");
       setColor(COLOR.ink);
@@ -544,7 +544,7 @@ function renderCover(cur, data, inputs, opts = {}) {
   pdf.setFont(FONT.sans, "bold");
   pdf.setFontSize(8.5);
   pdf.setCharSpace(1.2);
-  cur.setColor(COLOR.gold);
+  cur.setColor(COLOR.accent);
   pdf.text("ITINERARY", PAGE.marginX, cur.state.y);
   pdf.setCharSpace(0);
   cur.space(5);
@@ -559,7 +559,7 @@ function renderCover(cur, data, inputs, opts = {}) {
   });
   cur.space(2);
 
-  // Gold accent rule
+  // Teal accent rule
   cur.accentRule(48);
   cur.space(2);
 
@@ -584,7 +584,7 @@ function renderCover(cur, data, inputs, opts = {}) {
     pdf.setFont(FONT.sans, "bold");
     pdf.setFontSize(9);
     pdf.setCharSpace(1.0);
-    cur.setColor(COLOR.gold);
+    cur.setColor(COLOR.accent);
     pdf.text("WHAT YOU TOLD US", PAGE.marginX, cur.state.y);
     pdf.setCharSpace(0);
     cur.space(4);
@@ -674,7 +674,7 @@ function renderIntroduction(cur, data, inputs) {
   cur.newPage();
 
   // Heading: destination name + year, same style as day headers — small caps,
-  // tracked, gold. NO word "Introduction".
+  // tracked, teal. NO word "Introduction".
   const headingDest = (() => {
     const cityList = Array.isArray(data?.cities) ? data.cities : [];
     if (cityList.length >= 2) {
@@ -694,7 +694,7 @@ function renderIntroduction(cur, data, inputs) {
   pdf.setFont(FONT.sans, "bold");
   pdf.setFontSize(10);
   pdf.setCharSpace(1.6);
-  cur.setColor(COLOR.gold);
+  cur.setColor(COLOR.accent);
   const headingMaxW = PAGE.width - PAGE.marginX * 2;
   const headingLines = pdf.splitTextToSize(asciiSafe(headingText.toUpperCase()), headingMaxW);
   const headingLineH = (10 * 1.2) / 2.83465;
@@ -708,7 +708,7 @@ function renderIntroduction(cur, data, inputs) {
   cur.space(8);
 
   // Body — navy text in serif, generous leading for an editorial read.
-  // The two parts sit as separated paragraphs; a thin gold rule between
+  // The two parts sit as separated paragraphs; a thin teal rule between
   // them gives a visual breath without breaking the spec's "no headers"
   // rule (the spec explicitly allows a rule when the design system uses one).
   const arcText = (intro.arc && typeof intro.arc === "string") ? intro.arc.trim() : "";
@@ -726,7 +726,7 @@ function renderIntroduction(cur, data, inputs) {
 
   if (diffText && diffText !== "NONE_FLAGGED") {
     cur.space(4);
-    // Thin gold rule between Part 1 and Part 2 — spec-permitted breath.
+    // Thin teal rule between Part 1 and Part 2 — spec-permitted breath.
     cur.accentRule(28);
     cur.space(4);
     cur.text(diffText, {
@@ -759,7 +759,7 @@ function renderDay(cur, day, index) {
   // 110mm reliably fits a day label + headline + 3 items without orphaning.
   cur.ensureSpace(110);
 
-  // Day label — bigger, more tracked, and with a generous gold accent rule
+  // Day label — bigger, more tracked, and with a generous teal accent rule
   // so the start of each day reads like a proper section, not another bullet.
   //
   // WRAP the label rather than drawing it on one fixed line. Long labels
@@ -771,7 +771,7 @@ function renderDay(cur, day, index) {
   pdf.setFont(FONT.sans, "bold");
   pdf.setFontSize(10);
   pdf.setCharSpace(1.6);
-  cur.setColor(COLOR.gold);
+  cur.setColor(COLOR.accent);
   const labelText = (day.label || `DAY ${index + 1}`).toString();
   const labelMaxW = PAGE.width - PAGE.marginX * 2;
   const labelLines = pdf.splitTextToSize(asciiSafe(labelText.toUpperCase()), labelMaxW);
@@ -868,7 +868,7 @@ function renderItem(cur, item, isLast) {
     pdf.setFont(FONT.sans, "bold");
     pdf.setFontSize(7.5);
     pdf.setCharSpace(0.6);
-    cur.setColor(COLOR.gold);
+    cur.setColor(COLOR.accent);
     pdf.text(asciiSafe(type.toUpperCase()), PAGE.marginX, cur.state.y + 8.5);
     pdf.setCharSpace(0);
   }
@@ -1026,8 +1026,8 @@ function renderLinkLine(cur, label, value, url, x, maxW) {
   const lines = cur.wrap(String(value), maxW - DETAIL_LABEL_W);
   const lineH = (10 * 1.3) / 2.83465;
   if (url) {
-    cur.setColor(COLOR.gold);
-    cur.setDraw(COLOR.gold);
+    cur.setColor(COLOR.accent);
+    cur.setDraw(COLOR.accent);
     pdf.setLineWidth(0.15);
     lines.forEach((ln, i) => {
       const baselineY = cur.state.y + 3.2 + i * lineH;
@@ -1099,8 +1099,8 @@ function renderHotelBlock(cur, h, x, maxW) {
   if (h.confirmation_note) renderDetailLine(cur, "Note", h.confirmation_note, x, maxW);
 }
 
-// Render a row of small pill-style reservation chips: pale-gold fill, gold
-// underlined platform label, tappable hyperlink. Matches the SantaFe .link-gold
+// Render a row of small pill-style reservation chips: pale-teal fill, teal
+// underlined platform label, tappable hyperlink.
 // feel inside a button-shaped container so the user can tap directly from the
 // PDF to OpenTable / Resy / Tock / Yelp / tel:. Wraps to a second line if the
 // row exceeds maxW. Each chip is { label, url }.
@@ -1139,13 +1139,13 @@ function renderReservationChips(cur, chips, x, maxW) {
     }
     // Pill background.
     cur.setFill(COLOR.bgChip);
-    cur.setDraw(COLOR.gold);
+    cur.setDraw(COLOR.accent);
     pdf.setLineWidth(0.2);
     pdf.roundedRect(curX, curY, c.w, chipH, radius, radius, "FD");
-    // Gold underlined label as a tappable link.
+    // Teal underlined label as a tappable link.
     const textX = curX + padX;
     const baselineY = curY + chipH - 1.5;
-    cur.setColor(COLOR.gold);
+    cur.setColor(COLOR.accent);
     if (c.url) {
       pdf.textWithLink(c.safe, textX, baselineY, { url: c.url });
       pdf.setLineWidth(0.15);
@@ -1253,11 +1253,11 @@ function renderCategoryEntry(cur, entry, category, x, maxW) {
   cur.ensureSpace(16);
   cur.space(1.2);
 
-  // Context line — small gold uppercase tag (Day / weekday / time).
+  // Context line — small teal uppercase tag (Day / weekday / time).
   pdf.setFont(FONT.sans, "bold");
   pdf.setFontSize(7.5);
   pdf.setCharSpace(0.5);
-  cur.setColor(COLOR.gold);
+  cur.setColor(COLOR.accent);
   pdf.text(asciiSafe(categoryEntryContext(entry).toUpperCase()), x, cur.state.y + 3);
   pdf.setCharSpace(0);
   cur.state.y += 5;
@@ -1323,13 +1323,13 @@ function renderProviderEntry(cur, item, x, maxW) {
   cur.ensureSpace(16);
   cur.space(1.2);
 
-  // Name + verify label on the context line (gold uppercase tag).
+  // Name + verify label on the context line (teal uppercase tag).
   const tag = item.verifyLabel === "verified" ? "VERIFIED" : "VERIFY BEFORE BOOKING";
   const ctx = [item.name, item.city, tag].filter(Boolean).join("  ·  ");
   pdf.setFont(FONT.sans, "bold");
   pdf.setFontSize(7.5);
   pdf.setCharSpace(0.5);
-  cur.setColor(COLOR.gold);
+  cur.setColor(COLOR.accent);
   pdf.text(asciiSafe(ctx.toUpperCase()), x, cur.state.y + 3);
   pdf.setCharSpace(0);
   cur.state.y += 5;
@@ -1384,7 +1384,7 @@ function sectionHeader(cur, title) {
   pdf.setFont(FONT.sans, "bold");
   pdf.setFontSize(8.5);
   pdf.setCharSpace(1.4);
-  cur.setColor(COLOR.gold);
+  cur.setColor(COLOR.accent);
   pdf.text(asciiSafe(String(title).toUpperCase()), PAGE.marginX, cur.state.y);
   pdf.setCharSpace(0);
   cur.space(1);
@@ -1472,7 +1472,7 @@ function renderReferences(cur, data) {
       // Number
       pdf.setFont(FONT.sans, "bold");
       pdf.setFontSize(10);
-      cur.setColor(COLOR.gold);
+      cur.setColor(COLOR.accent);
       pdf.text(`${i + 1}.`, PAGE.marginX, cur.state.y + lineH * 0.78);
       // Text
       pdf.setFont(FONT.sans, "normal");
@@ -1496,7 +1496,7 @@ function renderReferences(cur, data) {
         pdf.setFontSize(9);
         const display = asciiSafe(url.length > 60 ? url.slice(0, 57) + "..." : url);
         const baselineY = cur.state.y + lhLink * 0.78;
-        cur.setColor(COLOR.gold);
+        cur.setColor(COLOR.accent);
         pdf.textWithLink(display, PAGE.marginX + indent + 2, baselineY, { url });
         pdf.setLineWidth(0.12);
         pdf.line(PAGE.marginX + indent + 2, baselineY + 0.5, PAGE.marginX + indent + 2 + pdf.getTextWidth(display), baselineY + 0.5);
@@ -1516,7 +1516,7 @@ function renderReferences(cur, data) {
 }
 
 // Render a bullet that auto-detects https:// URLs and phone numbers in the text,
-// appending each as a separate clickable gold link on the line below the bullet.
+// appending each as a separate clickable teal link on the line below the bullet.
 function bulletWithLinks(cur, label) {
   cur.bullet(label);
   const text = String(label);
@@ -1537,7 +1537,7 @@ function bulletWithLinks(cur, label) {
     pdf.setFontSize(size);
     const display = asciiSafe(url.length > 60 ? url.slice(0, 57) + "..." : url);
     const baselineY = cur.state.y + lineH * 0.78;
-    cur.setColor(COLOR.gold);
+    cur.setColor(COLOR.accent);
     pdf.textWithLink(display, PAGE.marginX + indent, baselineY, { url });
     pdf.setLineWidth(0.12);
     pdf.line(PAGE.marginX + indent, baselineY + 0.5, PAGE.marginX + indent + pdf.getTextWidth(display), baselineY + 0.5);
@@ -1553,7 +1553,7 @@ function bulletWithLinks(cur, label) {
     pdf.setFontSize(size);
     const display = asciiSafe(raw.trim());
     const baselineY = cur.state.y + lineH * 0.78;
-    cur.setColor(COLOR.gold);
+    cur.setColor(COLOR.accent);
     pdf.textWithLink(display, PAGE.marginX + indent, baselineY, { url });
     pdf.setLineWidth(0.12);
     pdf.line(PAGE.marginX + indent, baselineY + 0.5, PAGE.marginX + indent + pdf.getTextWidth(display), baselineY + 0.5);
