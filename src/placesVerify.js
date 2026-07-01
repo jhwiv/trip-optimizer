@@ -383,7 +383,11 @@ function decorateVenue(venue, v, tally, dayContext) {
   if (isOperational) {
     if (v.address) nextContact.address = v.address;
     if (v.phone) nextContact.phone = v.phone;
-    if (v.website) nextContact.website = v.website;
+    // When Places confirms the venue is operational, prefer its websiteUri.
+    // If Places has no websiteUri, null out any model-generated URL — a
+    // verified "no website" is better than an unverified (potentially wrong)
+    // model URL. NOT_FOUND/UNVERIFIED venues keep their model URL (untouched).
+    nextContact.website = v.website || null;
     if (Array.isArray(v.hours) && v.hours.length) {
       nextContact.hours_verified = v.hours;
     }
