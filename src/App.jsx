@@ -12,6 +12,7 @@ import { resolveOutputs } from "./outputsState.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnconfirmedTimesPayload } from "./flightResolver.js";
 import { classifyActivityCountConstraint, renderActivityCountPromptRule, enforceTripTotalActivityCap } from "./activityCountConstraint.js";
+import { buildFlightCardTitle } from "./flightCardTitle.js";
 import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, isPdfDownloadReady } from "./introduction.js";
 import { shouldShowWelcome, markWelcomeDismissed, detectPlatform } from "./appIntro.js";
 import { partitionTabs, isActiveTabInOverflow, activeOverflowLabel } from "./tabStrip.js";
@@ -1310,21 +1311,18 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   // the quality layer via _userSuppliedFlightNumber), show it in the title so
   // the traveler immediately sees the right number on the card. Otherwise the
   // number was stripped (model guess) and the title shows carrier · route only.
-  const userFn = f._userSuppliedFlightNumber && f.flight_number ? String(f.flight_number).trim() : null;
-  // Compose the title flight ident. For a user-supplied number we keep the
-  // full carrier string the model produced so the user sees what they typed
-  // ("United 1040"). For an auto-selected schedule flight, the schedule
-  // flightNumber already carries the IATA prefix ("UA1040") and is guaranteed
-  // (by the autoFlight memo's _airlineIata gate) to belong to this carrier, so
-  // we show the ident alone — prepending f.carrier would double-prefix it
-  // ("United UA1040"). Precedence: (1) user-supplied/confirmed number,
-  // (2) auto-selected schedule flight (real number from schedFlights),
-  // (3) carrier · route.
-  const titleLine = userFn
-    ? `${f.carrier || ""} ${userFn}`.trim() + ` · ${route}`
-    : autoFlight
-    ? `${autoFlight.flightNumber} · ${route}`
-    : `${f.carrier || "Carrier TBD"} · ${route}`;
+  // Title composition delegated to buildFlightCardTitle (src/flightCardTitle.js).
+  // Precedence, in order:
+  //   1. User-supplied number (_userSuppliedFlightNumber === true) — user-typed.
+  //   2. Resolver schedule-verified number (_scheduleVerified === true) —
+  //      confirmed or substituted by FlightNumberAutoResolver against the
+  //      live schedule. Added 2026-06-30 late-evening to close the recurrence
+  //      where FlightCard showed "United · EWR → SFO" while the trip Overview
+  //      showed "United UA 337 · EWR → SFO" — two components on the same plan
+  //      disagreeing because only Overview read f.flight_number directly.
+  //   3. autoFlight from the card's own live-lookup (schedFlights useEffect).
+  //   4. Carrier + route only, honest fallback.
+  const titleLine = buildFlightCardTitle({ flight: f, autoFlight, route });
   // Banner copy: priority is carrier-correction → airport suggestion → generic look-up.
   const overrideBanner = f._carrierOverride
     ? `App corrected carrier: ${f._originalCarrier || "the model's pick"} does not operate this nonstop. Use ${f.carrier} — confirm with the live lookup below.`
