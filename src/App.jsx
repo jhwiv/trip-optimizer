@@ -4946,7 +4946,7 @@ function LocalProvidersView({ providers }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "22px" }}>
       <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", lineHeight: 1.6, margin: 0 }}>
-        Real local operators checked against Google Places. Anything we couldn't confirm is labeled “verify before booking” — we don't guess.
+        Real local operators checked against Google Places. Anything we couldn't confirm is labeled "verify before booking" — we don't guess.
       </p>
       {error && (
         <p role="alert" style={{ fontSize: "12px", color: "var(--color-warning)", margin: 0 }}>
@@ -6995,6 +6995,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   useEffect(() => {
     const dest = rawData?.destination;
     if (!dest) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset-before-fetch: clears stale photo while new destination loads
     setHeroPhotoUrl(null);
     fetchCoverPhoto(dest).then(url => setHeroPhotoUrl(url || null));
   }, [rawData?.destination]);
@@ -14140,6 +14141,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   //
   // _review is carried over from prev (functional update gives us prev for
   // free, eliminating the old resultRef read and keeping the callback stable).
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization -- functional setState updater inside useCallback; React Compiler cannot verify this pattern is safe to auto-optimize
   const handlePlanRevised = useCallback((newPlanOrFn) => {
     if (!newPlanOrFn) return;
     setResult(prev => {
@@ -14176,6 +14178,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     const list = loadSavedTrips();
     const next = list.map(t => t.id === currentSavedTripId ? { ...t, result } : t);
     writeSavedTrips(next);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: refresh saved-trip list in UI immediately after persisting to localStorage
     refreshSavedTrips();
   }, [result, currentSavedTripId, refreshSavedTrips]);
 
@@ -14827,78 +14830,78 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 {/* Backdrop */}
                 <div
                   onClick={cancelNameChecks}
-                  style={{ position: “fixed”, inset: 0, background: “rgba(0,0,0,0.45)”, zIndex: 800, backdropFilter: “blur(2px)” }}
+                  style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 800, backdropFilter: "blur(2px)" }}
                 />
                 {/* Card */}
                 <div
-                  role=”dialog”
-                  aria-modal=”true”
-                  aria-label=”Confirm venue names”
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="Confirm venue names"
                   style={{
-                    position: “fixed”,
-                    top: “50%”,
-                    left: “50%”,
-                    transform: “translate(-50%, -50%)”,
+                    position: "fixed",
+                    top: "50%",
+                    left: "50%",
+                    transform: "translate(-50%, -50%)",
                     zIndex: 801,
-                    width: “min(540px, 92vw)”,
-                    maxHeight: “88vh”,
-                    overflowY: “auto”,
-                    background: “var(--color-background-primary)”,
+                    width: "min(540px, 92vw)",
+                    maxHeight: "88vh",
+                    overflowY: "auto",
+                    background: "var(--color-background-primary)",
                     border: `1px solid ${ACCENT}`,
-                    borderRadius: “var(--border-radius-md)”,
-                    padding: “20px 22px”,
-                    boxShadow: “0 24px 64px rgba(0,0,0,0.28)”,
+                    borderRadius: "var(--border-radius-md)",
+                    padding: "20px 22px",
+                    boxShadow: "0 24px 64px rgba(0,0,0,0.28)",
                   }}
                 >
-                  <p style={{ fontSize: “10.5px”, fontWeight: 600, color: ACCENT, letterSpacing: “0.12em”, textTransform: “uppercase”, margin: “0 0 6px” }}>Confirm before building</p>
-                  <p style={{ fontSize: “13px”, color: “var(--color-text-primary)”, margin: “0 0 16px”, lineHeight: 1.5 }}>
+                  <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 6px" }}>Confirm before building</p>
+                  <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 16px", lineHeight: 1.5 }}>
                     A name in your narrative isn&rsquo;t a clean match. Pick the right one so we don&rsquo;t silently use the wrong property.
                   </p>
                   {pendingNameChecks.checks.map((c, i) => {
-                    const resolution = pendingNameChecks.resolutions[i] || { choice: “original”, value: “” };
+                    const resolution = pendingNameChecks.resolutions[i] || { choice: "original", value: "" };
                     const setRes = (patch) => setPendingNameChecks((prev) => prev ? {
                       ...prev,
                       resolutions: { ...prev.resolutions, [i]: { ...resolution, ...patch } },
                     } : prev);
                     return (
-                      <div key={i} style={{ marginBottom: “16px”, paddingBottom: “14px”, borderBottom: i < pendingNameChecks.checks.length - 1 ? “0.5px solid var(--color-border-tertiary)” : “none” }}>
-                        <p style={{ fontSize: “11px”, color: “var(--color-text-secondary)”, margin: “0 0 4px”, textTransform: “uppercase”, letterSpacing: “0.08em” }}>{c.kind}</p>
-                        <p style={{ fontSize: “14px”, color: “var(--color-text-primary)”, margin: “0 0 4px”, fontWeight: 500 }}>
-                          You wrote: <span style={{ fontStyle: “italic” }}>&ldquo;{c.original}&rdquo;</span>
+                      <div key={i} style={{ marginBottom: "16px", paddingBottom: "14px", borderBottom: i < pendingNameChecks.checks.length - 1 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                        <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 4px", textTransform: "uppercase", letterSpacing: "0.08em" }}>{c.kind}</p>
+                        <p style={{ fontSize: "14px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>
+                          You wrote: <span style={{ fontStyle: "italic" }}>&ldquo;{c.original}&rdquo;</span>
                         </p>
                         {c.reason && (
-                          <p style={{ fontSize: “12px”, color: “var(--color-text-secondary)”, margin: “0 0 10px”, lineHeight: 1.5 }}>{c.reason}</p>
+                          <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 10px", lineHeight: 1.5 }}>{c.reason}</p>
                         )}
-                        <div style={{ display: “flex”, flexDirection: “column”, gap: “8px” }}>
-                          <label style={{ display: “flex”, alignItems: “center”, gap: “8px”, fontSize: “13px”, cursor: “pointer” }}>
-                            <input type=”radio” name={`namecheck-${i}`} checked={resolution.choice === “original”} onChange={() => setRes({ choice: “original” })} style={{ accentColor: ACCENT, margin: 0 }} />
-                            <span>Use exactly as written: <span style={{ fontStyle: “italic” }}>&ldquo;{c.original}&rdquo;</span></span>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                          <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
+                            <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === "original"} onChange={() => setRes({ choice: "original" })} style={{ accentColor: ACCENT, margin: 0 }} />
+                            <span>Use exactly as written: <span style={{ fontStyle: "italic" }}>&ldquo;{c.original}&rdquo;</span></span>
                           </label>
                           {Array.isArray(c.candidates) && c.candidates.map((cand, ci) => (
-                            <label key={ci} style={{ display: “flex”, alignItems: “center”, gap: “8px”, fontSize: “13px”, cursor: “pointer” }}>
-                              <input type=”radio” name={`namecheck-${i}`} checked={resolution.choice === `candidate:${ci}`} onChange={() => setRes({ choice: `candidate:${ci}` })} style={{ accentColor: ACCENT, margin: 0 }} />
+                            <label key={ci} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
+                              <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === `candidate:${ci}`} onChange={() => setRes({ choice: `candidate:${ci}` })} style={{ accentColor: ACCENT, margin: 0 }} />
                               <span>{cand}</span>
                             </label>
                           ))}
-                          <label style={{ display: “flex”, alignItems: “center”, gap: “8px”, fontSize: “13px”, cursor: “pointer” }}>
-                            <input type=”radio” name={`namecheck-${i}`} checked={resolution.choice === “custom”} onChange={() => setRes({ choice: “custom” })} style={{ accentColor: ACCENT, margin: 0 }} />
+                          <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
+                            <input type="radio" name={`namecheck-${i}`} checked={resolution.choice === "custom"} onChange={() => setRes({ choice: "custom" })} style={{ accentColor: ACCENT, margin: 0 }} />
                             <span>Something else:</span>
                             <input
-                              type=”text”
-                              value={resolution.value || “”}
-                              placeholder=”Type the correct name”
-                              onChange={(e) => setRes({ choice: “custom”, value: e.target.value })}
-                              onFocus={() => setRes({ choice: “custom” })}
-                              style={{ flex: 1, fontSize: “13px”, padding: “6px 8px”, border: “0.5px solid var(--color-border-secondary)”, borderRadius: “4px”, background: “var(--color-background-primary)”, fontFamily: “inherit”, color: “var(--color-text-primary)”, outline: “none” }}
+                              type="text"
+                              value={resolution.value || ""}
+                              placeholder="Type the correct name"
+                              onChange={(e) => setRes({ choice: "custom", value: e.target.value })}
+                              onFocus={() => setRes({ choice: "custom" })}
+                              style={{ flex: 1, fontSize: "13px", padding: "6px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "var(--color-background-primary)", fontFamily: "inherit", color: "var(--color-text-primary)", outline: "none" }}
                             />
                           </label>
                         </div>
                       </div>
                     );
                   })}
-                  <div style={{ display: “flex”, gap: “10px”, marginTop: “4px” }}>
-                    <button onClick={cancelNameChecks} style={{ background: “transparent”, color: “var(--color-text-secondary)”, border: “0.5px solid var(--color-border-secondary)”, borderRadius: “var(--border-radius-md)”, padding: “10px 16px”, fontSize: “11px”, letterSpacing: “0.08em”, textTransform: “uppercase”, cursor: “pointer”, fontFamily: “inherit”, whiteSpace: “nowrap” }}>← Edit narrative</button>
-                    <button onClick={confirmNameChecks} style={{ flex: 1, border: “none”, borderRadius: “var(--border-radius-md)”, padding: “13px 20px”, fontSize: “11px”, fontWeight: 500, letterSpacing: “0.1em”, textTransform: “uppercase”, cursor: “pointer”, fontFamily: “inherit”, background: ACCENT, color: ON_ACCENT }}>
+                  <div style={{ display: "flex", gap: "10px", marginTop: "4px" }}>
+                    <button onClick={cancelNameChecks} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>← Edit narrative</button>
+                    <button onClick={confirmNameChecks} style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: ACCENT, color: ON_ACCENT }}>
                       Continue →
                     </button>
                   </div>

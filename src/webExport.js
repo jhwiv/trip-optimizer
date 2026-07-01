@@ -29,6 +29,7 @@ function formatTime(t) {
   const ampm = h >= 12 ? "PM" : "AM";
   if (h === 0) h = 12;
   else if (h > 12) h -= 12;
+  // eslint-disable-next-line no-irregular-whitespace -- U+202F narrow no-break space between minutes and AM/PM (typographic convention)
   return `${h}:${min} ${ampm}`;
 }
 
