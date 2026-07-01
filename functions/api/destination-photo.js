@@ -1,11 +1,13 @@
 // GET /api/destination-photo?destination=Paris
 //
-// Returns a JPEG photo for the named destination, sourced from Google Places
+// Returns a photo for the named destination, sourced from Google Places
 // (New) Photo API. Cached in the PLACES KV binding for 30 days so each unique
 // destination only hits the Places API once per month.
 //
 // Used by the PDF cover page to embed a location-aware hero image. The endpoint
-// proxies the image bytes so the API key never reaches the browser.
+// proxies the image bytes so the API key never reaches the browser. The real
+// Content-Type from the CDN is forwarded so the client's Blob has the correct
+// MIME type and jsPDF receives a properly-labeled data URL (JPEG or WebP).
 //
 // Billing note: requesting `places.photos` in the Text Search field mask uses
 // the Advanced Data SKU ($32/1000). With 30-day KV caching per destination the
@@ -13,6 +15,7 @@
 
 const PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
 const CACHE_PREFIX = "destphoto:v1:";
+const CACHE_CT_PREFIX = "destphoto:ct:v1:";
 const CACHE_TTL = 30 * 24 * 60 * 60; // 30 days
 const HTTP_TIMEOUT_MS = 8000;
 
@@ -37,6 +40,18 @@ async function fetchWithTimeout(url, opts) {
   }
 }
 
+// Normalise a destination string to a stable, diacritic-free cache key.
+// Folds Unicode diacritics so "Zürich" and "Zurich", "Montréal" and "Montreal"
+// resolve to the same KV entry and don't double-bill the Places Advanced SKU.
+function normaliseCacheKey(s) {
+  return s
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export async function onRequestGet({ request, env }) {
   const url = new URL(request.url);
   const destination = (url.searchParams.get("destination") || "").trim();
@@ -47,17 +62,22 @@ export async function onRequestGet({ request, env }) {
     return new Response("no key", { status: 503, headers: corsHeaders() });
   }
 
-  // Normalise cache key: lowercase, collapse whitespace, no punctuation variation.
-  const cacheKey = CACHE_PREFIX + destination.toLowerCase().replace(/\s+/g, " ");
+  const normalised = normaliseCacheKey(destination);
+  const cacheKey = CACHE_PREFIX + normalised;
+  const cacheCtKey = CACHE_CT_PREFIX + normalised;
 
-  // Check KV cache first.
+  // Check KV cache first. Two keys: raw bytes + the original Content-Type so
+  // the correct MIME type is forwarded even after a cache hit.
   if (env?.PLACES) {
     try {
-      const cached = await env.PLACES.get(cacheKey, { type: "arrayBuffer" });
+      const [cached, cachedCt] = await Promise.all([
+        env.PLACES.get(cacheKey, { type: "arrayBuffer" }),
+        env.PLACES.get(cacheCtKey, { type: "text" }),
+      ]);
       if (cached && cached.byteLength > 0) {
         return new Response(cached, {
           headers: {
-            "Content-Type": "image/jpeg",
+            "Content-Type": cachedCt || "image/jpeg",
             "Cache-Control": "public, max-age=2592000",
             "X-Photo-Source": "kv-cache",
             ...corsHeaders(),
@@ -101,23 +121,32 @@ export async function onRequestGet({ request, env }) {
       return new Response("no photo uri", { status: 404, headers: corsHeaders() });
     }
 
-    // Step 3: Fetch the actual image bytes.
-    const imgRes = await fetch(photoUri);
+    // Step 3: Fetch the actual image bytes — wrapped in fetchWithTimeout so a
+    // slow CDN can't stall the Worker indefinitely (same guard as Steps 1 & 2).
+    const imgRes = await fetchWithTimeout(photoUri, {});
     if (!imgRes.ok) {
       return new Response("image fetch failed", { status: 502, headers: corsHeaders() });
     }
     const imgBuf = await imgRes.arrayBuffer();
 
-    // Write to KV for future requests.
+    // Forward the real Content-Type so the client Blob has the correct MIME type.
+    // Google Places CDN can serve WebP; hardcoding image/jpeg would mislabel the
+    // bytes and cause jsPDF to reject the data URL.
+    const contentType = imgRes.headers.get("content-type") || "image/jpeg";
+
+    // Write bytes + content-type to KV for future requests.
     if (env?.PLACES && imgBuf.byteLength > 0) {
       try {
-        await env.PLACES.put(cacheKey, imgBuf, { expirationTtl: CACHE_TTL });
+        await Promise.all([
+          env.PLACES.put(cacheKey, imgBuf, { expirationTtl: CACHE_TTL }),
+          env.PLACES.put(cacheCtKey, contentType, { expirationTtl: CACHE_TTL }),
+        ]);
       } catch { /* cache write failure is non-fatal */ }
     }
 
     return new Response(imgBuf, {
       headers: {
-        "Content-Type": "image/jpeg",
+        "Content-Type": contentType,
         "Cache-Control": "public, max-age=2592000",
         "X-Photo-Source": "places-api",
         ...corsHeaders(),

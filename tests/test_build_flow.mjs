@@ -48,9 +48,9 @@ assert(
 );
 
 const jumpLabel = />\s*Jump to select outputs/;
-const buildLabel = />\s*Build itinerary\s*</;
+const buildLabel = />\s*Plan my trip\s*</;
 assert("Details CTA labelled 'Jump to select outputs'", jumpLabel.test(SRC));
-assert("Outputs CTA labelled 'Build itinerary'", buildLabel.test(SRC));
+assert("Outputs CTA labelled 'Plan my trip'", buildLabel.test(SRC));
 
 // --- 3. Jump button only navigates; Build button triggers the build -------
 console.log("\n[CTA wiring]");
@@ -69,12 +69,12 @@ assert(
   "Jump button must not start a build"
 );
 
-// The "Build itinerary" button's onClick must be handleBuild.
+// The "Plan my trip" button's onClick must be handleBuild.
 const buildIdx = SRC.search(buildLabel);
 const buildBtnStart = SRC.lastIndexOf("<button", buildIdx);
 const buildBtnTag = SRC.slice(buildBtnStart, buildIdx);
 assert(
-  "Build itinerary button is wired to handleBuild",
+  "Plan my trip button is wired to handleBuild",
   /onClick=\{handleBuild\}/.test(buildBtnTag),
   buildBtnTag.slice(0, 160)
 );
