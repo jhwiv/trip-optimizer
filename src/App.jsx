@@ -11362,6 +11362,16 @@ export default function TripOptimizer() {
   // closure that's about to be replaced.
   const [extractingFromGuidelines, setExtractingFromGuidelines] = useState(false);
   const [pendingBuildFromGuidelines, setPendingBuildFromGuidelines] = useState(false);
+  // Input mode toggle: "narrative" = single text box (default), "form" = structured fields.
+  // Persisted to localStorage so returning users land in their preferred mode.
+  const INPUT_MODE_KEY = "rs:inputMode:v1";
+  const [inputMode, setInputModeState] = useState(() => {
+    try { return localStorage.getItem(INPUT_MODE_KEY) || "narrative"; } catch { return "narrative"; }
+  });
+  const setInputMode = (mode) => {
+    setInputModeState(mode);
+    try { localStorage.setItem(INPUT_MODE_KEY, mode); } catch {}
+  };
   // Uncertain-name confirmation. When extraction returns name_checks[],
   // pause before arming the build and show the user a small panel asking
   // them to resolve each one (use original / pick a candidate / type a fix).
@@ -14358,82 +14368,95 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 </div>
               );
             })()}
-            {/* HERO GUIDELINES — the very first thing the user sees on step 1.
-                High-level direction the planner should apply to every decision
-                below. Conceptually a level above the destination/dates form
-                and a level above the per-trip narrative. Distinct from the
-                step-2 "Tell me about the trip" narrative: guidelines are the
-                META-rules (pacing posture, mobility, anniversary framing,
-                budget posture, anchor rhythm), narrative is the SPECIFICS
-                (confirmation numbers, named guides, exact hotels). Both flow
-                into the prompt; guidelines render first. */}
-            <div style={{ ...cardStyleR, borderLeft: `2px solid ${ACCENT}`, marginBottom: "1.25rem" }}>
-              <p style={ctStyle}>About your trip</p>
-              <Field label="Tell us about your trip" hint="Type or dictate. Dump anything that matters: booked flights with numbers and times, hotel names, restaurants with reservation times, named drivers or guides, anniversary or kids' ages, mobility notes, pacing preferences, things to avoid. The planner reads this as the source of truth — every named flight, hotel, and restaurant is used EXACTLY, not substituted.">
+            {/* ── Input mode toggle ── */}
+            <div style={{ display: "flex", marginBottom: "1.5rem", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", overflow: "hidden" }}>
+              {[
+                { key: "narrative", label: "Describe your trip", sub: "Just tell us what you want" },
+                { key: "form",      label: "Use the form",       sub: "Fill in destinations & dates" },
+              ].map(({ key, label, sub }, idx) => {
+                const active = inputMode === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setInputMode(key)}
+                    style={{
+                      flex: 1, padding: "12px 14px", border: "none", cursor: "pointer",
+                      fontFamily: "inherit", textAlign: "left",
+                      borderLeft: idx > 0 ? "0.5px solid var(--color-border-secondary)" : "none",
+                      background: active ? "var(--color-text-primary)" : "var(--color-background-secondary)",
+                      color: active ? "var(--color-background-primary)" : "var(--color-text-secondary)",
+                      transition: "background 0.15s, color 0.15s",
+                    }}
+                  >
+                    <span style={{ display: "block", fontSize: "10px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "2px" }}>{label}</span>
+                    <span style={{ display: "block", fontSize: "11px", opacity: active ? 0.7 : 0.85, lineHeight: 1.3 }}>{sub}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* ── Narrative mode ── */}
+            {inputMode === "narrative" && (
+              <div style={{ ...cardStyleR, borderLeft: `2px solid ${ACCENT}`, marginBottom: "1.25rem" }}>
+                <p style={ctStyle}>Tell us about your trip</p>
+                <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "0 0 14px", lineHeight: 1.6 }}>
+                  Write anything — destination, dates, booked hotels and flights, restaurants, special occasions, preferences, things to avoid. We'll read it as the source of truth.
+                </p>
                 <NarrativeBox
                   value={guidelines}
                   onChange={e => setGuidelines(e.target.value)}
-                  placeholder={"e.g. United UA 57 EWR→CDG Sept 12 dep 18:55, return UA 58 Sept 19. Staying at Le Bristol Paris Sept 12–19, conf #BRST44A21. Dinners: Le Comptoir du Relais night 1, Le Cinq for anniversary on the 14th (already booked, 8pm), Frenchie night 3. Want a private driver from arrival through departure. Wife has a knee injury — no long walks or stairs-heavy days. Home by 9pm. Skip the Louvre, we've done it."}
+                  placeholder={"e.g. 7 nights in Paris Sept 12–19 for our anniversary. Arriving United UA 57 EWR→CDG dep 18:55, returning UA 58 Sept 19. Staying Le Bristol, conf #BRST44A21. Dinners booked: Le Comptoir du Relais night 1, Le Cinq for anniversary night 2 (8pm). Want a private driver throughout. Wife has a knee injury — no long walks or stairs. Home by 9pm each night. Skip the Louvre, we've done it."}
                 />
-              </Field>
-              {/* "Build from this →" shortcut. Appears when the box looks like
-                  a real trip prompt: ≥ 20 chars AND ≥ 4 whitespace-separated
-                  tokens. Covers short brain-dumps like "3 nights in Saratoga.
-                  High end. October" (39 chars / 7 tokens) while still hiding
-                  the button for one-word fragments or random scribbles.
-                  Click → extract fields from narrative → jump straight to
-                  build. The full guidelines text still flows through to the
-                  build prompt as SOURCE OF TRUTH, so nothing is lost in
-                  translation. /api/extract-trip returns a 422 (already
-                  surfaced inline below) if it can't find a destination, so a
-                  generous client gate is safe. */}
-              {(() => {
-                const t = (guidelines || "").trim();
-                if (t.length < 20) return false;
-                const tokens = t.split(/\s+/).filter(Boolean).length;
-                return tokens >= 4;
-              })() && (
-                <div style={{ marginTop: "14px", display: "flex", flexDirection: "column", alignItems: "stretch", gap: "6px" }}>
+                {/* CTA — always visible; disabled while empty so the user always
+                    sees the action without hunting for a conditional button. */}
+                <div style={{ marginTop: "16px", display: "flex", flexDirection: "column", gap: "8px" }}>
                   <button
                     type="button"
                     onClick={buildFromGuidelines}
-                    disabled={extractingFromGuidelines || loading}
+                    disabled={extractingFromGuidelines || loading || (guidelines || "").trim().length < 8}
                     style={{
-                      border: "none",
-                      borderRadius: "var(--border-radius-md)",
-                      padding: "13px 20px",
-                      fontSize: "11px",
-                      fontWeight: 500,
-                      letterSpacing: "0.1em",
-                      textTransform: "uppercase",
-                      cursor: (extractingFromGuidelines || loading) ? "not-allowed" : "pointer",
-                      width: "100%",
-                      fontFamily: "inherit",
-                      background: ACCENT,
-                      color: ON_ACCENT,
-                      opacity: (extractingFromGuidelines || loading) ? 0.6 : 1,
+                      border: "none", borderRadius: "var(--border-radius-md)",
+                      padding: "14px 20px", fontSize: "11px", fontWeight: 600,
+                      letterSpacing: "0.1em", textTransform: "uppercase",
+                      cursor: (extractingFromGuidelines || loading || (guidelines || "").trim().length < 8) ? "not-allowed" : "pointer",
+                      width: "100%", fontFamily: "inherit",
+                      background: ACCENT, color: ON_ACCENT,
+                      opacity: (extractingFromGuidelines || loading || (guidelines || "").trim().length < 8) ? 0.45 : 1,
                     }}
-                    aria-label="Build the trip directly from this narrative"
+                    aria-label="Build the trip plan from your description"
                   >
-                    {extractingFromGuidelines ? "Reading your narrative…" : "Build from this →"}
+                    {extractingFromGuidelines ? "Reading your narrative…" : "Plan my trip →"}
                   </button>
-                  {/* Inline error surface for the shortcut. Step 1 has no
-                      global error banner, so a 422 from /api/extract-trip
-                      (or a network blip) used to dim the button and vanish
-                      with no feedback. Render error here so the user sees it. */}
                   {error && (
-                    <p role="alert" style={{ fontSize: "12px", color: "var(--color-text-danger, var(--color-text-danger))", margin: 0, textAlign: "center", lineHeight: 1.5 }}>{error}</p>
+                    <p role="alert" style={{ fontSize: "12px", color: "var(--color-text-danger)", margin: 0, textAlign: "center", lineHeight: 1.5 }}>{error}</p>
                   )}
-                  <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, textAlign: "center", fontStyle: "italic", lineHeight: 1.5 }}>
-                    Skip the form — we'll extract destination, dates, and details and build straight from your narrative.
+                  <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: 0, textAlign: "center", fontStyle: "italic", lineHeight: 1.5 }}>
+                    We'll extract dates, destination, and details automatically.
                   </p>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
 
-            <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Four essentials to start. Refine the details after, or build immediately.</p>
+            {/* ── Form mode: narrative as optional secondary context ── */}
+            {inputMode === "form" && (
+              <div style={{ ...cardStyleR, marginBottom: "1.25rem" }}>
+                <p style={ctStyle}>Additional context <span style={{ fontSize: "10px", fontWeight: 400, color: "var(--color-text-tertiary)", letterSpacing: 0, textTransform: "none" }}>— optional</span></p>
+                <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 10px", lineHeight: 1.5 }}>
+                  Already have booked flights, hotels, or restaurants? Paste them here and we'll use them exactly.
+                </p>
+                <NarrativeBox
+                  value={guidelines}
+                  onChange={e => setGuidelines(e.target.value)}
+                  placeholder={"e.g. United UA 57 EWR→CDG Sept 12 dep 18:55. Staying Le Bristol Paris. Anniversary dinner at Le Cinq on the 14th at 8pm (booked). Private driver from arrival. Wife has a knee injury."}
+                  size="compact"
+                />
+              </div>
+            )}
 
-            <div style={cardStyleR}>
+            {inputMode === "form" && <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "1.5rem", lineHeight: "1.65" }}>Four essentials to start. Refine the details after, or build immediately.</p>}
+
+            {inputMode === "form" && <div style={cardStyleR}>
               <p style={ctStyle}>Where & when</p>
               <div style={g2r}>
                 {/* When multi-city, Trip Route needs the full row width or the city
@@ -14501,43 +14524,46 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                   <BaseAreaAutocomplete value={basics.baseArea} onChange={e => setB({ ...basics, baseArea: e.target.value })} placeholder="Where in the destination?" destination={basics.destination} />
                 </Field>
               )}
-            </div>
+            </div>}
 
-            {/* Output Sections — collapsible, available on Step 1 so users can
-                preview and trim add-on sections before continuing. Same outputs
-                state as Step 2's Output Sections card. */}
-            <div style={cardStyleR}>
-              <button
-                type="button"
-                onClick={() => setStep1OutputsOpen(!step1OutputsOpen)}
-                style={{ width: "100%", border: "none", background: "transparent", padding: 0, cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}
-              >
-                <span>
-                  <span style={ctStyle}>{`Output sections  ·  ${activeCount} of 12 active`}</span>
-                  {!step1OutputsOpen && (
-                    <span style={{ display: "block", fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "4px", fontStyle: "italic" }}>
-                      Want a slimmer PDF? Tap to choose which sections to include.
-                    </span>
-                  )}
-                </span>
-                <span style={{ flex: "0 0 auto", fontSize: "18px", color: ACCENT, fontWeight: 300 }}>
-                  {step1OutputsOpen ? "−" : "+"}
-                </span>
-              </button>
-              {step1OutputsOpen && (
-                <div style={{ marginTop: "10px" }}>
-                  {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} disabled={k === "itinerary"} />)}
-                </div>
-              )}
-            </div>
+            {inputMode === "form" && (
+              <div style={cardStyleR}>
+                <button
+                  type="button"
+                  onClick={() => setStep1OutputsOpen(!step1OutputsOpen)}
+                  style={{ width: "100%", border: "none", background: "transparent", padding: 0, cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}
+                >
+                  <span>
+                    <span style={ctStyle}>{`Output sections  ·  ${activeCount} of 12 active`}</span>
+                    {!step1OutputsOpen && (
+                      <span style={{ display: "block", fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "4px", fontStyle: "italic" }}>
+                        Want a slimmer PDF? Tap to choose which sections to include.
+                      </span>
+                    )}
+                  </span>
+                  <span style={{ flex: "0 0 auto", fontSize: "18px", color: ACCENT, fontWeight: 300 }}>
+                    {step1OutputsOpen ? "−" : "+"}
+                  </span>
+                </button>
+                {step1OutputsOpen && (
+                  <div style={{ marginTop: "10px" }}>
+                    {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} disabled={k === "itinerary"} />)}
+                  </div>
+                )}
+              </div>
+            )}
 
-            <button disabled={!ready} onClick={() => { if (ready) { setOutputsStep(false); setStep(2); /* #2: always land at the top of Details (Trip style) on every viewport. Without this, mobile kept the prior scroll offset and opened partway down at Flights while desktop showed the top. */ try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } } }}
-              style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: ready ? "pointer" : "not-allowed", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: ready ? "var(--color-text-primary)" : "var(--color-surface-offset)", color: ready ? "var(--color-background-primary)" : "var(--color-text-tertiary)", opacity: ready ? 1 : 0.7 }}>
-              Continue — Add Details →
-            </button>
-            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "8px", textAlign: "center", minHeight: "16px", fontStyle: "italic" }}>
-              {!ready ? `Still needed: ${missing.join(", ")}` : ""}
-            </p>
+            {inputMode === "form" && (
+              <>
+                <button disabled={!ready} onClick={() => { if (ready) { setOutputsStep(false); setStep(2); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } } }}
+                  style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: ready ? "pointer" : "not-allowed", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: ready ? "var(--color-text-primary)" : "var(--color-surface-offset)", color: ready ? "var(--color-background-primary)" : "var(--color-text-tertiary)", opacity: ready ? 1 : 0.7 }}>
+                  Continue — Add Details →
+                </button>
+                <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "8px", textAlign: "center", minHeight: "16px", fontStyle: "italic" }}>
+                  {!ready ? `Still needed: ${missing.join(", ")}` : ""}
+                </p>
+              </>
+            )}
           </div>
         )}
 
