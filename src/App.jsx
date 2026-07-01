@@ -7225,8 +7225,10 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       })()}
 
       {/* Sticky two-row tab nav lives ABOVE the hero so the hero stays compact and every
-         tab is reachable at a glance — modeled after zurich-weekend.com / maritimesgrandloop.com. */}
-      {data.days && data.days.length > 0 && (
+         tab is reachable at a glance — modeled after zurich-weekend.com / maritimesgrandloop.com.
+         Hidden during the initial auto-review so the review progress card sits at the top of
+         the page in the same visual slot as the build progress bar that preceded it. */}
+      {!autoReviewRunning && data.days && data.days.length > 0 && (
         <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} showProviders={providers.relevantIds.length > 0} onOpenMenu={openMenu} onBack={onBack} />
       )}
 
@@ -14620,16 +14622,9 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", gap: "10px" }}>
               <button
                 type="button"
-                onClick={() => {
-                  if (window.confirm("Return to the start? Your current trip details will be cleared.")) {
-                    resetFormToBlank();
-                    setCurrentSavedTripId(null);
-                    setReviewState(null);
-                    setStep(1);
-                  }
-                }}
-                aria-label="Return to the start"
-                title="Return to the start"
+                onClick={() => setStep(1)}
+                aria-label="Back to Essentials"
+                title="Back to Essentials"
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
