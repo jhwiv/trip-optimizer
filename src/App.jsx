@@ -6615,20 +6615,14 @@ function introPlanSignature(plan) {
 // is fully resilient — any failure is silent and never touches the itinerary.
 function FlightNumberAutoResolver({ plan, onPlanRevised }) {
   const attemptedRef = useRef("");
-  // Keep refs to the latest onPlanRevised and plan so the effect only re-runs
-  // when the plan changes, not on every parent render. Crucially, using
-  // planRef.current (not the closed-over plan snapshot) when committing ensures
-  // the resolver always writes onto the LATEST plan state. Without this,
-  // IntroductionAutoGenerator finishing after the resolver would overwrite
-  // _scheduleVerified (it committed from its own stale snapshot that pre-dated
-  // the resolver's write), and vice-versa — whichever committed last would
-  // clobber the other's work. Both components now read the latest state at
-  // commit time, so neither race overwrites the other.
+  // Keep a ref to the latest onPlanRevised so the effect doesn't re-run on
+  // every parent render (only when plan changes). The commit uses a functional
+  // update (prev => ...) so React accumulates concurrent writes correctly —
+  // the intro generator and resolver can both commit in the same automatic-
+  // batching window without clobbering each other.
   const onPlanRevisedRef = useRef(onPlanRevised);
-  const planRef = useRef(plan);
   useLayoutEffect(() => {
     onPlanRevisedRef.current = onPlanRevised;
-    planRef.current = plan;
   });
   useEffect(() => {
     const days = Array.isArray(plan?.days) ? plan.days : [];
@@ -6871,25 +6865,25 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
 
       if (cancelled || resolved.length === 0) return;
 
-      // Build an immutable next plan with the resolved fields merged into the
-      // LATEST plan (planRef.current, not the stale closure snapshot). This
-      // prevents clobbering work written by IntroductionAutoGenerator or any
-      // other concurrent onPlanRevised call that committed while the schedule
-      // API fetch was in flight. The day/item indices in resolved[] are still
-      // valid because concurrent writes (intro text, review state) never add
-      // or remove days or flight items.
-      const latestPlan = planRef.current;
-      const nextDays = latestPlan.days.map((d, di) => {
-        const hits = resolved.filter(r => r.di === di);
-        if (hits.length === 0) return d;
-        const items = d.items.map((it, ii) => {
-          const hit = hits.find(h => h.ii === ii);
-          if (!hit) return it;
-          return { ...it, flight: { ...it.flight, ...hit.merge } };
+      // Commit via a functional update so React accumulates this write with
+      // any concurrent IntroductionAutoGenerator commit in the same automatic-
+      // batching window. Both use functional updates → React chains them:
+      // updater2(updater1(prev)) — neither clobbers the other's fields.
+      // The day/item indices in resolved[] remain valid because concurrent
+      // writes (intro text, review state) never add or remove days or items.
+      onPlanRevisedRef.current(prevPlan => {
+        const nextDays = prevPlan.days.map((d, di) => {
+          const hits = resolved.filter(r => r.di === di);
+          if (hits.length === 0) return d;
+          const items = d.items.map((it, ii) => {
+            const hit = hits.find(h => h.ii === ii);
+            if (!hit) return it;
+            return { ...it, flight: { ...it.flight, ...hit.merge } };
+          });
+          return { ...d, items };
         });
-        return { ...d, items };
+        return { ...prevPlan, days: nextDays };
       });
-      onPlanRevisedRef.current({ ...latestPlan, days: nextDays });
       settled = true;
     })();
 
@@ -6907,15 +6901,6 @@ function IntroductionAutoGenerator({ plan, inputs, onPlanRevised, onGeneratingCh
   // Tracks the plan signature we've already auto-attempted so the effect fires
   // once per build and never auto-retries a failure.
   const autoAttemptedRef = useRef("");
-  // Always apply the intro onto the latest plan so concurrent writes from
-  // FlightNumberAutoResolver (which commits _scheduleVerified while the
-  // /api/introduction fetch is in flight) are not clobbered. Without this
-  // ref, applyGeneratedIntroduction would run against the old plan snapshot
-  // captured when the effect started, producing a new plan that drops any
-  // _scheduleVerified flags the resolver already wrote — causing the
-  // flight-number strip to null the number on the very next render.
-  const planRef = useRef(plan);
-  useLayoutEffect(() => { planRef.current = plan; });
 
   // Lift the in-flight state out to the parent (ItineraryView) so the PDF
   // download button can gate on it. We KEEP a local mirror so this component
@@ -6951,12 +6936,11 @@ function IntroductionAutoGenerator({ plan, inputs, onPlanRevised, onGeneratingCh
         });
         if (!res.ok) return;
         const data = await res.json().catch(() => ({}));
-        // force:false — never clobber an existing (e.g. recovered) intro.
-        // Use planRef.current (latest plan) so _scheduleVerified flags written
-        // by the concurrent FlightNumberAutoResolver are preserved.
-        const latestPlan = planRef.current;
-        const next = applyGeneratedIntroduction(latestPlan, data, { force: false });
-        if (!cancelled && next !== latestPlan) onPlanRevised(next);
+        // Commit via functional update so React accumulates this write with any
+        // concurrent FlightNumberAutoResolver commit in the same automatic-
+        // batching window. Both use functional updates → React chains them,
+        // so neither clobbers the other's fields (force:false still applies).
+        if (!cancelled) onPlanRevised(prevPlan => applyGeneratedIntroduction(prevPlan, data, { force: false }));
       } catch {
         // Swallow — a failed intro must never break the itinerary view.
       } finally {
@@ -11340,8 +11324,6 @@ export default function TripOptimizer() {
   // Ref always mirrors the latest result so handlePlanRevised can read
   // result._review without closing over result (which would make useCallback
   // produce a new reference on every plan change).
-  const resultRef = useRef(result);
-  useLayoutEffect(() => { resultRef.current = result; });
   const [error, setError] = useState("");
   const abortRef = useRef(null);
   // Points at the streaming-progress panel (rendered in step 2 while
@@ -14146,26 +14128,25 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     ["pronunciation","Pronunciation guide","Phonetic hints on unfamiliar place names"],
   ];
 
-  // Called by ReviewPanel when the user applies revisions and we have a new
-  // plan (either surgically patched or fully re-planned). We replace the
-  // displayed result and, if this plan came from a saved trip entry, also
-  // persist the new plan into that entry so re-opening preserves the edits.
-  const handlePlanRevised = useCallback((newPlan) => {
-    if (!newPlan) return;
-    // Carry over any pre-existing _review marker; ReviewPanel will overwrite
-    // it shortly via onReviewChange. Reading it from the result ref avoids
-    // closing over reviewState (which changes on every review update and would
-    // make handlePlanRevised a new reference, defeating the useCallback).
-    const prevReview = resultRef.current?._review;
-    const merged = prevReview ? { ...newPlan, _review: prevReview } : newPlan;
-    setResult(merged);
-    if (currentSavedTripId) {
-      const list = loadSavedTrips();
-      const next = list.map(t => t.id === currentSavedTripId ? { ...t, result: merged } : t);
-      writeSavedTrips(next);
-      refreshSavedTrips();
-    }
-  }, [currentSavedTripId, refreshSavedTrips]);
+  // Called by any component that needs to revise the canonical plan:
+  // ReviewPanel apply (full replace), FlightNumberAutoResolver (functional
+  // update with _scheduleVerified), IntroductionAutoGenerator (functional
+  // update with introduction). Callers that need race-free concurrent writes
+  // pass a function — React accumulates functional updates in the same batch,
+  // so two concurrent callers never clobber each other's fields. Callers that
+  // do a full replace pass a plain object (ReviewPanel, ChangeRequestCard).
+  //
+  // _review is carried over from prev (functional update gives us prev for
+  // free, eliminating the old resultRef read and keeping the callback stable).
+  const handlePlanRevised = useCallback((newPlanOrFn) => {
+    if (!newPlanOrFn) return;
+    setResult(prev => {
+      const newPlan = typeof newPlanOrFn === "function" ? newPlanOrFn(prev) : newPlanOrFn;
+      if (!newPlan || newPlan === prev) return prev;
+      const prevReview = prev?._review;
+      return prevReview ? { ...newPlan, _review: prevReview } : newPlan;
+    });
+  }, []);
 
   // Called by ReviewPanel whenever review state changes (sources/findings/
   // applied_ids). We attach it to the current result as _review and persist
@@ -14183,6 +14164,18 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       refreshSavedTrips();
     }
   };
+
+  // Persist plan revisions to the saved-trip entry. Separated from
+  // handlePlanRevised so functional-update callers (resolver, intro generator)
+  // that can't compute the new value synchronously still get persistence —
+  // the effect always fires after the render with the correct accumulated state.
+  useEffect(() => {
+    if (!result || !currentSavedTripId) return;
+    const list = loadSavedTrips();
+    const next = list.map(t => t.id === currentSavedTripId ? { ...t, result } : t);
+    writeSavedTrips(next);
+    refreshSavedTrips();
+  }, [result, currentSavedTripId, refreshSavedTrips]);
 
   // Phones can't fit the 2- and 3-column form grids without overflowing a
   // ~390px viewport, so collapse them to a single column on mobile. Desktop
