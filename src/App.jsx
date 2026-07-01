@@ -4984,7 +4984,7 @@ function LocalProvidersView({ providers }) {
 // Tabbed shell. Row 1 of the sticky nav is the day-tab strip (Overview only,
 // now an interactive filter — click to focus a single day, "All" to see them
 // all). Row 2 is the section/reference strip. Default tab is "Overview".
-function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showProviders, onOpenMenu: _onOpenMenu }) {
+function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showProviders, onOpenMenu: _onOpenMenu, onBack }) {
   const days = data.days || [];
   // Compute counts so we can show e.g. "Dining · 12" inline.
   const counts = useMemo(() => {
@@ -5158,6 +5158,34 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
                 </div>
               )}
             </div>
+          )}
+          {typeof onBack === "function" && (
+            <button
+              type="button"
+              onClick={onBack}
+              aria-label="Return to home"
+              title="Return to home (your trip plan stays saved)"
+              style={{
+                marginLeft: "auto",
+                flex: "0 0 auto",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "30px",
+                height: "30px",
+                background: "transparent",
+                color: "var(--color-text-tertiary)",
+                border: "0.5px solid var(--color-border-secondary)",
+                borderRadius: "50%",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 10.5 12 3l9 7.5" />
+                <path d="M5 9.5V21h14V9.5" />
+              </svg>
+            </button>
           )}
         </div>
         {/* Row 2 — day filter (Overview only). "All" + one pill per day; click to focus that day. WRAPS. */}
@@ -6583,14 +6611,21 @@ function introPlanSignature(plan) {
 // is fully resilient — any failure is silent and never touches the itinerary.
 function FlightNumberAutoResolver({ plan, onPlanRevised }) {
   const attemptedRef = useRef("");
-  // Keep a ref to the latest onPlanRevised so the effect only re-runs when
-  // the plan changes, not on every parent render that creates a new callback
-  // reference. Without this, any re-render of the parent (including the one
-  // caused by IntroductionAutoGenerator writing the intro text) would cancel
-  // the in-flight API fetch via the effect cleanup, preventing _scheduleVerified
-  // from ever being committed.
+  // Keep refs to the latest onPlanRevised and plan so the effect only re-runs
+  // when the plan changes, not on every parent render. Crucially, using
+  // planRef.current (not the closed-over plan snapshot) when committing ensures
+  // the resolver always writes onto the LATEST plan state. Without this,
+  // IntroductionAutoGenerator finishing after the resolver would overwrite
+  // _scheduleVerified (it committed from its own stale snapshot that pre-dated
+  // the resolver's write), and vice-versa — whichever committed last would
+  // clobber the other's work. Both components now read the latest state at
+  // commit time, so neither race overwrites the other.
   const onPlanRevisedRef = useRef(onPlanRevised);
-  useLayoutEffect(() => { onPlanRevisedRef.current = onPlanRevised; });
+  const planRef = useRef(plan);
+  useLayoutEffect(() => {
+    onPlanRevisedRef.current = onPlanRevised;
+    planRef.current = plan;
+  });
   useEffect(() => {
     const days = Array.isArray(plan?.days) ? plan.days : [];
     if (days.length === 0 || typeof onPlanRevisedRef.current !== "function") return;
@@ -6832,12 +6867,15 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
 
       if (cancelled || resolved.length === 0) return;
 
-      // Build an immutable next plan with the resolved fields merged
-      // into the canonical plan via onPlanRevised. applyQualityLayer
-      // exempts _scheduleVerified numbers from the strip; PDF reads
-      // both _autoResolvedFlightNumber (for the "verify at booking"
-      // qualifier) and _timesUnconfirmed (for the honest-fallback line).
-      const nextDays = plan.days.map((d, di) => {
+      // Build an immutable next plan with the resolved fields merged into the
+      // LATEST plan (planRef.current, not the stale closure snapshot). This
+      // prevents clobbering work written by IntroductionAutoGenerator or any
+      // other concurrent onPlanRevised call that committed while the schedule
+      // API fetch was in flight. The day/item indices in resolved[] are still
+      // valid because concurrent writes (intro text, review state) never add
+      // or remove days or flight items.
+      const latestPlan = planRef.current;
+      const nextDays = latestPlan.days.map((d, di) => {
         const hits = resolved.filter(r => r.di === di);
         if (hits.length === 0) return d;
         const items = d.items.map((it, ii) => {
@@ -6847,7 +6885,7 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         });
         return { ...d, items };
       });
-      onPlanRevisedRef.current({ ...plan, days: nextDays });
+      onPlanRevisedRef.current({ ...latestPlan, days: nextDays });
       settled = true;
     })();
 
@@ -6865,6 +6903,15 @@ function IntroductionAutoGenerator({ plan, inputs, onPlanRevised, onGeneratingCh
   // Tracks the plan signature we've already auto-attempted so the effect fires
   // once per build and never auto-retries a failure.
   const autoAttemptedRef = useRef("");
+  // Always apply the intro onto the latest plan so concurrent writes from
+  // FlightNumberAutoResolver (which commits _scheduleVerified while the
+  // /api/introduction fetch is in flight) are not clobbered. Without this
+  // ref, applyGeneratedIntroduction would run against the old plan snapshot
+  // captured when the effect started, producing a new plan that drops any
+  // _scheduleVerified flags the resolver already wrote — causing the
+  // flight-number strip to null the number on the very next render.
+  const planRef = useRef(plan);
+  useLayoutEffect(() => { planRef.current = plan; });
 
   // Lift the in-flight state out to the parent (ItineraryView) so the PDF
   // download button can gate on it. We KEEP a local mirror so this component
@@ -6901,8 +6948,11 @@ function IntroductionAutoGenerator({ plan, inputs, onPlanRevised, onGeneratingCh
         if (!res.ok) return;
         const data = await res.json().catch(() => ({}));
         // force:false — never clobber an existing (e.g. recovered) intro.
-        const next = applyGeneratedIntroduction(plan, data, { force: false });
-        if (!cancelled && next !== plan) onPlanRevised(next);
+        // Use planRef.current (latest plan) so _scheduleVerified flags written
+        // by the concurrent FlightNumberAutoResolver are preserved.
+        const latestPlan = planRef.current;
+        const next = applyGeneratedIntroduction(latestPlan, data, { force: false });
+        if (!cancelled && next !== latestPlan) onPlanRevised(next);
       } catch {
         // Swallow — a failed intro must never break the itinerary view.
       } finally {
@@ -7150,38 +7200,6 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   return (
     <URLVerifyContext.Provider value={verifyContextValue}>
     <div id="trip-print-root">
-      <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", marginBottom: "0.75rem" }}>
-        <button
-          type="button"
-          onClick={() => {
-            if (typeof onBack === "function") onBack();
-          }}
-          aria-label="Return to home"
-          title="Return to home (your trip plan stays saved)"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "6px",
-            background: "transparent",
-            color: ACCENT,
-            border: `0.5px solid ${ACCENT}`,
-            borderRadius: "var(--border-radius-md)",
-            padding: "7px 12px",
-            fontSize: "11px",
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            cursor: "pointer",
-            fontFamily: "inherit",
-            fontWeight: 500,
-          }}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M3 10.5 12 3l9 7.5" />
-            <path d="M5 9.5V21h14V9.5" />
-          </svg>
-          <span>Home</span>
-        </button>
-      </div>
       <InputSummary inputs={inputs} />
       {/* Menu modal renders MenuModal once data is available (either model-
           supplied at build time or lazy-fetched via /api/menu). While the
@@ -7213,7 +7231,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       {/* Sticky two-row tab nav lives ABOVE the hero so the hero stays compact and every
          tab is reachable at a glance — modeled after zurich-weekend.com / maritimesgrandloop.com. */}
       {data.days && data.days.length > 0 && (
-        <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} showProviders={providers.relevantIds.length > 0} onOpenMenu={openMenu} />
+        <TripTabs data={data} tab={tab} onTabChange={handleTabChange} dayFilter={dayFilter} onDayFilterChange={handleDayFilterChange} showProviders={providers.relevantIds.length > 0} onOpenMenu={openMenu} onBack={onBack} />
       )}
 
       <TripHero data={data} coverPhotoUrl={heroPhotoUrl} />
@@ -7322,11 +7340,6 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
             title="Go back to the input form with this trip's details still filled in — tweak dates, cities, or anything else and rebuild."
           >✎ Edit trip details</button>
         )}
-        <button
-          onClick={onBack}
-          style={{ background: "transparent", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", color: "var(--color-text-secondary)" }}
-          title="Go back to the input form. Your trip details stay filled in."
-        >← Back to inputs</button>
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
         <PrintButton data={data} inputs={inputs} providers={providers} plan={rawData} introIsGenerating={introIsGenerating} />
         <PrintRidesButton data={data} inputs={inputs} />
