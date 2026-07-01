@@ -14407,49 +14407,6 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           <div>
             <SavedTripsPanel trips={savedTrips} onOpen={handleOpenSavedTrip} onDelete={handleDeleteSavedTrip} />
             <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={dismissStale} />
-            {(() => {
-              const hasContent = !!(basics.destination || basics.startDate || basics.endDate || basics.baseArea || basics.travelers || (cities && cities.some(c => c.name)) || (restaurants && restaurants.length > 0) || (activities && activities.length > 0) || result);
-              if (!hasContent) return null;
-              return (
-                <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "1rem" }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm("Clear all trip details and start fresh?")) {
-                        resetFormToBlank();
-                        setResult(null);
-                        setCurrentSavedTripId(null);
-                        setReviewState(null);
-                      }
-                    }}
-                    aria-label="Reset plan"
-                    title="Clear all trip details and start fresh"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "6px",
-                      background: "transparent",
-                      color: ACCENT,
-                      border: `0.5px solid ${ACCENT}`,
-                      borderRadius: "var(--border-radius-md)",
-                      padding: "7px 12px",
-                      fontSize: "11px",
-                      letterSpacing: "0.08em",
-                      textTransform: "uppercase",
-                      cursor: "pointer",
-                      fontFamily: "inherit",
-                      fontWeight: 500,
-                    }}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="M3 12a9 9 0 1 0 3-6.7" />
-                      <path d="M3 3v5h5" />
-                    </svg>
-                    <span>Reset plan</span>
-                  </button>
-                </div>
-              );
-            })()}
             {/* ── Input mode toggle ── */}
             <div style={{ display: "flex", marginBottom: "1.5rem", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", overflow: "hidden" }}>
               {[
