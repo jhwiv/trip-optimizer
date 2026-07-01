@@ -11159,16 +11159,6 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
                   {slide.fact}
                 </p>
               </div>
-              {/* CTA — full-width, inside the slide content block */}
-              <button
-                type="button"
-                onClick={() => { triggerDismiss(slide); }}
-                style={{ display: "block", width: "100%", padding: "12px 0", borderRadius: "4px", border: "1.5px solid rgba(255,255,255,0.52)", background: "rgba(255,255,255,0.13)", backdropFilter: "blur(4px)", color: "#fff", fontSize: "11.5px", fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}
-                onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.24)"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.13)"; }}
-              >
-                Begin planning →
-              </button>
             </div>
           </div>
         ))}
