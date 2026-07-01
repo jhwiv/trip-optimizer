@@ -11026,6 +11026,7 @@ const HERO_SLIDES = [
 
 function AppIntroOverlay({ onBeginPlanning } = {}) {
   const [visible, setVisible] = useState(() => shouldShowWelcome());
+  const [dismissing, setDismissing] = useState(false);
   const [a2hsOpen, setA2hsOpen] = useState(() => {
     const p = detectPlatform(typeof navigator !== "undefined" ? navigator.userAgent : "");
     return p === "ios" || p === "android" ? p : "";
@@ -11034,10 +11035,14 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
   const [slideIdx, setSlideIdx] = useState(0);
   const [paused, setPaused] = useState(false);
 
-  const dismiss = useCallback(() => {
-    markWelcomeDismissed();
-    setVisible(false);
-  }, []);
+  const triggerDismiss = useCallback((slide) => {
+    setDismissing(true);
+    if (slide && onBeginPlanning) onBeginPlanning({ dest: slide.prefillDest, accent: slide.accent });
+    setTimeout(() => {
+      markWelcomeDismissed();
+      setVisible(false);
+    }, 380);
+  }, [onBeginPlanning]);
 
   // Lock body scroll while overlay is up.
   useEffect(() => {
@@ -11050,10 +11055,10 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
   // Escape key dismisses.
   useEffect(() => {
     if (!visible) return undefined;
-    const onKey = (e) => { if (e.key === "Escape") dismiss(); };
+    const onKey = (e) => { if (e.key === "Escape") triggerDismiss(null); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, dismiss]);
+  }, [visible, triggerDismiss]);
 
   // Auto-advance every 5 s; pause on hover.
   useEffect(() => {
@@ -11089,7 +11094,7 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
       role="dialog"
       aria-modal="true"
       aria-labelledby="app-intro-title"
-      style={{ position: "fixed", inset: 0, zIndex: 9999, overflowY: "auto", WebkitOverflowScrolling: "touch" }}
+      style={{ position: "fixed", inset: 0, zIndex: 9999, overflowY: "auto", WebkitOverflowScrolling: "touch", transform: dismissing ? "scale(1.04)" : "scale(1)", opacity: dismissing ? 0 : 1, transition: dismissing ? "transform 0.38s ease, opacity 0.32s ease" : "none", pointerEvents: dismissing ? "none" : undefined }}
     >
       {/* ── CAROUSEL HERO (full viewport height) ─────────────────────── */}
       <div
@@ -11138,7 +11143,7 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
               {/* CTA — full-width, inside the slide content block */}
               <button
                 type="button"
-                onClick={() => { dismiss(); if (onBeginPlanning) onBeginPlanning(slide.prefillDest); }}
+                onClick={() => { triggerDismiss(slide); }}
                 style={{ display: "block", width: "100%", padding: "12px 0", borderRadius: "4px", border: "1.5px solid rgba(255,255,255,0.52)", background: "rgba(255,255,255,0.13)", backdropFilter: "blur(4px)", color: "#fff", fontSize: "11.5px", fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}
                 onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.24)"; }}
                 onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.13)"; }}
@@ -11158,7 +11163,7 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
         </div>
 
         {/* Skip — top right */}
-        <button type="button" onClick={dismiss} aria-label="Skip intro and go to the planner"
+        <button type="button" onClick={() => triggerDismiss(null)} aria-label="Skip intro and go to the planner"
           style={{ position: "absolute", top: "calc(env(safe-area-inset-top,14px) + 14px)", right: "20px", zIndex: 10, background: "rgba(0,0,0,0.28)", border: "0.5px solid rgba(255,255,255,0.22)", borderRadius: "20px", padding: "5px 14px", color: "rgba(255,255,255,0.65)", fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
           Skip
         </button>
@@ -11252,7 +11257,7 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
               </ol>
             )}
           </div>
-          <button type="button" onClick={dismiss}
+          <button type="button" onClick={() => triggerDismiss(null)}
             style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "15px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", marginTop: "14px" }}>
             Start planning
           </button>
@@ -11340,6 +11345,7 @@ export default function TripOptimizer() {
   // is intentionally unused — we just need the lazy-init contract.
   const [recovered] = useState(() => loadSession());
 
+  const [heroEntry, setHeroEntry] = useState(null);
   const [step, setStep] = useState(recovered?.step || 1);
   // Landing-level mode switch. When true, the whole surface flips to the
   // find-only experience (the standalone FindView, rendered inline) instead
@@ -14232,9 +14238,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       {/* #9 — First-visit App Intro overlay. Self-gated; renders null when
           already dismissed, when ?direct=1 is on the URL, or when running
           as an installed PWA. Sits above the wizard chrome at z-index 9999. */}
-      <AppIntroOverlay onBeginPlanning={dest => setB(p => ({ ...p, destination: dest }))} />
+      <AppIntroOverlay onBeginPlanning={({ dest, accent } = {}) => {
+        if (dest) setB(p => ({ ...p, destination: dest }));
+        if (accent) setHeroEntry({ accent, dest });
+      }} />
 
-      <div style={{ padding: vp.isMobile ? "1.5rem 0 1.25rem" : "2rem 0 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}>
+      <div style={{ padding: vp.isMobile ? "1.5rem 0 1.25rem" : "2rem 0 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: heroEntry ? `linear-gradient(160deg, ${heroEntry.accent}28 0%, var(--color-background-primary) 62%)` : "var(--color-background-primary)", transition: "background 0.6s ease" }}>
         <div style={{ maxWidth: colMaxWidth, margin: "0 auto", padding: vp.isMobile ? "0 1rem" : "0 1.5rem" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
           <div style={{ minWidth: 0, flex: 1 }}>
@@ -14339,6 +14348,31 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         </div>
       </div>
 
+      {/* Welcome banner — shown after arriving from the hero carousel */}
+      {heroEntry && basics.destination && (
+        <div style={{
+          background: `${heroEntry.accent}18`,
+          borderBottom: `0.5px solid ${heroEntry.accent}35`,
+          padding: "7px 1.5rem",
+          display: "flex", alignItems: "center", gap: "8px",
+        }}>
+          <span style={{ fontSize: "11px", color: "var(--color-text-secondary)", letterSpacing: "0.03em" }}>
+            Planning your trip to
+          </span>
+          <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--color-accent)", letterSpacing: "0.03em" }}>
+            {basics.destination}
+          </span>
+          <button
+            type="button"
+            onClick={() => setHeroEntry(null)}
+            aria-label="Dismiss"
+            style={{ marginLeft: "auto", background: "transparent", border: "none", cursor: "pointer", color: "var(--color-text-tertiary)", fontSize: "16px", lineHeight: 1, padding: "0 2px", fontFamily: "inherit" }}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {findOnly ? (
         // Find-only mode reuses the standalone FindView verbatim, rendered
         // inline. `embedded` suppresses FindView's own brand/back-link header
@@ -14365,42 +14399,53 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             plan pill is only navigable when a result exists; Essentials
             and Details are always navigable. Current step is bold + teal,
             other navigable steps render as buttons styled like text. */}
-        <div style={{ display: "flex", alignItems: "center", gap: "7px", marginBottom: "1.75rem", fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--color-text-secondary)", flexWrap: "wrap" }}>
-          {["Essentials", "Details", "Your plan"].map((s, i) => {
-            const targetStep = i + 1;
-            const isCurrent = step === targetStep;
-            // Step 3 is only navigable when a plan exists. Steps 1 & 2 are
-            // always navigable so the user can revisit inputs at any time.
-            const isNavigable = !isCurrent && (targetStep < 3 || (targetStep === 3 && !!result));
-            const dotColor = step >= targetStep ? ACCENT : "var(--color-border-secondary)";
-            const textColor = isCurrent
-              ? ACCENT
-              : (step > targetStep || isNavigable ? "var(--color-text-primary)" : "var(--color-text-tertiary)");
-            const navHandler = () => {
-              if (!isNavigable) return;
-              // Re-entering Details via the step nav always lands on the Details
-              // screen, not the Outputs screen, so the build trigger stays gated.
-              if (targetStep === 2) setOutputsStep(false);
-              setStep(targetStep);
-              try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
-            };
-            return (
-              <Fragment key={s}>
-                <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: dotColor, display: "inline-block", flexShrink: 0 }} />
-                {isNavigable ? (
-                  <button
-                    type="button"
-                    onClick={navHandler}
-                    title={`Go to ${s}`}
-                    style={{ background: "transparent", border: "none", padding: "2px 0", cursor: "pointer", color: textColor, fontSize: "inherit", letterSpacing: "inherit", textTransform: "inherit", fontFamily: "inherit", textDecoration: "underline", textDecorationColor: "rgba(91, 101, 119, 0.4)", textUnderlineOffset: "3px" }}
-                  >{s}</button>
-                ) : (
-                  <span style={{ color: textColor, fontWeight: isCurrent ? 600 : 400 }}>{s}</span>
-                )}
-                {i < 2 && <span style={{ color: "var(--color-border-secondary)", margin: "0 2px" }}>·</span>}
-              </Fragment>
-            );
-          })}
+        <div style={{ marginBottom: "1.75rem" }}>
+          {/* Thin gradient progress bar */}
+          <div style={{ height: "2px", background: "var(--color-border-tertiary)", borderRadius: "2px", marginBottom: "10px", overflow: "hidden" }}>
+            <div style={{
+              height: "100%",
+              width: `${Math.round(step / 3 * 100)}%`,
+              background: "linear-gradient(to right, var(--color-accent-hover), var(--color-accent))",
+              transition: "width 0.5s cubic-bezier(0.4,0,0.2,1)",
+              borderRadius: "2px",
+            }} />
+          </div>
+          {/* Step labels */}
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+            {["Essentials", "Details", "Your plan"].map((s, i) => {
+              const targetStep = i + 1;
+              const isCurrent = step === targetStep;
+              const isCompleted = step > targetStep;
+              const isNavigable = !isCurrent && (targetStep < 3 || (targetStep === 3 && !!result));
+              const textColor = isCurrent
+                ? "var(--color-accent)"
+                : (isCompleted || isNavigable ? "var(--color-text-primary)" : "var(--color-text-tertiary)");
+              const navHandler = () => {
+                if (!isNavigable) return;
+                if (targetStep === 2) setOutputsStep(false);
+                setStep(targetStep);
+                try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+              };
+              return (
+                <Fragment key={s}>
+                  {isNavigable ? (
+                    <button
+                      type="button"
+                      onClick={navHandler}
+                      title={`Go to ${s}`}
+                      style={{ background: "transparent", border: "none", padding: "2px 0", cursor: "pointer", color: textColor, fontSize: "inherit", letterSpacing: "inherit", textTransform: "inherit", fontFamily: "inherit", fontWeight: isCompleted ? 600 : 400 }}
+                    >{s}</button>
+                  ) : (
+                    <span style={{ color: textColor, fontWeight: isCurrent ? 700 : (isCompleted ? 600 : 400) }}>{s}</span>
+                  )}
+                  {i < 2 && <span style={{ color: "var(--color-border-secondary)", margin: "0 3px" }}>—</span>}
+                </Fragment>
+              );
+            })}
+            <span style={{ marginLeft: "auto", fontSize: "10px", color: "var(--color-text-tertiary)", fontWeight: 500, letterSpacing: "0.12em" }}>
+              {step} / 3
+            </span>
+          </div>
         </div>
 
         {step === 1 && (
@@ -14408,11 +14453,11 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             <SavedTripsPanel trips={savedTrips} onOpen={handleOpenSavedTrip} onDelete={handleDeleteSavedTrip} />
             <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={dismissStale} />
             {/* ── Input mode toggle ── */}
-            <div style={{ display: "flex", marginBottom: "1.5rem", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", overflow: "hidden" }}>
+            <div style={{ display: "flex", marginBottom: "1.5rem", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "3px", gap: "3px" }}>
               {[
                 { key: "narrative", label: "Describe your trip", sub: "Just tell us what you want" },
                 { key: "form",      label: "Use the form",       sub: "Fill in destinations & dates" },
-              ].map(({ key, label, sub }, idx) => {
+              ].map(({ key, label, sub }) => {
                 const active = inputMode === key;
                 return (
                   <button
@@ -14420,12 +14465,13 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                     type="button"
                     onClick={() => setInputMode(key)}
                     style={{
-                      flex: 1, padding: "12px 14px", border: "none", cursor: "pointer",
+                      flex: 1, padding: "11px 14px", border: "none", cursor: "pointer",
                       fontFamily: "inherit", textAlign: "left",
-                      borderLeft: idx > 0 ? "0.5px solid var(--color-border-secondary)" : "none",
-                      background: active ? "var(--color-text-primary)" : "var(--color-background-secondary)",
-                      color: active ? "var(--color-background-primary)" : "var(--color-text-secondary)",
-                      transition: "background 0.15s, color 0.15s",
+                      background: active ? "var(--color-background-primary)" : "transparent",
+                      color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)",
+                      borderRadius: "calc(var(--border-radius-md) - 1px)",
+                      boxShadow: active ? "0 1px 3px rgba(0,0,0,0.09), 0 0 0 0.5px var(--color-border-secondary)" : "none",
+                      transition: "background 0.18s, box-shadow 0.18s",
                     }}
                   >
                     <span style={{ display: "block", fontSize: "10px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "2px" }}>{label}</span>
@@ -14437,7 +14483,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
             {/* ── Narrative mode ── */}
             {inputMode === "narrative" && (
-              <div style={{ ...cardStyleR, borderLeft: `2px solid ${ACCENT}`, marginBottom: "1.25rem" }}>
+              <div style={{ ...cardStyleR, borderLeft: `3px solid var(--color-accent)`, background: "var(--color-accent-tint)", boxShadow: "0 2px 8px rgba(63,125,134,0.07)", marginBottom: "1.25rem" }}>
                 <p style={ctStyle}>Tell us about your trip</p>
                 <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "0 0 14px", lineHeight: 1.6 }}>
                   Write anything — destination, dates, booked hotels and flights, restaurants, special occasions, preferences, things to avoid. We'll read it as the source of truth.
