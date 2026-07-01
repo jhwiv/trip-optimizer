@@ -3466,7 +3466,7 @@ async function fetchCoverPhoto(destination) {
 // page breaks, and a clean editorial layout. The legacy DOM-screenshot path
 // is preserved below as a fallback for the unlikely case the new builder
 // throws on malformed data.
-async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers, coverPhoto: preloadedCoverPhoto } = {}) {
+async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers, coverPhoto: preloadedCoverPhoto, cityPhotos } = {}) {
   setStatus("Preparing…");
   // Pre-export gate — see CLAUDE.md "VENUE VERIFICATION — HARD RULE".
   // Block PDF generation if any venue still carries a severity:'block'
@@ -3507,7 +3507,7 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers
           : (setStatus("Fetching cover photo…"), fetchCoverPhoto(destination)),
       ]);
 
-      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers, coverPhoto });
+      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers, coverPhoto, cityPhotos });
       setStatus("Saving…");
       pdf.save(filename);
       return;
@@ -3688,7 +3688,7 @@ function WebExportSection({ data, inputs }) {
   );
 }
 
-function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPhoto }) {
+function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPhoto, cityPhotos }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -3719,7 +3719,7 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPh
         const loaded = await providers.ensureLoaded();
         providersForPdf = { ...providers, byCategory: loaded || providers.byCategory };
       }
-      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers: providersForPdf, coverPhoto });
+      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers: providersForPdf, coverPhoto, cityPhotos });
     } catch (err) {
       console.error("PDF save failed", err);
       if (isStaleChunkError(err)) {
@@ -7004,6 +7004,21 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
     fetchCoverPhoto(dest).then(url => setHeroPhotoUrl(url || null));
   }, [rawData?.destination]);
 
+  // City photos for PDF day-section banners — pre-fetched in the background
+  // after a build lands so PDF export doesn't have to wait for them.
+  // Keyed by lowercased city name: { "nashville": "data:image/jpeg;base64,…" }.
+  const [cityPhotosCache, setCityPhotosCache] = useState({});
+  const _cityPhotoCacheKey = (rawData?.days || []).map(d => d?.city).filter(Boolean).join(",");
+  useEffect(() => {
+    const cities = [...new Set(_cityPhotoCacheKey.split(",").filter(Boolean))].slice(0, 5);
+    if (!cities.length) return;
+    const map = {};
+    Promise.all(cities.map(async (city) => {
+      const url = await fetchCoverPhoto(city);
+      if (url) map[city.toLowerCase()] = url;
+    })).then(() => setCityPhotosCache(map));
+  }, [_cityPhotoCacheKey]);
+
   // #8 Auto-run the expert review when a FRESH build lands. Per the chosen flow
   // ("pre-build picker, then full auto"), a brand-new plan kicks off the review
   // automatically; a RESTORED saved trip (initialReview present) does not — its
@@ -7337,7 +7352,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           >✎ Edit trip details</button>
         )}
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
-        <PrintButton data={data} inputs={inputs} providers={providers} plan={rawData} introIsGenerating={introIsGenerating} coverPhoto={heroPhotoUrl} />
+        <PrintButton data={data} inputs={inputs} providers={providers} plan={rawData} introIsGenerating={introIsGenerating} coverPhoto={heroPhotoUrl} cityPhotos={cityPhotosCache} />
         <PrintRidesButton data={data} inputs={inputs} />
         {/* Reset — surfaced here on Step 3 (results) so users don't have to
             navigate Home + scroll Step 1 to find it. Styled as a clear but
