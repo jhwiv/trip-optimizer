@@ -903,18 +903,17 @@ function getAreaHint(dest) {
 
 const BADGE_COLORS = {
   Flight:     { bg: "var(--color-info-tint)",            color: "var(--color-info)" },
-  // TODO: introduce --color-accent-tint token; literal #e3eef0 paired with --color-accent-hover yields 5.83:1 AA
-  Hotel:      { bg: "#e3eef0",                            color: "var(--color-accent-hover)" },
+  Hotel:      { bg: "var(--color-accent-tint)",          color: "var(--color-accent-hover)" },
   Car:        { bg: "var(--color-success-tint)",         color: "var(--color-success)" },
   Dinner:     { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
   Lunch:      { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
   Breakfast:  { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
   Activity:   { bg: "var(--color-category-purple-tint)", color: "var(--color-category-purple)" },
   Flag:       { bg: "var(--color-danger-tint)",          color: "var(--color-text-danger)" },
-  "Plan B":   { bg: "var(--color-border-tertiary)",      color: "var(--color-text-secondary)" },
+  "Plan B":   { bg: "var(--color-accent-tint)",          color: "var(--color-accent-hover)" },
   Snob:       { bg: "var(--color-category-rose-tint)",   color: "var(--color-category-rose)" },
   Tonight:    { bg: "var(--color-warning-tint)",         color: "var(--color-warning)" },
-  Note:       { bg: "var(--color-surface-2)",            color: "var(--color-text-secondary)" },
+  Note:       { bg: "var(--color-accent-tint)",          color: "var(--color-accent-hover)" },
 };
 
 function Badge({ type }) {
@@ -957,7 +956,7 @@ function TimePill({ time, end_time }) {
   return (
     <span style={{
       display: "inline-block", fontSize: "11px", fontWeight: 600,
-      color: "var(--color-text-primary)", background: "var(--color-surface-2)",
+      color: "var(--color-accent-hover)", background: "var(--color-accent-tint)",
       padding: "2px 7px", borderRadius: "3px", whiteSpace: "nowrap",
       letterSpacing: "0.02em", minWidth: "58px", textAlign: "center",
     }}>{et ? `${t} – ${et}` : t}</span>
@@ -1418,7 +1417,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
             {lockedFlight.aircraft && <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>{lockedFlight.aircraft}</span>}
           </div>
           <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-            <button onClick={() => setLockedFlight(null)} style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-tertiary)", cursor: "pointer", letterSpacing: "0.04em", textTransform: "uppercase", fontWeight: 500, fontFamily: "inherit" }}>Change</button>
+            <button onClick={() => setLockedFlight(null)} style={{ fontSize: "10px", padding: "4px 9px", borderRadius: "20px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer", letterSpacing: "0.04em", textTransform: "uppercase", fontWeight: 500, fontFamily: "inherit" }}>Change</button>
             {bookUrl && (
               <a href={bookUrl} target="_blank" rel="noopener noreferrer"
                  style={{ fontSize: "11px", padding: "4px 10px", borderRadius: "20px", border: `0.5px solid ${ACCENT}`, background: "transparent", color: ACCENT_DARK, textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 600 }}>
@@ -1596,10 +1595,10 @@ function DayBlock({ day, dayIndex, onOpenMenu, legCity, onSwapItem }) {
         {(day?.weather || day?.pace_note) && (
           <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
             {day.weather && (
-              <span style={{ fontSize: "10.5px", color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", padding: "3px 8px", letterSpacing: "0.02em" }}>☀ {day.weather}</span>
+              <span style={{ fontSize: "10.5px", color: "var(--color-text-primary)", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", padding: "3px 8px", letterSpacing: "0.02em" }}>☀ {day.weather}</span>
             )}
             {day.pace_note && (
-              <span style={{ fontSize: "10.5px", color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", padding: "3px 8px", letterSpacing: "0.02em" }}>· {day.pace_note}</span>
+              <span style={{ fontSize: "10.5px", color: "var(--color-text-primary)", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", padding: "3px 8px", letterSpacing: "0.02em" }}>· {day.pace_note}</span>
             )}
           </div>
         )}
