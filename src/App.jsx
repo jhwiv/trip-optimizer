@@ -5367,9 +5367,18 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   }, [review]);
 
   // Lift review progress to the parent overlay via onProgressChange.
+  // hasEverStartedRef guards the initial idle-on-mount fire: the parent
+  // pre-arms reviewPhaseRunning=true before we mount (to avoid a flicker
+  // between build end and review start); if we immediately fire running=false
+  // on mount we'd kill that pre-arm before autoRun kicks in.
+  const hasEverStartedRef = useRef(false);
   useEffect(() => {
     if (typeof onProgressChange !== "function") return;
     const running = status === "running" || status === "applying";
+    if (running) hasEverStartedRef.current = true;
+    // Don't fire running=false on the initial mount before the review has
+    // started — that would clear the parent's pre-armed overlay state.
+    if (!running && !hasEverStartedRef.current) return;
     onProgressChange({ running, progress, label: progressLabel, elapsedSec });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, progress, progressLabel, elapsedSec]);
