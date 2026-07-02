@@ -11042,8 +11042,9 @@ export { FindView };
 // localStorage; suppressed when ?direct=1 is on the URL or the app is
 // running as an installed PWA. Pure gate logic lives in src/appIntro.js so
 // the dismissal, URL bypass, and platform detection are unit-testable.
-// Seven destination slides for the landing page carousel. Each slide is a
-// pure CSS gradient — no external image dependencies, works offline, fast.
+// Hero destination slides. Each slide has a real Unsplash photo (loaded async)
+// with the gradient kept as an instant fallback so nothing looks blank while
+// the image arrives. Photo IDs sourced from Unsplash search, July 2026.
 const HERO_SLIDES = [
   {
     dest: "Amalfi Coast",
@@ -11052,6 +11053,7 @@ const HERO_SLIDES = [
     tagline: "Where limestone cliffs meet the Tyrrhenian Sea",
     fact: "The scenic SS163 coastal road was carved from sheer cliff faces in the 1850s — a decade-long feat that transformed the region into one of Europe’s most storied drives.",
     gradient: "linear-gradient(150deg, #1a3a4a 0%, #2d7a8a 40%, #e8724a 72%, #c94a2a 100%)",
+    photo: "https://images.unsplash.com/photo-SZyU8dAzw8Y?auto=format&fit=crop&w=1200&q=80",
     accent: "#f0a07a",
   },
   {
@@ -11061,6 +11063,7 @@ const HERO_SLIDES = [
     tagline: "Cathedral rocks and canyon silence",
     fact: "Sedona’s red rock formations are not sandstone — they’re ancient seabed sediment compressed and uplifted over 300 million years. The color comes from iron oxide. Every sunset turns them a different shade of fire.",
     gradient: "linear-gradient(150deg, #3d0a00 0%, #8b2500 40%, #c85a1e 72%, #f0a060 100%)",
+    photo: "https://images.unsplash.com/photo-lBLwDAeLzL4?auto=format&fit=crop&w=1200&q=80",
     accent: "#f0c090",
   },
   {
@@ -11070,6 +11073,7 @@ const HERO_SLIDES = [
     tagline: "Seventeen centuries of imperial elegance",
     fact: "Kyoto holds 17 UNESCO World Heritage Sites — more than any other city in Japan — spanning Zen gardens, golden pavilions, and shrines predating the printing press.",
     gradient: "linear-gradient(150deg, #1c0a2e 0%, #4a1a5e 40%, #c85fa4 72%, #ff9a9e 100%)",
+    photo: "https://images.unsplash.com/photo-jg3NTQilepo?auto=format&fit=crop&w=1200&q=80",
     accent: "#f0b8d8",
   },
   {
@@ -11079,6 +11083,7 @@ const HERO_SLIDES = [
     tagline: "The end of the world, magnificently preserved",
     fact: "Torres del Paine’s granite towers were shaped over 12 million years of glaciation and rise nearly 9,000 feet. The park receives fewer annual visitors than some city museums host in a week.",
     gradient: "linear-gradient(150deg, #03045e 0%, #0077b6 40%, #00b4d8 72%, #90e0ef 100%)",
+    photo: "https://images.unsplash.com/photo-Wneqcp9-nkM?auto=format&fit=crop&w=1200&q=80",
     accent: "#90e0ef",
   },
   {
@@ -11088,6 +11093,7 @@ const HERO_SLIDES = [
     tagline: "A spa town with a gambling soul",
     fact: "Saratoga’s thoroughbred racing season has run continuously since 1863 — interrupted only by World War I. The oldest active track in America, it hosts the Travers Stakes, one of the sport’s oldest races.",
     gradient: "linear-gradient(150deg, #0a2212 0%, #1a4a2e 40%, #2e7d52 72%, #c8a830 100%)",
+    photo: "https://images.unsplash.com/photo-fxAo3DiMICI?auto=format&fit=crop&w=1200&q=80",
     accent: "#e8c84a",
   },
   {
@@ -11097,6 +11103,7 @@ const HERO_SLIDES = [
     tagline: "A living labyrinth of color and craft",
     fact: "The Chouara tannery has operated in the same location since the 11th century, using techniques nearly unchanged for a thousand years — pomegranate juice and pigeon dung still soften the hides.",
     gradient: "linear-gradient(150deg, #264653 0%, #c25b4e 40%, #e76f51 72%, #f4a261 100%)",
+    photo: "https://images.unsplash.com/photo-nIqiOZ0tBac?auto=format&fit=crop&w=1200&q=80",
     accent: "#f4d090",
   },
   {
@@ -11106,6 +11113,7 @@ const HERO_SLIDES = [
     tagline: "Forty-eight hours is never enough. It never is.",
     fact: "More than 800 languages are spoken in New York City — the highest linguistic diversity of any urban area on Earth. You can hear them all on a single subway ride.",
     gradient: "linear-gradient(150deg, #0b0c2a 0%, #1a2a5e 40%, #3d5a80 72%, #e9c46a 100%)",
+    photo: "https://images.unsplash.com/photo-CDQRLACxIzw?auto=format&fit=crop&w=1200&q=80",
     accent: "#e9c46a",
   },
   {
@@ -11115,6 +11123,7 @@ const HERO_SLIDES = [
     tagline: "Overwater bungalows. Zero agenda.",
     fact: "The Maldives is the lowest-lying nation on Earth — its highest natural point sits 2.4 metres above sea level, making every sunrise over the lagoon feel borrowed from the sea.",
     gradient: "linear-gradient(150deg, #073b4c 0%, #118ab2 40%, #06d6a0 72%, #ffd166 100%)",
+    photo: "https://images.unsplash.com/photo-iWYrCr8eGwU?auto=format&fit=crop&w=1200&q=80",
     accent: "#7eefd8",
   },
   {
@@ -11124,6 +11133,7 @@ const HERO_SLIDES = [
     tagline: "The New South’s most livable secret",
     fact: "Greenville’s downtown revival began by removing a 1970s highway overpass. The pedestrian bridge over Reedy River Falls that replaced it sparked a $2 billion renaissance since studied by urban planners worldwide.",
     gradient: "linear-gradient(150deg, #0f1f2e 0%, #1a3a4e 40%, #2d6b8a 72%, #7ab8c8 100%)",
+    photo: "https://images.unsplash.com/photo-n2eibnVN6jA?auto=format&fit=crop&w=1200&q=80",
     accent: "#a8d8e8",
   },
   {
@@ -11133,6 +11143,7 @@ const HERO_SLIDES = [
     tagline: "Mist, myth, and a dram by the fire",
     fact: "Loch Ness holds more fresh water than all the lakes of England and Wales combined. Its depths have never been fully charted, and neither has its grip on the imagination.",
     gradient: "linear-gradient(150deg, #1a3a2a 0%, #2e4a3e 40%, #6b3fa0 72%, #9b8ec4 100%)",
+    photo: "https://images.unsplash.com/photo-44LQxELu1E0?auto=format&fit=crop&w=1200&q=80",
     accent: "#c4b5e4",
   },
 ];
@@ -11208,10 +11219,12 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
     >
       {/* ── HERO (full viewport height, single random destination) ─────── */}
       <div style={{ position: "relative", height: "100svh", overflow: "hidden" }}>
-        {/* Destination background */}
+        {/* Gradient fallback — shows instantly while photo loads */}
         <div style={{ position: "absolute", inset: 0, background: slide.gradient }} />
-        {/* Bottom-to-top dark scrim */}
-        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to top, rgba(0,0,0,0.82) 0%, rgba(0,0,0,0.28) 50%, transparent 75%)" }} />
+        {/* Photo layer — covers gradient once loaded; cover+center handles any crop */}
+        <div style={{ position: "absolute", inset: 0, backgroundImage: `url(${slide.photo})`, backgroundSize: "cover", backgroundPosition: "center" }} />
+        {/* Dark scrim — ensures text is readable regardless of photo brightness */}
+        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.42) 45%, rgba(0,0,0,0.18) 100%)" }} />
 
         {/* Powered by — top left */}
         <div style={{ position: "absolute", top: "calc(env(safe-area-inset-top,14px) + 18px)", left: "22px", zIndex: 10, display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "9px", letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", fontWeight: 600 }}>
