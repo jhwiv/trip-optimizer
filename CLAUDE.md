@@ -91,3 +91,142 @@ When touching this codebase:
 - This codebase runs on Cloudflare Pages with Functions; the streaming `/api/build` endpoint
   is delicate (rewritten 2026-05-24 to fix a `waitUntil` cancellation bug) — do not
   add post-stream blocking work there. The post-build verification pass runs from the client.
+
+---
+
+## VERIFICATION DISCIPLINE — READ THIS BEFORE CLAIMING ANYTHING IS DONE
+
+**The user's explicit complaint (2026-07-01):** "We have been iterating and progress is bad.
+How do we stop the drift, guessing and false positives for repair success."
+
+This happened because agents declared things fixed without running the app. Do not repeat it.
+
+### The rule
+
+**Never say a UI change works without running it in a browser and capturing what you see.**
+
+- Code compiling is not evidence. A build passing is not evidence.
+- "Looks correct to me" based on reading the code is not evidence.
+- A test that imports and calls a function is not evidence of the UI working.
+- The only evidence is a screenshot or log from the running app showing the feature.
+
+### How to verify UI changes (Playwright)
+
+Chromium is pre-installed at `/opt/pw-browsers/chromium`. Use it.
+
+**Always mock the streaming API correctly.** `/api/build` returns NDJSON over a streaming
+POST response — NOT a JSON object. The client reads it as a `ReadableStream`. If you mock
+it with `route.fulfill({ body: JSON.stringify({jobId: ...}) })` the build will silently fail
+and the app will stay on step 2. The correct mock format:
+
+```js
+// Each line is a JSON event terminated with \n
+const stream = [
+  JSON.stringify({ type: "job", jobId: "test-123" }) + "\n",
+  JSON.stringify({ type: "delta", text: planJsonString }) + "\n",
+  JSON.stringify({ type: "stop_reason", reason: "end_turn" }) + "\n",
+  JSON.stringify({ type: "done", len: planJsonString.length }) + "\n",
+].join("");
+
+await route.fulfill({
+  status: 200,
+  contentType: "application/x-ndjson",
+  body: stream,
+});
+```
+
+**Bypass the intro modal** with `?direct=1` on the URL (`shouldShowWelcome()` checks for
+the `direct` query param and returns false).
+
+**Auto-accept `window.confirm`** dialogs or they will return false and block navigation:
+```js
+page.on('dialog', dialog => dialog.accept());
+```
+
+**Start monitoring before clicking**, not after. The build overlay may appear and disappear
+in under 300ms when the mock API responds instantly. Start the polling loop first, then click.
+
+**Use `button.allTextContents()` for tab labels**, not `innerText()` on the body. CSS
+`text-transform: uppercase` makes `innerText()` return "DAY 1" when the source text is
+"Day 1", breaking `includes('Day 1')` checks.
+
+### The QA process for every session
+
+Before pushing to master, run through:
+1. Landing / hero — intro modal shows, Escape dismisses, no "Begin planning" on each slide
+2. Step 1 — textarea, narrative/form toggle, "Plan my trip →" button
+3. Step 2 — sources screen, destination extracted, source chips, build button
+4. Build overlay — both "Initial build" and "② Expert review" phases visible
+5. Step 3 — DAY 1 in itinerary, day tabs, PDF export, Web export buttons
+6. Review panel — findings shown, "Re-run review" button
+7. Navigation — Essentials tab, Reset returns to step 1
+8. Console — zero JS errors
+
+The Playwright script at `scratchpad/qa_final.mjs` in the session scratchpad covers all 8.
+Re-run it or adapt it. 56/56 checks passing on 2026-07-02 is the baseline.
+
+---
+
+## KEY TECHNICAL PATTERNS (learned 2026-07-01 → 07-02)
+
+### React state batching and pre-arm race conditions
+
+When you pre-arm a state value before mounting a component (e.g., `setReviewPhaseRunning(true)`
+before `setStep(3)` triggers the component to mount), the mounted component's first render
+will fire a `useEffect` that may immediately overwrite the pre-arm.
+
+Pattern that caused this bug:
+```
+applyBuiltPlan → setReviewPhaseRunning(true) → setStep(3)
+[React render] → ReviewPanel mounts with status="idle"
+[useEffect] → onProgressChange({ running: false }) → setReviewPhaseRunning(false)  ← kills pre-arm
+```
+
+Fix: add a `hasEverStartedRef` that gates the `running: false` notification until the component
+has actually been in a running state at least once. The parent's pre-arm survives until autoRun
+fires.
+
+### `/api/build` streaming format
+
+The client (`streamBuildJob` in `src/App.jsx`) reads a streaming NDJSON POST response. Events:
+- `{"type":"job","jobId":"..."}` — job ID (used for KV poll fallback)
+- `{"type":"delta","text":"..."}` — chunk of the plan JSON string
+- `{"type":"ping"}` — heartbeat (no-op, resets stall watchdog)
+- `{"type":"stop_reason","reason":"end_turn"|"max_tokens"}` — finish reason
+- `{"type":"done","len":N}` — stream complete, N = total accumulated bytes
+- `{"type":"error","error":"..."}` — server-side failure
+
+If the stream drops, the client falls back to KV polling at `GET /api/build/<jobId>?cursor=N`.
+The `cursor` is the byte offset of content already received from the stream.
+
+The review (`handleRunReview` in ReviewPanel) uses the same `streamBuildJob` function and
+the same `/api/build` endpoint.
+
+### Build flow (step → step path)
+
+```
+Step 1: user fills narrative → clicks "Plan my trip →"
+  → /api/extract-trip → sets extracted basics → setStep(2)
+
+Step 2: user optionally tweaks sources → clicks "Plan my trip"
+  → /api/review-retrieve (pre-build grounding)
+  → POST /api/build (streaming NDJSON)
+  → polls / streams until done
+  → applyBuiltPlan(parsed) called on success:
+      setReviewPhaseRunning(true)  ← pre-arm overlay
+      setResult(parsed)
+      setStep(3)
+  → finally: setLoading(false)
+  → React batch render: overlay shows (loading=false, reviewPhaseRunning=true)
+
+Step 3: ItineraryView renders → ReviewPanel mounts with autoRun=true
+  → onProgressChange fires with running=false on mount (suppressed by hasEverStartedRef)
+  → autoRun useEffect fires → handleRunReview()
+  → onProgressChange fires with running=true → overlay continues
+  → review completes → onProgressChange fires with running=false → overlay closes
+```
+
+### ESLint baseline
+
+14 pre-existing warnings in `src/App.jsx` as of 2026-07-02. Do not add new ones.
+Run `npm run lint` and verify the count doesn't increase.
