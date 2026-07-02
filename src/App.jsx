@@ -3671,6 +3671,9 @@ function WebExportSection({ data, inputs }) {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const handleExport = async () => {
     if (busy) return;
@@ -3689,31 +3692,117 @@ function WebExportSection({ data, inputs }) {
     }
   };
 
+  const handleShare = async () => {
+    if (shareBusy) return;
+    setShareBusy(true); setError(""); setShareUrl("");
+    try {
+      const res = await fetch("/api/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan: data, inputs }),
+      });
+      if (!res.ok) {
+        const msg = await res.json().catch(() => ({}));
+        throw new Error(msg.error || `HTTP ${res.status}`);
+      }
+      const { url } = await res.json();
+      setShareUrl(url);
+    } catch (err) {
+      console.error("Share failed", err);
+      setError("Share failed: " + (err.message || "try again"));
+      setTimeout(() => setError(""), 6000);
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    });
+  };
+
   return (
     <div className="no-print" style={{ marginTop: "2.5rem", padding: "24px", background: "var(--color-background-primary)", border: `1.5px solid ${ACCENT}`, borderRadius: "var(--border-radius-lg)" }}>
       <p style={{ fontSize: "10px", color: ACCENT, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" }}>Export for web</p>
       <p style={{ fontSize: "14px", fontFamily: "var(--font-serif)", fontStyle: "italic", fontWeight: 500, color: "var(--color-text-primary)", margin: "0 0 8px", lineHeight: 1.35 }}>Turn this itinerary into a standalone web app</p>
       <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 18px", lineHeight: 1.6 }}>
-        Downloads a self-contained HTML file — beautiful day-by-day site ready to open in any browser, share with your client, or hand off to a developer as a starting point for a custom build.
+        Downloads a self-contained HTML file — or publish it to a live URL you can share with anyone.
       </p>
-      <button
-        onClick={handleExport}
-        disabled={busy}
-        style={{
-          display: "inline-flex", alignItems: "center", gap: "8px",
-          background: busy ? "var(--color-surface-offset)" : ACCENT,
-          color: busy ? "var(--color-text-tertiary)" : "var(--color-background-primary)",
-          border: "none", borderRadius: "var(--border-radius-md)",
-          padding: "12px 20px", fontSize: "11px", fontWeight: 600,
-          letterSpacing: "0.1em", textTransform: "uppercase",
-          cursor: busy ? "not-allowed" : "pointer", fontFamily: "inherit",
-        }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="10" /><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-        </svg>
-        {busy ? "Preparing…" : done ? "Downloaded ✓" : "Export itinerary as web app"}
-      </button>
+      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+        <button
+          onClick={handleExport}
+          disabled={busy}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: "8px",
+            background: busy ? "var(--color-surface-offset)" : ACCENT,
+            color: busy ? "var(--color-text-tertiary)" : "var(--color-background-primary)",
+            border: "none", borderRadius: "var(--border-radius-md)",
+            padding: "12px 20px", fontSize: "11px", fontWeight: 600,
+            letterSpacing: "0.1em", textTransform: "uppercase",
+            cursor: busy ? "not-allowed" : "pointer", fontFamily: "inherit",
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" /><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+          </svg>
+          {busy ? "Preparing…" : done ? "Downloaded ✓" : "Export as web app"}
+        </button>
+        <button
+          onClick={handleShare}
+          disabled={shareBusy}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: "8px",
+            background: "transparent",
+            color: ACCENT,
+            border: `1.5px solid ${ACCENT}`,
+            borderRadius: "var(--border-radius-md)",
+            padding: "11px 20px", fontSize: "11px", fontWeight: 600,
+            letterSpacing: "0.1em", textTransform: "uppercase",
+            cursor: shareBusy ? "not-allowed" : "pointer", fontFamily: "inherit",
+            opacity: shareBusy ? 0.6 : 1,
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/>
+          </svg>
+          {shareBusy ? "Publishing…" : "Get shareable link"}
+        </button>
+      </div>
+      {shareUrl && (
+        <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <input
+            readOnly
+            value={shareUrl}
+            style={{
+              flex: "1 1 200px", minWidth: 0,
+              fontSize: "12px", fontFamily: "monospace",
+              padding: "8px 12px", borderRadius: "var(--border-radius-sm)",
+              border: "1px solid var(--color-border-subtle)",
+              background: "var(--color-surface-offset)",
+              color: "var(--color-text-primary)",
+            }}
+            onClick={e => e.target.select()}
+          />
+          <button
+            onClick={handleCopy}
+            style={{
+              padding: "8px 14px", fontSize: "11px", fontWeight: 600,
+              letterSpacing: "0.08em", textTransform: "uppercase",
+              background: copied ? "#2d6a4f" : "var(--color-surface-offset)",
+              color: copied ? "#fff" : "var(--color-text-secondary)",
+              border: "1px solid var(--color-border-subtle)",
+              borderRadius: "var(--border-radius-sm)",
+              cursor: "pointer", fontFamily: "inherit",
+              transition: "background 0.2s, color 0.2s",
+            }}
+          >
+            {copied ? "Copied ✓" : "Copy"}
+          </button>
+          <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>· expires in 90 days</span>
+        </div>
+      )}
       {error && <p style={{ fontSize: "11.5px", color: "var(--color-text-danger)", marginTop: "8px" }}>{error}</p>}
     </div>
   );
