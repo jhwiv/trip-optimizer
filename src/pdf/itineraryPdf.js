@@ -536,15 +536,15 @@ function renderCover(cur, data, inputs, opts = {}) {
   // when the /api/destination-photo request failed or returned nothing.
   if (coverPhoto) {
     const photoW = PAGE.width - PAGE.marginX * 2;
-    const photoH = 52; // mm — tall enough for visual impact, fits with content below
+    const photoH = 40; // mm — enough for visual impact without eating the page
     try {
       const imgFormat = coverPhoto.match(/^data:image\/(\w+);/)?.[1]?.toUpperCase() ?? "JPEG";
       pdf.addImage(coverPhoto, imgFormat, PAGE.marginX, cur.state.y, photoW, photoH, undefined, "FAST");
-      cur.state.y += photoH + 6;
+      cur.state.y += photoH + 4;
     } catch { /* addImage failure silently falls through to text-only cover */ }
   } else {
     // No photo: compact spacing — the title block provides enough breathing room.
-    cur.space(4);
+    cur.space(3);
   }
 
   // Eyebrow
@@ -554,7 +554,7 @@ function renderCover(cur, data, inputs, opts = {}) {
   cur.setColor(COLOR.accent);
   pdf.text("ITINERARY", PAGE.marginX, cur.state.y);
   pdf.setCharSpace(0);
-  cur.space(5);
+  cur.space(3);
 
   // Title (serif italic for editorial feel)
   cur.text(dest, {
@@ -677,8 +677,9 @@ function renderIntroduction(cur, data, inputs) {
     return; // no introduction to render — silently skip
   }
 
-  // Force a fresh page so the intro always gets its own.
-  cur.newPage();
+  // Use remaining cover-page space if enough room; otherwise start a new page.
+  cur.space(4);
+  cur.ensureSpace(60);
 
   // Heading: destination name + year, same style as day headers — small caps,
   // tracked, teal. NO word "Introduction".
