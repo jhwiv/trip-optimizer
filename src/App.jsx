@@ -13097,13 +13097,13 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   // localStorage). Caller provides the expected nights so progress can be
   // computed without re-deriving from current form state (which may be empty
   // on a resume into a fresh tab).
-  const runBuildForJob = async ({ jobId, nightsNum, expectedTokens, startedAt, citiesCount = 1, streamResp = null, onJobIdReady = null }) => {
+  const runBuildForJob = async ({ jobId, nightsNum, expectedTokens, startedAt, citiesCount = 1, streamResp = null, onJobIdReady = null, initialMsg = null }) => {
     setLoading(true);
     setError("");
     setProgress(0);
     setProgressLabel("");
     setElapsedSec(0);
-    setLoadingMsg("Researching destination…");
+    setLoadingMsg(initialMsg || "Researching destination…");
 
     const totalDays = nightsNum + 1;
     // Build-time scales with trip size. A single-city 3-night plan finishes in
@@ -14401,13 +14401,13 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           // whole accumulated delta + status "done" → applyBuiltPlan is called).
           setOutputsStep(true);
           setStep(2);
-          setLoadingMsg(`Recovering completed plan for ${saved.destination || "your trip"}…`);
           runBuildForJob({
             jobId: saved.jobId,
             nightsNum: saved.nightsNum || 3,
             expectedTokens: saved.expectedTokens || 6500,
             startedAt: Date.now(),
             citiesCount: saved.citiesCount || 1,
+            initialMsg: `Recovering completed plan for ${saved.destination || "your trip"}…`,
           });
           return;
         }
@@ -14417,13 +14417,13 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         }
         setOutputsStep(true);
         setStep(2);
-        setLoadingMsg(`Resuming build for ${saved.destination || "your trip"}…`);
         runBuildForJob({
           jobId: saved.jobId,
           nightsNum: saved.nightsNum || 3,
           expectedTokens: saved.expectedTokens || 6500,
           startedAt: saved.startedAt || Date.now(),
           citiesCount: saved.citiesCount || 1,
+          initialMsg: `Resuming build for ${saved.destination || "your trip"}…`,
         });
       })
       .catch(() => {});
