@@ -2491,6 +2491,37 @@ const DEST_AIRPORTS = {
   "santorini": [
     { iata: "JTR", name: "Santorini", drive: "20 min", note: "only airport" },
   ],
+  // Arizona
+  "scottsdale": [
+    { iata: "PHX", name: "Phoenix Sky Harbor", drive: "20 min from Old Town Scottsdale", note: "primary — all major carriers; DO NOT use SDL (Scottsdale Airport is GA/charter only, no commercial service)" },
+    { iata: "AZA", name: "Phoenix-Mesa Gateway", drive: "45 min", note: "Allegiant/Frontier budget option only" },
+  ],
+  "phoenix": [
+    { iata: "PHX", name: "Phoenix Sky Harbor", drive: "10 min from downtown", note: "primary hub for greater Phoenix metro" },
+    { iata: "AZA", name: "Phoenix-Mesa Gateway", drive: "40 min from downtown", note: "Allegiant/Frontier only" },
+  ],
+  "sedona": [
+    { iata: "PHX", name: "Phoenix Sky Harbor", drive: "2 h", note: "most flights; scenic drive through Oak Creek Canyon" },
+    { iata: "FLG", name: "Flagstaff Pulliam", drive: "45 min", note: "limited American Eagle from PHX only — check schedule" },
+  ],
+  "tucson": [
+    { iata: "TUS", name: "Tucson Intl", drive: "15 min from downtown", note: "primary; served by American, Delta, United, Southwest" },
+    { iata: "PHX", name: "Phoenix Sky Harbor", drive: "1.5 h", note: "more flight options if TUS fares are high" },
+  ],
+  // California desert
+  "palm springs": [
+    { iata: "PSP", name: "Palm Springs Intl", drive: "10 min", note: "primary — seasonal nonstops from many cities" },
+    { iata: "ONT", name: "Ontario Intl", drive: "1.5 h", note: "year-round backup with more carriers" },
+    { iata: "LAX", name: "Los Angeles Intl", drive: "2.5 h", note: "last resort — far drive" },
+  ],
+  "palm desert": [
+    { iata: "PSP", name: "Palm Springs Intl", drive: "15 min", note: "closest; seasonal nonstops" },
+    { iata: "ONT", name: "Ontario Intl", drive: "1.5 h", note: "more year-round options" },
+  ],
+  "coachella valley": [
+    { iata: "PSP", name: "Palm Springs Intl", drive: "15–30 min depending on venue", note: "preferred" },
+    { iata: "ONT", name: "Ontario Intl", drive: "1.5 h", note: "backup" },
+  ],
 };
 
 const KNOWN_NONSTOPS = {
@@ -12754,7 +12785,19 @@ ${narrative.trim()}
 Treat the narrative as the source of truth when it conflicts with a dropdown field. If the narrative names a specific hotel, flight, time, restaurant, guide, driver, confirmation number, or anchor activity, USE IT EXACTLY — don't invent alternates. If the narrative implies a constraint the dropdowns missed (kids, anniversary, mobility, allergies, no-museum-day, late arrivals, jet-lag day, work calls, religious holidays, anniversaries, mourning, surprise stops), respect it on every day it touches. Surface any narrative-specified booking that isn't yet confirmed in flags[] with the exact text the traveler used.
 ` : ""}
 
-${flights.noFlight ? `IMPORTANT: NO FLIGHTS. The user is ${trainAllowed ? "driving or taking the train" : "driving"}. Day 1 must be a Transport item describing the surface-travel arrival; do not invent flights, do not include any Flight items in days[].items.` : (flights.homeAirport.trim() ? `IMPORTANT: Prefer NONSTOP flights. If ${extractAirportCode(flights.homeAirport) || flights.homeAirport} has no nonstop to the primary airport for ${isMultiCity ? cities[0]?.name : basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.` : `IMPORTANT: The traveler IS flying — include Flight items. Home airport was not specified; infer it from the narrative/guidelines, or pick the nearest major US hub if origin is unclear. Prefer nonstop. Day 1 must have an outbound Flight item; the final day must have a return Flight item.`)}
+${(() => {
+  if (flights.noFlight) {
+    return `IMPORTANT: NO FLIGHTS. The user is ${trainAllowed ? "driving or taking the train" : "driving"}. Day 1 must be a Transport item describing the surface-travel arrival; do not invent flights, do not include any Flight items in days[].items.`;
+  }
+  const _nonstopLine = flights.homeAirport.trim()
+    ? `IMPORTANT: Prefer NONSTOP flights. If ${extractAirportCode(flights.homeAirport) || flights.homeAirport} has no nonstop to the primary airport for ${isMultiCity ? cities[0]?.name : basics.destination}, recommend a nearby airport that does have nonstop service and note the drive time. The user does NOT want a connecting itinerary if a nonstop exists to any nearby airport.`
+    : `IMPORTANT: The traveler IS flying — include Flight items. Home airport was not specified; infer it from the narrative/guidelines, or pick the nearest major US hub if origin is unclear. Prefer nonstop. Day 1 must have an outbound Flight item; the final day must have a return Flight item.`;
+  const _arrEntry = lookupDestAirports(isMultiCity ? cities[0]?.name : basics.destination);
+  if (!_arrEntry) return _nonstopLine;
+  const [_arr1, ..._arrRest] = _arrEntry.airports;
+  const _arrLine = `ARRIVAL AIRPORT: For ${basics.destination}, the correct arrival airport is ${_arr1.iata} (${_arr1.name}, ${_arr1.drive}${_arr1.note ? ` — ${_arr1.note}` : ""}).${_arrRest.length ? ` If needed: ${_arrRest.map(a => `${a.iata} — ${a.note || a.name}`).join("; ")}.` : ""} Use ${_arr1.iata} as to_airport on the inbound Flight item and from_airport on the return.`;
+  return _nonstopLine + "\n" + _arrLine;
+})()}
 ${trainAllowed ? "" : "IMPORTANT — NO TRAINS: The user did NOT request train or rail transportation. Do NOT suggest Amtrak, regional rail, commuter rail, or any train segment anywhere in the plan — not as primary transport, not as an alternative in flags[], not in planb[], not in plan-B fallbacks, not in transport_in for any leg, not in any item.text. Every transport segment must be by car, flight (if applicable), or walking. If the destination is rail-friendly (e.g. Saratoga, the Hudson Valley, Hudson NY, Westchester, Connecticut shore, DC corridor, anywhere on the Northeast Corridor) you still must NOT suggest a train. Pretend rail does not exist for this trip."}
 ${dateTable ? dateTable + "\n" : ""}
 IMPORTANT: Return a complete days[] array with ${(isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)) + 1} entries (arrival day + ${isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)} nights). Do not collapse the plan into the logistics chip list.${isMultiCity ? `
