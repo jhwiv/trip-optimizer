@@ -13320,7 +13320,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     } catch (err) {
       let msg;
       if (err?.name === "AbortError") {
-        msg = "Build cancelled. The server may still be finishing — reopen the page within a few minutes to resume.";
+        msg = "Build timed out on your device. The server may still be finishing — refresh the page within a few minutes to recover the completed plan.";
       } else if (err?.notFound) {
         msg = "That build expired or was not found. Tap Build again.";
         try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
@@ -13775,7 +13775,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       // and only clear the key on a genuine hard error.
       let msg;
       if (err?.name === "AbortError") {
-        msg = "Build cancelled. The server may still be finishing — reopen the page within a few minutes to resume.";
+        msg = "Build timed out on your device. The server may still be finishing — refresh the page within a few minutes to recover the completed plan.";
         // Intentionally DO NOT remove ACTIVE_JOB_KEY here — the chunk jobIds
         // stay persisted for a future resume (see CHUNKED_BUILD_IMPL_NOTES.md).
       } else if (err?.notFound) {
@@ -13987,7 +13987,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       // expired job, clear only on a genuine hard error.
       let msg;
       if (err?.name === "AbortError") {
-        msg = "Build cancelled. The server may still be finishing — reopen the page within a few minutes to resume.";
+        msg = "Build timed out on your device. The server may still be finishing — refresh the page within a few minutes to recover the completed plan.";
       } else if (err?.notFound) {
         msg = "That build expired or was not found. Tap Build again.";
         try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
@@ -14383,14 +14383,35 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       return;
     }
     // Probe the job first so we don't show a spinner for an expired/missing one.
-    // ONLY resume if the server says the build is still running. If status is
-    // 'done' or 'error' (e.g. previous timeout / partial completion), clear
-    // the key and stay on the home page — the user already navigated away
-    // and we shouldn't force them back into a stuck build screen.
+    // status "running" → resume streaming/polling from where we left off.
+    // status "done"    → server finished while the client had timed out; fetch
+    //                    the completed content from KV and apply it so the user
+    //                    doesn't lose their plan after a long build.
+    // anything else   → discard and stay on the home page.
     fetch(`/api/build/${encodeURIComponent(saved.jobId)}?cursor=0`)
       .then(r => r.ok ? r.json() : null)
       .then(data => {
-        if (!data || data.notFound || data?.status !== "running") {
+        if (!data || data.notFound) {
+          try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+          return;
+        }
+        if (data.status === "done") {
+          // Server completed while the client hard-timeout was running. Fetch
+          // the finished content from KV (single poll at cursor=0 returns the
+          // whole accumulated delta + status "done" → applyBuiltPlan is called).
+          setOutputsStep(true);
+          setStep(2);
+          setLoadingMsg(`Recovering completed plan for ${saved.destination || "your trip"}…`);
+          runBuildForJob({
+            jobId: saved.jobId,
+            nightsNum: saved.nightsNum || 3,
+            expectedTokens: saved.expectedTokens || 6500,
+            startedAt: Date.now(),
+            citiesCount: saved.citiesCount || 1,
+          });
+          return;
+        }
+        if (data.status !== "running") {
           try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
           return;
         }
