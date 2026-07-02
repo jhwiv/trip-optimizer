@@ -11140,13 +11140,12 @@ const HERO_SLIDES = [
 function AppIntroOverlay({ onBeginPlanning } = {}) {
   const [visible, setVisible] = useState(() => shouldShowWelcome());
   const [dismissing, setDismissing] = useState(false);
-  const [a2hsOpen, setA2hsOpen] = useState(() => {
-    const p = detectPlatform(typeof navigator !== "undefined" ? navigator.userAgent : "");
-    return p === "ios" || p === "android" ? p : "";
-  });
-  // Carousel state
-  const [slideIdx, setSlideIdx] = useState(0);
-  const [paused, setPaused] = useState(false);
+
+  // Pick a random destination once per session — no user navigation
+  const [slideIdx] = useState(() => Math.floor(Math.random() * HERO_SLIDES.length));
+
+  // Detect platform once for device-aware A2HS instructions
+  const platform = detectPlatform(typeof navigator !== "undefined" ? navigator.userAgent : "");
 
   const triggerDismiss = useCallback((slide) => {
     setDismissing(true);
@@ -11173,34 +11172,32 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
     return () => window.removeEventListener("keydown", onKey);
   }, [visible, triggerDismiss]);
 
-  // Auto-advance every 5 s; pause on hover.
-  useEffect(() => {
-    if (!visible || paused) return undefined;
-    const t = setInterval(() => setSlideIdx(s => (s + 1) % HERO_SLIDES.length), 5000);
-    return () => clearInterval(t);
-  }, [visible, paused]);
-
-  const prevSlide = () => setSlideIdx(s => (s - 1 + HERO_SLIDES.length) % HERO_SLIDES.length);
-  const nextSlide = () => setSlideIdx(s => (s + 1) % HERO_SLIDES.length);
-
   if (!visible) return null;
 
-  const cardStyle = {
-    background: "var(--color-background-primary)",
-    border: "0.5px solid var(--color-border-secondary)",
-    borderRadius: "var(--border-radius-md)",
-    padding: "16px 18px",
-    marginBottom: "10px",
+  const slide = HERO_SLIDES[slideIdx];
+
+  const a2hsSteps = {
+    ios: (
+      <ol style={{ fontSize: "11.5px", color: "rgba(255,255,255,0.72)", margin: 0, paddingLeft: "18px", lineHeight: 1.65 }}>
+        <li>Open in <strong style={{ color: "#fff" }}>Safari</strong> (required for iOS install).</li>
+        <li>Tap the <strong style={{ color: "#fff" }}>Share ↑</strong> icon at the bottom.</li>
+        <li>Tap <strong style={{ color: "#fff" }}>Add to Home Screen</strong>, then <strong style={{ color: "#fff" }}>Add</strong>.</li>
+      </ol>
+    ),
+    android: (
+      <ol style={{ fontSize: "11.5px", color: "rgba(255,255,255,0.72)", margin: 0, paddingLeft: "18px", lineHeight: 1.65 }}>
+        <li>Open in <strong style={{ color: "#fff" }}>Chrome</strong> or <strong style={{ color: "#fff" }}>Edge</strong>.</li>
+        <li>Tap the <strong style={{ color: "#fff" }}>⋮ menu</strong> in the top-right corner.</li>
+        <li>Tap <strong style={{ color: "#fff" }}>Add to Home screen</strong> and confirm.</li>
+      </ol>
+    ),
+    desktop: (
+      <ol style={{ fontSize: "11.5px", color: "rgba(255,255,255,0.72)", margin: 0, paddingLeft: "18px", lineHeight: 1.65 }}>
+        <li><strong style={{ color: "#fff" }}>Chrome / Edge:</strong> click the install icon in the address bar.</li>
+        <li><strong style={{ color: "#fff" }}>Safari (Mac):</strong> File → <strong style={{ color: "#fff" }}>Add to Dock</strong>.</li>
+      </ol>
+    ),
   };
-  const cardLabel = {
-    fontSize: "10px",
-    color: "var(--color-accent-hover)",
-    letterSpacing: "0.16em",
-    textTransform: "uppercase",
-    fontWeight: 700,
-    margin: "0 0 7px",
-  };
-  const cardBody = { fontSize: "13px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.6 };
 
   return (
     <div
@@ -11209,55 +11206,12 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
       aria-labelledby="app-intro-title"
       style={{ position: "fixed", inset: 0, zIndex: 9999, overflowY: "auto", WebkitOverflowScrolling: "touch", transform: dismissing ? "scale(1.04)" : "scale(1)", opacity: dismissing ? 0 : 1, transition: dismissing ? "transform 0.38s ease, opacity 0.32s ease" : "none", pointerEvents: dismissing ? "none" : undefined }}
     >
-      {/* ── CAROUSEL HERO (full viewport height) ─────────────────────── */}
-      <div
-        style={{ position: "relative", height: "100svh", overflow: "hidden" }}
-        onMouseEnter={() => setPaused(true)}
-        onMouseLeave={() => setPaused(false)}
-      >
-        {/* Slide stack — crossfade via opacity transition */}
-        {HERO_SLIDES.map((slide, i) => (
-          <div
-            key={i}
-            style={{
-              position: "absolute",
-              inset: 0,
-              background: slide.gradient,
-              opacity: i === slideIdx ? 1 : 0,
-              transition: "opacity 1s ease-in-out",
-              pointerEvents: i === slideIdx ? "auto" : "none",
-              display: "flex",
-              flexDirection: "column",
-              justifyContent: "flex-end",
-            }}
-          >
-            {/* Bottom-to-top dark scrim — stronger gradient so text is always readable */}
-            <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to top, rgba(0,0,0,0.78) 0%, rgba(0,0,0,0.3) 45%, transparent 75%)" }} />
-            {/* Slide text + CTA — all inside the slide so nothing floats over dots */}
-            <div style={{ position: "relative", zIndex: 1, padding: "0 24px calc(env(safe-area-inset-bottom, 16px) + 46px)" }}>
-              <p style={{ fontSize: "10px", color: slide.accent, letterSpacing: "0.22em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 700 }}>
-                {slide.region}
-              </p>
-              <h2
-                id={i === slideIdx ? "app-intro-title" : undefined}
-                style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: "clamp(30px, 7vw, 52px)", color: "#fff", margin: "0 0 5px", lineHeight: 1.08, fontWeight: 400 }}
-              >
-                {slide.dest}
-              </h2>
-              <p style={{ fontSize: "clamp(12px, 2vw, 15px)", color: "rgba(255,255,255,0.8)", margin: "0 0 10px", lineHeight: 1.4, fontStyle: "italic" }}>
-                {slide.tagline}
-              </p>
-              <div style={{ background: "rgba(0,0,0,0.38)", backdropFilter: "blur(8px)", border: "0.5px solid rgba(255,255,255,0.14)", borderRadius: "8px", padding: "9px 13px", marginBottom: "14px" }}>
-                <p style={{ fontSize: "11px", color: "rgba(255,255,255,0.75)", margin: 0, lineHeight: 1.6 }}>
-                  <span style={{ color: slide.accent, fontWeight: 600 }}>Did you know · </span>
-                  {slide.fact}
-                </p>
-              </div>
-            </div>
-          </div>
-        ))}
-
-        {/* ── CHROME (constant, above all slides) ───────────────────── */}
+      {/* ── HERO (full viewport height, single random destination) ─────── */}
+      <div style={{ position: "relative", height: "100svh", overflow: "hidden" }}>
+        {/* Destination background */}
+        <div style={{ position: "absolute", inset: 0, background: slide.gradient }} />
+        {/* Bottom-to-top dark scrim */}
+        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to top, rgba(0,0,0,0.82) 0%, rgba(0,0,0,0.28) 50%, transparent 75%)" }} />
 
         {/* Powered by — top left */}
         <div style={{ position: "absolute", top: "calc(env(safe-area-inset-top,14px) + 18px)", left: "22px", zIndex: 10, display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "9px", letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", fontWeight: 600 }}>
@@ -11271,97 +11225,54 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
           Skip
         </button>
 
-        {/* RouteSmith wordmark + tagline — centered */}
-        <div style={{ position: "absolute", top: "clamp(80px, 16%, 130px)", left: 0, right: 0, zIndex: 10, display: "flex", flexDirection: "column", alignItems: "center", pointerEvents: "none" }}>
+        {/* RouteSmith wordmark + tagline — centered near top */}
+        <div style={{ position: "absolute", top: "clamp(80px, 16%, 130px)", left: 0, right: 0, zIndex: 10, display: "flex", flexDirection: "column", alignItems: "center", padding: "0 28px" }}>
           <img src="/rs3-wordmark.svg?v=3" alt="Route Smith" style={{ height: "clamp(42px, 6vw, 62px)", width: "auto", filter: "brightness(0) invert(1)", opacity: 0.92 }} />
           <p style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", color: "rgba(255,255,255,0.55)", fontSize: "clamp(12px, 1.8vw, 16px)", margin: "10px 0 0", letterSpacing: "0.02em" }}>
             Journeys planned to the last detail.
           </p>
+          {/* Device-aware Add to Home Screen instructions */}
+          {a2hsSteps[platform] && (
+            <div style={{ marginTop: "20px", background: "rgba(0,0,0,0.36)", backdropFilter: "blur(10px)", border: "0.5px solid rgba(255,255,255,0.13)", borderRadius: "10px", padding: "11px 16px", width: "100%", maxWidth: "340px" }}>
+              <p style={{ fontSize: "9px", color: "rgba(255,255,255,0.4)", letterSpacing: "0.18em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 8px" }}>Save to Home Screen</p>
+              {a2hsSteps[platform]}
+            </div>
+          )}
         </div>
 
-        {/* Prev arrow — positioned in the gradient zone above the text content */}
-        <button type="button" onClick={prevSlide} aria-label="Previous destination"
-          style={{ position: "absolute", left: "14px", top: "36%", transform: "translateY(-50%)", zIndex: 10, background: "rgba(0,0,0,0.28)", border: "0.5px solid rgba(255,255,255,0.2)", borderRadius: "50%", width: "38px", height: "38px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "rgba(255,255,255,0.8)", fontSize: "22px", lineHeight: 1, fontFamily: "inherit", padding: 0 }}>
-          ‹
-        </button>
-
-        {/* Next arrow */}
-        <button type="button" onClick={nextSlide} aria-label="Next destination"
-          style={{ position: "absolute", right: "14px", top: "36%", transform: "translateY(-50%)", zIndex: 10, background: "rgba(0,0,0,0.28)", border: "0.5px solid rgba(255,255,255,0.2)", borderRadius: "50%", width: "38px", height: "38px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "rgba(255,255,255,0.8)", fontSize: "22px", lineHeight: 1, fontFamily: "inherit", padding: 0 }}>
-          ›
-        </button>
-
-        {/* Dot indicators — compact pill style, safe-area aware, 10 slides fit comfortably */}
-        <div style={{ position: "absolute", bottom: "calc(env(safe-area-inset-bottom, 10px) + 8px)", left: 0, right: 0, zIndex: 10, display: "flex", justifyContent: "center", alignItems: "center", gap: "6px" }}>
-          {HERO_SLIDES.map((_, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => setSlideIdx(i)}
-              aria-label={`Go to slide ${i + 1}`}
-              style={{ width: i === slideIdx ? "18px" : "6px", height: "6px", borderRadius: "3px", background: i === slideIdx ? "#fff" : "rgba(255,255,255,0.35)", border: "none", cursor: "pointer", padding: 0, transition: "all 0.3s ease" }}
-            />
-          ))}
+        {/* Destination info + Plan Trip CTA — pinned to bottom */}
+        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 10, padding: "0 24px calc(env(safe-area-inset-bottom, 16px) + 20px)" }}>
+          <p style={{ fontSize: "10px", color: slide.accent, letterSpacing: "0.22em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 700 }}>
+            {slide.region}
+          </p>
+          <h2
+            id="app-intro-title"
+            style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: "clamp(30px, 7vw, 52px)", color: "#fff", margin: "0 0 5px", lineHeight: 1.08, fontWeight: 400 }}
+          >
+            {slide.dest}
+          </h2>
+          <p style={{ fontSize: "clamp(12px, 2vw, 15px)", color: "rgba(255,255,255,0.8)", margin: "0 0 10px", lineHeight: 1.4, fontStyle: "italic" }}>
+            {slide.tagline}
+          </p>
+          <div style={{ background: "rgba(0,0,0,0.38)", backdropFilter: "blur(8px)", border: "0.5px solid rgba(255,255,255,0.14)", borderRadius: "8px", padding: "9px 13px", marginBottom: "16px" }}>
+            <p style={{ fontSize: "11px", color: "rgba(255,255,255,0.75)", margin: 0, lineHeight: 1.6 }}>
+              <span style={{ color: slide.accent, fontWeight: 600 }}>Did you know · </span>
+              {slide.fact}
+            </p>
+          </div>
+          {/* Plan Trip CTA */}
+          <button type="button" onClick={() => triggerDismiss(slide)}
+            style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "15px 18px", fontSize: "13px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#fff", color: "#1c2840" }}>
+            Plan Trip
+          </button>
         </div>
       </div>
 
-      {/* ── INFO (scrollable below carousel) ─────────────────────────── */}
-      <div style={{ background: "var(--color-background-secondary)", padding: "52px 20px 44px" }}>
+      {/* ── SCROLLABLE FOOTER (minimal — CTA above covers most users) ─── */}
+      <div style={{ background: "var(--color-background-secondary)", padding: "36px 20px 44px" }}>
         <div style={{ maxWidth: "640px", margin: "0 auto" }}>
-          <div style={cardStyle}>
-            <p style={cardLabel}>What you get</p>
-            <p style={cardBody}>
-              A day-by-day itinerary built around how you actually travel — flights, hotels, dining, activities, and the operational detail you need on the ground: addresses, phone numbers, confirmation windows, weather windows, packing notes.
-            </p>
-          </div>
-          <div style={cardStyle}>
-            <p style={cardLabel}>How it works</p>
-            <p style={cardBody}>
-              Tell us where, when, and how you travel. The planner builds a full itinerary, every venue verified against live sources. Tweak it via expert review or &ldquo;Suggest a change,&rdquo; then export as a PDF for the trip. Book directly with the operator — hours and prices should always be confirmed before travel.
-            </p>
-          </div>
-          <div style={cardStyle}>
-            <p style={cardLabel}>On your device</p>
-            <p style={{ ...cardBody, marginBottom: "10px" }}>
-              Nothing is stored on a server — your plan lives on your device. Save Route Smith to your home screen for one-tap access; it works offline once installed.
-            </p>
-            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: a2hsOpen ? "10px" : 0 }}>
-              {[{ id: "ios", label: "iPhone / iPad" }, { id: "android", label: "Android" }, { id: "desktop", label: "Desktop" }].map((opt) => {
-                const active = a2hsOpen === opt.id;
-                return (
-                  <button key={opt.id} type="button" aria-expanded={active} aria-controls={`a2hs-panel-${opt.id}`} onClick={() => setA2hsOpen(active ? "" : opt.id)}
-                    style={{ fontSize: "10.5px", letterSpacing: "0.04em", fontWeight: active ? 700 : 500, color: active ? "var(--color-background-primary)" : "var(--color-text-secondary)", background: active ? "var(--color-accent)" : "transparent", border: `0.5px solid ${active ? "var(--color-accent)" : "var(--color-border-secondary)"}`, borderRadius: "999px", padding: "4px 11px", cursor: "pointer", fontFamily: "inherit" }}>
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
-            {a2hsOpen === "ios" && (
-              <ol id="a2hs-panel-ios" style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}>
-                <li>Open this page in <strong>Safari</strong> (other iOS browsers can&rsquo;t install web apps).</li>
-                <li>Tap the <strong>Share</strong> icon at the bottom of the screen (the square with the up arrow).</li>
-                <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
-                <li>Tap <strong>Add</strong> in the top-right.</li>
-              </ol>
-            )}
-            {a2hsOpen === "android" && (
-              <ol id="a2hs-panel-android" style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}>
-                <li>Open this page in <strong>Chrome</strong>, <strong>Edge</strong>, or <strong>Samsung Internet</strong>.</li>
-                <li>Tap the <strong>three-dot menu</strong> in the top-right corner.</li>
-                <li>Tap <strong>Add to Home screen</strong> (or <strong>Install app</strong> if you see it).</li>
-                <li>Tap <strong>Add</strong> to confirm.</li>
-              </ol>
-            )}
-            {a2hsOpen === "desktop" && (
-              <ol id="a2hs-panel-desktop" style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: 0, paddingLeft: "20px", lineHeight: 1.6 }}>
-                <li><strong>Chrome / Edge:</strong> look for the install icon in the URL bar and click <strong>Install</strong>.</li>
-                <li><strong>Safari (macOS):</strong> File menu, then <strong>Add to Dock</strong>.</li>
-                <li><strong>Firefox:</strong> doesn&rsquo;t support PWA install; bookmark the page instead.</li>
-              </ol>
-            )}
-          </div>
           <button type="button" onClick={() => triggerDismiss(null)}
-            style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "15px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", marginTop: "14px" }}>
+            style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "15px 18px", fontSize: "12px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
             Start planning
           </button>
           <p style={{ textAlign: "center", fontSize: "9.5px", color: "var(--color-text-tertiary)", letterSpacing: "0.14em", textTransform: "uppercase", marginTop: "20px", marginBottom: 0, fontWeight: 500 }}>
