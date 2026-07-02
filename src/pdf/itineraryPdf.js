@@ -759,8 +759,8 @@ function renderIntroduction(cur, data, inputs) {
 // -----------------------------------------------------------------------------
 function renderDay(cur, day, index, opts = {}) {
   const { pdf } = cur;
-  const { cityPhoto = null, itemPhotos = {} } = opts;
-  const dayCity = (day.city || "").toLowerCase();
+  const { cityPhoto = null, itemPhotos = {}, destination = "" } = opts;
+  const dayCity = (day.city || destination || "").toLowerCase();
 
   // Reserve room before starting a day. 55mm fits a day label + headline +
   // 1 item without orphaning. Previous 72mm left up to 71mm of blank space
@@ -977,10 +977,12 @@ function renderItem(cur, item, isLast, itemPhotos = {}, dayCity = "") {
     const photo = itemPhotos[photoKey];
     if (photo) embedItemPhoto(cur, photo, headX, bodyMaxW, 24);
     renderHotelBlock(cur, item.hotel, headX, bodyMaxW);
+    if (item.contact) renderContactBlock(cur, item.contact, headX, bodyMaxW);
   } else if (item.type === "Activity") {
     const photoKey = makeItemPhotoKey(item.text || "", dayCity);
     const photo = itemPhotos[photoKey];
     if (photo) embedItemPhoto(cur, photo, headX, bodyMaxW, 22);
+    if (item.restaurant) renderRestaurantBlock(cur, item.restaurant, headX, bodyMaxW);
     if (item.contact) renderContactBlock(cur, item.contact, headX, bodyMaxW);
   } else {
     if (item.restaurant) renderRestaurantBlock(cur, item.restaurant, headX, bodyMaxW);
@@ -1712,7 +1714,7 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
       const isNewCity = dayCity && dayCity !== lastDayCity;
       const cityPhoto = isNewCity ? (cityPhotos[dayCity] || null) : null;
       if (d.city) lastDayCity = dayCity;
-      renderDay(cur, d, i, { cityPhoto, itemPhotos });
+      renderDay(cur, d, i, { cityPhoto, itemPhotos, destination: data.destination || "" });
     });
   }
 

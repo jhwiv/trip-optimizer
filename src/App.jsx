@@ -7054,10 +7054,12 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       const k = `${String(name || "").trim().toLowerCase().slice(0, 80)}|${String(city || "").trim().toLowerCase().slice(0, 30)}`;
       if (!seen.has(k)) { seen.add(k); toFetch.push({ k, query }); }
     };
-    // Hotels first — always include all
+    // Hotels first — capped at 8 total (shared with activities)
     days.forEach(d => {
+      if (toFetch.length >= 8) return;
       const city = (d.city || dest).trim();
       (d.items || []).forEach(it => {
+        if (toFetch.length >= 8) return;
         if (it.type === "Hotel" && it.hotel?.name) addKey(it.hotel.name, city, `${it.hotel.name} hotel ${city}`);
       });
     });
@@ -7075,7 +7077,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
     Promise.all(toFetch.map(async ({ k, query }) => {
       const url = await fetchCoverPhoto(query);
       if (url) map[k] = url;
-    })).then(() => setItemPhotosCache(prev => ({ ...prev, ...map })));
+    })).then(() => setItemPhotosCache(map));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [_itemPhotoCacheKey]);
 
@@ -11342,6 +11344,7 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
 
 function BuildAndReviewOverlay({
   loading,
+  extractingFromGuidelines,
   buildProgress,
   buildProgressLabel,
   loadingMsg,
@@ -11353,7 +11356,7 @@ function BuildAndReviewOverlay({
   reviewElapsedSec,
   destination,
 }) {
-  const visible = loading || reviewRunning;
+  const visible = loading || reviewRunning || extractingFromGuidelines;
   if (!visible) return null;
 
   const buildDone = !loading && reviewRunning;
@@ -11367,11 +11370,11 @@ function BuildAndReviewOverlay({
     ? "Done"
     : buildLongTail
       ? (buildElapsedTxt ? `still building · ${buildElapsedTxt}` : "still building…")
-      : `${buildProgress > 0 ? `${Math.round(buildProgress * 100)}%` : ""}${buildElapsedTxt ? ` · ${buildElapsedTxt}` : ""}`.trim();
+      : [buildProgress > 0 ? `${Math.round(buildProgress * 100)}%` : null, buildElapsedTxt || null].filter(Boolean).join(" · ");
 
   const reviewElapsedTxt = fmtElapsed(reviewElapsedSec);
   const reviewRightLabel = reviewRunning
-    ? `${reviewProgress > 0 ? `${Math.round(reviewProgress * 100)}%` : ""}${reviewElapsedTxt ? ` · ${reviewElapsedTxt}` : ""}`.trim()
+    ? [reviewProgress > 0 ? `${Math.round(reviewProgress * 100)}%` : null, reviewElapsedTxt || null].filter(Boolean).join(" · ")
     : "";
 
   const renderBar = (prog, done, active) => (
@@ -15280,6 +15283,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
       <BuildAndReviewOverlay
         loading={loading}
+        extractingFromGuidelines={extractingFromGuidelines}
         buildProgress={progress}
         buildProgressLabel={progressLabel}
         loadingMsg={loadingMsg}
