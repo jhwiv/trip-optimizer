@@ -30,6 +30,12 @@
 import { groupItemsByCategory } from "../categoryGroups.js";
 import { bucketProviders, PROVIDER_PDF_CAP } from "../localProviders.js";
 
+// Stable key for looking up pre-fetched item photos by name + city.
+// Must match the identical function in App.jsx that builds the photo map.
+function makeItemPhotoKey(text, city) {
+  return `${String(text || "").trim().toLowerCase().slice(0, 80)}|${String(city || "").trim().toLowerCase().slice(0, 30)}`;
+}
+
 const COLOR = {
   ink: [17, 17, 17],          // body text
   inkSoft: [85, 85, 85],      // secondary
@@ -753,12 +759,13 @@ function renderIntroduction(cur, data, inputs) {
 // -----------------------------------------------------------------------------
 function renderDay(cur, day, index, opts = {}) {
   const { pdf } = cur;
-  const { cityPhoto = null } = opts;
+  const { cityPhoto = null, itemPhotos = {} } = opts;
+  const dayCity = (day.city || "").toLowerCase();
 
-  // Reserve room before starting a day. 72mm fits a day label + headline +
-  // 2 items without orphaning; the previous 110mm was too aggressive and
-  // wasted half-pages worth of blank space before each day header.
-  cur.ensureSpace(72);
+  // Reserve room before starting a day. 55mm fits a day label + headline +
+  // 1 item without orphaning. Previous 72mm left up to 71mm of blank space
+  // at the bottom of pages before a day header.
+  cur.ensureSpace(55);
 
   // City photo banner — full-width landscape image shown on the first day
   // of each new city (passed in via opts.cityPhoto). Provides visual
@@ -828,10 +835,10 @@ function renderDay(cur, day, index, opts = {}) {
   // Sort chronologically by time string ("HH:MM")
   items.sort((a, b) => String(a.time || "").localeCompare(String(b.time || "")));
 
-  items.forEach((item, i) => renderItem(cur, item, i === items.length - 1));
+  items.forEach((item, i) => renderItem(cur, item, i === items.length - 1, itemPhotos, dayCity));
 }
 
-function renderItem(cur, item, isLast) {
+function renderItem(cur, item, isLast, itemPhotos = {}, dayCity = "") {
   const { pdf } = cur;
   if (!item) return;
 
@@ -960,11 +967,25 @@ function renderItem(cur, item, isLast) {
     cur.state.y += whyLines.length * lineHWhy + 1;
   }
 
-  // Type-specific extras
-  if (item.flight) renderFlightBlock(cur, item.flight, headX, bodyMaxW);
-  if (item.hotel) renderHotelBlock(cur, item.hotel, headX, bodyMaxW);
-  if (item.restaurant) renderRestaurantBlock(cur, item.restaurant, headX, bodyMaxW);
-  if (item.contact) renderContactBlock(cur, item.contact, headX, bodyMaxW);
+  // Type-specific extras — Hotel and Activity items get an inline photo banner
+  // (body-column width, ~24mm tall) when a pre-fetched photo is available.
+  if (item.flight) {
+    renderFlightBlock(cur, item.flight, headX, bodyMaxW);
+  } else if (item.hotel) {
+    const hotelName = item.hotel?.name || item.text || "";
+    const photoKey = makeItemPhotoKey(hotelName, dayCity);
+    const photo = itemPhotos[photoKey];
+    if (photo) embedItemPhoto(cur, photo, headX, bodyMaxW, 24);
+    renderHotelBlock(cur, item.hotel, headX, bodyMaxW);
+  } else if (item.type === "Activity") {
+    const photoKey = makeItemPhotoKey(item.text || "", dayCity);
+    const photo = itemPhotos[photoKey];
+    if (photo) embedItemPhoto(cur, photo, headX, bodyMaxW, 22);
+    if (item.contact) renderContactBlock(cur, item.contact, headX, bodyMaxW);
+  } else {
+    if (item.restaurant) renderRestaurantBlock(cur, item.restaurant, headX, bodyMaxW);
+    if (item.contact) renderContactBlock(cur, item.contact, headX, bodyMaxW);
+  }
 
   // Bottom spacer + divider line between items
   cur.space(0.5);
@@ -1099,6 +1120,20 @@ function renderFlightBlock(cur, fl, x, maxW) {
   if (fl.confirmation_note) renderDetailLine(cur, "Note", fl.confirmation_note, x, maxW);
   const bookUrl = carrierBookUrl(fl.carrier);
   if (bookUrl) renderLinkLine(cur, "Book", bookUrl, bookUrl, x, maxW);
+}
+
+// Embed a photo data URL as an inline banner spanning the body column.
+// Used for Hotel and Activity items. Silently skipped on any addImage failure.
+function embedItemPhoto(cur, photoDataUrl, x, maxW, photoH = 24) {
+  if (!photoDataUrl) return;
+  const { pdf } = cur;
+  cur.ensureSpace(photoH + 3);
+  cur.space(1.5);
+  try {
+    const fmt = photoDataUrl.match(/^data:image\/(\w+);/)?.[1]?.toUpperCase() ?? "JPEG";
+    pdf.addImage(photoDataUrl, fmt, x, cur.state.y, maxW, photoH, undefined, "FAST");
+    cur.state.y += photoH + 2;
+  } catch { /* skip on failure — text-only fallback */ }
 }
 
 function renderHotelBlock(cur, h, x, maxW) {
@@ -1621,7 +1656,7 @@ function renderFooters(pdf, opts) {
 // PUBLIC ENTRYPOINT
 // -----------------------------------------------------------------------------
 export async function buildItineraryPdf(data, inputs, options = {}) {
-  const { setStatus, buildId, providers, coverPhoto } = options;
+  const { setStatus, buildId, providers, coverPhoto, itemPhotos = {} } = options;
   if (setStatus) setStatus("Loading PDF engine…");
 
   const jsPDFModule = await import("jspdf");
@@ -1677,7 +1712,7 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
       const isNewCity = dayCity && dayCity !== lastDayCity;
       const cityPhoto = isNewCity ? (cityPhotos[dayCity] || null) : null;
       if (d.city) lastDayCity = dayCity;
-      renderDay(cur, d, i, { cityPhoto });
+      renderDay(cur, d, i, { cityPhoto, itemPhotos });
     });
   }
 

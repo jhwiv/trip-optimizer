@@ -3466,7 +3466,7 @@ async function fetchCoverPhoto(destination) {
 // page breaks, and a clean editorial layout. The legacy DOM-screenshot path
 // is preserved below as a fallback for the unlikely case the new builder
 // throws on malformed data.
-async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers, coverPhoto: preloadedCoverPhoto, cityPhotos } = {}) {
+async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers, coverPhoto: preloadedCoverPhoto, cityPhotos, itemPhotos } = {}) {
   setStatus("Preparing…");
   // Pre-export gate — see CLAUDE.md "VENUE VERIFICATION — HARD RULE".
   // Block PDF generation if any venue still carries a severity:'block'
@@ -3507,7 +3507,7 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers
           : (setStatus("Fetching cover photo…"), fetchCoverPhoto(destination)),
       ]);
 
-      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers, coverPhoto, cityPhotos });
+      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers, coverPhoto, cityPhotos, itemPhotos });
       setStatus("Saving…");
       pdf.save(filename);
       return;
@@ -3688,7 +3688,7 @@ function WebExportSection({ data, inputs }) {
   );
 }
 
-function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPhoto, cityPhotos }) {
+function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPhoto, cityPhotos, itemPhotos }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -3719,7 +3719,7 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPh
         const loaded = await providers.ensureLoaded();
         providersForPdf = { ...providers, byCategory: loaded || providers.byCategory };
       }
-      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers: providersForPdf, coverPhoto, cityPhotos });
+      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers: providersForPdf, coverPhoto, cityPhotos, itemPhotos });
     } catch (err) {
       console.error("PDF save failed", err);
       if (isStaleChunkError(err)) {
@@ -7036,6 +7036,49 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
     })).then(() => setCityPhotosCache(map));
   }, [_cityPhotoCacheKey]);
 
+  // Per-item photos (hotel + activity) for PDF inline banners — pre-fetched
+  // in the background alongside city photos. Hotels first (always), then up
+  // to 5 activities. Keyed by makeItemPhotoKey(name, city) — same function
+  // as itineraryPdf.js so keys match without a shared import.
+  const [itemPhotosCache, setItemPhotosCache] = useState({});
+  const _itemPhotoCacheKey = (rawData?.days || [])
+    .flatMap(d => (d?.items || []).map(it => `${it?.type}:${it?.text}:${d?.city}`))
+    .join("|");
+  useEffect(() => {
+    const days = rawData?.days;
+    if (!days) return;
+    const dest = rawData?.destination || "";
+    const toFetch = [];
+    const seen = new Set();
+    const addKey = (name, city, query) => {
+      const k = `${String(name || "").trim().toLowerCase().slice(0, 80)}|${String(city || "").trim().toLowerCase().slice(0, 30)}`;
+      if (!seen.has(k)) { seen.add(k); toFetch.push({ k, query }); }
+    };
+    // Hotels first — always include all
+    days.forEach(d => {
+      const city = (d.city || dest).trim();
+      (d.items || []).forEach(it => {
+        if (it.type === "Hotel" && it.hotel?.name) addKey(it.hotel.name, city, `${it.hotel.name} hotel ${city}`);
+      });
+    });
+    // Then activities — up to 5 after hotels
+    days.forEach(d => {
+      if (toFetch.length >= 8) return;
+      const city = (d.city || dest).trim();
+      (d.items || []).forEach(it => {
+        if (toFetch.length >= 8) return;
+        if (it.type === "Activity" && it.text) addKey(it.text, city, `${it.text} ${city}`);
+      });
+    });
+    if (!toFetch.length) return;
+    const map = {};
+    Promise.all(toFetch.map(async ({ k, query }) => {
+      const url = await fetchCoverPhoto(query);
+      if (url) map[k] = url;
+    })).then(() => setItemPhotosCache(prev => ({ ...prev, ...map })));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [_itemPhotoCacheKey]);
+
   // #8 Auto-run the expert review when a FRESH build lands. Per the chosen flow
   // ("pre-build picker, then full auto"), a brand-new plan kicks off the review
   // automatically; a RESTORED saved trip (initialReview present) does not — its
@@ -7370,7 +7413,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           >✎ Edit trip details</button>
         )}
         <SaveTripButton inputs={inputs} result={rawData} onSaved={onSaved} />
-        <PrintButton data={data} inputs={inputs} providers={providers} plan={rawData} introIsGenerating={introIsGenerating} coverPhoto={heroPhotoUrl} cityPhotos={cityPhotosCache} />
+        <PrintButton data={data} inputs={inputs} providers={providers} plan={rawData} introIsGenerating={introIsGenerating} coverPhoto={heroPhotoUrl} cityPhotos={cityPhotosCache} itemPhotos={itemPhotosCache} />
         <PrintRidesButton data={data} inputs={inputs} />
         {/* Reset — surfaced here on Step 3 (results) so users don't have to
             navigate Home + scroll Step 1 to find it. Styled as a clear but
