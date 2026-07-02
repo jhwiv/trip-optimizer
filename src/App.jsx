@@ -11299,7 +11299,6 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
 
 function BuildAndReviewOverlay({
   loading,
-  extractingFromGuidelines,
   buildProgress,
   buildProgressLabel,
   loadingMsg,
@@ -11311,7 +11310,7 @@ function BuildAndReviewOverlay({
   reviewElapsedSec,
   destination,
 }) {
-  const visible = loading || reviewRunning || extractingFromGuidelines;
+  const visible = loading || reviewRunning;
   if (!visible) return null;
 
   const buildDone = !loading && reviewRunning;
@@ -15271,7 +15270,6 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
       <BuildAndReviewOverlay
         loading={loading}
-        extractingFromGuidelines={extractingFromGuidelines}
         buildProgress={progress}
         buildProgressLabel={progressLabel}
         loadingMsg={loadingMsg}
