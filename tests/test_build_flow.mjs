@@ -98,14 +98,15 @@ assert(
 
 // --- 5. Progress panel lives in the outputs sub-view, gated on loading ----
 console.log("\n[progress panel placement]");
+const progressGateStr = "{(loading || extractingFromGuidelines) &&";
 assert(
   "progress panel is gated on loading/extracting",
-  SRC.includes("{(loading || extractingFromGuidelines) && ("),
+  SRC.includes(progressGateStr),
   "missing the loading-gated progress panel"
 );
 assert(
   "progress panel renders after the build trigger (outputs sub-view)",
-  SRC.indexOf("{(loading || extractingFromGuidelines) && (") > buildIdx,
+  SRC.indexOf(progressGateStr) > buildIdx,
   "progress panel should follow the Build itinerary button in source order"
 );
 
