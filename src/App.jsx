@@ -14440,10 +14440,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       {/* #9 — First-visit App Intro overlay. Self-gated; renders null when
           already dismissed, when ?direct=1 is on the URL, or when running
           as an installed PWA. Sits above the wizard chrome at z-index 9999. */}
-      <AppIntroOverlay onBeginPlanning={({ dest, accent } = {}) => {
-        if (dest) setB(p => ({ ...p, destination: dest }));
-        if (accent) setHeroEntry({ accent, dest });
-      }} />
+      <AppIntroOverlay onBeginPlanning={() => {}} />
 
       <div style={{ padding: vp.isMobile ? "1.5rem 0 1.25rem" : "2rem 0 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: heroEntry ? `linear-gradient(160deg, ${heroEntry.accent}28 0%, var(--color-background-primary) 62%)` : "var(--color-background-primary)", transition: "background 0.6s ease" }}>
         <div style={{ maxWidth: colMaxWidth, margin: "0 auto", padding: vp.isMobile ? "0 1rem" : "0 1.5rem" }}>
