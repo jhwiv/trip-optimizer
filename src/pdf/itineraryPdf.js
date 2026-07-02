@@ -677,9 +677,8 @@ function renderIntroduction(cur, data, inputs) {
     return; // no introduction to render — silently skip
   }
 
-  // Use remaining cover-page space if enough room; otherwise start a new page.
-  cur.space(4);
-  cur.ensureSpace(60);
+  // Force a fresh page so the intro always gets its own.
+  cur.newPage();
 
   // Heading: destination name + year, same style as day headers — small caps,
   // tracked, teal. NO word "Introduction".
