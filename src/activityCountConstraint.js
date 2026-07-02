@@ -71,6 +71,8 @@ const TRIP_TOTAL_PATTERNS = [
   // "N activities total" / "N activities in total" / "N total activities"
   new RegExp(`\\b${COUNT_ANY}\\s+(?:activities|things|stops|outings|excursions)\\s+(?:in\\s+)?total\\b`, "i"),
   new RegExp(`\\b${COUNT_ANY}\\s+total\\s+(?:activities|things|stops|outings|excursions)\\b`, "i"),
+  // "a total of N activities"
+  new RegExp(`\\ba\\s+total\\s+of\\s+${COUNT_ANY}\\s+(?:activities|things|stops|outings|excursions)\\b`, "i"),
   // "N activities (for|across|during|throughout|in) the (entire|whole) <scope>"
   new RegExp(`\\b${COUNT_ANY}\\s+(?:activities|things|stops|outings|excursions)\\s+(?:for|across|during|throughout|in|over)\\s+the\\s+(?:entire|whole|full|complete)\\s+${SCOPE_WORDS}\\b`, "i"),
   // "N activities (for|across|during|throughout|in) the <scope>" (no entire/whole adjective)
@@ -83,6 +85,14 @@ const TRIP_TOTAL_PATTERNS = [
   new RegExp(`\\b${COUNT_ANY}\\s+(?:activities|things)\\s+or\\s+(?:fewer|less)\\b`, "i"),
   // "no more than N activities" / "at most N activities"
   new RegExp(`\\b(?:no\\s+more\\s+than|at\\s+most|max(?:imum)?\\s+of)\\s+${COUNT_ANY}\\s+(?:activities|things)\\b`, "i"),
+  // "N activities max/maximum/only/tops"
+  new RegExp(`\\b${COUNT_ANY}\\s+(?:activities|things)\\s+(?:max|maximum|only|tops)\\b`, "i"),
+  // "limit (to) N activities" / "keep (it) to N activities" / "cap (at) N activities"
+  new RegExp(`\\b(?:limit(?:ed)?\\s+(?:to|activities?\\s+to)|keep\\s+(?:it\\s+)?to|cap(?:ped)?\\s+(?:at\\s+)?)\\s*${COUNT_ANY}\\s+(?:activity|activities|things?)\\b`, "i"),
+  // Constraining verbs: "want/need/prefer/include/plan/schedule/give me N activities"
+  // Negative lookahead blocks per-day qualifiers ("on Day 3", "each day", "per day", "a day", "daily")
+  new RegExp(`\\b(?:want|need|prefer|include|plan|schedule)\\s+(?:only\\s+|just\\s+)?${COUNT_ANY}\\s+(?:activity|activities|thing|things|outing|outings|excursion|excursions)\\b(?!\\s+(?:on\\s+day|each\\s+day|per\\s+day|a\\s+day|daily|on\\s+(?:mon|tue|wed|thu|fri|sat|sun)))`, "i"),
+  new RegExp(`\\bgive\\s+me\\s+(?:only\\s+|just\\s+)?${COUNT_ANY}\\s+(?:activity|activities|thing|things|outing|outings)\\b(?!\\s+(?:on\\s+day|each\\s+day|per\\s+day|a\\s+day|daily))`, "i"),
   // "(only|just) one activity (during|across|for|in|throughout|over) the (entire|whole) <scope>"
   new RegExp(`\\b(?:only|just)?\\s*${COUNT_ANY}\\s+activity\\s+(?:during|across|for|in|throughout|over)\\s+the\\s+(?:entire|whole|full|complete)?\\s*${SCOPE_WORDS}\\b`, "i"),
   // "one activity (during|in|for|across) the (entire|whole)? <scope>"
