@@ -29,3 +29,5 @@ Luxury-tier travel-planning web app. One bundle, two surfaces:
 - `concepts/final-4-roadmap.md` — consolidated execution brief for the four remaining items (#22, #6, #7, #15): status, test scenarios, technical dependencies, and experiment design
 - `learnings/2026-06-27.md` — full work log for the day PRs #64–#69 shipped
 - `learnings/2026-06-30.md` — work log for the day PRs #96–#102 shipped; #6 parked; flight-numbers investigation opened
+- `learnings/2026-07-03.md` — work log: shareable URL, activity count hardening, PDF whitespace, iOS offset fix
+- `concepts/activity-count.md` — complete root-cause analysis and fix history for the "too many activities" recurrence

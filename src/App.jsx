@@ -3671,6 +3671,9 @@ function WebExportSection({ data, inputs }) {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const handleExport = async () => {
     if (busy) return;
@@ -3689,31 +3692,117 @@ function WebExportSection({ data, inputs }) {
     }
   };
 
+  const handleShare = async () => {
+    if (shareBusy) return;
+    setShareBusy(true); setError(""); setShareUrl("");
+    try {
+      const res = await fetch("/api/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan: data, inputs }),
+      });
+      if (!res.ok) {
+        const msg = await res.json().catch(() => ({}));
+        throw new Error(msg.error || `HTTP ${res.status}`);
+      }
+      const { url } = await res.json();
+      setShareUrl(url);
+    } catch (err) {
+      console.error("Share failed", err);
+      setError("Share failed: " + (err.message || "try again"));
+      setTimeout(() => setError(""), 6000);
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    });
+  };
+
   return (
     <div className="no-print" style={{ marginTop: "2.5rem", padding: "24px", background: "var(--color-background-primary)", border: `1.5px solid ${ACCENT}`, borderRadius: "var(--border-radius-lg)" }}>
       <p style={{ fontSize: "10px", color: ACCENT, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 6px" }}>Export for web</p>
       <p style={{ fontSize: "14px", fontFamily: "var(--font-serif)", fontStyle: "italic", fontWeight: 500, color: "var(--color-text-primary)", margin: "0 0 8px", lineHeight: 1.35 }}>Turn this itinerary into a standalone web app</p>
       <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 18px", lineHeight: 1.6 }}>
-        Downloads a self-contained HTML file — beautiful day-by-day site ready to open in any browser, share with your client, or hand off to a developer as a starting point for a custom build.
+        Downloads a self-contained HTML file — or publish it to a live URL you can share with anyone.
       </p>
-      <button
-        onClick={handleExport}
-        disabled={busy}
-        style={{
-          display: "inline-flex", alignItems: "center", gap: "8px",
-          background: busy ? "var(--color-surface-offset)" : ACCENT,
-          color: busy ? "var(--color-text-tertiary)" : "var(--color-background-primary)",
-          border: "none", borderRadius: "var(--border-radius-md)",
-          padding: "12px 20px", fontSize: "11px", fontWeight: 600,
-          letterSpacing: "0.1em", textTransform: "uppercase",
-          cursor: busy ? "not-allowed" : "pointer", fontFamily: "inherit",
-        }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="10" /><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-        </svg>
-        {busy ? "Preparing…" : done ? "Downloaded ✓" : "Export itinerary as web app"}
-      </button>
+      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+        <button
+          onClick={handleExport}
+          disabled={busy}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: "8px",
+            background: busy ? "var(--color-surface-offset)" : ACCENT,
+            color: busy ? "var(--color-text-tertiary)" : "var(--color-background-primary)",
+            border: "none", borderRadius: "var(--border-radius-md)",
+            padding: "12px 20px", fontSize: "11px", fontWeight: 600,
+            letterSpacing: "0.1em", textTransform: "uppercase",
+            cursor: busy ? "not-allowed" : "pointer", fontFamily: "inherit",
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" /><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+          </svg>
+          {busy ? "Preparing…" : done ? "Downloaded ✓" : "Export as web app"}
+        </button>
+        <button
+          onClick={handleShare}
+          disabled={shareBusy}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: "8px",
+            background: "transparent",
+            color: ACCENT,
+            border: `1.5px solid ${ACCENT}`,
+            borderRadius: "var(--border-radius-md)",
+            padding: "11px 20px", fontSize: "11px", fontWeight: 600,
+            letterSpacing: "0.1em", textTransform: "uppercase",
+            cursor: shareBusy ? "not-allowed" : "pointer", fontFamily: "inherit",
+            opacity: shareBusy ? 0.6 : 1,
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/>
+          </svg>
+          {shareBusy ? "Publishing…" : "Get shareable link"}
+        </button>
+      </div>
+      {shareUrl && (
+        <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <input
+            readOnly
+            value={shareUrl}
+            style={{
+              flex: "1 1 200px", minWidth: 0,
+              fontSize: "12px", fontFamily: "monospace",
+              padding: "8px 12px", borderRadius: "var(--border-radius-sm)",
+              border: "1px solid var(--color-border-subtle)",
+              background: "var(--color-surface-offset)",
+              color: "var(--color-text-primary)",
+            }}
+            onClick={e => e.target.select()}
+          />
+          <button
+            onClick={handleCopy}
+            style={{
+              padding: "8px 14px", fontSize: "11px", fontWeight: 600,
+              letterSpacing: "0.08em", textTransform: "uppercase",
+              background: copied ? "#2d6a4f" : "var(--color-surface-offset)",
+              color: copied ? "#fff" : "var(--color-text-secondary)",
+              border: "1px solid var(--color-border-subtle)",
+              borderRadius: "var(--border-radius-sm)",
+              cursor: "pointer", fontFamily: "inherit",
+              transition: "background 0.2s, color 0.2s",
+            }}
+          >
+            {copied ? "Copied ✓" : "Copy"}
+          </button>
+          <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>· expires in 90 days</span>
+        </div>
+      )}
       {error && <p style={{ fontSize: "11.5px", color: "var(--color-text-danger)", marginTop: "8px" }}>{error}</p>}
     </div>
   );
@@ -10841,7 +10930,7 @@ function FindView({ embedded = false } = {}) {
             </span>
             <a
               href="#top"
-              onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); }}
               style={{ color: ACCENT, textDecoration: "none", fontSize: "11px", letterSpacing: "0.06em", textTransform: "uppercase", whiteSpace: "nowrap" }}
             >Edit</a>
           </div>
@@ -11629,7 +11718,7 @@ export default function TripOptimizer() {
     // on the Outputs screen where the progress panel renders.
     setOutputsStep(true);
     setStep(2);
-    try { window.scrollTo({ top: 0, behavior: "instant" }); } catch {}
+    try { window.scrollTo({ top: 0, left: 0, behavior: "instant" }); } catch {}
     try {
       const resp = await fetch("/api/extract-trip", {
         method: "POST",
@@ -11866,7 +11955,7 @@ export default function TripOptimizer() {
     setCurrentSavedTripId(entry.id || null);
     setReviewState(entry.result?._review || null);
     setStep(3);
-    window.scrollTo({ top: 0, behavior: "instant" });
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
   };
   const handleDeleteSavedTrip = (id) => {
     const next = loadSavedTrips().filter(t => t.id !== id);
@@ -12027,7 +12116,7 @@ export default function TripOptimizer() {
     // Defer past this render so the (taller) outputs screen has painted first;
     // a 0ms timeout lands after layout. (rAF isn't in the lint globals here.)
     const id = setTimeout(() => {
-      try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+      try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
     }, 0);
     return () => clearTimeout(id);
   }, [outputsStep]);
@@ -12429,7 +12518,7 @@ days[] is the main deliverable. Write the entire days[] array BEFORE writing log
 TRIP REQUIREMENTS:
 • The exact required day count for this trip is given in the per-trip preamble below. Use the COMPUTED DATE TABLE for every day's weekday and date — do not compute weekdays yourself.
 • Each day MUST include: label, headline (the one-line "if you only do one thing" call), weather (seasonal expectation, NOT a live forecast), and items[].
-• Each day's items[] needs at least 3 items — a typical full day is: morning Activity, midday Activity, evening Dinner. Arrival/departure days also include Flight + Hotel.
+• Each day's items[] needs at least 3 items — a typical full day is: one Activity + evening Dinner + Hotel. Arrival/departure days also include Flight. ACTIVITY COUNT PER FULL DAY IS STRICTLY PACE-DRIVEN: "Relaxed" or no pace specified = exactly 1 Activity item per full day. "Moderate" = exactly 2 Activity items per full day. "Full" = 3 Activity items per full day. These are hard maximums, not targets — do NOT round up. Marquee sights count toward the day's activity limit; do NOT add extra activities on top of them. Arrival and departure days always get 0–1 Activity items regardless of pace. When in doubt, schedule FEWER activities — a traveler who wants more can always ask; one overwhelmed by too many cannot easily trim.
 • DAY-SCOPED REQUESTS — HONOR LITERALLY (overrides the pacing default for the named day only): If the traveler specifies how many activities a SPECIFIC day should have (e.g. "one activity on Tuesday", "just one thing on Day 3", "keep the 14th light", "only golf on Saturday"), that count applies to THAT DAY ALONE. Do NOT propagate it to other days and do NOT back-fill the rest of the trip to match it. Days the traveler did not constrain keep the normal pacing for the stated Pace setting. On a day the traveler asked to keep light, the "at least 3 items" guideline YIELDS: that day may legitimately be just one Activity + Dinner (and Flight/Hotel on arrival/departure days). Never inflate a deliberately light day back up to hit the item minimum, and never spread one day's requested activity across every day.
 • TRIP-TOTAL REQUESTS — HONOR LITERALLY AS A WHOLE-TRIP CAP (overrides the per-day pacing default for every day): If the traveler specifies how many activities the ENTIRE TRIP should have (e.g. "2 activities for the trip", "just 3 things total", "only 2 activities the whole stay", "keep it to 4 activities across the week", "minimal — one activity per couple of days"), that count is the SUM across all days, NOT a per-day target. Do NOT multiply it by the day count. Do NOT schedule one activity on every day to satisfy a trip-total ask. Place those N activities on the N most appropriate days (using the same "single most appropriate day" logic as the activities POOL) and leave the other days with NO Activity items — those days are legitimately just morning ambiance + Dinner (plus Flight/Hotel on arrival/departure days), and the "at least 3 items" guideline YIELDS for them the same way it yields on a day-scoped light day. Never spread a trip-total of N activities across more than N days, and never inflate the unconstrained days back to a full pacing default to compensate — a trip-total cap means the traveler explicitly chose a quieter trip. CRITICAL: This cap also overrides the activities pool — if the pool above lists more entries than the stated total, schedule ONLY the stated number of Activity items across the entire trip (pick the N best-fitting ones from the pool); place the unused pool entries in planb[] as alternatives, not in days[].items[].
 • EVERY item in items[] MUST have a "time" field (24h local time, e.g. '08:30', '14:00', '19:30'). Items should appear in chronological order within each day. This is what turns the day into a real time-based itinerary instead of a vague list.
@@ -12476,6 +12565,8 @@ VARIETY RULES — STRICT, NON-NEGOTIABLE:
 
 MARQUEE SIGHTS — NEVER ASSUME, ALWAYS SCHEDULE:
 Every destination has 2–6 marquee sights that any luxury traveler will expect to see. You MUST explicitly schedule each one as a dedicated Activity item with a specific day, time slot, and (when ticketed) booking detail. Do NOT mention them only in passing in a headline or snobs entry. If a marquee sight is intentionally skipped (e.g. the user already saw it on a previous trip, or the dates exclude it), say so explicitly in flags[]. The destination-specific marquee list (when one is on file for this trip's destination) is in the per-trip preamble below.
+
+MARQUEE YIELD RULE (overrides MUST when pace cap is binding): If the ACTIVITY COUNT rule above allows fewer total activities than the number of marquee sights, you MUST yield to the pace cap. Schedule only the top N marquee sights by significance — where N equals the pace cap total for the trip. Place the remaining marquee sights in planb[] as "marquee alternative — pace cap reached" entries. Never exceed the pace cap to honor the marquee list. The pace cap wins.
 
 General rule: if your destination is not in the per-trip marquee list, generate the equivalent "top 4–6 marquee experiences any first-time visitor would expect" list mentally and schedule each one. If the user gave fewer nights than needed to cover all marquees, surface the gap in flags[].
 
@@ -12685,7 +12776,7 @@ Start date: ${formatDateForDisplay(basics.startDate) || basics.startDate}${basic
 Return date: ${formatDateForDisplay(basics.endDate) || basics.endDate}` : ""}
 Nights: ${isMultiCity ? totalNightsFromCities : basics.nights}${isMultiCity ? "  (" + cities.map(c => `${c.nights} in ${c.name}`).join(" + ") + ")" : ""}
 Travelers: ${basics.travelers}
-Style: ${prefToText(basics.style)} · Pace: ${basics.pace || "No preference"} · Budget: ${prefToText(basics.budget)}
+Style: ${prefToText(basics.style)} · Pace: ${basics.pace || "Relaxed (1 activity/day) — traveler did not specify; use this conservative default"} · Budget: ${prefToText(basics.budget)}
 ${flights.noFlight ? `Transportation mode: GROUND ONLY (${groundModeText}). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the ${trainAllowed ? "drive or rail" : "drive"} journey from the user's origin to the destination, with realistic time + distance.` : (flights.homeAirport.trim() ? `Home airport: ${flights.homeAirport} (use IATA ${extractAirportCode(flights.homeAirport)} on Flight items) · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin || "no preference"}` : `Home airport: not specified — infer the most logical departure airport from the traveler narrative/guidelines, or use the nearest major hub. INCLUDE Flight items: Day 1 must have an outbound Flight, and the final day must have a return Flight. Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin || "no preference"}`)}
 Hotel brand: ${prefToText(hotel.brand)}${hotel.tier ? ` · ${hotel.tier}` : ""} · Must-haves: ${hotel.mustHave || "none"}
 Transport: ${prefToText(transport.type)}${transport.company ? ` · ${transport.company}` : ""}
@@ -14222,7 +14313,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // Wait one frame so the panel (gated on `loading`) has mounted before we
     // measure/scroll to it; the ref is null on the render that flips loading.
     const raf = window.requestAnimationFrame(() => {
-      progressPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      progressPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
     });
     return () => window.cancelAnimationFrame(raf);
   }, [loading]);
@@ -14253,11 +14344,11 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         return;
       }
       // Clear the extraction loading message now that extraction is done.
-      // The user lands on the outputs screen and must press "Plan my trip"
-      // to start the build — nothing fires automatically.
+      // Land on ESSENTIALS (not DETAILS) so the user sees the extracted
+      // destination + build button immediately, not the outputs config.
       setPendingBuildFromGuidelines(false);
       setLoadingMsg("");
-      setOutputsStep(true);
+      setOutputsStep(false);
       setStep(2);
       // No handleBuild() here — user chooses outputs/sources then clicks the button.
     }, 0);
@@ -14471,7 +14562,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 setReviewState(null);
                 setOutputsStep(false);
                 setStep(1);
-                try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+                try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
               }
             }}
             aria-label="Reset and start over"
@@ -14623,7 +14714,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 if (!isNavigable) return;
                 if (targetStep === 2) setOutputsStep(false);
                 setStep(targetStep);
-                try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+                try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
               };
               return (
                 <Fragment key={s}>
@@ -14839,7 +14930,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
             {inputMode === "form" && (
               <>
-                <button disabled={!ready} onClick={() => { if (ready) { setOutputsStep(false); setStep(2); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } } }}
+                <button disabled={!ready} onClick={() => { if (ready) { setOutputsStep(false); setStep(2); try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } } }}
                   style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: ready ? "pointer" : "not-allowed", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: ready ? "var(--color-text-primary)" : "var(--color-surface-offset)", color: ready ? "var(--color-background-primary)" : "var(--color-text-tertiary)", opacity: ready ? 1 : 0.7 }}>
                   Continue — Add Details →
                 </button>
@@ -15028,7 +15119,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             )}
 
             <div style={{ display: "flex", gap: "10px", marginTop: "0.5rem" }}>
-              <button onClick={() => { setOutputsStep(false); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }} disabled={loading} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", opacity: loading ? 0.5 : 1 }}>← Back</button>
+              <button onClick={() => { setOutputsStep(false); try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }} disabled={loading} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", opacity: loading ? 0.5 : 1 }}>← Back</button>
               {loading ? (
                 <button onClick={handleCancel}
                   style={{ flex: 1, border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}>
@@ -15173,7 +15264,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               // form inputs. The user can come back to the plan via the
               // step nav, or rebuild from scratch by editing the inputs.
               setStep(1);
-              try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+              try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
             }}
             onEditTrip={() => {
               // Go back to the input form without wiping anything. The user's
@@ -15182,7 +15273,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               // plan), so they can tweak dates/cities/etc and rebuild.
               setStep(1);
               // Smooth scroll to top so they land on the "Where & when" card.
-              try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+              try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
             }}
             onReset={() => {
               // Destructive reset — the parent button confirms before calling.
@@ -15199,7 +15290,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               setReviewState(null);
               setCurrentSavedTripId(null);
               setStep(1);
-              try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+              try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
             }}
             onSaved={(entry) => { setCurrentSavedTripId(entry?.id || null); refreshSavedTrips(); }}
             savedTripId={currentSavedTripId}
