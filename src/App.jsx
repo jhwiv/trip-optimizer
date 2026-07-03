@@ -12643,6 +12643,8 @@ VARIETY RULES — STRICT, NON-NEGOTIABLE:
 MARQUEE SIGHTS — NEVER ASSUME, ALWAYS SCHEDULE:
 Every destination has 2–6 marquee sights that any luxury traveler will expect to see. You MUST explicitly schedule each one as a dedicated Activity item with a specific day, time slot, and (when ticketed) booking detail. Do NOT mention them only in passing in a headline or snobs entry. If a marquee sight is intentionally skipped (e.g. the user already saw it on a previous trip, or the dates exclude it), say so explicitly in flags[]. The destination-specific marquee list (when one is on file for this trip's destination) is in the per-trip preamble below.
 
+MARQUEE YIELD RULE (overrides MUST when pace cap is binding): If the ACTIVITY COUNT rule above allows fewer total activities than the number of marquee sights, you MUST yield to the pace cap. Schedule only the top N marquee sights by significance — where N equals the pace cap total for the trip. Place the remaining marquee sights in planb[] as "marquee alternative — pace cap reached" entries. Never exceed the pace cap to honor the marquee list. The pace cap wins.
+
 General rule: if your destination is not in the per-trip marquee list, generate the equivalent "top 4–6 marquee experiences any first-time visitor would expect" list mentally and schedule each one. If the user gave fewer nights than needed to cover all marquees, surface the gap in flags[].
 
 BESPOKE LOCAL SERVICES — RESEARCH PER DESTINATION, DO NOT DEFAULT TO GLOBAL BRANDS:
