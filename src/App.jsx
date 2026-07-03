@@ -10930,7 +10930,7 @@ function FindView({ embedded = false } = {}) {
             </span>
             <a
               href="#top"
-              onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); }}
               style={{ color: ACCENT, textDecoration: "none", fontSize: "11px", letterSpacing: "0.06em", textTransform: "uppercase", whiteSpace: "nowrap" }}
             >Edit</a>
           </div>
@@ -11795,7 +11795,7 @@ export default function TripOptimizer() {
     // on the Outputs screen where the progress panel renders.
     setOutputsStep(true);
     setStep(2);
-    try { window.scrollTo({ top: 0, behavior: "instant" }); } catch {}
+    try { window.scrollTo({ top: 0, left: 0, behavior: "instant" }); } catch {}
     try {
       const resp = await fetch("/api/extract-trip", {
         method: "POST",
@@ -12032,7 +12032,7 @@ export default function TripOptimizer() {
     setCurrentSavedTripId(entry.id || null);
     setReviewState(entry.result?._review || null);
     setStep(3);
-    window.scrollTo({ top: 0, behavior: "instant" });
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
   };
   const handleDeleteSavedTrip = (id) => {
     const next = loadSavedTrips().filter(t => t.id !== id);
@@ -12193,7 +12193,7 @@ export default function TripOptimizer() {
     // Defer past this render so the (taller) outputs screen has painted first;
     // a 0ms timeout lands after layout. (rAF isn't in the lint globals here.)
     const id = setTimeout(() => {
-      try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+      try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
     }, 0);
     return () => clearTimeout(id);
   }, [outputsStep]);
@@ -14388,7 +14388,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // Wait one frame so the panel (gated on `loading`) has mounted before we
     // measure/scroll to it; the ref is null on the render that flips loading.
     const raf = window.requestAnimationFrame(() => {
-      progressPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      progressPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
     });
     return () => window.cancelAnimationFrame(raf);
   }, [loading]);
@@ -14419,11 +14419,11 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         return;
       }
       // Clear the extraction loading message now that extraction is done.
-      // The user lands on the outputs screen and must press "Plan my trip"
-      // to start the build — nothing fires automatically.
+      // Land on ESSENTIALS (not DETAILS) so the user sees the extracted
+      // destination + build button immediately, not the outputs config.
       setPendingBuildFromGuidelines(false);
       setLoadingMsg("");
-      setOutputsStep(true);
+      setOutputsStep(false);
       setStep(2);
       // No handleBuild() here — user chooses outputs/sources then clicks the button.
     }, 0);
@@ -14640,7 +14640,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 setReviewState(null);
                 setOutputsStep(false);
                 setStep(1);
-                try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+                try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
               }
             }}
             aria-label="Reset and start over"
@@ -14792,7 +14792,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 if (!isNavigable) return;
                 if (targetStep === 2) setOutputsStep(false);
                 setStep(targetStep);
-                try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+                try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
               };
               return (
                 <Fragment key={s}>
@@ -15008,7 +15008,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
             {inputMode === "form" && (
               <>
-                <button disabled={!ready} onClick={() => { if (ready) { setOutputsStep(false); setStep(2); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } } }}
+                <button disabled={!ready} onClick={() => { if (ready) { setOutputsStep(false); setStep(2); try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } } }}
                   style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: ready ? "pointer" : "not-allowed", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: ready ? "var(--color-text-primary)" : "var(--color-surface-offset)", color: ready ? "var(--color-background-primary)" : "var(--color-text-tertiary)", opacity: ready ? 1 : 0.7 }}>
                   Continue — Add Details →
                 </button>
@@ -15197,7 +15197,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             )}
 
             <div style={{ display: "flex", gap: "10px", marginTop: "0.5rem" }}>
-              <button onClick={() => { setOutputsStep(false); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }} disabled={loading} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", opacity: loading ? 0.5 : 1 }}>← Back</button>
+              <button onClick={() => { setOutputsStep(false); try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }} disabled={loading} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", opacity: loading ? 0.5 : 1 }}>← Back</button>
               {loading ? (
                 <button onClick={handleCancel}
                   style={{ flex: 1, border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}>
@@ -15342,7 +15342,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               // form inputs. The user can come back to the plan via the
               // step nav, or rebuild from scratch by editing the inputs.
               setStep(1);
-              try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+              try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
             }}
             onEditTrip={() => {
               // Go back to the input form without wiping anything. The user's
@@ -15351,7 +15351,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               // plan), so they can tweak dates/cities/etc and rebuild.
               setStep(1);
               // Smooth scroll to top so they land on the "Where & when" card.
-              try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+              try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
             }}
             onReset={() => {
               // Destructive reset — the parent button confirms before calling.
@@ -15368,7 +15368,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               setReviewState(null);
               setCurrentSavedTripId(null);
               setStep(1);
-              try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
+              try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
             }}
             onSaved={(entry) => { setCurrentSavedTripId(entry?.id || null); refreshSavedTrips(); }}
             savedTripId={currentSavedTripId}
