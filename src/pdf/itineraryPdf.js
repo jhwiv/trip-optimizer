@@ -535,12 +535,15 @@ function renderCover(cur, data, inputs, opts = {}) {
   // Renders only when a data URL was fetched by the caller; silently skipped
   // when the /api/destination-photo request failed or returned nothing.
   if (coverPhoto) {
-    const photoW = PAGE.width - PAGE.marginX * 2;
-    const photoH = 40; // mm — enough for visual impact without eating the page
+    // 3:2 aspect ratio — standard landscape photo proportion.
+    // Centered in the printable area so left/right margins are symmetric.
+    const photoW = 130;
+    const photoH = Math.round(photoW * (2 / 3)); // 87mm
+    const photoX = (PAGE.width - photoW) / 2;
     try {
       const imgFormat = coverPhoto.match(/^data:image\/(\w+);/)?.[1]?.toUpperCase() ?? "JPEG";
-      pdf.addImage(coverPhoto, imgFormat, PAGE.marginX, cur.state.y, photoW, photoH, undefined, "FAST");
-      cur.state.y += photoH + 4;
+      pdf.addImage(coverPhoto, imgFormat, photoX, cur.state.y, photoW, photoH, undefined, "FAST");
+      cur.state.y += photoH + 5;
     } catch { /* addImage failure silently falls through to text-only cover */ }
   } else {
     // No photo: compact spacing — the title block provides enough breathing room.
@@ -771,12 +774,14 @@ function renderDay(cur, day, index, opts = {}) {
   // of each new city (passed in via opts.cityPhoto). Provides visual
   // interest without requiring every day to have its own photo fetch.
   if (cityPhoto) {
-    const photoW = PAGE.width - PAGE.marginX * 2;
-    const photoH = 40;
+    // 3:2 aspect ratio, centered — same proportions as the cover photo.
+    const photoW = 130;
+    const photoH = Math.round(photoW * (2 / 3)); // 87mm
+    const photoX = (PAGE.width - photoW) / 2;
     try {
       const imgFmt = cityPhoto.match(/^data:image\/(\w+);/)?.[1]?.toUpperCase() ?? "JPEG";
-      pdf.addImage(cityPhoto, imgFmt, PAGE.marginX, cur.state.y, photoW, photoH, undefined, "FAST");
-      cur.state.y += photoH + 3;
+      pdf.addImage(cityPhoto, imgFmt, photoX, cur.state.y, photoW, photoH, undefined, "FAST");
+      cur.state.y += photoH + 4;
     } catch { /* silently skip — text-only fallback */ }
   }
 
@@ -975,13 +980,13 @@ function renderItem(cur, item, isLast, itemPhotos = {}, dayCity = "") {
     const hotelName = item.hotel?.name || item.text || "";
     const photoKey = makeItemPhotoKey(hotelName, dayCity);
     const photo = itemPhotos[photoKey];
-    if (photo) embedItemPhoto(cur, photo, headX, bodyMaxW, 24);
+    if (photo) embedItemPhoto(cur, photo, headX, bodyMaxW);
     renderHotelBlock(cur, item.hotel, headX, bodyMaxW);
     if (item.contact) renderContactBlock(cur, item.contact, headX, bodyMaxW);
   } else if (item.type === "Activity") {
     const photoKey = makeItemPhotoKey(item.text || "", dayCity);
     const photo = itemPhotos[photoKey];
-    if (photo) embedItemPhoto(cur, photo, headX, bodyMaxW, 22);
+    if (photo) embedItemPhoto(cur, photo, headX, bodyMaxW);
     if (item.restaurant) renderRestaurantBlock(cur, item.restaurant, headX, bodyMaxW);
     if (item.contact) renderContactBlock(cur, item.contact, headX, bodyMaxW);
   } else {
@@ -1124,17 +1129,22 @@ function renderFlightBlock(cur, fl, x, maxW) {
   if (bookUrl) renderLinkLine(cur, "Book", bookUrl, bookUrl, x, maxW);
 }
 
-// Embed a photo data URL as an inline banner spanning the body column.
+// Embed a photo data URL as a right-aligned 3:2 thumbnail in the body column.
 // Used for Hotel and Activity items. Silently skipped on any addImage failure.
-function embedItemPhoto(cur, photoDataUrl, x, maxW, photoH = 24) {
+function embedItemPhoto(cur, photoDataUrl, x, maxW) {
   if (!photoDataUrl) return;
   const { pdf } = cur;
+  // 3:2 ratio thumbnail — matches standard landscape photo proportions.
+  // Right-aligned within the body column so it sits beside the item heading.
+  const photoW = Math.min(72, maxW);
+  const photoH = Math.round(photoW * (2 / 3)); // 48mm at 72mm wide
+  const photoX = x + maxW - photoW;
   cur.ensureSpace(photoH + 3);
   cur.space(1.5);
   try {
     const fmt = photoDataUrl.match(/^data:image\/(\w+);/)?.[1]?.toUpperCase() ?? "JPEG";
-    pdf.addImage(photoDataUrl, fmt, x, cur.state.y, maxW, photoH, undefined, "FAST");
-    cur.state.y += photoH + 2;
+    pdf.addImage(photoDataUrl, fmt, photoX, cur.state.y, photoW, photoH, undefined, "FAST");
+    cur.state.y += photoH + 3;
   } catch { /* skip on failure — text-only fallback */ }
 }
 
