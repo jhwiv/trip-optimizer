@@ -26,7 +26,8 @@ Routing lives in `src/main.jsx`, **before** any component tree mounts:
 - `replanControl.js` — Re-plan stream control (PR #66)
 - `swapAlternatives.js` — "Find another restaurant/activity" swap on itinerary cards (PR #60)
 - `useViewport.js` — viewport hook
-- `pdf/itineraryPdf.js` — PDF generation. `renderIntroduction` ~line 654, called ~line 1602 (after cover, before day-by-day). Reads `data.introduction.{arc,differentiators}`.
+- `pdf/itineraryPdf.js` — PDF generation. `renderIntroduction` ~line 654, called ~line 1602 (after cover, before day-by-day). Reads `data.introduction.{arc,differentiators}`. Exports shared layout primitives (`makeCursor`, `COLOR`, `FONT`, `PAGE`, `mapsUrl`, `telUrl`, `asciiSafe`, `to12h`, `safe`, `titleCase`) reused by `pdf/findPdf.js`.
+- `pdf/findPdf.js` — PDF export for `/find` (local-info-only) results. Sibling to `itineraryPdf.js`, reuses its cursor/hyperlink primitives but lays out the flatter restaurant/activity list shape (no days/flights/hotels). `buildFindPdf(payload, options)` — payload is `{ location, category, guidelines, restaurants, activities, localExpert, note }` mirroring `FindView`'s `results` state. Every phone/website/booking/address renders as a live clickable link, same mechanism as the itinerary PDF.
 
 ## API surface — Cloudflare Pages Functions (`functions/api/`)
 
