@@ -71,6 +71,17 @@ The original 15-item list grew to 24 via live testing. Working in waves, one foc
 
 The structural recurrence guards are now in place. Two of today's PRs (#111 + #112) established a pattern: any prompt rule the model can pattern-match against now has a deterministic enforcement layer on top. Future similar bugs ("no rental car → model emits one anyway", "vegetarian only → model surfaces a steakhouse") should follow this same belt + suspenders approach.
 
+## 2026-07-07 session — /find LOCATION autocomplete + PDF export
+
+User reported two /find (local-info-only) gaps: (1) "the app has trouble identifying Bolton Landing NY" / "takes too long to surface the town to begin search", (2) no PDF export with live hyperlinks for websites/reservations/phone numbers.
+
+**Root-cause finding (item 1):** Direct `/api/find` probes (3x) confirmed the server-side pipeline handles "Bolton Landing" correctly — the actual gap was that the LOCATION field was a plain text input with zero disambiguation. A bare "Bolton" silently resolved to Bolton, Greater Manchester UK instead of Bolton Landing, NY, and there was no confirmation of what the user meant before the 30-45s search ran.
+
+- **PR #131** (open, awaiting merge) — `feat/find-location-autocomplete`. New `/api/place-autocomplete` endpoint proxies Google Places Autocomplete (New) via the existing `GOOGLE_PLACES_API_KEY`. LOCATION field now shows a debounced dropdown of disambiguated suggestions as the user types, with keyboard nav. Soft-fails to freeform typing on any error. 19 new tests (Bolton Landing vs Bolton UK disambiguation case included).
+- **PR #132** (open, awaiting merge) — `feat/find-pdf-export`. New `src/pdf/findPdf.js`, sibling to `itineraryPdf.js` (which now exports its shared cursor/hyperlink primitives). "Save as PDF" button in the /find results row. Live tel:/website/booking/maps hyperlinks throughout, including the Locally Sourced section. 19 new tests verifying embedded link annotations.
+
+Both PRs are independent (branched off master separately, non-overlapping code) and can merge in either order. Both green on all CI checks except the pre-existing Hex-leak baseline failure (confirmed via `git stash` + CI history on master's last 3 commits — **not introduced by either PR**, already broken on master since before this session). That gate will need the user's call: bump the baseline, or fix the underlying hex literals separately.
+
 ## Remaining (in user's preferred order)
 
 1. **#25 Narrate-vs-dropdown call-out** — user-facing discoverability. Add a clear card on the first-visit intro overlay (PR #102 surface) AND a persistent radio-style choice at wizard step 1 ("Tell me about the trip" vs "Use dropdowns"). Smaller scope than the full #15 toggle (no underlying mode change, just the call-out).
