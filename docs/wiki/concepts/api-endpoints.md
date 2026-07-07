@@ -16,6 +16,7 @@ All endpoints are Cloudflare Pages Functions under `functions/api/`. Every endpo
 | `/api/places-verify-batch` | POST | Batch variant, chunked to stay under the Workers subrequest cap (PR #44). |
 | `/api/routes-verify` | POST | Routes API travel-time grounding → `PACING_IMPOSSIBLE` / `PACING_CONFLICT` flags. |
 | `/api/geocode-cities` | POST | City geocoding used by location radius checks. |
+| `/api/place-autocomplete` | POST | Live-typing place suggestions for the `/find` LOCATION field (Google Places Autocomplete New, proxied). Soft-fails to `{ suggestions: [] }`. |
 | `/api/flights-search` | POST | Real scheduled flight numbers + times surfaced on flight cards (PRs #59, #62). |
 | `/api/introduction` | POST | Post-build trip introduction generation (arc + differentiators). Powers PDF intro section (PR #67). |
 | `/api/extract-from-file` | POST | Reads a previously-built itinerary (PDF/docx/paste) into Trip Optimizer's structured plan shape. |

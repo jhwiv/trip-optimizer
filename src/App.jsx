@@ -10439,6 +10439,106 @@ function FindView({ embedded = false } = {}) {
   const [category, setCategory] = useState(() => computeInitialFindState().c);
   const [guidelines, setGuidelines] = useState(() => computeInitialFindState().g);
 
+  // -------- location autocomplete --------
+  // Debounced /api/place-autocomplete lookups so the user gets real place
+  // suggestions (with state/country context) as they type, instead of
+  // discovering 30-45s later that "Bolton" resolved to Bolton, UK instead
+  // of Bolton Landing, NY. Soft-fails to an empty list — the field always
+  // still works as freeform text if autocomplete is unavailable.
+  const [suggestions, setSuggestions] = useState([]);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const suggestionsAbortRef = useRef(null);
+  const suggestionsDebounceRef = useRef(null);
+  // Suppresses the next autocomplete fetch right after the user picks a
+  // suggestion (setLocation from onChange would otherwise immediately
+  // re-open the dropdown for the just-selected text).
+  const suppressNextFetchRef = useRef(false);
+
+  const fetchSuggestions = async (q) => {
+    const trimmed = q.trim();
+    if (trimmed.length < 2) {
+      setSuggestions([]);
+      setSuggestionsOpen(false);
+      setSuggestionsLoading(false);
+      return;
+    }
+    if (suggestionsAbortRef.current) suggestionsAbortRef.current.abort();
+    const controller = new AbortController();
+    suggestionsAbortRef.current = controller;
+    setSuggestionsLoading(true);
+    try {
+      const res = await fetch("/api/place-autocomplete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: trimmed }),
+        signal: controller.signal,
+      });
+      const json = await res.json().catch(() => ({}));
+      if (controller.signal.aborted) return;
+      const list = Array.isArray(json?.suggestions) ? json.suggestions : [];
+      setSuggestions(list);
+      setSuggestionsOpen(list.length > 0);
+      setActiveSuggestion(-1);
+    } catch {
+      // Network error / abort — leave the field as freeform text, no banner.
+      if (!controller.signal.aborted) {
+        setSuggestions([]);
+        setSuggestionsOpen(false);
+      }
+    } finally {
+      if (!controller.signal.aborted) setSuggestionsLoading(false);
+    }
+  };
+
+  const onLocationChange = (val) => {
+    setLocation(val);
+    if (suppressNextFetchRef.current) {
+      suppressNextFetchRef.current = false;
+      return;
+    }
+    if (suggestionsDebounceRef.current) clearTimeout(suggestionsDebounceRef.current);
+    suggestionsDebounceRef.current = setTimeout(() => fetchSuggestions(val), 220);
+  };
+
+  const onPickSuggestion = (s) => {
+    suppressNextFetchRef.current = true;
+    setLocation(s.description);
+    setSuggestions([]);
+    setSuggestionsOpen(false);
+    setActiveSuggestion(-1);
+  };
+
+  const onLocationKeyDown = (e) => {
+    if (!suggestionsOpen || suggestions.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveSuggestion((i) => (i + 1) % suggestions.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveSuggestion((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+    } else if (e.key === "Enter") {
+      if (activeSuggestion >= 0 && activeSuggestion < suggestions.length) {
+        e.preventDefault();
+        onPickSuggestion(suggestions[activeSuggestion]);
+      }
+      // else: let the form's native submit run (Enter with no active pick).
+    } else if (e.key === "Escape") {
+      setSuggestionsOpen(false);
+      setActiveSuggestion(-1);
+    }
+  };
+
+  // Cleanup on unmount — cancel any in-flight autocomplete fetch and clear
+  // the pending debounce timer so they don't try to setState after unmount.
+  useEffect(() => {
+    return () => {
+      if (suggestionsDebounceRef.current) clearTimeout(suggestionsDebounceRef.current);
+      if (suggestionsAbortRef.current) suggestionsAbortRef.current.abort();
+    };
+  }, []);
+
   // -------- search state --------
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -10803,6 +10903,9 @@ function FindView({ embedded = false } = {}) {
     setLocalExpertResults(null);
     setError("");
     setSourcesExpanded(false);
+    setSuggestions([]);
+    setSuggestionsOpen(false);
+    setActiveSuggestion(-1);
     try { window.localStorage.removeItem(FIND_LS_KEY); } catch {}
     writeFindParams({ q: "", c: "both", g: "" });
   }
@@ -10845,18 +10948,53 @@ function FindView({ embedded = false } = {}) {
 
         {/* Search form */}
         <form onSubmit={onSubmit} style={{ display: "flex", flexDirection: "column", gap: "14px", padding: "16px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-lg)", background: "var(--color-background-primary)", marginBottom: "1.25rem" }}>
-          <Field label="Location" hint="City, neighborhood, or landmark.">
-            <input
-              type="text"
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              placeholder="Santa Fe, NM"
-              autoComplete="off"
-              autoCapitalize="words"
-              spellCheck={false}
-              enterKeyHint="search"
-              style={{ fontSize: "16px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box" }}
-            />
+          <Field label="Location" hint="City, neighborhood, or landmark. Pick a suggestion to avoid ambiguous matches.">
+            <div style={{ position: "relative" }}>
+              <input
+                type="text"
+                value={location}
+                onChange={(e) => onLocationChange(e.target.value)}
+                onKeyDown={onLocationKeyDown}
+                onFocus={() => { if (suggestions.length > 0) setSuggestionsOpen(true); }}
+                onBlur={() => { setTimeout(() => setSuggestionsOpen(false), 150); }}
+                placeholder="Santa Fe, NM"
+                autoComplete="off"
+                autoCapitalize="words"
+                spellCheck={false}
+                enterKeyHint="search"
+                role="combobox"
+                aria-expanded={suggestionsOpen}
+                aria-autocomplete="list"
+                aria-controls="find-location-suggestions"
+                style={{ fontSize: "16px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box" }}
+              />
+              {suggestionsLoading && (
+                <span style={{ position: "absolute", right: "12px", top: "50%", transform: "translateY(-50%)", fontSize: "11px", color: "var(--color-text-tertiary)", fontStyle: "italic" }}>…</span>
+              )}
+              {suggestionsOpen && suggestions.length > 0 && (
+                <ul
+                  id="find-location-suggestions"
+                  role="listbox"
+                  style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20, margin: 0, padding: "6px 0", listStyle: "none", background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", boxShadow: "0 6px 20px rgba(0,0,0,0.12)", maxHeight: "260px", overflowY: "auto" }}
+                >
+                  {suggestions.map((s, i) => (
+                    <li key={s.place_id || s.description} role="option" aria-selected={i === activeSuggestion}>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => onPickSuggestion(s)}
+                        style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 14px", background: i === activeSuggestion ? "var(--color-background-secondary)" : "transparent", border: "none", cursor: "pointer", fontFamily: "inherit" }}
+                      >
+                        <span style={{ display: "block", fontSize: "13.5px", color: "var(--color-text-primary)", fontWeight: 500 }}>{s.main_text}</span>
+                        {s.secondary_text && (
+                          <span style={{ display: "block", fontSize: "11.5px", color: "var(--color-text-secondary)", marginTop: "1px" }}>{s.secondary_text}</span>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </Field>
 
           <Field label="Show">
