@@ -36,7 +36,7 @@ function makeItemPhotoKey(text, city) {
   return `${String(text || "").trim().toLowerCase().slice(0, 80)}|${String(city || "").trim().toLowerCase().slice(0, 30)}`;
 }
 
-const COLOR = {
+export const COLOR = {
   ink: [17, 17, 17],          // body text
   inkSoft: [85, 85, 85],      // secondary
   inkFaint: [140, 140, 140],  // meta / footer
@@ -47,7 +47,7 @@ const COLOR = {
   bgChip: [232, 244, 246],    // pale teal tint for chips
 };
 
-const FONT = {
+export const FONT = {
   sans: "helvetica",
   serif: "times",
 };
@@ -55,7 +55,7 @@ const FONT = {
 // Page geometry — US Letter portrait. Tightened margins (15mm vs 18mm) to
 // give content ~12% more usable area per page and reduce the airy feel users
 // were complaining about. Still leaves a printable safe zone.
-const PAGE = {
+export const PAGE = {
   width: 215.9,   // mm (letter)
   height: 279.4,  // mm (letter)
   marginX: 15,
@@ -77,7 +77,7 @@ const PAGE = {
 // already-formatted '8:00 AM', durations like '4h 35m', empty values).
 // Mirrors the formatTime() helper in App.jsx so the PDF and the live UI
 // always display times the same way.
-function to12h(t) {
+export function to12h(t) {
   if (!t || typeof t !== "string") return t || "";
   const s = t.trim();
   if (/[AaPp][Mm]\b/.test(s)) return s; // already 12h
@@ -134,7 +134,7 @@ function foldDiacritics(s) {
   return out.replace(DIACRITIC_RE, (ch) => DIACRITIC_FOLDS[ch] || ch);
 }
 
-function asciiSafe(s) {
+export function asciiSafe(s) {
   if (s == null) return "";
   let out = String(s)
     // Directional arrows -> ASCII tokens.
@@ -198,7 +198,7 @@ function asciiSafe(s) {
 // PdfCursor — a tiny stateful helper for layout. Tracks current Y, page count,
 // and provides primitives the rest of the module uses without repeating boiler.
 // -----------------------------------------------------------------------------
-function makeCursor(pdf) {
+export function makeCursor(pdf) {
   const state = {
     y: PAGE.marginTop,
     page: 1,
@@ -469,11 +469,11 @@ function makeCursor(pdf) {
 // -----------------------------------------------------------------------------
 // Helpers — URL builders, label formatters, safe getters.
 // -----------------------------------------------------------------------------
-function mapsUrl(address) {
+export function mapsUrl(address) {
   if (!address) return null;
   return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(address);
 }
-function telUrl(phone) {
+export function telUrl(phone) {
   if (!phone) return null;
   const cleaned = String(phone).replace(/[^\d+]/g, "");
   if (!cleaned) return null;
@@ -501,8 +501,8 @@ function carrierBookUrl(carrier) {
   if (c.includes("jal") || c.includes("japan airlines")) return "https://www.jal.com";
   return null;
 }
-function safe(s) { return s == null ? "" : String(s); }
-function titleCase(s) {
+export function safe(s) { return s == null ? "" : String(s); }
+export function titleCase(s) {
   if (!s) return s;
   return String(s).replace(/\b\w/g, c => c.toUpperCase());
 }

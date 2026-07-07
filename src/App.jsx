@@ -10811,6 +10811,47 @@ function FindView({ embedded = false } = {}) {
   const hasActivities = (results?.activities?.length || 0) > 0;
   const showSectionToggle = !!results && hasRestaurants && hasActivities;
 
+  // -------- PDF export --------
+  // Lets the user take a location's restaurant/activity list offline (or
+  // share it) with live tel:/website/booking/maps hyperlinks intact —
+  // /find previously had no export option at all. Mirrors the full
+  // itinerary's "Save as PDF" pattern: lazy-import the PDF module so its
+  // jsPDF dependency never loads on the initial /find bundle.
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfStatus, setPdfStatus] = useState("");
+  const [pdfError, setPdfError] = useState("");
+
+  const onDownloadPdf = async () => {
+    if (!results || pdfBusy) return;
+    setPdfBusy(true);
+    setPdfError("");
+    setPdfStatus("Preparing\u2026");
+    try {
+      const buildId = (typeof __BUILD_ID__ !== "undefined" && __BUILD_ID__) ? String(__BUILD_ID__) : "";
+      const { buildFindPdf } = await import("./pdf/findPdf.js");
+      const payload = {
+        location: results.queryUsed.location,
+        category: results.queryUsed.category,
+        guidelines: results.queryUsed.guidelines,
+        note: results.note,
+        restaurants: results.restaurants,
+        activities: results.activities,
+        localExpert: localExpertResults
+          ? { restaurants: localExpertResults.restaurants, activities: localExpertResults.activities }
+          : null,
+      };
+      const pdf = await buildFindPdf(payload, { setStatus: setPdfStatus, buildId });
+      setPdfStatus("Saving\u2026");
+      const safeLocation = String(results.queryUsed.location || "find").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "find";
+      pdf.save(`routesmith-find-${safeLocation}.pdf`);
+    } catch (err) {
+      setPdfError(`Couldn't build the PDF. ${String(err?.message || err).slice(0, 120)}`);
+    } finally {
+      setPdfBusy(false);
+      setPdfStatus("");
+    }
+  };
+
   return (
     <URLVerifyContext.Provider value={verifyContextValue}>
       {/* Find page container. Wider than the wizard's because once results
@@ -10928,11 +10969,26 @@ function FindView({ embedded = false } = {}) {
                 </>
               )}
             </span>
-            <a
-              href="#top"
-              onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); }}
-              style={{ color: ACCENT, textDecoration: "none", fontSize: "11px", letterSpacing: "0.06em", textTransform: "uppercase", whiteSpace: "nowrap" }}
-            >Edit</a>
+            <span style={{ display: "flex", gap: "14px", alignItems: "center", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={onDownloadPdf}
+                disabled={pdfBusy}
+                style={{ display: "inline-flex", alignItems: "center", gap: "5px", background: "transparent", border: "none", padding: 0, color: pdfBusy ? "var(--color-text-tertiary)" : ACCENT, fontSize: "11px", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600, cursor: pdfBusy ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+              ><span aria-hidden="true">⤓</span> {pdfBusy ? (pdfStatus || "Preparing…") : "Save as PDF"}</button>
+              <a
+                href="#top"
+                onClick={(e) => { e.preventDefault(); window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); }}
+                style={{ color: ACCENT, textDecoration: "none", fontSize: "11px", letterSpacing: "0.06em", textTransform: "uppercase", whiteSpace: "nowrap" }}
+              >Edit</a>
+            </span>
+          </div>
+        )}
+
+        {/* PDF export error — non-blocking, results stay visible */}
+        {pdfError && (
+          <div role="alert" style={{ padding: "8px 14px", marginBottom: "1rem", background: "var(--color-danger-tint)", border: "0.5px solid var(--color-text-danger)", borderRadius: "var(--border-radius-md)", color: "var(--color-danger-hover)", fontSize: "12px", lineHeight: 1.5 }}>
+            {pdfError}
           </div>
         )}
 
