@@ -1087,20 +1087,29 @@ function renderDay(cur, day, index, opts = {}) {
   // Reserve room before starting a day. 55mm fits a day label + headline +
   // 1 item without orphaning. Previous 72mm left up to 71mm of blank space
   // at the bottom of pages before a day header.
-  cur.ensureSpace(55);
+  //
+  // When a city-photo banner leads the day it consumes ~91mm (87mm image +
+  // 4mm gap) BEFORE the label is drawn. The reserve must include that height,
+  // or the banner eats into the 55mm and the label spills past the page
+  // content area — where the globally-positioned footer then paints on top of
+  // it (RCA bug F). Compute the reserve from the actual banner height rather
+  // than hardcoding a bigger constant.
+  const DAY_HEADER_RESERVE = 55;
+  // 3:2 aspect ratio, centered — same proportions as the cover photo.
+  const bannerPhotoW = 130;
+  const bannerPhotoH = Math.round(bannerPhotoW * (2 / 3)); // 87mm
+  const bannerBlockH = cityPhoto ? bannerPhotoH + 4 : 0;   // image + 4mm gap
+  cur.ensureSpace(bannerBlockH + DAY_HEADER_RESERVE);
 
   // City photo banner — full-width landscape image shown on the first day
   // of each new city (passed in via opts.cityPhoto). Provides visual
   // interest without requiring every day to have its own photo fetch.
   if (cityPhoto) {
-    // 3:2 aspect ratio, centered — same proportions as the cover photo.
-    const photoW = 130;
-    const photoH = Math.round(photoW * (2 / 3)); // 87mm
-    const photoX = (PAGE.width - photoW) / 2;
+    const photoX = (PAGE.width - bannerPhotoW) / 2;
     try {
       const imgFmt = cityPhoto.match(/^data:image\/(\w+);/)?.[1]?.toUpperCase() ?? "JPEG";
-      pdf.addImage(cityPhoto, imgFmt, photoX, cur.state.y, photoW, photoH, undefined, "FAST");
-      cur.state.y += photoH + 4;
+      pdf.addImage(cityPhoto, imgFmt, photoX, cur.state.y, bannerPhotoW, bannerPhotoH, undefined, "FAST");
+      cur.state.y += bannerPhotoH + 4;
     } catch { /* silently skip — text-only fallback */ }
   }
 
@@ -1121,6 +1130,12 @@ function renderDay(cur, day, index, opts = {}) {
   const labelMaxW = PAGE.width - PAGE.marginX * 2;
   const labelLines = pdf.splitTextToSize(asciiSafe(labelText.toUpperCase()), labelMaxW);
   const labelLineH = (10 * 1.2) / 2.83465; // pt -> mm, tight leading for caps
+  // Guard the raw pdf.text draw with a pagination check: splitTextToSize can
+  // return more lines than the up-front reserve assumed for an unusually long
+  // label, and raw pdf.text (unlike cur.text) does not page-break on its own —
+  // it would draw straight into the footer band. ensureSpace moves the whole
+  // label block to a fresh page when it can't fit (RCA bug F).
+  cur.ensureSpace(labelLines.length * labelLineH);
   labelLines.forEach((ln, i) => {
     pdf.text(ln, PAGE.marginX, cur.state.y + i * labelLineH);
   });
