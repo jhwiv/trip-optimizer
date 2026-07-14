@@ -1,18 +1,21 @@
-// Tests for the flight-time single-source-of-truth helpers in
-// src/pdf/itineraryPdf.js (RCA bugs A / B / C):
-//   • flightStampTime              — schedule stamp reads resolved depart_time
-//                                     (bug A), never the stale model item.time
+// Tests for the day-sort / note-contradiction helpers in
+// src/pdf/itineraryPdf.js (RCA bugs B / C):
 //   • isOvernightArrivalFlight     — overnight-arrival detection (bug B tie-break)
 //   • sortDayItems                 — numeric minute-of-day sort with the
 //                                     overnight-arrival-first tie-break (bug B)
 //   • flightNoteContradictsSchedule — untrusted confirmation_note time claims
 //                                     (bug C)
 //
+// Bug A (schedule stamp reads resolved depart_time) has been reverted from
+// this branch: the resolver's live-schedule path falls back to the model's
+// fabricated times when the schedule fetch is empty, so routing the stamp
+// through fl.depart_time propagates the fabrication. The upstream resolver
+// fix is being tracked separately — see the PR body for the diagnosis.
+//
 // Pure functions; jsPDF is only imported inside the builder, so importing the
 // module here needs no DOM.
 
 import {
-  flightStampTime,
   isOvernightArrivalFlight,
   sortDayItems,
   flightNoteContradictsSchedule,
@@ -28,18 +31,6 @@ const flightItem = (time, depart, arrive) => ({
   time, type: "Flight", flight: { depart_time: depart, arrive_time: arrive },
 });
 const groundItem = (time, type = "Activity") => ({ time, type });
-
-console.log("=== flightStampTime (RCA bug A) ===");
-assert("flight item uses resolved depart_time, not stale item.time",
-  flightStampTime(flightItem("11:05 AM", "5:05 PM", "8:30 PM")) === "5:05 PM",
-  flightStampTime(flightItem("11:05 AM", "5:05 PM", "8:30 PM")));
-assert("falls back to item.time when flight has no depart_time",
-  flightStampTime({ time: "9:00 AM", flight: { arrive_time: "6:00 AM" } }) === "9:00 AM");
-assert("falls back to item.time when depart_time is blank",
-  flightStampTime({ time: "9:00 AM", flight: { depart_time: "   " } }) === "9:00 AM");
-assert("non-flight item uses item.time", flightStampTime(groundItem("1:15 AM")) === "1:15 AM");
-assert("missing everything → empty string", flightStampTime({}) === "");
-assert("null item → empty string", flightStampTime(null) === "");
 
 console.log("=== isOvernightArrivalFlight (RCA bug B) ===");
 assert("overnight (arrive 6:00 AM < depart 3:35 PM) → true",
