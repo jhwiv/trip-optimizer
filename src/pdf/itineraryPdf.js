@@ -616,6 +616,39 @@ export function formatTripMonthYear(startDate, nights) {
   return `${MONTH_NAMES[sM]} ${sY} – ${MONTH_NAMES[eM]} ${eY}`;
 }
 
+// Reconstruct a prompt-like paragraph from the structured "What You Told Us"
+// fields, for legacy trips saved before the free-text prompt was captured.
+// Used ONLY when inputs.narrative is missing/empty — a real prompt is always
+// shown verbatim. Empty fields drop out so we never print "for ." or a
+// dangling "Budget:". Returns "" when there's nothing meaningful to say.
+export function buildLegacyRequestText(inputs) {
+  const b = (inputs && inputs.basics) || {};
+  const h = (inputs && inputs.hotel) || {};
+  const v = x => safe(x).trim();
+
+  let lead = "Plan a";
+  const nights = v(b.nights);
+  const style = v(b.style);
+  if (nights) lead += ` ${nights}-night`;
+  if (style) lead += ` ${style}`;
+  lead += " trip";
+  if (v(b.destination)) lead += ` to ${v(b.destination)}`;
+  if (v(b.startDate)) lead += ` starting ${v(b.startDate)}`;
+  if (v(b.travelers)) lead += ` for ${v(b.travelers)}`;
+  lead += ".";
+
+  const parts = [lead];
+  if (v(b.pace)) parts.push(`Pace: ${v(b.pace)}.`);
+  if (v(b.budget)) parts.push(`Budget: ${v(b.budget)}.`);
+  const hotel = [v(h.tier), v(h.brand)].filter(Boolean).join(" ");
+  if (hotel) parts.push(`Hotel: ${hotel}.`);
+  if (v(h.mustHave)) parts.push(`Notes: ${v(h.mustHave)}.`);
+
+  // "Plan a trip." with no destination or qualifiers isn't worth showing.
+  const meaningful = v(b.destination) || v(b.startDate) || nights || style || v(b.travelers) || parts.length > 1;
+  return meaningful ? parts.join(" ") : "";
+}
+
 // Human-friendly transport modes actually used in the trip, derived from the
 // ground-transport steps in the day-by-day (NOT the user's stated preference).
 // Returns { modes: [labels], rentalUsed: bool }. A rental-car brand is only
@@ -671,6 +704,58 @@ function transportSummaryLine(data, t = {}) {
       .join(" + ");
   }
   return profile || null;
+}
+
+// Render the traveler's request as an indented blockquote with a teal
+// left-border. Paragraph breaks in the source are preserved (each paragraph
+// wraps to width independently). When `reconstructed` is true a small italic
+// note flags that the text was synthesized from trip inputs, not the original
+// prompt.
+function renderRequestQuote(cur, requestText, reconstructed) {
+  const { pdf } = cur;
+  const indent = 6;
+  const maxWidth = PAGE.width - PAGE.marginX * 2 - indent;
+  const yStart = cur.state.y;
+  const pageStart = cur.state.page;
+
+  const paras = String(requestText)
+    .split(/\n{2,}/)
+    .map(p => p.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const blocks = paras.length ? paras : [String(requestText)];
+  blocks.forEach((p, i) => {
+    cur.text(p, {
+      x: PAGE.marginX + indent,
+      maxWidth,
+      font: FONT.serif,
+      style: "italic",
+      size: 10.5,
+      color: COLOR.inkSoft,
+      leading: 1.35,
+      space: i === 0 ? 0 : 2,
+    });
+  });
+
+  // Teal left-border, drawn after the text so its height is known. Only spans
+  // the starting page — cover content fits on page 1 in practice.
+  if (cur.state.page === pageStart && cur.state.y > yStart) {
+    cur.setDraw(COLOR.accent);
+    pdf.setLineWidth(0.8);
+    pdf.line(PAGE.marginX + 1.5, yStart, PAGE.marginX + 1.5, cur.state.y);
+  }
+
+  if (reconstructed) {
+    cur.text("(reconstructed from trip inputs — original prompt not captured)", {
+      x: PAGE.marginX + indent,
+      maxWidth,
+      font: FONT.sans,
+      style: "italic",
+      size: 8,
+      color: COLOR.inkFaint,
+      leading: 1.3,
+      space: 1.5,
+    });
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -830,6 +915,25 @@ function renderCover(cur, data, inputs, opts = {}) {
     // They're the user's raw input; the trip plan that follows already
     // reflects them. Re-printing them earlier added 4–6 pages of dense prose
     // that the user explicitly called out as too much.
+
+    // "Your Request" — the traveler's own words. A captured free-text prompt
+    // (inputs.narrative) is shown verbatim; legacy trips with none fall back to
+    // a paragraph reconstructed from the fields above, flagged as such. Header
+    // mirrors "WHAT YOU TOLD US" exactly.
+    const verbatim = safe(inputs.narrative).trim();
+    const requestText = verbatim || buildLegacyRequestText(inputs);
+    if (requestText) {
+      cur.space(4);
+      pdf.setFont(FONT.sans, "bold");
+      pdf.setFontSize(9);
+      pdf.setCharSpace(1.0);
+      cur.setColor(COLOR.accent);
+      pdf.text("YOUR REQUEST", PAGE.marginX, cur.state.y);
+      pdf.setCharSpace(0);
+      cur.space(4);
+
+      renderRequestQuote(cur, requestText, !verbatim);
+    }
   }
 
   // Generated stamp removed from the cover body. Now that day-by-day content
