@@ -12,7 +12,7 @@
 // answer here rather than passing by CI-happens-to-be-UTC luck.
 process.env.TZ = "America/Chicago";
 
-import { formatTripMonthYear, buildLegacyRequestText } from "../src/pdf/itineraryPdf.js";
+import { formatTripMonthYear, buildLegacyRequestText, endSentence } from "../src/pdf/itineraryPdf.js";
 
 let passed = 0, failed = 0;
 function assert(name, cond, detail = "") {
@@ -52,7 +52,35 @@ assert("missing nights treated as 0",
   formatTripMonthYear("2026-09-03") === "September 2026",
   String(formatTripMonthYear("2026-09-03")));
 
+console.log("=== endSentence (RCA bug E) ===");
+assert("appends '.' when unterminated", endSentence("Include Bruges Belgium") === "Include Bruges Belgium.");
+assert("does NOT double a trailing period", endSentence("Include Bruges Belgium.") === "Include Bruges Belgium.");
+assert("leaves a trailing '?' alone", endSentence("Any rooftop bars?") === "Any rooftop bars?");
+assert("leaves a trailing '!' alone", endSentence("No red-eyes please!") === "No red-eyes please!");
+assert("leaves an ASCII ellipsis alone (no 4th dot)", endSentence("and so on...") === "and so on...");
+assert("leaves a unicode ellipsis alone", endSentence("and so on…") === "and so on…");
+assert("trims trailing whitespace before appending", endSentence("canal view  ") === "canal view.");
+assert("period followed by whitespace is treated as terminated", endSentence("Done.  ") === "Done.");
+assert("empty string passes through", endSentence("") === "");
+assert("whitespace-only passes through as empty", endSentence("   ") === "");
+assert("null passes through as empty", endSentence(null) === "");
+
 console.log("=== buildLegacyRequestText (Change 3) ===");
+{
+  // RCA bug E regression: a mustHave note that already ends in a period must
+  // not render "..Belgium.." in the "Your Request" block.
+  const out = buildLegacyRequestText({
+    basics: { destination: "Amsterdam" },
+    hotel: { mustHave: "Include Bruges Belgium." },
+  });
+  assert("no double period after pre-punctuated note",
+    out.includes("Notes: Include Bruges Belgium.") && !out.includes("Belgium.."), out);
+}
+{
+  // A question-mark note keeps its '?' rather than being forced to a period.
+  const out = buildLegacyRequestText({ basics: {}, hotel: { mustHave: "Any tips?" } });
+  assert("note keeps trailing '?'", out.includes("Notes: Any tips?") && !out.includes("tips?."), out);
+}
 {
   const out = buildLegacyRequestText({
     basics: { nights: 7, style: "relaxed", destination: "Amsterdam", startDate: "2026-09-03", travelers: "2 adults", pace: "easy", budget: "mid" },

@@ -572,6 +572,32 @@ export function deriveLegNights(data) {
   return legs.length >= 2 ? legs : null;
 }
 
+// Total code-derived nights per city, keyed by lower-cased city name, summed
+// across every contiguous leg (so a city visited twice — e.g. Amsterdam at the
+// start and end of an A→B→A trip — reports its combined night count). Returns
+// null when the split can't be derived, so callers omit the token rather than
+// fall back to the model's unverified count (CLAUDE.md: sums computed in code).
+export function deriveCityNights(data) {
+  const legs = deriveLegNights(data);
+  if (!legs) return null;
+  const totals = new Map();
+  for (const leg of legs) {
+    const key = safe(leg.city).trim().toLowerCase();
+    if (!key) continue;
+    totals.set(key, (totals.get(key) || 0) + leg.nights);
+  }
+  return totals.size ? totals : null;
+}
+
+// Look up the derived nights for a display city name in the map returned by
+// deriveCityNights. Returns null (→ omit token) when the map is missing or the
+// city has no derived entry.
+function lookupCityNights(totals, name) {
+  if (!totals) return null;
+  const n = totals.get(safe(name).trim().toLowerCase());
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 // Rewrite the misleading "N nights (a+b)" token in the meta line with the real
 // leg breakdown, e.g. "7 nights (3+3+1)". Leaves meta untouched when the split
 // can't be derived (single leg, missing city data) or meta carries no nights
@@ -616,6 +642,16 @@ export function formatTripMonthYear(startDate, nights) {
   return `${MONTH_NAMES[sM]} ${sY} – ${MONTH_NAMES[eM]} ${eY}`;
 }
 
+// Append a single sentence-terminating period unless the (trimmed) string
+// already ends in one — so a field value that arrived pre-punctuated ("Include
+// Bruges Belgium." / "Any tips?" / "wow!" / "and so on…") is not doubled up.
+// Empty/blank input passes through untouched.
+export function endSentence(str) {
+  const s = safe(str).trim();
+  if (!s) return s;
+  return /[.!?…]$/.test(s) ? s : `${s}.`;
+}
+
 // Reconstruct a prompt-like paragraph from the structured "What You Told Us"
 // fields, for legacy trips saved before the free-text prompt was captured.
 // Used ONLY when inputs.narrative is missing/empty — a real prompt is always
@@ -635,14 +671,14 @@ export function buildLegacyRequestText(inputs) {
   if (v(b.destination)) lead += ` to ${v(b.destination)}`;
   if (v(b.startDate)) lead += ` starting ${v(b.startDate)}`;
   if (v(b.travelers)) lead += ` for ${v(b.travelers)}`;
-  lead += ".";
+  lead = endSentence(lead);
 
   const parts = [lead];
-  if (v(b.pace)) parts.push(`Pace: ${v(b.pace)}.`);
-  if (v(b.budget)) parts.push(`Budget: ${v(b.budget)}.`);
+  if (v(b.pace)) parts.push(endSentence(`Pace: ${v(b.pace)}`));
+  if (v(b.budget)) parts.push(endSentence(`Budget: ${v(b.budget)}`));
   const hotel = [v(h.tier), v(h.brand)].filter(Boolean).join(" ");
-  if (hotel) parts.push(`Hotel: ${hotel}.`);
-  if (v(h.mustHave)) parts.push(`Notes: ${v(h.mustHave)}.`);
+  if (hotel) parts.push(endSentence(`Hotel: ${hotel}`));
+  if (v(h.mustHave)) parts.push(endSentence(`Notes: ${v(h.mustHave)}`));
 
   // "Plan a trip." with no destination or qualifiers isn't worth showing.
   const meaningful = v(b.destination) || v(b.startDate) || nights || style || v(b.travelers) || parts.length > 1;
@@ -846,8 +882,10 @@ function renderCover(cur, data, inputs, opts = {}) {
   // reads as a clean list instead of a single run-on sentence.
   if (Array.isArray(data?.cities) && data.cities.length > 1) {
     cur.space(2);
+    const cityNights = deriveCityNights(data);
     data.cities.forEach((c, i) => {
-      const line = `${i + 1}. ${c.name}${c.nights ? ` · ${c.nights}n` : ""}${c.focus ? ` — ${c.focus}` : ""}`;
+      const n = lookupCityNights(cityNights, c.name);
+      const line = `${i + 1}. ${c.name}${n ? ` · ${n}n` : ""}${c.focus ? ` — ${c.focus}` : ""}`;
       cur.text(line, { font: FONT.sans, style: "italic", size: 10, color: COLOR.inkSoft, leading: 1.35 });
     });
   }
@@ -873,8 +911,12 @@ function renderCover(cur, data, inputs, opts = {}) {
     const dn = inputs.dining || {};
     const it = inputs.interests || {};
 
+    const routeCityNights = deriveCityNights(data);
     const citiesLine = Array.isArray(b.cities) && b.cities.length > 1
-      ? b.cities.map((c, i) => `${i + 1}) ${c.name} — ${c.nights}n${c.focus ? ` (${c.focus})` : ""}`).join("  ")
+      ? b.cities.map((c, i) => {
+          const n = lookupCityNights(routeCityNights, c.name);
+          return `${i + 1}) ${c.name}${n ? ` — ${n}n` : ""}${c.focus ? ` (${c.focus})` : ""}`;
+        }).join("  ")
       : null;
 
     const rows = [
@@ -1045,20 +1087,29 @@ function renderDay(cur, day, index, opts = {}) {
   // Reserve room before starting a day. 55mm fits a day label + headline +
   // 1 item without orphaning. Previous 72mm left up to 71mm of blank space
   // at the bottom of pages before a day header.
-  cur.ensureSpace(55);
+  //
+  // When a city-photo banner leads the day it consumes ~91mm (87mm image +
+  // 4mm gap) BEFORE the label is drawn. The reserve must include that height,
+  // or the banner eats into the 55mm and the label spills past the page
+  // content area — where the globally-positioned footer then paints on top of
+  // it (RCA bug F). Compute the reserve from the actual banner height rather
+  // than hardcoding a bigger constant.
+  const DAY_HEADER_RESERVE = 55;
+  // 3:2 aspect ratio, centered — same proportions as the cover photo.
+  const bannerPhotoW = 130;
+  const bannerPhotoH = Math.round(bannerPhotoW * (2 / 3)); // 87mm
+  const bannerBlockH = cityPhoto ? bannerPhotoH + 4 : 0;   // image + 4mm gap
+  cur.ensureSpace(bannerBlockH + DAY_HEADER_RESERVE);
 
   // City photo banner — full-width landscape image shown on the first day
   // of each new city (passed in via opts.cityPhoto). Provides visual
   // interest without requiring every day to have its own photo fetch.
   if (cityPhoto) {
-    // 3:2 aspect ratio, centered — same proportions as the cover photo.
-    const photoW = 130;
-    const photoH = Math.round(photoW * (2 / 3)); // 87mm
-    const photoX = (PAGE.width - photoW) / 2;
+    const photoX = (PAGE.width - bannerPhotoW) / 2;
     try {
       const imgFmt = cityPhoto.match(/^data:image\/(\w+);/)?.[1]?.toUpperCase() ?? "JPEG";
-      pdf.addImage(cityPhoto, imgFmt, photoX, cur.state.y, photoW, photoH, undefined, "FAST");
-      cur.state.y += photoH + 4;
+      pdf.addImage(cityPhoto, imgFmt, photoX, cur.state.y, bannerPhotoW, bannerPhotoH, undefined, "FAST");
+      cur.state.y += bannerPhotoH + 4;
     } catch { /* silently skip — text-only fallback */ }
   }
 
@@ -1079,6 +1130,12 @@ function renderDay(cur, day, index, opts = {}) {
   const labelMaxW = PAGE.width - PAGE.marginX * 2;
   const labelLines = pdf.splitTextToSize(asciiSafe(labelText.toUpperCase()), labelMaxW);
   const labelLineH = (10 * 1.2) / 2.83465; // pt -> mm, tight leading for caps
+  // Guard the raw pdf.text draw with a pagination check: splitTextToSize can
+  // return more lines than the up-front reserve assumed for an unusually long
+  // label, and raw pdf.text (unlike cur.text) does not page-break on its own —
+  // it would draw straight into the footer band. ensureSpace moves the whole
+  // label block to a fresh page when it can't fit (RCA bug F).
+  cur.ensureSpace(labelLines.length * labelLineH);
   labelLines.forEach((ln, i) => {
     pdf.text(ln, PAGE.marginX, cur.state.y + i * labelLineH);
   });
