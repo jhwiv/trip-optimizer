@@ -531,6 +531,46 @@ export function flightStampTime(item) {
   return safe(item?.time);
 }
 
+// A flight is an overnight arrival for the day it renders on when its arrival
+// clock time is earlier in the day than its departure — i.e. it crossed
+// midnight, so the departure stamp belongs to the PREVIOUS calendar day and the
+// flight is the precondition for every ground step that day. Such a flight must
+// lead the day regardless of its (late-afternoon/evening) departure clock time
+// (RCA bug B). A same-day departure (Day 8 return, arrive_time > depart_time)
+// is NOT overnight and sorts naturally by clock time → last event of the day.
+export function isOvernightArrivalFlight(item) {
+  const fl = item?.flight;
+  if (!fl) return false;
+  const dep = parseClockToMinutes(fl.depart_time);
+  const arr = parseClockToMinutes(fl.arrive_time);
+  return dep !== null && arr !== null && arr < dep;
+}
+
+// Sort a day's items chronologically by minute-of-day (0–1439) parsed from the
+// schedule stamp, replacing the old lexicographic string sort that ordered
+// "3:35 PM" / "1:15 AM" by character code across the noon boundary (RCA bug B).
+// Rules:
+//   • Overnight arrival flights are pinned to the front of the day (their
+//     departure stamp is a previous-calendar-day instant; every ground step is
+//     downstream of the landing).
+//   • Otherwise sort ascending by parsed minute-of-day.
+//   • Unparseable times sort to the END, preserving their relative order.
+// The sort is stable (Array.prototype.sort), so equal keys keep input order.
+// Mutates and returns the array, matching the previous in-place .sort() call.
+export function sortDayItems(items) {
+  if (!Array.isArray(items)) return items;
+  const key = (item) => {
+    const m = parseClockToMinutes(flightStampTime(item));
+    return m === null ? Number.POSITIVE_INFINITY : m;
+  };
+  return items.sort((a, b) => {
+    const aPin = isOvernightArrivalFlight(a);
+    const bPin = isOvernightArrivalFlight(b);
+    if (aPin !== bPin) return aPin ? -1 : 1;
+    return key(a) - key(b);
+  });
+}
+
 // Extract explicit clock-time claims (minutes-of-day) asserted in free prose:
 // the word anchors "midnight"/"noon" plus any HH:MM (optionally AM/PM).
 function extractTimeClaims(text) {
@@ -1178,8 +1218,9 @@ function renderDay(cur, day, index, opts = {}) {
 
   // Items
   const items = Array.isArray(day.items) ? day.items : [];
-  // Sort chronologically by time string ("HH:MM")
-  items.sort((a, b) => String(a.time || "").localeCompare(String(b.time || "")));
+  // Sort chronologically by minute-of-day, pinning an overnight flight arrival
+  // to the front of the day (RCA bug B — see sortDayItems).
+  sortDayItems(items);
 
   items.forEach((item, i) => renderItem(cur, item, i === items.length - 1, itemPhotos, dayCity));
 }
