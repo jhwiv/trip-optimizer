@@ -1536,24 +1536,47 @@ function renderFlightBlock(cur, fl, x, maxW) {
   const ident = _fn
     ? (_selfPrefixed ? _fn : [fl.carrier, _fn].filter(Boolean).join(" "))
     : (fl.carrier || "");
+  // _verifyTrusted marks the App.jsx verify-fallback case (App.jsx:6990-7001)
+  // where /api/flights-search returned nothing usable and the pipeline kept
+  // the MODEL's fabricated depart_time / arrive_time / duration as a last
+  // resort so applyQualityLayer's strip wouldn't null the flight number and
+  // leave a blank card. _scheduleVerified is stamped alongside it, but that
+  // flag's contract is "protect the number from strip," NOT "the times are
+  // correct." When _verifyTrusted is set, the times shown are the model's
+  // best guess and can be internally inconsistent (real observed case:
+  // DL9374 "5:05 PM → 8:25 PM · 10h 20m" — those three values cannot all be
+  // true in any timezone). Drop the duration on the headline in this case so
+  // we don't propagate an inconsistent-with-itself fabrication, and swap the
+  // "Verify" qualifier below for a stronger, times-inclusive nudge. Times
+  // themselves are kept on the headline because the user has to book
+  // something; the qualifier is where the honesty comes through.
+  const _verifyTrusted = fl._verifyTrusted === true;
   const headline = [
     ident,
     [fl.from_airport, to12h(fl.depart_time)].filter(Boolean).join(" "),
     "→",
     [fl.to_airport, to12h(fl.arrive_time)].filter(Boolean).join(" "),
-    fl.duration ? `· ${fl.duration}` : "",
+    (!_verifyTrusted && fl.duration) ? `· ${fl.duration}` : "",
     fl.nonstop ? "· nonstop" : (fl.connection ? `· via ${fl.connection}` : ""),
   ].filter(s => s && s !== "→ ").join(" ").replace(/\s+/g, " ").trim();
   if (headline) renderDetailLine(cur, "Flight", headline, x, maxW);
   if (fl.cabin) renderDetailLine(cur, "Cabin", fl.cabin, x, maxW);
-  if (fl.aircraft) renderDetailLine(cur, "Aircraft", fl.aircraft, x, maxW);
+  if (fl.aircraft && !_verifyTrusted) renderDetailLine(cur, "Aircraft", fl.aircraft, x, maxW);
   // Honesty qualifier — emit for EVERY flight block (outbound AND return) so the
   // card reads consistently regardless of direction. A flight number is the
   // scheduled operating flight, not a guaranteed booking; user-supplied numbers
   // still warrant a confirm-at-booking nudge. Only skipped when there is no
   // number at all (nothing to verify).
+  //
+  // When _verifyTrusted is set (verify-fallback case), the standard qualifier
+  // understates the risk: it says "number confirmed, verify at booking" when in
+  // reality NEITHER the number NOR the times were confirmed against the live
+  // schedule. Swap in a stronger, times-inclusive nudge.
   if (fl.flight_number) {
-    renderDetailLine(cur, "Verify", "Flight number is the scheduled operating flight — confirm at booking.", x, maxW);
+    const verifyCopy = _verifyTrusted
+      ? "Flight number and times could not be confirmed against the live schedule — verify all details directly with the airline before booking."
+      : "Flight number is the scheduled operating flight — confirm at booking.";
+    renderDetailLine(cur, "Verify", verifyCopy, x, maxW);
   }
   // #12 follow-up: when both /api/flights-search attempts (airline-filtered
   // + route-only retry) missed AND the model also omitted clock times, the
