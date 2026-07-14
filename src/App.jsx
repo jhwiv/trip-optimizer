@@ -40,9 +40,9 @@ function urlSearchFallback(name, destination) {
 }
 
 // Teal accent palette — matches the CSS custom properties in index.html.
-// ACCENT     = teal (#3f7d86) for borders, eyebrows, active states.
+// ACCENT     = teal (var(--color-accent)) for borders, eyebrows, active states.
 // ACCENT_LIGHT = pale teal tint for chip/pill backgrounds.
-// ACCENT_DARK  = deeper teal (#316169) for text on light surfaces.
+// ACCENT_DARK  = deeper teal (var(--color-accent-hover)) for text on light surfaces.
 // ON_ACCENT    = white, for text/icons rendered on a solid ACCENT fill.
 const ACCENT = "var(--color-accent)";
 const ACCENT_LIGHT = "var(--color-accent-tint)";
@@ -3811,7 +3811,7 @@ function WebExportSection({ data, inputs }) {
               padding: "8px 14px", fontSize: "11px", fontWeight: 600,
               letterSpacing: "0.08em", textTransform: "uppercase",
               background: copied ? "#2d6a4f" : "var(--color-surface-offset)",
-              color: copied ? "#fff" : "var(--color-text-secondary)",
+              color: copied ? "var(--color-white)" : "var(--color-text-secondary)",
               border: "1px solid var(--color-border-subtle)",
               borderRadius: "var(--border-radius-sm)",
               cursor: "pointer", fontFamily: "inherit",
@@ -6931,7 +6931,7 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
                 // time-proximity pick (substitution case) so the
                 // schedule's number replaces the model's fabricated one.
                 // pre-filter by carrier IATA to guarantee no cross-carrier
-                // pick can sneak through (same rule PR #108 enforced).
+                // pick can sneak through (same rule PR 108 enforced).
                 const wanted = String(t.fl.flight_number).trim().toUpperCase();
                 const exact = j.flights.find(x => typeof x.flightNumber === "string" && x.flightNumber.toUpperCase() === wanted);
                 if (exact) {
@@ -11499,22 +11499,22 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
   const a2hsSteps = {
     ios: (
       <ol style={{ fontSize: "11.5px", color: "rgba(255,255,255,0.72)", margin: 0, paddingLeft: "18px", lineHeight: 1.65 }}>
-        <li>Open in <strong style={{ color: "#fff" }}>Safari</strong> (required for iOS install).</li>
-        <li>Tap the <strong style={{ color: "#fff" }}>Share ↑</strong> icon at the bottom.</li>
-        <li>Tap <strong style={{ color: "#fff" }}>Add to Home Screen</strong>, then <strong style={{ color: "#fff" }}>Add</strong>.</li>
+        <li>Open in <strong style={{ color: "var(--color-white)" }}>Safari</strong> (required for iOS install).</li>
+        <li>Tap the <strong style={{ color: "var(--color-white)" }}>Share ↑</strong> icon at the bottom.</li>
+        <li>Tap <strong style={{ color: "var(--color-white)" }}>Add to Home Screen</strong>, then <strong style={{ color: "var(--color-white)" }}>Add</strong>.</li>
       </ol>
     ),
     android: (
       <ol style={{ fontSize: "11.5px", color: "rgba(255,255,255,0.72)", margin: 0, paddingLeft: "18px", lineHeight: 1.65 }}>
-        <li>Open in <strong style={{ color: "#fff" }}>Chrome</strong> or <strong style={{ color: "#fff" }}>Edge</strong>.</li>
-        <li>Tap the <strong style={{ color: "#fff" }}>⋮ menu</strong> in the top-right corner.</li>
-        <li>Tap <strong style={{ color: "#fff" }}>Add to Home screen</strong> and confirm.</li>
+        <li>Open in <strong style={{ color: "var(--color-white)" }}>Chrome</strong> or <strong style={{ color: "var(--color-white)" }}>Edge</strong>.</li>
+        <li>Tap the <strong style={{ color: "var(--color-white)" }}>⋮ menu</strong> in the top-right corner.</li>
+        <li>Tap <strong style={{ color: "var(--color-white)" }}>Add to Home screen</strong> and confirm.</li>
       </ol>
     ),
     desktop: (
       <ol style={{ fontSize: "11.5px", color: "rgba(255,255,255,0.72)", margin: 0, paddingLeft: "18px", lineHeight: 1.65 }}>
-        <li><strong style={{ color: "#fff" }}>Chrome / Edge:</strong> click the install icon in the address bar.</li>
-        <li><strong style={{ color: "#fff" }}>Safari (Mac):</strong> File → <strong style={{ color: "#fff" }}>Add to Dock</strong>.</li>
+        <li><strong style={{ color: "var(--color-white)" }}>Chrome / Edge:</strong> click the install icon in the address bar.</li>
+        <li><strong style={{ color: "var(--color-white)" }}>Safari (Mac):</strong> File → <strong style={{ color: "var(--color-white)" }}>Add to Dock</strong>.</li>
       </ol>
     ),
   };
@@ -11569,7 +11569,7 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
           </p>
           <h2
             id="app-intro-title"
-            style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: "clamp(30px, 7vw, 52px)", color: "#fff", margin: "0 0 5px", lineHeight: 1.08, fontWeight: 400 }}
+            style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontSize: "clamp(30px, 7vw, 52px)", color: "var(--color-white)", margin: "0 0 5px", lineHeight: 1.08, fontWeight: 400 }}
           >
             {slide.dest}
           </h2>
@@ -11584,7 +11584,7 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
           </div>
           {/* Plan Trip CTA */}
           <button type="button" onClick={() => triggerDismiss(slide)}
-            style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "15px 18px", fontSize: "13px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "#fff", color: "#1c2840" }}>
+            style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "15px 18px", fontSize: "13px", fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-white)", color: "#1c2840" }}>
             Plan Trip
           </button>
         </div>
