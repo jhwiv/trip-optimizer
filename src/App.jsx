@@ -2,6 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, Fra
 import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
+import { findArrivalOrderIssues } from "./arrivalOrderCheck.js";
 import { buildDateTable } from "./dateFacts.js";
 import { pickScheduledFlight, parseClockToMinutes, resolveAirlineIata, normalizeAirportCode } from "./flightSelect.js";
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
@@ -3517,6 +3518,19 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers
       );
       err.code = "VERIFICATION_BLOCK";
       err.issues = blockingIssues;
+      throw err;
+    }
+    // Arrival-day ordering gate (bug #3b). Block export if any day schedules a
+    // ground-transport / check-in / activity step EARLIER than the flight lands
+    // that day + a minimum connection buffer — a physically impossible ordering
+    // (ground before landing) reported on the Amsterdam→Bruges plan.
+    const arrivalIssues = findArrivalOrderIssues(data);
+    if (arrivalIssues.length > 0) {
+      const summary = arrivalIssues.slice(0, 3).map((iss) => iss.message).join(" ");
+      const more = arrivalIssues.length > 3 ? ` … and ${arrivalIssues.length - 3} more` : "";
+      const err = new Error(`Cannot export: ${summary}${more}`);
+      err.code = "ARRIVAL_ORDER";
+      err.issues = arrivalIssues;
       throw err;
     }
   }
