@@ -25,6 +25,8 @@
 // pool inside pickFromPool still constrains the carrier match before
 // any number lift, so the rule still holds.
 
+import { formatAirportLocalTime } from "./airportTz.js";
+
 // Classify what a flight needs from the resolver:
 //   "number" — no usable flight number AND not user-supplied. Run the
 //              full airline-filtered resolve (number + times).
@@ -145,8 +147,15 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
   if (!pick || typeof pick !== "object") return null;
   if (mode !== "number" && mode !== "times" && mode !== "verify") return null;
 
-  const toT = (iso) =>
-    iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined;
+  // Format schedule timestamps in the AIRPORT's local timezone, not the JS
+  // runtime's (UTC on Cloudflare Workers). Departures localize to the origin
+  // airport, arrivals to the destination — otherwise an overnight arrival
+  // prints its UTC wall-clock and reads as landing before/after the wrong
+  // day (bug #3a). pick.origin/pick.destination are IATA codes from the
+  // schedules worker; when either is missing or unmapped, formatAirportLocalTime
+  // falls back to a UTC render rather than inventing an offset.
+  const toDepart = (iso) => formatAirportLocalTime(iso, pick.origin);
+  const toArrive = (iso) => formatAirportLocalTime(iso, pick.destination);
 
   // Honesty check: in number-resolve mode, never lift a number whose
   // carrier prefix disagrees with the requested airline. pickFromPool
@@ -165,8 +174,8 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
   if (mode === "number") {
     return {
       flight_number: pick.flightNumber,
-      depart_time: currentFlight.depart_time || toT(pick.scheduledOut),
-      arrive_time: currentFlight.arrive_time || toT(pick.scheduledIn),
+      depart_time: currentFlight.depart_time || toDepart(pick.scheduledOut),
+      arrive_time: currentFlight.arrive_time || toArrive(pick.scheduledIn),
       ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
       _scheduleVerified: true,
       _autoResolvedFlightNumber: true,
@@ -189,8 +198,8 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
         typeof pick.flightNumber === "string" ? pick.flightNumber.slice(0, 2).toUpperCase() : "";
       if (pickPrefix && pickPrefix !== airlineIata.toUpperCase()) {
         return {
-          depart_time: toT(pick.scheduledOut) || currentFlight.depart_time,
-          arrive_time: toT(pick.scheduledIn) || currentFlight.arrive_time,
+          depart_time: toDepart(pick.scheduledOut) || currentFlight.depart_time,
+          arrive_time: toArrive(pick.scheduledIn) || currentFlight.arrive_time,
           ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
           _scheduleVerified: true,
           _resolveSource: source || "airline",
@@ -212,8 +221,8 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
     const overrode = currentNum !== pickNum;
     return {
       flight_number: pick.flightNumber,
-      depart_time: toT(pick.scheduledOut) || currentFlight.depart_time,
-      arrive_time: toT(pick.scheduledIn) || currentFlight.arrive_time,
+      depart_time: toDepart(pick.scheduledOut) || currentFlight.depart_time,
+      arrive_time: toArrive(pick.scheduledIn) || currentFlight.arrive_time,
       ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
       _scheduleVerified: true,
       ...(overrode ? { _autoResolvedFlightNumber: true } : {}),
@@ -226,8 +235,8 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
   // when we resolved the number too). _scheduleVerified is still set
   // because the times came from the live schedule API.
   return {
-    depart_time: currentFlight.depart_time || toT(pick.scheduledOut),
-    arrive_time: currentFlight.arrive_time || toT(pick.scheduledIn),
+    depart_time: currentFlight.depart_time || toDepart(pick.scheduledOut),
+    arrive_time: currentFlight.arrive_time || toArrive(pick.scheduledIn),
     ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
     _scheduleVerified: true,
     _resolveSource: source || "airline",
