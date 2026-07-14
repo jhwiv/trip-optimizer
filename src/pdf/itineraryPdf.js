@@ -531,6 +531,46 @@ export function flightStampTime(item) {
   return safe(item?.time);
 }
 
+// Extract explicit clock-time claims (minutes-of-day) asserted in free prose:
+// the word anchors "midnight"/"noon" plus any HH:MM (optionally AM/PM).
+function extractTimeClaims(text) {
+  const claims = [];
+  const lower = text.toLowerCase();
+  if (/\bmidnight\b/.test(lower)) claims.push(0);
+  if (/\bnoon\b/.test(lower)) claims.push(720);
+  const re = /\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const min = parseClockToMinutes(`${m[1]}:${m[2]}${m[3] ? ` ${m[3]}` : ""}`);
+    if (min !== null) claims.push(min);
+  }
+  return claims;
+}
+
+// True when a model-authored flight confirmation_note asserts a clock time that
+// contradicts the flight's resolved depart_time/arrive_time. confirmation_note
+// is untrusted prose (CLAUDE.md): the #133/resolver correction of the structured
+// arrival was never carried into the note, so "arrives midnight" can sit beside
+// a resolved 6:00 AM landing (RCA bug C). Returns false — i.e. render the note —
+// when it makes no time claim (booking guidance only) or every claim matches a
+// resolved time; returns true when at least one claim matches neither resolved
+// time, so the caller suppresses the whole (self-contradicting) note. The
+// flight block renders an independent "Verify at booking" line, so the essential
+// nudge is not lost when a note is suppressed.
+export function flightNoteContradictsSchedule(note, fl) {
+  const text = safe(note).trim();
+  if (!text) return false;
+  const known = new Set();
+  for (const t of [fl?.depart_time, fl?.arrive_time]) {
+    const min = parseClockToMinutes(t);
+    if (min !== null) known.add(min);
+  }
+  if (known.size === 0) return false;
+  const claims = extractTimeClaims(text);
+  if (claims.length === 0) return false;
+  return claims.some((min) => !known.has(min));
+}
+
 // Hotel-brand → proprietary room-category names. Several brands market their
 // room tiers with invented proper nouns (Hoxton's Cosy/Snug/Roomy/Biggy) that
 // read as lowercase adjectives unless we quote + capitalize them. Keyed by a
@@ -1440,7 +1480,12 @@ function renderFlightBlock(cur, fl, x, maxW) {
   if (fl._timesUnconfirmed && !(fl.depart_time && fl.arrive_time)) {
     renderDetailLine(cur, "Times", "Not yet confirmed — check with airline at booking.", x, maxW);
   }
-  if (fl.confirmation_note) renderDetailLine(cur, "Note", fl.confirmation_note, x, maxW);
+  // confirmation_note is untrusted model prose: suppress it when it asserts a
+  // clock time contradicting the resolved depart/arrive times (RCA bug C). The
+  // "Verify at booking" line above already carries the essential nudge.
+  if (fl.confirmation_note && !flightNoteContradictsSchedule(fl.confirmation_note, fl)) {
+    renderDetailLine(cur, "Note", fl.confirmation_note, x, maxW);
+  }
   const bookUrl = carrierBookUrl(fl.carrier);
   if (bookUrl) renderLinkLine(cur, "Book", bookUrl, bookUrl, x, maxW);
 }
