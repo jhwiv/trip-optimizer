@@ -642,6 +642,16 @@ export function formatTripMonthYear(startDate, nights) {
   return `${MONTH_NAMES[sM]} ${sY} – ${MONTH_NAMES[eM]} ${eY}`;
 }
 
+// Append a single sentence-terminating period unless the (trimmed) string
+// already ends in one — so a field value that arrived pre-punctuated ("Include
+// Bruges Belgium." / "Any tips?" / "wow!" / "and so on…") is not doubled up.
+// Empty/blank input passes through untouched.
+export function endSentence(str) {
+  const s = safe(str).trim();
+  if (!s) return s;
+  return /[.!?…]$/.test(s) ? s : `${s}.`;
+}
+
 // Reconstruct a prompt-like paragraph from the structured "What You Told Us"
 // fields, for legacy trips saved before the free-text prompt was captured.
 // Used ONLY when inputs.narrative is missing/empty — a real prompt is always
@@ -661,14 +671,14 @@ export function buildLegacyRequestText(inputs) {
   if (v(b.destination)) lead += ` to ${v(b.destination)}`;
   if (v(b.startDate)) lead += ` starting ${v(b.startDate)}`;
   if (v(b.travelers)) lead += ` for ${v(b.travelers)}`;
-  lead += ".";
+  lead = endSentence(lead);
 
   const parts = [lead];
-  if (v(b.pace)) parts.push(`Pace: ${v(b.pace)}.`);
-  if (v(b.budget)) parts.push(`Budget: ${v(b.budget)}.`);
+  if (v(b.pace)) parts.push(endSentence(`Pace: ${v(b.pace)}`));
+  if (v(b.budget)) parts.push(endSentence(`Budget: ${v(b.budget)}`));
   const hotel = [v(h.tier), v(h.brand)].filter(Boolean).join(" ");
-  if (hotel) parts.push(`Hotel: ${hotel}.`);
-  if (v(h.mustHave)) parts.push(`Notes: ${v(h.mustHave)}.`);
+  if (hotel) parts.push(endSentence(`Hotel: ${hotel}`));
+  if (v(h.mustHave)) parts.push(endSentence(`Notes: ${v(h.mustHave)}`));
 
   // "Plan a trip." with no destination or qualifiers isn't worth showing.
   const meaningful = v(b.destination) || v(b.startDate) || nights || style || v(b.travelers) || parts.length > 1;
