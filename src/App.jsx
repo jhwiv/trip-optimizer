@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, Fra
 import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
-import { findArrivalOrderIssues } from "./arrivalOrderCheck.js";
+import { arrivalOrderExportError } from "./arrivalOrderCheck.js";
 import { buildDateTable } from "./dateFacts.js";
 import { pickScheduledFlight, parseClockToMinutes, resolveAirlineIata, normalizeAirportCode } from "./flightSelect.js";
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
@@ -3498,7 +3498,7 @@ async function fetchCoverPhoto(destination) {
 // page breaks, and a clean editorial layout. The legacy DOM-screenshot path
 // is preserved below as a fallback for the unlikely case the new builder
 // throws on malformed data.
-async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers, coverPhoto: preloadedCoverPhoto, cityPhotos, itemPhotos } = {}) {
+async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers, coverPhoto: preloadedCoverPhoto, cityPhotos, itemPhotos, skipValidationForExistingPlans = false } = {}) {
   setStatus("Preparing…");
   // Pre-export gate — see CLAUDE.md "VENUE VERIFICATION — HARD RULE".
   // Block PDF generation if any venue still carries a severity:'block'
@@ -3520,18 +3520,24 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers
       err.issues = blockingIssues;
       throw err;
     }
-    // Arrival-day ordering gate (bug #3b). Block export if any day schedules a
+    // Arrival-day ordering gate (bug #3b). Flags any day that schedules a
     // ground-transport / check-in / activity step EARLIER than the flight lands
     // that day + a minimum connection buffer — a physically impossible ordering
     // (ground before landing) reported on the Amsterdam→Bruges plan.
-    const arrivalIssues = findArrivalOrderIssues(data);
-    if (arrivalIssues.length > 0) {
-      const summary = arrivalIssues.slice(0, 3).map((iss) => iss.message).join(" ");
-      const more = arrivalIssues.length > 3 ? ` … and ${arrivalIssues.length - 3} more` : "";
-      const err = new Error(`Cannot export: ${summary}${more}`);
-      err.code = "ARRIVAL_ORDER";
-      err.issues = arrivalIssues;
-      throw err;
+    //
+    // This block must NOT strand an existing/legacy plan: those built before
+    // the PR #133 timezone fix can still carry the old bad arrival times, so
+    // callers exporting a previously-built plan pass
+    // skipValidationForExistingPlans:true — the gate then only warns instead of
+    // throwing "Could not save PDF". See arrivalOrderExportError().
+    const { error: arrivalErr, issues: arrivalIssues } =
+      arrivalOrderExportError(data, { skipValidationForExistingPlans });
+    if (arrivalErr) throw arrivalErr;
+    if (skipValidationForExistingPlans && arrivalIssues.length > 0) {
+      console.warn(
+        `Exporting plan with ${arrivalIssues.length} arrival-order issue(s) ` +
+        `(skipped for existing plan): ${arrivalIssues[0].message}`
+      );
     }
   }
   // Prefer the rich template when we have structured plan data.
@@ -3853,7 +3859,7 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPh
         const loaded = await providers.ensureLoaded();
         providersForPdf = { ...providers, byCategory: loaded || providers.byCategory };
       }
-      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers: providersForPdf, coverPhoto, cityPhotos, itemPhotos });
+      await saveItineraryAsPDF(pdfFilename(data), setStatus, { data, inputs, providers: providersForPdf, coverPhoto, cityPhotos, itemPhotos, skipValidationForExistingPlans: true });
     } catch (err) {
       console.error("PDF save failed", err);
       if (isStaleChunkError(err)) {
@@ -3866,7 +3872,13 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPh
         setStale(true);
         setError("");
       } else {
-        setError("Could not save PDF. Try again.");
+        // Surface the real error in dev so the swallowed cause is visible
+        // without digging through the console; production keeps the calm copy.
+        const devDetail =
+          (import.meta.env && import.meta.env.DEV && err && err.message)
+            ? ` [dev: ${err.message}]`
+            : "";
+        setError(`Could not save PDF. Try again.${devDetail}`);
       }
     } finally {
       setBusy(false);

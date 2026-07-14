@@ -108,6 +108,32 @@ export function assertArrivalDayOrdering(data, opts = {}) {
   throw err;
 }
 
+// Pre-export gate decision (bug: "Could not save PDF" on legacy plans).
+//
+// The arrival-order validator belongs at itinerary GENERATION, where a fresh
+// plan can be rejected and rebuilt. Running it as a hard block at PDF-export
+// time strands users on a plan built BEFORE the PR #133 timezone fix: those
+// legacy itineraries can still carry the old physically-impossible arrival
+// times, so blocking export leaves them with an itinerary they can never save.
+//
+// Callers exporting a previously-built plan pass skipValidationForExistingPlans
+// to bypass the block. Returns { error, issues }: `error` is a throwable Error
+// (code ARRIVAL_ORDER) only when the plan should be BLOCKED; it is null when
+// the plan is clean OR when the block is skipped. `issues` is always the full
+// list so the caller can still log a diagnostic warning when skipping.
+export function arrivalOrderExportError(data, { skipValidationForExistingPlans = false, bufferMin = DEFAULT_ARRIVAL_BUFFER_MIN } = {}) {
+  const issues = findArrivalOrderIssues(data, { bufferMin });
+  if (issues.length === 0 || skipValidationForExistingPlans) {
+    return { error: null, issues };
+  }
+  const summary = issues.slice(0, 3).map((iss) => iss.message).join(" ");
+  const more = issues.length > 3 ? ` … and ${issues.length - 3} more` : "";
+  const error = new Error(`Cannot export: ${summary}${more}`);
+  error.code = "ARRIVAL_ORDER";
+  error.issues = issues;
+  return { error, issues };
+}
+
 // Pure helper: return a shallow-cloned plan whose arrival-day ground steps are
 // pushed to at least (landing + bufferMin) when they were scheduled earlier.
 // Only clock-time strings are rewritten; items without a parseable time or on
