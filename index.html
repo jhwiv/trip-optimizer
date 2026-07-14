@@ -175,6 +175,34 @@
         font-size: 11px;
         margin-left: 6px;
       }
+      /* Restaurant-card header. On desktop (and in PDF capture, which renders at
+         >=800px) the meal badge, name, and warning pills sit on one inline row.
+         min-width:0 + word-break:normal on the name overrides the global
+         overflow-wrap:anywhere so a long name wraps at word boundaries instead
+         of stacking one letter per line when the flex column is squeezed. */
+      .rc-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .rc-name {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow-wrap: break-word;
+        word-break: normal;
+      }
+      /* On narrow phones the inline row can't fit name + pills, so the name
+         gets its own full-width row ABOVE the badges (order:-1) and the meal
+         badge + warning pills wrap in a horizontal group below it. */
+      @media (max-width: 600px) {
+        .rc-header { align-items: flex-start; }
+        .rc-name {
+          flex: 1 1 100%;
+          width: 100%;
+          order: -1;
+        }
+      }
       @keyframes slideBar {
         0% { transform: translateX(-100%); }
         100% { transform: translateX(250%); }
