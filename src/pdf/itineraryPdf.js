@@ -586,6 +586,36 @@ export function rewriteMetaNights(meta, data) {
   return s.replace(/\b(\d+)\s*nights?\s*\([^)]*\)/i, `${total} nights (${notation})`);
 }
 
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+// Derive a "September 2026" cover subtitle from the trip's start date + night
+// count. Pure and timezone-safe: the ISO date is parsed in UTC so a Cloudflare
+// Worker's UTC runtime can't shift the month across a boundary. Spans:
+//   same month/year        → "September 2026"
+//   cross-month, same year → "September – October 2026"
+//   cross-year             → "December 2026 – January 2027"
+// Returns null when startDate isn't a parseable YYYY-MM-DD, so the caller can
+// omit the subtitle rather than print a fabricated date.
+export function formatTripMonthYear(startDate, nights) {
+  const m = safe(startDate).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const startY = Number(m[1]);
+  const startMo = Number(m[2]) - 1;
+  const startD = Number(m[3]);
+  const n = Number.parseInt(nights, 10);
+  const spanNights = Number.isFinite(n) && n > 0 ? n : 0;
+  const start = new Date(Date.UTC(startY, startMo, startD));
+  const end = new Date(Date.UTC(startY, startMo, startD + spanNights));
+  const sM = start.getUTCMonth(), sY = start.getUTCFullYear();
+  const eM = end.getUTCMonth(), eY = end.getUTCFullYear();
+  if (sY === eY && sM === eM) return `${MONTH_NAMES[sM]} ${sY}`;
+  if (sY === eY) return `${MONTH_NAMES[sM]} – ${MONTH_NAMES[eM]} ${sY}`;
+  return `${MONTH_NAMES[sM]} ${sY} – ${MONTH_NAMES[eM]} ${eY}`;
+}
+
 // Human-friendly transport modes actually used in the trip, derived from the
 // ground-transport steps in the day-by-day (NOT the user's stated preference).
 // Returns { modes: [labels], rentalUsed: bool }. A rental-car brand is only
@@ -705,6 +735,17 @@ function renderCover(cur, data, inputs, opts = {}) {
     color: COLOR.ink,
     leading: 1.05,
   });
+
+  // Month + year subtitle — a quiet editorial date line tucked directly under
+  // the title (part of the title block, above the accent rule and the detailed
+  // meta line that follows). Derived purely from the trip's start date +
+  // nights; omitted when the start date isn't parseable rather than guessed.
+  const monthYear = formatTripMonthYear(inputs?.basics?.startDate, inputs?.basics?.nights);
+  if (monthYear) {
+    cur.space(1);
+    cur.text(monthYear, { font: FONT.serif, style: "normal", size: 17, color: COLOR.inkSoft, leading: 1.1 });
+  }
+
   cur.space(2);
 
   // Teal accent rule
