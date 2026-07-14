@@ -507,6 +507,257 @@ export function titleCase(s) {
   return String(s).replace(/\b\w/g, c => c.toUpperCase());
 }
 
+// Hotel-brand → proprietary room-category names. Several brands market their
+// room tiers with invented proper nouns (Hoxton's Cosy/Snug/Roomy/Biggy) that
+// read as lowercase adjectives unless we quote + capitalize them. Keyed by a
+// lowercase brand token matched against the hotel name; extend with Marriott /
+// Aman / etc. as needed — the renderer stays data-driven off this map.
+export const BRAND_ROOM_CATEGORIES = {
+  hoxton: ["Cosy", "Snug", "Roomy", "Biggy"],
+};
+
+function detectHotelBrand(name) {
+  const n = String(name || "").toLowerCase();
+  for (const brand of Object.keys(BRAND_ROOM_CATEGORIES)) {
+    if (n.includes(brand)) return brand;
+  }
+  return null;
+}
+
+// Render a brand's room-category names as the proper nouns they are: quoted and
+// capitalized, labeled as a "room category" rather than a plain adjective. When
+// the hotel isn't a known brand the room string passes through untouched.
+//   Hoxton: `Roomy or Biggy room (canal view upgrade recommended)`
+//        →  `"Roomy" or "Biggy" room category (request canal view)`
+export function normalizeRoomType(hotelName, roomType) {
+  if (!roomType) return roomType;
+  const brand = detectHotelBrand(hotelName);
+  if (!brand) return roomType;
+  let out = String(roomType);
+  for (const cat of BRAND_ROOM_CATEGORIES[brand]) {
+    // Quote + capitalize the category, skipping any that's already quoted.
+    const re = new RegExp(`(?<!["'\\w])${cat}(?!["'\\w])`, "gi");
+    out = out.replace(re, `"${cat}"`);
+  }
+  // These are named categories, not loose adjectives — make that explicit.
+  out = out.replace(/\broom\b(?! category)/i, "room category");
+  // Tighten a "canal view upgrade recommended" nudge into a cleaner request.
+  out = out.replace(/\([^)]*canal view[^)]*\)/i, "(request canal view)");
+  return out;
+}
+
+// Derive the real per-leg night breakdown from the day-by-day city sequence.
+// The meta string's "(6+1)" grouping is model-emitted and often misleading for
+// A→B→A trips (the return leg vanishes). Walking days[].city gives the true
+// contiguous stays. Returns an ordered [{ city, nights }] or null when there
+// aren't at least two legs with nights to describe.
+//
+// Nights per leg = number of days in the contiguous city run, minus one for the
+// trip's final day (a departure day carries no overnight). This makes the parts
+// sum to (totalDays - 1) = total nights.
+export function deriveLegNights(data) {
+  const days = Array.isArray(data?.days) ? data.days : [];
+  if (days.length < 2) return null;
+  const runs = [];
+  for (let i = 0; i < days.length; i++) {
+    const city = safe(days[i]?.city).trim();
+    if (!city) return null; // incomplete city data — don't guess
+    const prev = runs[runs.length - 1];
+    if (prev && prev.city.toLowerCase() === city.toLowerCase()) prev.dayCount += 1;
+    else runs.push({ city, dayCount: 1 });
+  }
+  // Final day is departure — drop one night from the last leg.
+  runs[runs.length - 1].dayCount -= 1;
+  const legs = runs.map(r => ({ city: r.city, nights: r.dayCount })).filter(l => l.nights > 0);
+  return legs.length >= 2 ? legs : null;
+}
+
+// Rewrite the misleading "N nights (a+b)" token in the meta line with the real
+// leg breakdown, e.g. "7 nights (3+3+1)". Leaves meta untouched when the split
+// can't be derived (single leg, missing city data) or meta carries no nights
+// parenthetical to replace.
+export function rewriteMetaNights(meta, data) {
+  const s = safe(meta);
+  if (!s) return s;
+  const legs = deriveLegNights(data);
+  if (!legs) return s;
+  const total = legs.reduce((n, l) => n + l.nights, 0);
+  const notation = legs.map(l => l.nights).join("+");
+  return s.replace(/\b(\d+)\s*nights?\s*\([^)]*\)/i, `${total} nights (${notation})`);
+}
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+// Derive a "September 2026" cover subtitle from the trip's start date + night
+// count. Pure and timezone-safe: the ISO date is parsed in UTC so a Cloudflare
+// Worker's UTC runtime can't shift the month across a boundary. Spans:
+//   same month/year        → "September 2026"
+//   cross-month, same year → "September – October 2026"
+//   cross-year             → "December 2026 – January 2027"
+// Returns null when startDate isn't a parseable YYYY-MM-DD, so the caller can
+// omit the subtitle rather than print a fabricated date.
+export function formatTripMonthYear(startDate, nights) {
+  const m = safe(startDate).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const startY = Number(m[1]);
+  const startMo = Number(m[2]) - 1;
+  const startD = Number(m[3]);
+  const n = Number.parseInt(nights, 10);
+  const spanNights = Number.isFinite(n) && n > 0 ? n : 0;
+  const start = new Date(Date.UTC(startY, startMo, startD));
+  const end = new Date(Date.UTC(startY, startMo, startD + spanNights));
+  const sM = start.getUTCMonth(), sY = start.getUTCFullYear();
+  const eM = end.getUTCMonth(), eY = end.getUTCFullYear();
+  if (sY === eY && sM === eM) return `${MONTH_NAMES[sM]} ${sY}`;
+  if (sY === eY) return `${MONTH_NAMES[sM]} – ${MONTH_NAMES[eM]} ${sY}`;
+  return `${MONTH_NAMES[sM]} ${sY} – ${MONTH_NAMES[eM]} ${eY}`;
+}
+
+// Reconstruct a prompt-like paragraph from the structured "What You Told Us"
+// fields, for legacy trips saved before the free-text prompt was captured.
+// Used ONLY when inputs.narrative is missing/empty — a real prompt is always
+// shown verbatim. Empty fields drop out so we never print "for ." or a
+// dangling "Budget:". Returns "" when there's nothing meaningful to say.
+export function buildLegacyRequestText(inputs) {
+  const b = (inputs && inputs.basics) || {};
+  const h = (inputs && inputs.hotel) || {};
+  const v = x => safe(x).trim();
+
+  let lead = "Plan a";
+  const nights = v(b.nights);
+  const style = v(b.style);
+  if (nights) lead += ` ${nights}-night`;
+  if (style) lead += ` ${style}`;
+  lead += " trip";
+  if (v(b.destination)) lead += ` to ${v(b.destination)}`;
+  if (v(b.startDate)) lead += ` starting ${v(b.startDate)}`;
+  if (v(b.travelers)) lead += ` for ${v(b.travelers)}`;
+  lead += ".";
+
+  const parts = [lead];
+  if (v(b.pace)) parts.push(`Pace: ${v(b.pace)}.`);
+  if (v(b.budget)) parts.push(`Budget: ${v(b.budget)}.`);
+  const hotel = [v(h.tier), v(h.brand)].filter(Boolean).join(" ");
+  if (hotel) parts.push(`Hotel: ${hotel}.`);
+  if (v(h.mustHave)) parts.push(`Notes: ${v(h.mustHave)}.`);
+
+  // "Plan a trip." with no destination or qualifiers isn't worth showing.
+  const meaningful = v(b.destination) || v(b.startDate) || nights || style || v(b.travelers) || parts.length > 1;
+  return meaningful ? parts.join(" ") : "";
+}
+
+// Human-friendly transport modes actually used in the trip, derived from the
+// ground-transport steps in the day-by-day (NOT the user's stated preference).
+// Returns { modes: [labels], rentalUsed: bool }. A rental-car brand is only
+// worth surfacing when a rental leg genuinely appears in the plan.
+const TRANSPORT_MODE_PATTERNS = [
+  { label: "rental car", rental: true, re: /\b(rental|hertz|avis|europcar|sixt|enterprise|budget rent|car rental|rent(?:al)? car|pick ?up (?:the |your )?car)\b/i },
+  { label: "train", re: /\b(train|rail|railway|\bNS\b|centraal|eurostar|intercity|thalys)\b/i },
+  { label: "private car", re: /\b(private car|car service|chauffeur|private transfer|black car|sedan)\b/i },
+  { label: "ferry", re: /\b(ferry|catamaran|boat transfer)\b/i },
+  { label: "tram", re: /\btram\b/i },
+  { label: "metro", re: /\b(metro|subway|underground)\b/i },
+  { label: "taxi", re: /\b(taxi|uber|cab)\b/i },
+];
+
+export function deriveTransportSummary(data) {
+  const days = Array.isArray(data?.days) ? data.days : [];
+  const seen = [];
+  let rentalUsed = false;
+  for (const d of days) {
+    const items = Array.isArray(d?.items) ? d.items : [];
+    for (const it of items) {
+      const type = safe(it?.type).toLowerCase();
+      const isGround = /car|transport|train|transfer|ferry|tram|metro|taxi|drive|bus/.test(type);
+      // Derive ONLY from genuine ground-transport steps (spec #7): keying off
+      // the item TYPE keeps a restaurant called "The Tram Stop" or an activity
+      // named "Train Museum" from registering as a mode of travel.
+      if (!isGround) continue;
+      const haystack = `${safe(it?.type)} ${safe(it?.text)} ${safe(it?.location)}`;
+      for (const m of TRANSPORT_MODE_PATTERNS) {
+        if (m.re.test(haystack)) {
+          if (m.rental) rentalUsed = true;
+          if (!seen.includes(m.label)) seen.push(m.label);
+        }
+      }
+    }
+  }
+  return { modes: seen, rentalUsed };
+}
+
+// Cover "Transport" value. Only surfaces a rental-car brand when a rental leg
+// actually appears in the day-by-day; otherwise it shows the modes the trip
+// really uses (e.g. "Train + private car"), title-cased and joined with " + ".
+// Falls back to the user-profile transport string only when nothing usable can
+// be derived from the plan.
+function transportSummaryLine(data, t = {}) {
+  const { modes, rentalUsed } = deriveTransportSummary(data);
+  const profile = [t.type, t.company].filter(Boolean).join(" · ");
+  if (rentalUsed) return profile || "Rental car";
+  if (modes.length) {
+    return modes
+      .filter(m => m !== "rental car")
+      .map(m => m.charAt(0).toUpperCase() + m.slice(1))
+      .join(" + ");
+  }
+  return profile || null;
+}
+
+// Render the traveler's request as an indented blockquote with a teal
+// left-border. Paragraph breaks in the source are preserved (each paragraph
+// wraps to width independently). When `reconstructed` is true a small italic
+// note flags that the text was synthesized from trip inputs, not the original
+// prompt.
+function renderRequestQuote(cur, requestText, reconstructed) {
+  const { pdf } = cur;
+  const indent = 6;
+  const maxWidth = PAGE.width - PAGE.marginX * 2 - indent;
+  const yStart = cur.state.y;
+  const pageStart = cur.state.page;
+
+  const paras = String(requestText)
+    .split(/\n{2,}/)
+    .map(p => p.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const blocks = paras.length ? paras : [String(requestText)];
+  blocks.forEach((p, i) => {
+    cur.text(p, {
+      x: PAGE.marginX + indent,
+      maxWidth,
+      font: FONT.serif,
+      style: "italic",
+      size: 10.5,
+      color: COLOR.inkSoft,
+      leading: 1.35,
+      space: i === 0 ? 0 : 2,
+    });
+  });
+
+  // Teal left-border, drawn after the text so its height is known. Only spans
+  // the starting page — cover content fits on page 1 in practice.
+  if (cur.state.page === pageStart && cur.state.y > yStart) {
+    cur.setDraw(COLOR.accent);
+    pdf.setLineWidth(0.8);
+    pdf.line(PAGE.marginX + 1.5, yStart, PAGE.marginX + 1.5, cur.state.y);
+  }
+
+  if (reconstructed) {
+    cur.text("(reconstructed from trip inputs — original prompt not captured)", {
+      x: PAGE.marginX + indent,
+      maxWidth,
+      font: FONT.sans,
+      style: "italic",
+      size: 8,
+      color: COLOR.inkFaint,
+      leading: 1.3,
+      space: 1.5,
+    });
+  }
+}
+
 // -----------------------------------------------------------------------------
 // COVER PAGE
 // -----------------------------------------------------------------------------
@@ -529,7 +780,9 @@ function renderCover(cur, data, inputs, opts = {}) {
     const parts = dest.split(/\s->\s/).map(s => s.trim()).filter(Boolean);
     if (parts.length >= 2) dest = `${parts[0]} to ${parts[parts.length - 1]}`;
   }
-  const meta = safe(data?.meta || "");
+  // Replace the meta line's misleading "(6+1)" nights grouping with the real
+  // per-leg breakdown derived from the day-by-day (e.g. "7 nights (3+3+1)").
+  const meta = rewriteMetaNights(safe(data?.meta || ""), data);
 
   // Cover photo hero — full-width image at the top of the cover page.
   // Renders only when a data URL was fetched by the caller; silently skipped
@@ -567,6 +820,17 @@ function renderCover(cur, data, inputs, opts = {}) {
     color: COLOR.ink,
     leading: 1.05,
   });
+
+  // Month + year subtitle — a quiet editorial date line tucked directly under
+  // the title (part of the title block, above the accent rule and the detailed
+  // meta line that follows). Derived purely from the trip's start date +
+  // nights; omitted when the start date isn't parseable rather than guessed.
+  const monthYear = formatTripMonthYear(inputs?.basics?.startDate, inputs?.basics?.nights);
+  if (monthYear) {
+    cur.space(1);
+    cur.text(monthYear, { font: FONT.serif, style: "normal", size: 17, color: COLOR.inkSoft, leading: 1.1 });
+  }
+
   cur.space(2);
 
   // Teal accent rule
@@ -578,11 +842,14 @@ function renderCover(cur, data, inputs, opts = {}) {
     cur.text(meta, { font: FONT.sans, style: "normal", size: 11, color: COLOR.inkSoft, leading: 1.3 });
   }
 
-  // Cities preview (multi-city)
+  // Cities preview (multi-city) — one city per line so a long multi-leg route
+  // reads as a clean list instead of a single run-on sentence.
   if (Array.isArray(data?.cities) && data.cities.length > 1) {
     cur.space(2);
-    const cityLine = data.cities.map((c, i) => `${i + 1}. ${c.name}${c.nights ? ` · ${c.nights}n` : ""}${c.focus ? ` — ${c.focus}` : ""}`).join("    ");
-    cur.text(cityLine, { font: FONT.sans, style: "italic", size: 10, color: COLOR.inkSoft });
+    data.cities.forEach((c, i) => {
+      const line = `${i + 1}. ${c.name}${c.nights ? ` · ${c.nights}n` : ""}${c.focus ? ` — ${c.focus}` : ""}`;
+      cur.text(line, { font: FONT.sans, style: "italic", size: 10, color: COLOR.inkSoft, leading: 1.35 });
+    });
   }
 
   cur.space(3);
@@ -626,7 +893,7 @@ function renderCover(cur, data, inputs, opts = {}) {
       ["Hotel brand", h.brand],
       ["Hotel tier", h.tier],
       ["Hotel must-have", h.mustHave],
-      ["Transport", [t.type, t.company].filter(Boolean).join(" · ")],
+      ["Transport", transportSummaryLine(data, t)],
       ["Vehicle", t.vehicle],
       ["Cuisine focus", dn.cuisine],
       ["Dining budget", Array.isArray(dn.budget) ? dn.budget.join(", ") : dn.budget],
@@ -648,6 +915,25 @@ function renderCover(cur, data, inputs, opts = {}) {
     // They're the user's raw input; the trip plan that follows already
     // reflects them. Re-printing them earlier added 4–6 pages of dense prose
     // that the user explicitly called out as too much.
+
+    // "Your Request" — the traveler's own words. A captured free-text prompt
+    // (inputs.narrative) is shown verbatim; legacy trips with none fall back to
+    // a paragraph reconstructed from the fields above, flagged as such. Header
+    // mirrors "WHAT YOU TOLD US" exactly.
+    const verbatim = safe(inputs.narrative).trim();
+    const requestText = verbatim || buildLegacyRequestText(inputs);
+    if (requestText) {
+      cur.space(4);
+      pdf.setFont(FONT.sans, "bold");
+      pdf.setFontSize(9);
+      pdf.setCharSpace(1.0);
+      cur.setColor(COLOR.accent);
+      pdf.text("YOUR REQUEST", PAGE.marginX, cur.state.y);
+      pdf.setCharSpace(0);
+      cur.space(4);
+
+      renderRequestQuote(cur, requestText, !verbatim);
+    }
   }
 
   // Generated stamp removed from the cover body. Now that day-by-day content
@@ -673,7 +959,7 @@ function renderCover(cur, data, inputs, opts = {}) {
 // elements it writes 'NONE_FLAGGED' in differentiators — we surface that as
 // a small italic note instead of fabricating content.
 // -----------------------------------------------------------------------------
-function renderIntroduction(cur, data, inputs) {
+function renderIntroduction(cur, data, _inputs) {
   const { pdf } = cur;
   const intro = data && data.introduction;
   if (!intro || (typeof intro.arc !== "string" && typeof intro.differentiators !== "string")) {
@@ -683,22 +969,11 @@ function renderIntroduction(cur, data, inputs) {
   // Force a fresh page so the intro always gets its own.
   cur.newPage();
 
-  // Heading: destination name + year, same style as day headers — small caps,
-  // tracked, teal. NO word "Introduction".
-  const headingDest = (() => {
-    const cityList = Array.isArray(data?.cities) ? data.cities : [];
-    if (cityList.length >= 2) {
-      const first = safe(cityList[0]?.name);
-      const last = safe(cityList[cityList.length - 1]?.name);
-      if (first && last && first !== last) return `${first} to ${last}`;
-    }
-    return safe(data?.destination || (cityList[0]?.name) || "Your trip");
-  })();
-  // Derive year from inputs.basics.startDate (YYYY-MM-DD) when available.
-  const startDate = safe(inputs?.basics?.startDate || "");
-  const yearMatch = startDate.match(/(\d{4})/);
-  const year = yearMatch ? yearMatch[1] : "";
-  const headingText = year ? `${headingDest} · ${year}` : headingDest;
+  // Section header: "The Trip" — a titled anchor for the guiding narrative that
+  // sits between "What You Told Us" and "Day by Day". The narrative used to
+  // float untitled. Same small-caps / tracked / teal treatment as the day
+  // headers. Still NO word "Introduction".
+  const headingText = "The Trip";
 
   cur.space(2);
   pdf.setFont(FONT.sans, "bold");
@@ -718,9 +993,10 @@ function renderIntroduction(cur, data, inputs) {
   cur.space(5);
 
   // Body — navy text in serif, generous leading for an editorial read.
-  // The two parts sit as separated paragraphs; a thin teal rule between
-  // them gives a visual breath without breaking the spec's "no headers"
-  // rule (the spec explicitly allows a rule when the design system uses one).
+  // The two parts sit as one continuous narrative separated only by paragraph
+  // spacing. The single teal accent bar lives under the "The Trip" header
+  // above; a second rule between the paragraphs used to split the narrative
+  // into two disconnected blurbs (fixed per report #4).
   const arcText = (intro.arc && typeof intro.arc === "string") ? intro.arc.trim() : "";
   const diffText = (intro.differentiators && typeof intro.differentiators === "string") ? intro.differentiators.trim() : "";
 
@@ -735,9 +1011,10 @@ function renderIntroduction(cur, data, inputs) {
   }
 
   if (diffText && diffText !== "NONE_FLAGGED") {
-    cur.space(4);
-    // Thin teal rule between Part 1 and Part 2 — spec-permitted breath.
-    cur.accentRule(28);
+    // The two paragraphs are one guiding narrative — a rule between them
+    // visually split it into two disconnected blurbs. The single accent bar
+    // now lives under the "The Trip" header (above); here we use plain
+    // paragraph spacing so the narrative reads as one continuous piece.
     cur.space(4);
     cur.text(diffText, {
       font: FONT.serif,
@@ -880,7 +1157,16 @@ function renderItem(cur, item, isLast, itemPhotos = {}, dayCity = "") {
   // an otherwise-blank page 3). 32mm comfortably fits a headline + 4–6
   // detail lines and forces the entire item onto the same page when there
   // isn't room to fit it intact at the bottom of the current page.
-  cur.ensureSpace(32);
+  //
+  // FLIGHT cards carry more rows than any other item (Flight / Cabin /
+  // Aircraft / Verify / Note / Book ≈ 6 detail lines + headline), so 32mm
+  // was too small — a departing flight card could split, or (as reported on
+  // the Amsterdam→Bruges Day 8) get pushed whole onto the next page and
+  // read as orphaned. Reserve ~66mm for flight items so the card stays
+  // intact as a single block within its day. This is the jsPDF equivalent
+  // of `page-break-inside: avoid` on the flight card.
+  const itemReserve = item.flight ? 66 : 32;
+  cur.ensureSpace(itemReserve);
   cur.space(0.4);
   const itemTop = cur.state.y;
   const itemTopPage = cur.state.page;
@@ -1110,10 +1396,12 @@ function renderFlightBlock(cur, fl, x, maxW) {
   if (headline) renderDetailLine(cur, "Flight", headline, x, maxW);
   if (fl.cabin) renderDetailLine(cur, "Cabin", fl.cabin, x, maxW);
   if (fl.aircraft) renderDetailLine(cur, "Aircraft", fl.aircraft, x, maxW);
-  // #12 Honesty qualifier: a schedule-resolved (not user-confirmed) number is
-  // the scheduled operating flight, not a guaranteed booking — say so, matching
-  // the on-screen "verify" framing.
-  if (fl.flight_number && fl._autoResolvedFlightNumber && !fl._userSuppliedFlightNumber) {
+  // Honesty qualifier — emit for EVERY flight block (outbound AND return) so the
+  // card reads consistently regardless of direction. A flight number is the
+  // scheduled operating flight, not a guaranteed booking; user-supplied numbers
+  // still warrant a confirm-at-booking nudge. Only skipped when there is no
+  // number at all (nothing to verify).
+  if (fl.flight_number) {
     renderDetailLine(cur, "Verify", "Flight number is the scheduled operating flight — confirm at booking.", x, maxW);
   }
   // #12 follow-up: when both /api/flights-search attempts (airline-filtered
@@ -1156,7 +1444,7 @@ function renderHotelBlock(cur, h, x, maxW) {
   if (h.phone) renderLinkLine(cur, "Phone", h.phone, telUrl(h.phone), x, maxW);
   const ci = [h.check_in_time ? `In ${to12h(h.check_in_time)}` : "", h.check_out_time ? `Out ${to12h(h.check_out_time)}` : ""].filter(Boolean).join("  ·  ");
   if (ci) renderDetailLine(cur, "Times", ci, x, maxW);
-  if (h.room_type) renderDetailLine(cur, "Room", h.room_type, x, maxW);
+  if (h.room_type) renderDetailLine(cur, "Room", normalizeRoomType(h.name, h.room_type), x, maxW);
   if (h.confirmation_note) renderDetailLine(cur, "Note", h.confirmation_note, x, maxW);
 }
 
@@ -1348,9 +1636,13 @@ function renderByCategory(cur, data) {
   const groups = groupItemsByCategory(data);
   if (!groups.length) return;
 
-  // Start a new section — push to a fresh page only when there isn't enough
-  // room for the heading + a couple of entries.
-  cur.ensureSpace(55);
+  // Always begin "By Category" on a fresh page. Flowing it onto the tail of
+  // the last day-by-day page made the final day's departing FLIGHT card read
+  // as orphaned above this heading (Amsterdam→Bruges Day 8 report): the flight
+  // and the "By Category" title sat together with no day association. A hard
+  // page break cleanly separates the chronological plan from this regrouped
+  // reference.
+  cur.newPage();
   cur.space(4);
   cur.text("By Category", { font: FONT.serif, style: "italic", size: 22, color: COLOR.ink });
   cur.space(2);
