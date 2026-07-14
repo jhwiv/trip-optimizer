@@ -3274,6 +3274,115 @@ function applyQualityLayer(input, inputs) {
     });
   }
 
+  // City normalization (RCA bug D1). deriveLegNights (in the PDF renderer)
+  // groups days by exact case-insensitive match on the model-authored
+  // days[i].city field, then computes the leg-night breakdown that becomes
+  // the cover "7 nights (3+3+1)" token. But the model often decorates city
+  // strings inconsistently ("Amsterdam" vs "Amsterdam Centraal" vs
+  // "Amsterdam / Bruges" transit-day labels vs "Amsterdam (AMS)"), which
+  // over-fragments the runs and produces nonsense counts like "3+1+2+1"
+  // for a real 3+3+1 A→B→A trip (observed on Amsterdam→Bruges regen,
+  // 2026-07-14). Normalize each day.city against the canonical list from
+  // inputs.basics.cities (or the single destination when no city list was
+  // provided) via case-insensitive substring match in either direction —
+  // any day.city that CONTAINS or IS-CONTAINED-IN a canonical name gets
+  // rewritten to the canonical spelling. Model-emitted cities that don't
+  // match anything canonical are left alone (with a warning) rather than
+  // silently rewritten — that preserves off-book multi-city trips.
+  if (Array.isArray(days)) {
+    // Canonical city list: union of inputs.basics.cities (user form entries)
+    // and input.cities (model-emitted plan-level city list). The two often
+    // disagree in early sessions (form only has destination; model emits full
+    // multi-city route in the plan JSON), so we merge both and dedupe by
+    // case-insensitive name. Falls back to inputs.basics.destination as a
+    // last resort for single-city trips with no cities list anywhere.
+    const collected = [];
+    if (Array.isArray(inputs?.basics?.cities)) {
+      for (const c of inputs.basics.cities) {
+        const n = typeof c?.name === "string" ? c.name.trim() : "";
+        if (n) collected.push(n);
+      }
+    }
+    if (Array.isArray(input?.cities)) {
+      for (const c of input.cities) {
+        const n = typeof c?.name === "string" ? c.name.trim() : "";
+        if (n) collected.push(n);
+      }
+    }
+    if (collected.length === 0) {
+      const dest = typeof inputs?.basics?.destination === "string" ? inputs.basics.destination.trim() : "";
+      if (dest) collected.push(dest);
+    }
+    // Dedupe case-insensitively, keeping the first spelling of each name.
+    const seenLower = new Set();
+    const canonicalNames = [];
+    for (const n of collected) {
+      const key = n.toLowerCase();
+      if (seenLower.has(key)) continue;
+      seenLower.add(key);
+      canonicalNames.push(n);
+    }
+    if (canonicalNames.length > 0) {
+      const canonicalLower = canonicalNames.map(n => n.trim().toLowerCase());
+      days.forEach((day, dayIdx) => {
+        const raw = typeof day?.city === "string" ? day.city.trim() : "";
+        if (!raw) return; // blank stays blank — deriveLegNights guards on that separately
+        const rawLower = raw.toLowerCase();
+        // Prefer an exact case-insensitive match first (cheap short-circuit).
+        let matchIdx = canonicalLower.indexOf(rawLower);
+        if (matchIdx < 0) {
+          // Fuzzy: canonical contained in raw ("Amsterdam Centraal" → "Amsterdam"),
+          // or raw contained in canonical ("Ams" → "Amsterdam"). Prefer the
+          // longest canonical match so a transit-day label like
+          // "Amsterdam / Bruges" resolves to the first city (the arrival
+          // city that day — model convention across our corpus). Length-
+          // sorted iteration ensures "Amsterdam" beats "Ams" when both hit.
+          const ordered = canonicalLower
+            .map((n, i) => ({ n, i, len: n.length }))
+            .sort((a, b) => b.len - a.len);
+          for (const { n, i } of ordered) {
+            if (rawLower.includes(n) || n.includes(rawLower)) { matchIdx = i; break; }
+          }
+        }
+        if (matchIdx < 0) {
+          // Off-book city — don't rewrite, but warn so downstream sees the
+          // unexpected value.
+          warnings.push(`Day ${dayIdx + 1} city "${raw}" not in canonical list (${canonicalNames.join(", ")}) — leg nights may be wrong on the cover`);
+          return;
+        }
+        const canonical = canonicalNames[matchIdx];
+        if (raw !== canonical) {
+          day.city = canonical;
+          fixes.push(`Normalized Day ${dayIdx + 1} city "${raw}" → "${canonical}"`);
+        }
+      });
+    }
+  }
+
+  // Day completeness (RCA bug G). Every non-transit day should have at least
+  // one anchor experience — an activity, a scheduled meal, or a flight. Days
+  // that are pure Notes / Transport / Hotel checkout read as thin on a
+  // luxury deliverable (real observed case: Amsterdam→Bruges Day 6
+  // "Bruges Free Day" with only two NOTE items and nothing else). Warn-tier
+  // only — don't block export, but surface the flag so the user knows a day
+  // is skeletal and can regenerate if they want more.
+  //
+  // Anchor item types: Activity, Dinner, Lunch, Breakfast, Brunch, Dining,
+  // Flight. Notes, Transport (train/car/walk), and Hotel (check-in/out) do
+  // NOT count — they're plumbing, not experience.
+  if (Array.isArray(days)) {
+    const ANCHOR_TYPES = /^(Activity|Dinner|Lunch|Breakfast|Brunch|Dining|Flight)$/i;
+    days.forEach((day, dayIdx) => {
+      const items = Array.isArray(day?.items) ? day.items : [];
+      const anchorCount = items.filter(it => ANCHOR_TYPES.test(String(it?.type || ""))).length;
+      if (anchorCount === 0) {
+        day.flags = Array.isArray(day.flags) ? day.flags.slice() : [];
+        day.flags.push("Thin day \u2014 no signature activity, meal, or flight. Consider regenerating for a fuller day.");
+        warnings.push(`Day ${dayIdx + 1} is thin — only notes/transport/hotel with no anchor experience`);
+      }
+    });
+  }
+
   // Activity-count cap enforcement (suspenders to the prompt-side belt at
   // dynamicPreamble's ACTIVITY-COUNT HARD CAP rule). If the user's narrative
   // or guidelines named a trip-total cap and the model emitted more than
