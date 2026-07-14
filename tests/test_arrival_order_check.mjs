@@ -10,6 +10,7 @@ import {
   findArrivalOrderIssues,
   assertArrivalDayOrdering,
   cascadeArrivalDayTimes,
+  arrivalOrderExportError,
   DEFAULT_ARRIVAL_BUFFER_MIN,
 } from "../src/arrivalOrderCheck.js";
 
@@ -154,6 +155,33 @@ console.log("=== cascadeArrivalDayTimes ===");
   assert("does not mutate the input plan", badPlan.days[0].items[1].time === "6:00 AM");
   // A step already after the threshold is left untouched.
   assert("later step untouched", fixed.days[0].items[2].time === "8:30 AM");
+}
+
+console.log("=== arrivalOrderExportError (PDF pre-export gate) ===");
+{
+  // A clean plan never produces a blocking error.
+  const { error, issues } = arrivalOrderExportError(goodPlan);
+  assert("clean plan → no export error", error === null);
+  assert("clean plan → no issues", issues.length === 0);
+}
+{
+  // Default (generation-time) behavior: a bad plan is BLOCKED with a throwable
+  // Error carrying code ARRIVAL_ORDER.
+  const { error, issues } = arrivalOrderExportError(badPlan);
+  assert("bad plan → blocking error returned", error instanceof Error);
+  assert("blocking error has code ARRIVAL_ORDER", error?.code === "ARRIVAL_ORDER");
+  assert("blocking error message is user-facing", /^Cannot export:/.test(error?.message || ""));
+  assert("blocking error carries issues", Array.isArray(error?.issues) && error.issues.length === 1);
+  assert("issues surfaced alongside error", issues.length === 1);
+}
+{
+  // The fix: exporting an existing/legacy plan must NOT be blocked, even when
+  // the plan carries the old physically-impossible arrival ordering. The gate
+  // returns error:null but still reports the issues so the caller can warn.
+  const { error, issues } = arrivalOrderExportError(badPlan, { skipValidationForExistingPlans: true });
+  assert("legacy plan → export NOT blocked", error === null);
+  assert("legacy plan → issues still reported for diagnostics", issues.length === 1);
+  assert("reported issue names the offending step", /Train to city centre/.test(issues[0]?.message || ""));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
