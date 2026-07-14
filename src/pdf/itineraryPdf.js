@@ -29,6 +29,7 @@
 
 import { groupItemsByCategory } from "../categoryGroups.js";
 import { bucketProviders, PROVIDER_PDF_CAP } from "../localProviders.js";
+import { parseClockToMinutes } from "../flightSelect.js";
 
 // Stable key for looking up pre-fetched item photos by name + city.
 // Must match the identical function in App.jsx that builds the photo map.
@@ -505,6 +506,98 @@ export function safe(s) { return s == null ? "" : String(s); }
 export function titleCase(s) {
   if (!s) return s;
   return String(s).replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// --- Numeric day sort + confirmation_note contradiction guard ----------------
+// The flight resolver overwrites the STRUCTURED flight times
+// (item.flight.depart_time / .arrive_time) from the live schedule, but the
+// resolver's live-schedule path can fall back to the model's fabricated times
+// when the schedule fetch returns empty; because of that fallback, neither
+// item.time NOR fl.depart_time is a reliable single source of truth for the
+// schedule stamp today. The stamp fix (RCA bug A) needs an upstream resolver
+// change and is out of scope here. The two things we CAN fix without waiting
+// on the resolver diagnosis are the chronological sort (bug B) and the note
+// contradiction guard (bug C) — both continue to work off item.time / the
+// structured flight object as their inputs.
+
+// A flight is an overnight arrival for the day it renders on when its arrival
+// clock time is earlier in the day than its departure — i.e. it crossed
+// midnight, so the departure stamp belongs to the PREVIOUS calendar day and the
+// flight is the precondition for every ground step that day. Such a flight must
+// lead the day regardless of its (late-afternoon/evening) departure clock time
+// (RCA bug B). A same-day departure (Day 8 return, arrive_time > depart_time)
+// is NOT overnight and sorts naturally by clock time → last event of the day.
+export function isOvernightArrivalFlight(item) {
+  const fl = item?.flight;
+  if (!fl) return false;
+  const dep = parseClockToMinutes(fl.depart_time);
+  const arr = parseClockToMinutes(fl.arrive_time);
+  return dep !== null && arr !== null && arr < dep;
+}
+
+// Sort a day's items chronologically by minute-of-day (0–1439) parsed from the
+// schedule stamp, replacing the old lexicographic string sort that ordered
+// "3:35 PM" / "1:15 AM" by character code across the noon boundary (RCA bug B).
+// Rules:
+//   • Overnight arrival flights are pinned to the front of the day (their
+//     departure stamp is a previous-calendar-day instant; every ground step is
+//     downstream of the landing).
+//   • Otherwise sort ascending by parsed minute-of-day.
+//   • Unparseable times sort to the END, preserving their relative order.
+// The sort is stable (Array.prototype.sort), so equal keys keep input order.
+// Mutates and returns the array, matching the previous in-place .sort() call.
+export function sortDayItems(items) {
+  if (!Array.isArray(items)) return items;
+  const key = (item) => {
+    const m = parseClockToMinutes(safe(item?.time));
+    return m === null ? Number.POSITIVE_INFINITY : m;
+  };
+  return items.sort((a, b) => {
+    const aPin = isOvernightArrivalFlight(a);
+    const bPin = isOvernightArrivalFlight(b);
+    if (aPin !== bPin) return aPin ? -1 : 1;
+    return key(a) - key(b);
+  });
+}
+
+// Extract explicit clock-time claims (minutes-of-day) asserted in free prose:
+// the word anchors "midnight"/"noon" plus any HH:MM (optionally AM/PM).
+function extractTimeClaims(text) {
+  const claims = [];
+  const lower = text.toLowerCase();
+  if (/\bmidnight\b/.test(lower)) claims.push(0);
+  if (/\bnoon\b/.test(lower)) claims.push(720);
+  const re = /\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const min = parseClockToMinutes(`${m[1]}:${m[2]}${m[3] ? ` ${m[3]}` : ""}`);
+    if (min !== null) claims.push(min);
+  }
+  return claims;
+}
+
+// True when a model-authored flight confirmation_note asserts a clock time that
+// contradicts the flight's resolved depart_time/arrive_time. confirmation_note
+// is untrusted prose (CLAUDE.md): the #133/resolver correction of the structured
+// arrival was never carried into the note, so "arrives midnight" can sit beside
+// a resolved 6:00 AM landing (RCA bug C). Returns false — i.e. render the note —
+// when it makes no time claim (booking guidance only) or every claim matches a
+// resolved time; returns true when at least one claim matches neither resolved
+// time, so the caller suppresses the whole (self-contradicting) note. The
+// flight block renders an independent "Verify at booking" line, so the essential
+// nudge is not lost when a note is suppressed.
+export function flightNoteContradictsSchedule(note, fl) {
+  const text = safe(note).trim();
+  if (!text) return false;
+  const known = new Set();
+  for (const t of [fl?.depart_time, fl?.arrive_time]) {
+    const min = parseClockToMinutes(t);
+    if (min !== null) known.add(min);
+  }
+  if (known.size === 0) return false;
+  const claims = extractTimeClaims(text);
+  if (claims.length === 0) return false;
+  return claims.some((min) => !known.has(min));
 }
 
 // Hotel-brand → proprietary room-category names. Several brands market their
@@ -1171,8 +1264,9 @@ function renderDay(cur, day, index, opts = {}) {
 
   // Items
   const items = Array.isArray(day.items) ? day.items : [];
-  // Sort chronologically by time string ("HH:MM")
-  items.sort((a, b) => String(a.time || "").localeCompare(String(b.time || "")));
+  // Sort chronologically by minute-of-day, pinning an overnight flight arrival
+  // to the front of the day (RCA bug B — see sortDayItems).
+  sortDayItems(items);
 
   items.forEach((item, i) => renderItem(cur, item, i === items.length - 1, itemPhotos, dayCity));
 }
@@ -1469,7 +1563,12 @@ function renderFlightBlock(cur, fl, x, maxW) {
   if (fl._timesUnconfirmed && !(fl.depart_time && fl.arrive_time)) {
     renderDetailLine(cur, "Times", "Not yet confirmed — check with airline at booking.", x, maxW);
   }
-  if (fl.confirmation_note) renderDetailLine(cur, "Note", fl.confirmation_note, x, maxW);
+  // confirmation_note is untrusted model prose: suppress it when it asserts a
+  // clock time contradicting the resolved depart/arrive times (RCA bug C). The
+  // "Verify at booking" line above already carries the essential nudge.
+  if (fl.confirmation_note && !flightNoteContradictsSchedule(fl.confirmation_note, fl)) {
+    renderDetailLine(cur, "Note", fl.confirmation_note, x, maxW);
+  }
   const bookUrl = carrierBookUrl(fl.carrier);
   if (bookUrl) renderLinkLine(cur, "Book", bookUrl, bookUrl, x, maxW);
 }
