@@ -572,6 +572,32 @@ export function deriveLegNights(data) {
   return legs.length >= 2 ? legs : null;
 }
 
+// Total code-derived nights per city, keyed by lower-cased city name, summed
+// across every contiguous leg (so a city visited twice — e.g. Amsterdam at the
+// start and end of an A→B→A trip — reports its combined night count). Returns
+// null when the split can't be derived, so callers omit the token rather than
+// fall back to the model's unverified count (CLAUDE.md: sums computed in code).
+export function deriveCityNights(data) {
+  const legs = deriveLegNights(data);
+  if (!legs) return null;
+  const totals = new Map();
+  for (const leg of legs) {
+    const key = safe(leg.city).trim().toLowerCase();
+    if (!key) continue;
+    totals.set(key, (totals.get(key) || 0) + leg.nights);
+  }
+  return totals.size ? totals : null;
+}
+
+// Look up the derived nights for a display city name in the map returned by
+// deriveCityNights. Returns null (→ omit token) when the map is missing or the
+// city has no derived entry.
+function lookupCityNights(totals, name) {
+  if (!totals) return null;
+  const n = totals.get(safe(name).trim().toLowerCase());
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 // Rewrite the misleading "N nights (a+b)" token in the meta line with the real
 // leg breakdown, e.g. "7 nights (3+3+1)". Leaves meta untouched when the split
 // can't be derived (single leg, missing city data) or meta carries no nights
@@ -846,8 +872,10 @@ function renderCover(cur, data, inputs, opts = {}) {
   // reads as a clean list instead of a single run-on sentence.
   if (Array.isArray(data?.cities) && data.cities.length > 1) {
     cur.space(2);
+    const cityNights = deriveCityNights(data);
     data.cities.forEach((c, i) => {
-      const line = `${i + 1}. ${c.name}${c.nights ? ` · ${c.nights}n` : ""}${c.focus ? ` — ${c.focus}` : ""}`;
+      const n = lookupCityNights(cityNights, c.name);
+      const line = `${i + 1}. ${c.name}${n ? ` · ${n}n` : ""}${c.focus ? ` — ${c.focus}` : ""}`;
       cur.text(line, { font: FONT.sans, style: "italic", size: 10, color: COLOR.inkSoft, leading: 1.35 });
     });
   }
@@ -873,8 +901,12 @@ function renderCover(cur, data, inputs, opts = {}) {
     const dn = inputs.dining || {};
     const it = inputs.interests || {};
 
+    const routeCityNights = deriveCityNights(data);
     const citiesLine = Array.isArray(b.cities) && b.cities.length > 1
-      ? b.cities.map((c, i) => `${i + 1}) ${c.name} — ${c.nights}n${c.focus ? ` (${c.focus})` : ""}`).join("  ")
+      ? b.cities.map((c, i) => {
+          const n = lookupCityNights(routeCityNights, c.name);
+          return `${i + 1}) ${c.name}${n ? ` — ${n}n` : ""}${c.focus ? ` (${c.focus})` : ""}`;
+        }).join("  ")
       : null;
 
     const rows = [

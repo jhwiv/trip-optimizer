@@ -10,6 +10,7 @@
 import {
   normalizeRoomType,
   deriveLegNights,
+  deriveCityNights,
   rewriteMetaNights,
   deriveTransportSummary,
 } from "../src/pdf/itineraryPdf.js";
@@ -48,6 +49,39 @@ console.log("=== deriveLegNights (#6) ===");
 assert("single leg → null", deriveLegNights({ days: [{ city: "Amsterdam" }, { city: "Amsterdam" }] }) === null);
 assert("missing city data → null", deriveLegNights({ days: [{ city: "Amsterdam" }, {}] }) === null);
 assert("no days → null", deriveLegNights({}) === null);
+
+console.log("=== deriveCityNights (RCA bug D2) ===");
+{
+  // A→B→A: Amsterdam 3 (start) + Bruges 3 + Amsterdam 1 (last day departs).
+  // deriveLegNights → [Ams:3, Bruges:3, Ams:1]; per-city totals sum the two
+  // Amsterdam legs to 4. This is the case the reference PDF got wrong
+  // ("Amsterdam · 6n / Bruges · 1n" from the model instead of 4 / 3).
+  const days = [
+    ...Array(3).fill({ city: "Amsterdam" }),
+    ...Array(3).fill({ city: "Bruges" }),
+    ...Array(2).fill({ city: "Amsterdam" }),
+  ];
+  const totals = deriveCityNights({ days });
+  assert("returns a Map", totals instanceof Map, String(totals));
+  assert("Amsterdam sums both legs → 4n", totals?.get("amsterdam") === 4, JSON.stringify([...(totals || [])]));
+  assert("Bruges → 3n", totals?.get("bruges") === 3, JSON.stringify([...(totals || [])]));
+}
+{
+  // Simple two-leg trip, lookup is case-insensitive on the key.
+  const days = [
+    ...Array(5).fill({ city: "Amsterdam" }),
+    ...Array(3).fill({ city: "Bruges" }),
+  ];
+  const totals = deriveCityNights({ days });
+  assert("Amsterdam 5n", totals?.get("amsterdam") === 5);
+  assert("Bruges 2n (last day departs)", totals?.get("bruges") === 2);
+  assert("keys are lower-cased", totals?.get("Amsterdam") === undefined);
+}
+assert("single leg → null (undeivable, caller omits token)",
+  deriveCityNights({ days: [{ city: "Amsterdam" }, { city: "Amsterdam" }] }) === null);
+assert("missing city data → null", deriveCityNights({ days: [{ city: "Amsterdam" }, {}] }) === null);
+assert("no days → null", deriveCityNights({}) === null);
+assert("null data → null", deriveCityNights(null) === null);
 
 console.log("=== rewriteMetaNights (#6) ===");
 {
