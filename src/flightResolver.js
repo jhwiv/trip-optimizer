@@ -172,13 +172,24 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
   }
 
   if (mode === "number") {
+    // Time provenance: pickDepart/pickArrive come from the schedule API
+    // (authoritative when present). currentFlight.* is the model's guess.
+    // If we end up shipping a model-time (because the schedule row lacked
+    // the field), mark _verifyTrusted so the PDF renders concierge tone
+    // rather than presenting the model guess as schedule-confirmed.
+    const pickDepart = toDepart(pick.scheduledOut);
+    const pickArrive = toArrive(pick.scheduledIn);
+    const departFromModel = !!currentFlight.depart_time && !pickDepart;
+    const arriveFromModel = !!currentFlight.arrive_time && !pickArrive;
+    const anyTimeFromModel = departFromModel || arriveFromModel;
     return {
       flight_number: pick.flightNumber,
-      depart_time: currentFlight.depart_time || toDepart(pick.scheduledOut),
-      arrive_time: currentFlight.arrive_time || toArrive(pick.scheduledIn),
+      depart_time: currentFlight.depart_time || pickDepart,
+      arrive_time: currentFlight.arrive_time || pickArrive,
       ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
       _scheduleVerified: true,
       _autoResolvedFlightNumber: true,
+      ...(anyTimeFromModel ? { _verifyTrusted: true } : {}),
       // source captured so downstream tooling can audit how a number
       // was resolved if needed; PDF doesn't read this.
       _resolveSource: source || "airline",
@@ -197,11 +208,21 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
       const pickPrefix =
         typeof pick.flightNumber === "string" ? pick.flightNumber.slice(0, 2).toUpperCase() : "";
       if (pickPrefix && pickPrefix !== airlineIata.toUpperCase()) {
+        const pickDepart = toDepart(pick.scheduledOut);
+        const pickArrive = toArrive(pick.scheduledIn);
+        // Cross-carrier pick: we're keeping the model's number and only
+        // refreshing times where the schedule has them. If neither time
+        // came from the schedule (or the schedule field was empty), the
+        // shipped time is the model's guess — tag _verifyTrusted.
+        const departFromModel = !pickDepart && !!currentFlight.depart_time;
+        const arriveFromModel = !pickArrive && !!currentFlight.arrive_time;
+        const anyTimeFromModel = departFromModel || arriveFromModel;
         return {
-          depart_time: toDepart(pick.scheduledOut) || currentFlight.depart_time,
-          arrive_time: toArrive(pick.scheduledIn) || currentFlight.arrive_time,
+          depart_time: pickDepart || currentFlight.depart_time,
+          arrive_time: pickArrive || currentFlight.arrive_time,
           ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
           _scheduleVerified: true,
+          ...(anyTimeFromModel ? { _verifyTrusted: true } : {}),
           _resolveSource: source || "airline",
         };
       }
@@ -219,26 +240,44 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
     const pickNum =
       typeof pick.flightNumber === "string" ? pick.flightNumber.toUpperCase() : "";
     const overrode = currentNum !== pickNum;
+    // Time provenance same as number-mode above: prefer the schedule's
+    // authoritative times. If we fall back to the model's time because
+    // the schedule row was missing that field, tag _verifyTrusted so the
+    // PDF renders concierge tone rather than schedule-confirmed styling.
+    const pickDepart = toDepart(pick.scheduledOut);
+    const pickArrive = toArrive(pick.scheduledIn);
+    const departFromModel = !pickDepart && !!currentFlight.depart_time;
+    const arriveFromModel = !pickArrive && !!currentFlight.arrive_time;
+    const anyTimeFromModel = departFromModel || arriveFromModel;
     return {
       flight_number: pick.flightNumber,
-      depart_time: toDepart(pick.scheduledOut) || currentFlight.depart_time,
-      arrive_time: toArrive(pick.scheduledIn) || currentFlight.arrive_time,
+      depart_time: pickDepart || currentFlight.depart_time,
+      arrive_time: pickArrive || currentFlight.arrive_time,
       ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
       _scheduleVerified: true,
       ...(overrode ? { _autoResolvedFlightNumber: true } : {}),
+      ...(anyTimeFromModel ? { _verifyTrusted: true } : {}),
       _resolveSource: source || "airline",
     };
   }
 
   // mode === "times": fill missing times only. Never touch the number,
   // never set _autoResolvedFlightNumber (PDF only adds the qualifier
-  // when we resolved the number too). _scheduleVerified is still set
-  // because the times came from the live schedule API.
+  // when we resolved the number too). _scheduleVerified is set because
+  // the pick came from the live schedule API. But if the schedule row
+  // lacked one of the times and we ended up preserving the model's,
+  // tag _verifyTrusted so the PDF renders concierge tone.
+  const pickDepart = toDepart(pick.scheduledOut);
+  const pickArrive = toArrive(pick.scheduledIn);
+  const departFromModel = !!currentFlight.depart_time && !pickDepart;
+  const arriveFromModel = !!currentFlight.arrive_time && !pickArrive;
+  const anyTimeFromModel = departFromModel || arriveFromModel;
   return {
-    depart_time: currentFlight.depart_time || toDepart(pick.scheduledOut),
-    arrive_time: currentFlight.arrive_time || toArrive(pick.scheduledIn),
+    depart_time: currentFlight.depart_time || pickDepart,
+    arrive_time: currentFlight.arrive_time || pickArrive,
     ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
     _scheduleVerified: true,
+    ...(anyTimeFromModel ? { _verifyTrusted: true } : {}),
     _resolveSource: source || "airline",
   };
 }
