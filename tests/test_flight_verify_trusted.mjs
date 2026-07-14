@@ -39,7 +39,7 @@ function assembleHeadlineDuration(fl) {
 function verifyCopy(fl) {
   const _verifyTrusted = fl._verifyTrusted === true;
   return _verifyTrusted
-    ? "Flight number and times could not be confirmed against the live schedule — verify all details directly with the airline before booking."
+    ? "Times shown are indicative — confirm final schedule and book directly on the airline's site."
     : "Flight number is the scheduled operating flight — confirm at booking.";
 }
 function showsAircraft(fl) {
@@ -86,8 +86,8 @@ console.log("=== Verify qualifier copy selection ===");
   // Verify-trusted flight (real Amsterdam→Bruges DL9374 case): stronger copy.
   const fl = { flight_number: "DL9374", _scheduleVerified: true, _verifyTrusted: true };
   const copy = verifyCopy(fl);
-  assert("verify-trusted flight → stronger verify copy",
-    copy.includes("could not be confirmed") && copy.includes("times"),
+  assert("verify-trusted flight → concierge advisory copy",
+    copy.includes("indicative") && copy.includes("airline"),
     copy);
 }
 {
