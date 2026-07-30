@@ -1939,7 +1939,11 @@ function FindAnotherControl({ kind, city, currentItem, sameDayItems, onSwap }) {
           location: city,
           category: isRestaurant ? "restaurants" : "activities",
           guidelines: "",
-          mode: "standard",
+          // local_expert, not standard: a swap suggestion is only useful if it
+          // comes from the same hyperlocal sources (regional press, forums) as
+          // the rest of the plan. Costs 8-15s of Sonar latency on this inline
+          // interaction, which is an accepted trade.
+          mode: "local_expert",
         }),
       });
       const json = await res.json().catch(() => ({}));
