@@ -32,11 +32,13 @@ Configured in the Cloudflare Pages dashboard, **not** in repo:
 
 - `ANTHROPIC_API_KEY` — required for `/api/build`, `/api/menu`, `/api/activity-details`, standard mode of `/api/find`, `/api/extract-from-file`, `/api/introduction`
 - `PERPLEXITY_API_KEY` — required for `/api/confirm-booking`, `/api/review-retrieve`, local-expert mode of `/api/find`
+- `GOOGLE_PLACES_API_KEY` — required for all venue verification (`/api/places-verify`, `/api/places-verify-batch`, the verification pass inside `/api/find`) and for `/api/place-autocomplete`; without it every venue is `UNVERIFIED` and the location field degrades to freeform typing
 - `JOBS` — KV namespace binding used as job/cache store; app degrades gracefully if missing (no caching, no resume-after-drop)
+- `PLACES` — KV namespace binding for the venue-verification cache (30-day TTL for confirmed venues, 6-hour for negative results); app degrades gracefully if missing (every verify becomes a live Places call)
 
 All endpoints soft-fail when keys / KV are missing — degraded response instead of 500.
 
-**Known gap (as of 2026-06-27):** These three are bound to the **Production** environment only. PR preview deploys soft-fail. See `concepts/known-issues.md` #1.
+**Known gap (as of 2026-06-27):** These are bound to the **Production** environment only. PR preview deploys soft-fail. See `concepts/known-issues.md` #1.
 
 ## Scripts (package.json)
 
