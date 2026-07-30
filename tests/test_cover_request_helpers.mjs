@@ -12,7 +12,12 @@
 // answer here rather than passing by CI-happens-to-be-UTC luck.
 process.env.TZ = "America/Chicago";
 
-import { formatTripMonthYear, buildLegacyRequestText, endSentence } from "../src/pdf/itineraryPdf.js";
+import {
+  formatTripMonthYear,
+  buildLegacyRequestText,
+  buildCoverRequestText,
+  endSentence,
+} from "../src/pdf/itineraryPdf.js";
 
 let passed = 0, failed = 0;
 function assert(name, cond, detail = "") {
@@ -114,6 +119,47 @@ assert("nothing meaningful → empty string",
 assert("no inputs → empty string", buildLegacyRequestText() === "");
 assert("whitespace-only fields skipped",
   buildLegacyRequestText({ basics: { destination: "   ", nights: "  " }, hotel: {} }) === "");
+
+console.log("=== buildCoverRequestText (P1: guidelines fallback) ===");
+{
+  // Form path: inputs.narrative present — unchanged behavior, shown verbatim.
+  const out = buildCoverRequestText({
+    narrative: "Two weeks in France and Germany, trains between cities.",
+    guidelines: "",
+    basics: { destination: "Paris" },
+  });
+  assert("narrative shown verbatim",
+    out.text === "Two weeks in France and Germany, trains between cities.", out.text);
+  assert("narrative is not flagged reconstructed", out.reconstructed === false);
+}
+{
+  // Narrative path writes inputs.guidelines — this is the bug: the cover used
+  // to ignore it and print a reconstruction instead.
+  const out = buildCoverRequestText({
+    narrative: "",
+    guidelines: "## Trip\n\nBayeux then **Nuremberg**, see [the museum](https://x.test).\n\n- no red-eyes\n- train where possible",
+    basics: { destination: "England" },
+  });
+  assert("guidelines used when narrative empty", out.text.includes("Bayeux then Nuremberg"), out.text);
+  assert("guidelines is not flagged reconstructed", out.reconstructed === false);
+  assert("markdown header stripped", !out.text.includes("##"), out.text);
+  assert("bold markers stripped", !out.text.includes("**"), out.text);
+  assert("link collapsed to its label",
+    out.text.includes("the museum") && !out.text.includes("https://x.test"), out.text);
+  assert("list dashes become bullets", out.text.includes("• no red-eyes"), out.text);
+  assert("does NOT fall back to the reconstruction", !out.text.startsWith("Plan a"), out.text);
+}
+{
+  // Neither captured — falls through to buildLegacyRequestText, flagged.
+  const inputs = { narrative: "", guidelines: "   ", basics: { destination: "Bruges", nights: 3 }, hotel: {} };
+  const out = buildCoverRequestText(inputs);
+  assert("falls back to buildLegacyRequestText",
+    out.text === buildLegacyRequestText(inputs), out.text);
+  assert("fallback flagged reconstructed", out.reconstructed === true);
+}
+assert("nothing at all → empty text, no request block",
+  buildCoverRequestText({ basics: {}, hotel: {} }).text === "");
+assert("no inputs → empty text", buildCoverRequestText().text === "");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

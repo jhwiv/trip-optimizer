@@ -13,6 +13,7 @@ import {
   deriveCityNights,
   rewriteMetaNights,
   deriveTransportSummary,
+  markdownToProse,
 } from "../src/pdf/itineraryPdf.js";
 
 let passed = 0, failed = 0;
@@ -124,6 +125,23 @@ console.log("=== deriveTransportSummary (#7) ===");
   const { modes } = deriveTransportSummary(data);
   assert("non-transport item ignored", modes.length === 0, JSON.stringify(modes));
 }
+
+console.log("=== markdownToProse (P1: guidelines are pasted markdown) ===");
+assert("ATX header stripped, title kept", markdownToProse("## Day 1\nBayeux") === "Day 1\nBayeux");
+assert("bold markers stripped", markdownToProse("**Nuremberg** next") === "Nuremberg next");
+assert("italics stripped", markdownToProse("_quiet_ room") === "quiet room");
+assert("link collapses to its label",
+  markdownToProse("see [the museum](https://x.test)") === "see the museum");
+assert("horizontal rule becomes a blank line",
+  markdownToProse("one\n\n-----\n\ntwo") === "one\n\ntwo",
+  JSON.stringify(markdownToProse("one\n\n-----\n\ntwo")));
+assert("leading dashes become bullets", markdownToProse("- no red-eyes") === "• no red-eyes");
+assert("runs of blank lines collapse to one",
+  markdownToProse("a\n\n\n\nb") === "a\n\nb", JSON.stringify(markdownToProse("a\n\n\n\nb")));
+assert("plain prose passes through untouched",
+  markdownToProse("Two weeks in France.") === "Two weeks in France.");
+assert("empty input → empty string", markdownToProse("") === "");
+assert("null input → empty string", markdownToProse(null) === "");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

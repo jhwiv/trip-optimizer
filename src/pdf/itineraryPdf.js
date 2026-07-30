@@ -200,6 +200,19 @@ export function asciiSafe(s) {
 // box (## headers, **bold**, [text](url), -----, leading dashes for bullets)
 // down to clean prose with paragraph breaks. The PDF can't render the
 // markup, so left as-is it looked like a wall of code on the cover.
+export function markdownToProse(s) {
+  if (!s) return "";
+  let t = String(s);
+  t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+  t = t.replace(/^#{1,6}\s*/gm, "");
+  t = t.replace(/\*{1,3}([^*\n]+)\*{1,3}/g, "$1");
+  t = t.replace(/_{1,2}([^_\n]+)_{1,2}/g, "$1");
+  t = t.replace(/^\s*-{3,}\s*$/gm, "");
+  // The bullet char is in CP1252, so asciiSafe passes it through.
+  t = t.replace(/^\s*[-*]\s+/gm, "• ");
+  t = t.replace(/\n{3,}/g, "\n\n");
+  return t.trim();
+}
 
 // -----------------------------------------------------------------------------
 // PdfCursor — a tiny stateful helper for layout. Tracks current Y, page count,
@@ -727,6 +740,19 @@ export function buildLegacyRequestText(inputs) {
   return meaningful ? parts.join(" ") : "";
 }
 
+// Resolve the "Your Request" cover block. The traveler's own words land in
+// inputs.narrative from the form path but in inputs.guidelines from the
+// narrative path, so both are verbatim sources; only when neither is present
+// do we fall back to a reconstruction. Guidelines text is often pasted
+// markdown, which the PDF can't render, so it goes through markdownToProse.
+export function buildCoverRequestText(inputs) {
+  const verbatim =
+    safe(inputs && inputs.narrative).trim() ||
+    markdownToProse(safe(inputs && inputs.guidelines).trim());
+  if (verbatim) return { text: verbatim, reconstructed: false };
+  return { text: buildLegacyRequestText(inputs), reconstructed: true };
+}
+
 // Human-friendly transport modes actually used in the trip, derived from the
 // ground-transport steps in the day-by-day (NOT the user's stated preference).
 // Returns { modes: [labels], rentalUsed: bool }. A rental-car brand is only
@@ -1001,11 +1027,10 @@ function renderCover(cur, data, inputs, opts = {}) {
     // that the user explicitly called out as too much.
 
     // "Your Request" — the traveler's own words. A captured free-text prompt
-    // (inputs.narrative) is shown verbatim; legacy trips with none fall back to
-    // a paragraph reconstructed from the fields above, flagged as such. Header
-    // mirrors "WHAT YOU TOLD US" exactly.
-    const verbatim = safe(inputs.narrative).trim();
-    const requestText = verbatim || buildLegacyRequestText(inputs);
+    // (inputs.narrative or inputs.guidelines) is shown verbatim; legacy trips
+    // with none fall back to a paragraph reconstructed from the fields above,
+    // flagged as such. Header mirrors "WHAT YOU TOLD US" exactly.
+    const { text: requestText, reconstructed } = buildCoverRequestText(inputs);
     if (requestText) {
       cur.space(4);
       pdf.setFont(FONT.sans, "bold");
@@ -1016,7 +1041,7 @@ function renderCover(cur, data, inputs, opts = {}) {
       pdf.setCharSpace(0);
       cur.space(4);
 
-      renderRequestQuote(cur, requestText, !verbatim);
+      renderRequestQuote(cur, requestText, reconstructed);
     }
   }
 
