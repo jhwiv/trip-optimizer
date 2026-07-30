@@ -10584,6 +10584,15 @@ function FindView({ embedded = false } = {}) {
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  // The suggestion the user actually picked, kept so its place_id can travel
+  // to /api/find. A place_id is already disambiguated, which lets the server
+  // skip the guess-the-location ladder entirely. Cleared the moment the user
+  // free-types so a stale id can never be attached to different text.
+  //
+  // A ref rather than state: nothing renders it, and keeping it out of the
+  // reactive graph stops runSearch from becoming a dependency of the
+  // mount-once auto-search effect below.
+  const locationPlaceRef = useRef(null);
   const suggestionsAbortRef = useRef(null);
   const suggestionsDebounceRef = useRef(null);
   // Suppresses the next autocomplete fetch right after the user picks a
@@ -10629,6 +10638,7 @@ function FindView({ embedded = false } = {}) {
 
   const onLocationChange = (val) => {
     setLocation(val);
+    locationPlaceRef.current = null;
     if (suppressNextFetchRef.current) {
       suppressNextFetchRef.current = false;
       return;
@@ -10640,6 +10650,9 @@ function FindView({ embedded = false } = {}) {
   const onPickSuggestion = (s) => {
     suppressNextFetchRef.current = true;
     setLocation(s.description);
+    locationPlaceRef.current = s.place_id
+      ? { place_id: s.place_id, description: s.description }
+      : null;
     setSuggestions([]);
     setSuggestionsOpen(false);
     setActiveSuggestion(-1);
@@ -10810,6 +10823,13 @@ function FindView({ embedded = false } = {}) {
           category: c,
           guidelines: g || "",
           mode,
+          // Only send the id when it still describes the text being searched.
+          // Guards the local-expert re-run, which passes a location string
+          // back in rather than reading the field.
+          location_place_id:
+            locationPlaceRef.current?.description === loc
+              ? locationPlaceRef.current.place_id
+              : undefined,
         }),
         signal: controller.signal,
       });
@@ -10838,6 +10858,7 @@ function FindView({ embedded = false } = {}) {
             note: typeof json?.note === "string" ? json.note : "",
             queryUsed: { location: loc, category: c, guidelines: g, mode },
             localExpert: json?.local_expert || null,
+            locationResolution: json?.location_resolution || null,
           };
           if (isLocalExpert) {
             // Render BELOW the standard results, as its own section.
@@ -11256,6 +11277,17 @@ function FindView({ embedded = false } = {}) {
               >Edit</a>
             </span>
           </div>
+        )}
+
+        {/* The typed location didn't resolve, but a broader interpretation of
+            it did. Say so plainly rather than silently searching something
+            other than what was asked for. */}
+        {results?.locationResolution?.fallback_used && (
+          <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "-0.5rem 0 1rem", lineHeight: 1.55 }}>
+            Showing results for{" "}
+            <strong style={{ color: "var(--color-text-primary)" }}>{results.locationResolution.resolved}</strong>
+            {" "}— we couldn&rsquo;t find an exact match for &ldquo;{results.locationResolution.raw}&rdquo;.
+          </p>
         )}
 
         {/* PDF export error — non-blocking, results stay visible */}
