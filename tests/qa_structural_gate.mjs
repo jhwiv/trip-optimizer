@@ -341,11 +341,25 @@ console.log('\n── E: reserved dinner on the restaurant\'s closed day ──\
   // CLOSED_ON_THIS_DAY is not a drop flag — unlike CLOSED_PERMANENTLY the venue
   // stays in the plan and the gate refuses the export instead. Verified here so
   // a future change can't quietly turn a closure into a silent deletion.
-  //
-  // Note: restaurant.flags are not rendered on the card today, so on screen the
-  // closure is invisible until the user clicks Export. Pre-existing (the flag
-  // was a warn before this PR); called out in the PR as a follow-up.
   chk('E2 the venue is flagged, not dropped', await waitForText(page, 'la rapiere', 8000));
+
+  // The closure must be visible on the card, not just in the export gate. The
+  // model's own _weekdayMismatch chip is amber; this one is Places-sourced and
+  // block-severity, so it renders red and supersedes the model's.
+  const chip = page.locator('[data-closure-chip="block"]').first();
+  const chipVisible = await chip.isVisible({ timeout: 5000 }).catch(() => false);
+  chk('E2a a block-severity closure chip is on the card before Export', chipVisible);
+  const chipText = chipVisible ? await chip.innerText().catch(() => '') : '';
+  chk('E2b the chip names the closed weekday', /closed\s+mon/i.test(chipText), chipText || '(no chip)');
+  const chipTitle = chipVisible ? await chip.getAttribute('title').catch(() => '') : '';
+  chk('E2c the tooltip attributes the closure to Places', /google places/i.test(chipTitle || ''), chipTitle || '(no title)');
+  chk('E2d the model chip is suppressed — exactly one closure chip',
+    await page.locator('[data-closure-chip]').count() === 1);
+  if (chipVisible) {
+    await chip.scrollIntoViewIfNeeded().catch(() => {});
+    await page.screenshot({ path: join(SC, 'closure_chip_block.png'), fullPage: false });
+    console.log('     screenshot → scratchpad/closure_chip_block.png');
+  }
   const { found, download, banner, dialogMsg } = await clickExport(page, join(SC, 'structural_gate_closed_anchor.png'));
   chk('E3 PDF button present', found);
   chk('E4 export blocked — no PDF produced', download === null, download ? 'a PDF downloaded' : '');

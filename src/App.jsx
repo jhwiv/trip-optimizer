@@ -16,6 +16,7 @@ import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResume
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnverifiedFlightPayload, findUnverifiedFlights, withFlightMerge } from "./flightResolver.js";
 import { normalizeClock, findFlightTimeMismatches } from "./flightTimeConsistency.js";
 import { findImplausibleBookingUrls, stripDeadBookingUrls } from "./bookingUrlCheck.js";
+import { pickClosureChip } from "./closureChip.js";
 import { applyFlightNumberStrip } from "./flightNumberStrip.js";
 import { classifyActivityCountConstraint, renderActivityCountPromptRule, enforceTripTotalActivityCap } from "./activityCountConstraint.js";
 import { buildFlightCardTitle } from "./flightCardTitle.js";
@@ -2111,6 +2112,11 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
   // banner across the whole card, strike through the name, and hide all
   // action buttons so the user CANNOT accidentally book a closed restaurant.
   const isClosed = r.verify_status === "permanently_closed";
+  // Closed-on-this-day chip. Places' CLOSED_ON_THIS_DAY flag supersedes the
+  // model's own _weekdayMismatch so the card never shows two closure chips —
+  // see src/closureChip.js.
+  const closureChip = pickClosureChip(r);
+  const backupClosureChip = pickClosureChip(r.backup);
 
   return (
     <div style={{ marginBottom: "12px", border: isClosed ? "1px solid var(--color-text-danger)" : "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: isClosed ? "var(--color-danger-tint)" : "var(--color-background-primary)", position: "relative" }}>
@@ -2123,8 +2129,8 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
       <div className="rc-header" style={{ marginBottom: "6px" }}>
         <Badge type={type} />
         <p className="rc-name" style={{ fontSize: "14px", fontWeight: 600, color: isClosed ? "var(--color-danger-hover)" : "var(--color-text-primary)", margin: 0, lineHeight: 1.3, textDecoration: isClosed ? "line-through" : "none" }}>{r.name}</p>
-        {r._weekdayMismatch && !isClosed && (
-          <span style={{ fontSize: "10px", fontWeight: 600, color: "var(--color-warning)", letterSpacing: "0.04em", padding: "3px 7px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r._weekdayMismatch] || r._weekdayMismatch}</span>
+        {closureChip && !isClosed && (
+          <span title={closureChip.title} data-closure-chip={closureChip.severity} style={{ fontSize: "10px", fontWeight: 600, color: closureChip.severity === "block" ? "var(--color-text-danger)" : "var(--color-warning)", letterSpacing: "0.04em", padding: "3px 7px", background: closureChip.severity === "block" ? "var(--color-danger-tint)" : "var(--color-warning-tint)", border: closureChip.severity === "block" ? "0.5px solid var(--color-text-danger)" : "0.5px solid var(--color-border-secondary)", borderRadius: "3px", whiteSpace: "nowrap" }}>{closureChip.label}</span>
         )}
         {r._missingBackup && !isClosed && (
           <span style={{ fontSize: "9.5px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "0.08em", textTransform: "uppercase", padding: "3px 7px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", whiteSpace: "nowrap" }}>No backup</span>
@@ -2195,8 +2201,8 @@ function RestaurantCard({ type, restaurant: r, onOpenMenu, swapControl }) {
           <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", margin: "0 0 4px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Backup if no table</p>
           <p style={{ fontSize: "12.5px", color: "var(--color-text-primary)", margin: "0 0 4px", fontWeight: 500 }}>
             {r.backup.name}
-            {r.backup._weekdayMismatch && (
-              <span style={{ marginLeft: "6px", fontSize: "10px", fontWeight: 600, color: "var(--color-warning)", letterSpacing: "0.04em", padding: "2px 6px", background: "var(--color-warning-tint)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "3px", whiteSpace: "nowrap" }}>Closed {DAY_LABELS_3[r.backup._weekdayMismatch] || r.backup._weekdayMismatch}</span>
+            {backupClosureChip && (
+              <span title={backupClosureChip.title} data-closure-chip={backupClosureChip.severity} style={{ marginLeft: "6px", fontSize: "10px", fontWeight: 600, color: backupClosureChip.severity === "block" ? "var(--color-text-danger)" : "var(--color-warning)", letterSpacing: "0.04em", padding: "2px 6px", background: backupClosureChip.severity === "block" ? "var(--color-danger-tint)" : "var(--color-warning-tint)", border: backupClosureChip.severity === "block" ? "0.5px solid var(--color-text-danger)" : "0.5px solid var(--color-border-secondary)", borderRadius: "3px", whiteSpace: "nowrap" }}>{backupClosureChip.label}</span>
             )}
           </p>
           {(r.backup.neighborhood || r.backup.cuisine) && (
