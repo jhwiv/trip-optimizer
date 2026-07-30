@@ -458,6 +458,9 @@ function decorateVenue(venue, v, tally, dayContext) {
         extraFlags.push({
           code: "CLOSED_ON_THIS_DAY",
           severity: anchored ? "block" : "warn",
+          // Carried so the card can render a chip-sized "Closed Mon" without
+          // re-parsing the prose message.
+          weekday: dayContext.weekday,
           message: anchored
             ? `Closed on ${dayContext.weekday}s per Google Places hours — and this is a booked slot. Move it or replace the venue.`
             : `Closed on ${dayContext.weekday}s per Google Places hours.`,

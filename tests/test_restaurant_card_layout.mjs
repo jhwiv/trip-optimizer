@@ -17,8 +17,12 @@
 //      no longer pins the name with an inline `flex: 1`.
 //   4. The closed-day pill reads title case ("Closed Mon"), NOT the shouty
 //      "CLOSED MONS — VERIFY" (no textTransform:uppercase, no "— verify").
+//   5. That pill is driven by pickClosureChip(), so Google Places' authoritative
+//      CLOSED_ON_THIS_DAY flag supersedes the model's own _weekdayMismatch
+//      instead of rendering a second, possibly contradicting, chip.
 //
-// Pure Node string assertions — no browser, matches the existing suite style.
+// Pure Node string assertions over the source, plus direct unit coverage of
+// pickClosureChip — no browser, matches the existing suite style.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -73,19 +77,93 @@ assert('name <p> drops inline flex:1', !/flex:\s*1\b/.test(nameLine), nameLine);
 assert("name <p> renders r.name", /className="rc-name"[^]*?\{r\.name\}/.test(app) || nameLine.includes("{r.name}"), nameLine);
 
 console.log("=== App.jsx: closed-day pill is title case, not shouty ===");
-// Pill still communicates closure, now as "Closed {Mon}".
-assert('renders "Closed {DAY_LABELS_3...}"', /Closed \{DAY_LABELS_3\[r\._weekdayMismatch\]/.test(app));
-// Isolate the two rendered closed-day pill spans (header + backup). Match only
-// JSX <span> lines, not internal warning-log strings that also mention "verify
-// hours". Neither pill may force uppercase or carry the old "— verify" shout.
+// Both pills (header + backup) now render whatever pickClosureChip decided,
+// rather than reading _weekdayMismatch directly. Match only JSX <span> lines,
+// not internal warning-log strings that also mention "verify hours". Neither
+// pill may force uppercase or carry the old "— verify" shout.
+assert("card calls pickClosureChip for the primary", /const closureChip = pickClosureChip\(r\)/.test(app));
+assert("card calls pickClosureChip for the backup", /const backupClosureChip = pickClosureChip\(r\.backup\)/.test(app));
+assert("pickClosureChip is imported", /import \{ pickClosureChip \} from "\.\/closureChip\.js"/.test(app));
 const closedPillLines = app
   .split(/\r?\n/)
-  .filter((l) => /Closed \{DAY_LABELS_3/.test(l) && l.includes("<span"));
+  .filter((l) => /\{(?:backupC|c)losureChip\.label\}/.test(l) && l.includes("<span"));
 assert("found both closed-day pills", closedPillLines.length === 2, `found ${closedPillLines.length}`);
 for (const line of closedPillLines) {
   assert("closed-day pill drops textTransform:uppercase", !/textTransform:\s*"uppercase"/.test(line), line);
   assert('closed-day pill drops "— verify" shout', !/— verify/.test(line), line);
+  assert("closed-day pill carries the full message as a tooltip", /title=\{(?:backupC|c)losureChip\.title\}/.test(line), line);
+  // Severity is expressed with existing design tokens, never raw hex.
+  assert("block severity uses --color-text-danger", /var\(--color-text-danger\)/.test(line), line);
+  assert("warn severity keeps --color-warning", /var\(--color-warning\)/.test(line), line);
+  assert("no hex literals in the pill", !/#[0-9a-fA-F]{3,8}\b/.test(line), line);
 }
+
+// ---------------------------------------------------------------------------
+// Behavioral: which closure signal wins, and at what severity.
+//
+// Two mechanisms can claim a restaurant is closed on its scheduled day — the
+// model's own open_days (_weekdayMismatch) and Google Places' posted hours
+// (a CLOSED_ON_THIS_DAY flag). Places is authoritative, so it must supersede
+// rather than render a second, possibly contradicting, chip.
+// ---------------------------------------------------------------------------
+console.log("=== closureChip: Places supersedes the model ===");
+const { pickClosureChip } = await import(join(root, "src", "closureChip.js"));
+
+const BLOCK_MSG = "Closed on Mondays per Google Places hours — and this is a booked slot. Move it or replace the venue.";
+const WARN_MSG = "Closed on Mondays per Google Places hours.";
+
+// 1. Both signals fire on an anchor booking → one chip, Places', block-red.
+{
+  const chip = pickClosureChip({
+    name: "La Rapiere",
+    _weekdayMismatch: "tue",
+    flags: [{ code: "CLOSED_ON_THIS_DAY", severity: "block", weekday: "Monday", message: BLOCK_MSG }],
+  });
+  assert("block+mismatch: a chip is returned", !!chip);
+  assert("block+mismatch: Places won", chip?.source === "places", JSON.stringify(chip));
+  assert("block+mismatch: severity is block", chip?.severity === "block", JSON.stringify(chip));
+  assert("block+mismatch: label is the Places weekday, not the model's", chip?.label === "Closed Mon", JSON.stringify(chip));
+  assert("block+mismatch: tooltip is the flag message", chip?.title === BLOCK_MSG, JSON.stringify(chip));
+}
+
+// 2. Model-only signal → the pre-existing amber chip, unchanged.
+{
+  const chip = pickClosureChip({ name: "Chez Nous", _weekdayMismatch: "mon" });
+  assert("mismatch only: a chip is returned", !!chip);
+  assert("mismatch only: source is the model", chip?.source === "model", JSON.stringify(chip));
+  assert("mismatch only: severity is warn", chip?.severity === "warn", JSON.stringify(chip));
+  assert("mismatch only: label unchanged", chip?.label === "Closed Mon", JSON.stringify(chip));
+}
+
+// 3. Non-anchor Places closure → amber, but with the Places message.
+{
+  const chip = pickClosureChip({
+    name: "Cafe Tuesday",
+    flags: [{ code: "CLOSED_ON_THIS_DAY", severity: "warn", weekday: "Monday", message: WARN_MSG }],
+  });
+  assert("warn flag: source is Places", chip?.source === "places", JSON.stringify(chip));
+  assert("warn flag: severity is warn", chip?.severity === "warn", JSON.stringify(chip));
+  assert("warn flag: tooltip is the flag message", chip?.title === WARN_MSG, JSON.stringify(chip));
+}
+
+// 4. No closure signal → no chip. Unrelated flags must not summon one.
+{
+  assert("no signals: no chip", pickClosureChip({ name: "Open Always" }) === null);
+  assert("no signals: unrelated flags ignored",
+    pickClosureChip({ name: "X", flags: [{ code: "OUTSIDE_HOURS", severity: "warn" }] }) === null);
+  assert("no signals: undefined restaurant is safe", pickClosureChip(undefined) === null);
+}
+
+// 5. Degradation: a flag with no weekday still renders something honest.
+{
+  const chip = pickClosureChip({ flags: [{ code: "CLOSED_ON_THIS_DAY", severity: "block" }] });
+  assert("no weekday: falls back to a generic label", chip?.label === "Closed this day", JSON.stringify(chip));
+  assert("no weekday: severity survives", chip?.severity === "block", JSON.stringify(chip));
+}
+
+console.log("=== placesVerify: the flag carries its weekday ===");
+const pv = readFileSync(join(root, "src", "placesVerify.js"), "utf8");
+assert("CLOSED_ON_THIS_DAY flag includes weekday", /code: "CLOSED_ON_THIS_DAY",[\s\S]{0,300}?weekday: dayContext\.weekday/.test(pv));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
