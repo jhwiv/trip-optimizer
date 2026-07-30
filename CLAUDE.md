@@ -60,11 +60,39 @@ consumed by the merge helper and the pre-export gate.
 | `NOT_FOUND` | block | Places Text Search returned zero matches |
 | `UNVERIFIED` | warn | Places lookup couldn't run (missing key / network / timeout) |
 | `UNVERIFIED_SPECIFIC` | info | Client stripped phone / numbered-address / hours / booking_url from an UNVERIFIED venue |
-| `CLOSED_ON_THIS_DAY` | warn | Venue verified open but closed all day on the item's scheduled weekday |
+| `CLOSED_ON_THIS_DAY` | warn / **block** | Venue verified open but closed all day on the item's scheduled weekday. Blocks only when the item is an *anchor* — see below |
 | `OUTSIDE_HOURS` | warn | Venue verified open but item's time is outside Places' posted hours |
 | `WRONG_LOCATION` | block | Verified venue is too far (>50 km or per-leg widened radius) from any trip city — likely a wrong-city match |
 | `PACING_IMPOSSIBLE` | block | Adjacent items can't be reached in the scheduled gap (travel time > gap) |
 | `PACING_CONFLICT` | warn | Adjacent items have <15 min buffer after travel — tight but possible |
+
+`CLOSED_ON_THIS_DAY` is **anchor-scoped**: it blocks for a booking the traveller
+cannot improvise around — a restaurant with a reservation, a timed-entry
+activity, a hotel check-in — and stays a warn for walk-in stops. Places closure
+data has known gaps, so an ambiguous classification deliberately falls back to
+warn rather than blocking a correct plan. `classifyAnchor()` in
+`src/placesVerify.js` is the single decision point.
+
+### Structural flags (computed client-side)
+
+These are emitted by the pure validators in `src/` rather than by the Places
+batch, and they describe the *shape* of the itinerary rather than one venue.
+They ride on `day.structural_flags[]` and reach the pre-export gate through
+`findStructuralBlockingIssues()`. See `docs/wiki/concepts/structural-validation.md`.
+
+| code | severity | meaning | blocks export? |
+| --- | --- | --- | --- |
+| `DAY_CITY_DISCONTINUITY` | block | A day is set in a different city than the previous day ended in, with no flight or transport item that gets the traveller there | yes |
+| `DUPLICATE_CHECKIN` | block | The same property is checked into twice with no check-out in between | yes |
+| `ORPHANED_TRANSITION` | block | Two arrivals into the same city on different days with no departure in between — the plan travels somewhere it already is | yes |
+| `CITY_BACKTRACK` | block | An item is located in a city the plan finished with on an earlier day and never travels back to | yes |
+| `VEHICLE_STATE_CONFLICT` | warn | A rental car is returned in a city the plan is not in that day | no |
+| `NIGHT_COUNT_MISMATCH` | warn | `meta` / `cities[].nights` disagreed with the contiguous city runs in `days[]`. Auto-corrected in code; the flag is for visibility | no |
+| `WEEKDAY_CLAIM_MISMATCH` | warn | Model prose named a weekday that contradicts the computed date table. Auto-corrected in code; the flag is for visibility | no |
+| `FLIGHT_TIME_MISMATCH` | block | A Flight item's header `time` disagrees with its `flight.depart_time` — one of the two is wrong | yes |
+| `BOOKING_URL_IMPLAUSIBLE` | block | A `booking_url` has a vendor host but a product ID that does not match that vendor's format — a fabricated link is a fabricated fact | yes |
+| `BOOKING_URL_DEAD` | warn | `/api/verify-url` found the link dead. The URL is stripped from the plan; the flag records what was removed | no |
+| `FLIGHT_UNVERIFIED` | warn | The flight resolver could not confirm the route or times against a live schedule. Fail safe — annotate, never remove | no |
 
 A venue with any `severity:"block"` flag must NOT reach the PDF
 exporter. The pre-export gate is the last line of defense; it is not
