@@ -510,8 +510,10 @@ export function locationCandidates(raw) {
   const parts = q.split(/[,\s]+/).filter(Boolean);
   const stateFor = (token) => US_STATE_TOKENS[String(token || "").toLowerCase()];
 
-  // (a) Normalize a trailing colloquial state token: "mass" → "MA".
-  const trailingState = stateFor(parts[parts.length - 1]);
+  // (a) Normalize a trailing colloquial state token: "mass" → "MA". Needs two
+  //     or more tokens — a lone state name would collapse to just its
+  //     abbreviation, searching the same place the raw string already covers.
+  const trailingState = parts.length >= 2 ? stateFor(parts[parts.length - 1]) : undefined;
   if (trailingState) {
     out.push([...parts.slice(0, -1), trailingState].join(" "));
   }
