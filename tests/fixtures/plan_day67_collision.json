@@ -1,0 +1,121 @@
+{
+  "_fixture_note": "Minimal reproduction of the 2026-07-28 London -> Normandy -> Amsterdam -> Lisbon build (repo @ e49a0dd). Day 6 drives Utah Beach -> Amsterdam and checks into the Amsterdam Marriott; Day 7 wakes up back in Normandy, returns the rental in Bayeux, flies CFR -> AMS and checks into the same Marriott again. meta and cities[].nights carry the model's arithmetic, which disagrees with the day-by-day city sequence (derived 3+2+3+2).",
+  "destination": "London, Normandy, Amsterdam & Lisbon",
+  "meta": "11 days · 10 nights (2+3+2+3)",
+  "cities": [
+    { "name": "London", "nights": 3 },
+    { "name": "Bayeux", "nights": 2 },
+    { "name": "Amsterdam", "nights": 4 },
+    { "name": "Lisbon", "nights": 1 }
+  ],
+  "days": [
+    {
+      "day": 1,
+      "date": "2026-10-01",
+      "city": "London",
+      "items": [
+        { "time": "9:30 AM", "type": "Flight", "text": "Fly Newark (EWR) → London Heathrow (LHR)", "flight": { "flight_number": "UA934", "from_airport": "EWR", "to_airport": "LHR", "depart_time": "8:20 AM", "arrive_time": "8:40 PM" } },
+        { "time": "10:00 PM", "type": "Hotel", "text": "Check in at The Ned London", "hotel": { "name": "The Ned London" } }
+      ]
+    },
+    {
+      "day": 2,
+      "date": "2026-10-02",
+      "city": "London",
+      "items": [
+        { "time": "10:00 AM", "type": "Activity", "text": "Churchill War Rooms" },
+        { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at St. John" }
+      ]
+    },
+    {
+      "day": 3,
+      "date": "2026-10-03",
+      "city": "London",
+      "items": [
+        { "time": "10:00 AM", "type": "Activity", "text": "Imperial War Museum" },
+        { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at Brat" }
+      ]
+    },
+    {
+      "day": 4,
+      "date": "2026-10-04",
+      "city": "Bayeux",
+      "items": [
+        { "time": "8:00 AM", "type": "Hotel", "text": "Check out of The Ned London", "hotel": { "name": "The Ned London" } },
+        { "time": "9:15 AM", "type": "Transport", "text": "Eurostar London → Paris, then train to Bayeux" },
+        { "time": "4:00 PM", "type": "Hotel", "text": "Check in at Villa Lara Hotel", "hotel": { "name": "Villa Lara Hotel" } },
+        { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at Le Pommier" }
+      ]
+    },
+    {
+      "day": 5,
+      "date": "2026-10-05",
+      "city": "Bayeux",
+      "items": [
+        { "time": "9:00 AM", "type": "Activity", "text": "Bayeux Tapestry" },
+        { "time": "12:30 PM", "type": "Lunch", "text": "Lunch at La Rapiere" }
+      ]
+    },
+    {
+      "day": 6,
+      "date": "2026-10-06",
+      "city": "Amsterdam",
+      "items": [
+        { "time": "8:00 AM", "type": "Hotel", "text": "Check out of Villa Lara Hotel", "hotel": { "name": "Villa Lara Hotel" } },
+        { "time": "9:00 AM", "type": "Activity", "text": "Utah Beach Landing Museum" },
+        { "time": "11:00 AM", "type": "Transport", "text": "Drive Utah Beach → Amsterdam (via Belgium), approx 6h" },
+        { "time": "6:00 PM", "type": "Hotel", "text": "Check in at Amsterdam Marriott Hotel", "hotel": { "name": "Amsterdam Marriott Hotel" } },
+        { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at De Silveren Spiegel" }
+      ]
+    },
+    {
+      "day": 7,
+      "date": "2026-10-07",
+      "city": "Amsterdam",
+      "items": [
+        { "time": "7:00 AM", "type": "Activity", "text": "Early visit to Pointe du Hoc" },
+        { "time": "9:30 AM", "type": "Note", "text": "Drop off the rental car at the Bayeux depot", "location": "Bayeux, France" },
+        { "time": "11:00 AM", "type": "Flight", "text": "Fly Caen (CFR) → Amsterdam (AMS) via Paris CDG", "flight": { "flight_number": "AF7652", "from_airport": "CFR", "to_airport": "AMS", "depart_time": "11:00 AM", "arrive_time": "3:35 PM" } },
+        { "time": "4:30 PM", "type": "Hotel", "text": "Check in at Amsterdam Marriott Hotel", "hotel": { "name": "Amsterdam Marriott Hotel" } },
+        { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at Restaurant Breda" }
+      ]
+    },
+    {
+      "day": 8,
+      "date": "2026-10-08",
+      "city": "Amsterdam",
+      "items": [
+        { "time": "10:00 AM", "type": "Activity", "text": "Rijksmuseum" },
+        { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at Rijks" }
+      ]
+    },
+    {
+      "day": 9,
+      "date": "2026-10-09",
+      "city": "Lisbon",
+      "items": [
+        { "time": "8:00 AM", "type": "Hotel", "text": "Check out of Amsterdam Marriott Hotel", "hotel": { "name": "Amsterdam Marriott Hotel" } },
+        { "time": "10:15 AM", "type": "Flight", "text": "Fly Amsterdam (AMS) → Lisbon (LIS)", "flight": { "flight_number": "KL1695", "from_airport": "AMS", "to_airport": "LIS", "depart_time": "10:15 AM", "arrive_time": "12:40 PM" } },
+        { "time": "3:00 PM", "type": "Hotel", "text": "Check in at Bairro Alto Hotel", "hotel": { "name": "Bairro Alto Hotel" } }
+      ]
+    },
+    {
+      "day": 10,
+      "date": "2026-10-10",
+      "city": "Lisbon",
+      "items": [
+        { "time": "10:00 AM", "type": "Activity", "text": "Museu do Aljube" },
+        { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at Belcanto" }
+      ]
+    },
+    {
+      "day": 11,
+      "date": "2026-10-11",
+      "city": "Lisbon",
+      "items": [
+        { "time": "9:00 AM", "type": "Hotel", "text": "Check out of Bairro Alto Hotel", "hotel": { "name": "Bairro Alto Hotel" } },
+        { "time": "12:30 PM", "type": "Flight", "text": "Fly Lisbon (LIS) → Newark (EWR)", "flight": { "flight_number": "UA974", "from_airport": "LIS", "to_airport": "EWR", "depart_time": "12:30 PM", "arrive_time": "4:15 PM" } }
+      ]
+    }
+  ]
+}

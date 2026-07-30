@@ -3,6 +3,8 @@ import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { arrivalOrderExportError } from "./arrivalOrderCheck.js";
+import { findContinuityIssues, findStructuralBlockingIssues } from "./dayContinuityCheck.js";
+import { deriveCityNights, reconcileMetaNights, parseMetaNightsBreakdown } from "./legNights.js";
 import { buildDateTable } from "./dateFacts.js";
 import { pickScheduledFlight, parseClockToMinutes, resolveAirlineIata, normalizeAirportCode } from "./flightSelect.js";
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
@@ -3399,7 +3401,75 @@ function applyQualityLayer(input, inputs) {
     }
   }
 
-  return { data: { ...input, days: cappedDays }, qc: { fixes, warnings } };
+  const out = { ...input, days: cappedDays };
+
+  // Day-to-day structural continuity (RCA bug A). Runs last so it sees the
+  // normalized city names and the post-cap item lists. Block-severity flags
+  // land on days[].structural_flags, which findStructuralBlockingIssues reads
+  // in the pre-export gate; day.flags is a string array (see day completeness
+  // above) and can't carry a flag object.
+  if (Array.isArray(out.days)) {
+    const continuity = findContinuityIssues(out);
+    if (continuity.length > 0) {
+      out.days = out.days.map((day, dayIdx) => {
+        const dayFlags = continuity.filter(f => f.dayIdx === dayIdx);
+        if (dayFlags.length === 0) return day;
+        const prior = Array.isArray(day?.structural_flags) ? day.structural_flags : [];
+        return { ...day, structural_flags: [...prior, ...dayFlags] };
+      });
+      for (const f of continuity) warnings.push(`Day ${f.day}: ${f.message}`);
+    }
+  }
+
+  // Night math (RCA bug B). deriveLegNights and friends used to live inside the
+  // PDF renderer, so the printed document had code-derived counts while the
+  // plan object, the meta header, and the on-screen city breakdown all kept the
+  // model's arithmetic. Overwrite them here instead. Where the day sequence
+  // can't confirm a breakdown, strip it rather than printing an unverified one.
+  const metaBefore = typeof out.meta === "string" ? out.meta : "";
+  const { meta: metaAfter, derived: derivedLegs } = reconcileMetaNights(metaBefore, out);
+  if (metaAfter !== metaBefore) {
+    out.meta = metaAfter;
+    fixes.push(
+      derivedLegs
+        ? `Recomputed meta night breakdown from the day-by-day city sequence: "${metaAfter}"`
+        : `Stripped unverifiable night breakdown from the meta line: "${metaAfter}"`
+    );
+  }
+
+  let nightsDrifted = false;
+  const modelBreakdown = parseMetaNightsBreakdown(metaBefore);
+  if (derivedLegs && modelBreakdown) {
+    const derivedBreakdown = derivedLegs.map(l => l.nights);
+    nightsDrifted =
+      modelBreakdown.length !== derivedBreakdown.length ||
+      modelBreakdown.some((n, i) => n !== derivedBreakdown[i]);
+  }
+
+  const cityNights = deriveCityNights(out);
+  if (cityNights && Array.isArray(out.cities)) {
+    out.cities = out.cities.map((c) => {
+      const derivedNights = cityNights.get(String(c?.name || "").trim().toLowerCase());
+      if (!Number.isFinite(derivedNights) || derivedNights <= 0) return c;
+      if (Number(c?.nights) === derivedNights) return c;
+      nightsDrifted = true;
+      fixes.push(`Recomputed ${c.name} nights ${c?.nights} → ${derivedNights} from the day-by-day city sequence`);
+      return { ...c, nights: derivedNights };
+    });
+  }
+
+  if (nightsDrifted) {
+    const prior = Array.isArray(out.structural_flags) ? out.structural_flags : [];
+    out.structural_flags = [...prior, {
+      code: "NIGHT_COUNT_MISMATCH",
+      severity: "warn",
+      target: "meta",
+      message: "The model's night counts disagreed with the day-by-day city sequence; the itinerary now shows the computed counts.",
+    }];
+    warnings.push("Night counts disagreed with the day-by-day city sequence — replaced with computed values");
+  }
+
+  return { data: out, qc: { fixes, warnings } };
 }
 
 // Small QC chip surfaced below the trip — shows we caught and fixed something
@@ -3615,15 +3685,25 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers
   // helper drops these in normal flow; this gate is the last line of
   // defense against bypassed-merge code paths or future regressions.
   if (data && Array.isArray(data.days)) {
-    const blockingIssues = findBlockingIssues(data);
+    // findBlockingIssues only walks venue flags; day-to-day structural flags
+    // live on days[].structural_flags and need their own collector. Both are
+    // formatted with one code path because findStructuralBlockingIssues returns
+    // the same { dayIdx, name, flag } shape.
+    const venueIssues = findBlockingIssues(data);
+    const structuralIssues = findStructuralBlockingIssues(data);
+    const blockingIssues = [...venueIssues, ...structuralIssues];
     if (blockingIssues.length > 0) {
       const summary = blockingIssues
         .slice(0, 5)
         .map((iss) => `Day ${iss.dayIdx + 1}: ${iss.name} (${iss.flag.code})`)
         .join("; ");
       const more = blockingIssues.length > 5 ? ` … and ${blockingIssues.length - 5} more` : "";
+      const counts = [
+        `${venueIssues.length} venue verification`,
+        `${structuralIssues.length} itinerary structure`,
+      ].join(", ");
       const err = new Error(
-        `Cannot export: ${blockingIssues.length} venue${blockingIssues.length === 1 ? "" : "s"} failed verification — ${summary}${more}. Re-run the build or remove the affected items before exporting.`
+        `Cannot export: ${blockingIssues.length} blocking issue${blockingIssues.length === 1 ? "" : "s"} — ${counts} — ${summary}${more}. Re-run the build or remove the affected items before exporting.`
       );
       err.code = "VERIFICATION_BLOCK";
       err.issues = blockingIssues;

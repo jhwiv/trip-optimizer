@@ -1,0 +1,46 @@
+{
+  "_fixture_note": "Control fixture: a structurally sound two-city trip. Every city change is carried by a Transport or Flight item, each hotel is checked out of before the next check-in, no city is arrived at twice, and the rental is returned where the plan actually is. findContinuityIssues must return zero findings against this plan. Day sequence gives derived nights of 4+3 = 7 over 8 days.",
+  "destination": "Amsterdam & Bruges",
+  "meta": "8 days · 7 nights (4+3)",
+  "cities": [
+    { "name": "Amsterdam", "nights": 4 },
+    { "name": "Bruges", "nights": 3 }
+  ],
+  "days": [
+    {
+      "day": 1,
+      "date": "2026-09-01",
+      "city": "Amsterdam",
+      "items": [
+        { "time": "9:00 AM", "type": "Flight", "text": "Fly Newark (EWR) → Amsterdam (AMS)", "flight": { "flight_number": "UA70", "from_airport": "EWR", "to_airport": "AMS", "depart_time": "9:00 AM", "arrive_time": "10:35 PM" } },
+        { "time": "11:30 PM", "type": "Hotel", "text": "Check in at The Hoxton, Amsterdam", "hotel": { "name": "The Hoxton, Amsterdam" } }
+      ]
+    },
+    { "day": 2, "date": "2026-09-02", "city": "Amsterdam", "items": [ { "time": "10:00 AM", "type": "Activity", "text": "Rijksmuseum" }, { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at Rijks" } ] },
+    { "day": 3, "date": "2026-09-03", "city": "Amsterdam", "items": [ { "time": "10:00 AM", "type": "Activity", "text": "Van Gogh Museum" }, { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at Restaurant Breda" } ] },
+    { "day": 4, "date": "2026-09-04", "city": "Amsterdam", "items": [ { "time": "10:00 AM", "type": "Activity", "text": "Canal cruise" }, { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at De Silveren Spiegel" } ] },
+    {
+      "day": 5,
+      "date": "2026-09-05",
+      "city": "Bruges",
+      "items": [
+        { "time": "8:30 AM", "type": "Hotel", "text": "Check out of The Hoxton, Amsterdam", "hotel": { "name": "The Hoxton, Amsterdam" } },
+        { "time": "10:00 AM", "type": "Transport", "text": "Train Amsterdam → Bruges" },
+        { "time": "3:00 PM", "type": "Hotel", "text": "Check in at Hotel Dukes' Palace", "hotel": { "name": "Hotel Dukes' Palace" } },
+        { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at Den Gouden Harynck" }
+      ]
+    },
+    { "day": 6, "date": "2026-09-06", "city": "Bruges", "items": [ { "time": "10:00 AM", "type": "Activity", "text": "Groeningemuseum" }, { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at Sans Cravate" } ] },
+    { "day": 7, "date": "2026-09-07", "city": "Bruges", "items": [ { "time": "10:00 AM", "type": "Activity", "text": "Belfry of Bruges" }, { "time": "7:30 PM", "type": "Dinner", "text": "Dinner at Bar Bulot" } ] },
+    {
+      "day": 8,
+      "date": "2026-09-08",
+      "city": "Bruges",
+      "items": [
+        { "time": "7:00 AM", "type": "Hotel", "text": "Check out of Hotel Dukes' Palace", "hotel": { "name": "Hotel Dukes' Palace" } },
+        { "time": "8:00 AM", "type": "Note", "text": "Return the rental car at the Bruges depot", "location": "Bruges, Belgium" },
+        { "time": "11:00 AM", "type": "Transport", "text": "Airport transfer to Brussels Airport" }
+      ]
+    }
+  ]
+}
