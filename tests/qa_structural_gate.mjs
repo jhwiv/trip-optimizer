@@ -10,6 +10,8 @@
  *   D  fabricated Viator product code             → export BLOCKED
  *   E  reserved dinner on the venue's closed day  → export BLOCKED
  *   F  unconfirmable regional flight              → export ALLOWED, card warns
+ *   G  permanently-closed hotel                   → export BLOCKED
+ *   H  hotel Places matched to another property   → export ALLOWED, warns
  *
  * Usage:
  *   npm run build
@@ -130,6 +132,7 @@ const mockState = {
   buildN: 0,
   verifications: [],   // /api/places-verify-batch
   flights: null,       // /api/flights-search — null means "never asked"
+  batchVenues: [],     // every venue the client actually asked Places about
 };
 
 const mock = createServer(async (req, res) => {
@@ -162,6 +165,13 @@ const mock = createServer(async (req, res) => {
   }
 
   if (p === '/api/places-verify-batch') {
+    // One posted venue == one Places lookup (the server caches, but a cold
+    // cache bills every entry). Recording them here is how scenario G measures
+    // the API-cost delta hotels add.
+    try {
+      const parsed = JSON.parse(body || '{}');
+      if (Array.isArray(parsed.venues)) mockState.batchVenues.push(...parsed.venues);
+    } catch { /* malformed body is the client's problem, not the meter's */ }
     res.writeHead(200, h); res.end(JSON.stringify({ ok: true, verifications: mockState.verifications })); return;
   }
   if (p.includes('places-verify')) { res.writeHead(200, h); res.end('{"ok":true,"results":[]}'); return; }
@@ -269,6 +279,7 @@ async function scenario(browser, { plan: mutate, verifications = [], flights = n
   mockState.buildN = 0;
   mockState.verifications = verifications;
   mockState.flights = flights;
+  mockState.batchVenues = [];
   const ctx = await makePage(browser);
   const rendered = await buildPlan(ctx.page);
   // The venue-verify and flight-resolve passes are fire-and-forget; give them
@@ -405,6 +416,81 @@ console.log('\n── F: unconfirmable regional flight warns but still exports �
   chk('F7 gate did not fire', pdfFail.length === 0, pdfFail.join(' | '));
   chk('F8 no console errors', errs.length === 0, errs.join(' | '));
   console.log('     screenshot → scratchpad/structural_gate_flight_unverified.png');
+  await page.context().close();
+}
+
+console.log('\n── G: permanently-closed hotel ──\n');
+{
+  // The production gap this PR closes: before it, hotels were never sent to
+  // Places at all, so a closed property exported silently. Nothing about the
+  // plan's *shape* is wrong here — only the bed does not exist.
+  const { page, pdfFail, rendered } = await scenario(browser, {
+    plan: () => {},
+    verifications: [{
+      name: 'Villa Lara Hotel', kind: 'hotel', found: true,
+      business_status: 'CLOSED_PERMANENTLY',
+      flags: [{ code: 'CLOSED_PERMANENTLY', severity: 'block', message: 'Permanently closed per Google Places' }],
+    }],
+  });
+  chk('G1 plan renders on Step 3', rendered);
+
+  const asked = mockState.batchVenues;
+  const hotels = asked.filter(v => v.kind === 'hotel');
+  chk('G2 hotels are sent to Places at all',
+    hotels.length > 0, `kinds asked: ${[...new Set(asked.map(v => v.kind))].join(',') || 'none'}`);
+  // Villa Lara is checked into on Day 1 and out of on Day 3; The Hoxton on
+  // Days 3 and 4. Four hotel items, two properties, two lookups.
+  chk('G3 a property spanning several days costs one lookup, not one per day',
+    hotels.length === 2, `hotel lookups: ${hotels.map(v => v.name).join(' | ')}`);
+  console.log(`     Places lookups this build: ${asked.length} total ` +
+    `(${asked.length - hotels.length} non-hotel + ${hotels.length} hotel)`);
+
+  // A hotel is load-bearing structure — dropping it would leave the traveller
+  // with no bed and hide the closure from the duplicate-check-in validator.
+  // It stays on the page carrying its block flag; the gate is what refuses.
+  chk('G4 the hotel is flagged, not dropped', await waitForText(page, 'villa lara', 8000));
+
+  const { found, download, banner, dialogMsg } = await clickExport(page, join(SC, 'structural_gate_hotel_closed.png'));
+  chk('G5 PDF button present', found);
+  chk('G6 export blocked — no PDF produced', download === null, download ? 'a PDF downloaded' : '');
+  chk('G7 user sees an export error', Boolean(banner) || /could not save pdf|cannot export/i.test(dialogMsg),
+    `banner=${banner} dialog=${dialogMsg}`);
+  chk('G8 gate names CLOSED_PERMANENTLY against the hotel',
+    pdfFail.some(t => /CLOSED_PERMANENTLY/.test(t) && /Villa Lara Hotel/.test(t)), pdfFail.join(' | '));
+  chk('G9 counted as a venue-verification block',
+    pdfFail.some(t => /[1-9]\d* venue verification/.test(t)), pdfFail.join(' | '));
+  console.log('     screenshot → scratchpad/structural_gate_hotel_closed.png');
+  await page.context().close();
+}
+
+console.log('\n── H: hotel Places resolved to a different property ──\n');
+{
+  // "Marriott Marble Arch" resolving to "Marriott Regents Park" is the common
+  // failure for chain and near-duplicate names. It is a name judgement, not a
+  // business_status fact, so it must warn and still export — blocking here
+  // would refuse correct itineraries every time Places picked the wrong branch.
+  const { page, errs, pdfFail, rendered } = await scenario(browser, {
+    plan: () => {},
+    verifications: [{
+      name: 'Villa Lara Hotel', kind: 'hotel', found: false,
+      error: 'not-found', reason: 'name-mismatch',
+      resolved_name: 'Le Bistro Lara Rouen',
+      flags: [{
+        code: 'HOTEL_MATCH_UNCERTAIN', severity: 'warn',
+        message: 'Google Places resolved this to "Le Bistro Lara Rouen" — confirm it is the right property before booking.',
+      }],
+    }],
+  });
+  chk('H1 plan renders on Step 3', rendered);
+  chk('H2 the hotel stays in the plan', await waitForText(page, 'villa lara', 8000));
+  const { found, download, banner, dialogMsg } = await clickExport(page, join(SC, 'structural_gate_hotel_uncertain.png'));
+  chk('H3 PDF button present', found);
+  chk('H4 no export error shown', !banner && !/cannot export|could not save pdf/i.test(dialogMsg),
+    `banner=${banner} dialog=${dialogMsg}`);
+  chk('H5 PDF download initiated — an uncertain name never blocks', download !== null);
+  chk('H6 gate did not fire', pdfFail.length === 0, pdfFail.join(' | '));
+  chk('H7 no console errors', errs.length === 0, errs.join(' | '));
+  console.log('     screenshot → scratchpad/structural_gate_hotel_uncertain.png');
   await page.context().close();
 }
 
