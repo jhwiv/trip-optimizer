@@ -9,6 +9,7 @@ import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaura
 import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, activityHeadName, itemVenueName } from "./swapAlternatives.js";
 import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
+import { shouldAutoFireLocalPass } from "./findLocalPass.js";
 import { resolveOutputs } from "./outputsState.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnconfirmedTimesPayload } from "./flightResolver.js";
@@ -10769,15 +10770,24 @@ function FindView({ embedded = false } = {}) {
   // reset while the local-expert pass is running.
   const [askingLocals, setAskingLocals] = useState(false);
   const [sourcesExpanded, setSourcesExpanded] = useState(false);
+  // Last query actually submitted in standard mode. Identity changes on every
+  // submit, which is what re-triggers the local-expert auto-fire effect.
+  const [submittedQuery, setSubmittedQuery] = useState(null);
 
   const requestIdRef = useRef(0);
-  const runSearch = async (q, c, g, mode = "standard") => {
+  // `opts.standalone` marks a local-expert pass whose results will be the only
+  // ones on the page (the standard pass errored or came back empty). It changes
+  // two things: the standard pass's error message is left on screen while this
+  // one runs instead of being wiped, and the failure copy can't claim "your
+  // original list above is unchanged" when there is no list above.
+  const runSearch = async (q, c, g, mode = "standard", opts = {}) => {
     const loc = String(q || "").trim();
     if (!loc) {
       setError("Enter a location to search.");
       return;
     }
     const isLocalExpert = mode === "local_expert";
+    const standalone = !!opts.standalone;
     const myId = ++requestIdRef.current;
     if (isLocalExpert) {
       setAskingLocals(true);
@@ -10790,8 +10800,12 @@ function FindView({ embedded = false } = {}) {
       // since those snippets were grounded for a different query.
       setLocalExpertResults(null);
       setSourcesExpanded(false);
+      // Drives the local-expert auto-fire effect. Keyed off the *submitted*
+      // query, not off `results`, so the pass still runs when this search
+      // errors or returns nothing.
+      setSubmittedQuery({ location: loc, category: c, guidelines: g || "" });
     }
-    setError("");
+    if (!standalone) setError("");
     writeFindParams({ q: loc, c, g });
 
     // Local-expert calls fan out to Sonar in parallel server-side. Per-source
@@ -10827,7 +10841,9 @@ function FindView({ embedded = false } = {}) {
         if (restaurants.length === 0 && activities.length === 0) {
           setError(
             isLocalExpert
-              ? "The locals didn't surface different results this time. Your original list above is unchanged."
+              ? standalone
+                ? "Neither the standard search nor the local sources turned up anything for this location. Try a nearby larger town, or relax the guidelines."
+                : "The locals didn't surface different results this time. Your original list above is unchanged."
               : "No results for that search. Try a different location or relax the guidelines.",
           );
           if (!isLocalExpert) setResults(null);
@@ -10843,6 +10859,10 @@ function FindView({ embedded = false } = {}) {
             // Render BELOW the standard results, as its own section.
             setLocalExpertResults(payload);
             setSourcesExpanded(false);
+            // These are now the only results on the page, so the standard
+            // pass's error banner would contradict a populated list. The
+            // section header explains where they came from instead.
+            if (standalone) setError("");
           } else {
             setResults(payload);
           }
@@ -10851,7 +10871,13 @@ function FindView({ embedded = false } = {}) {
     } catch (err) {
       if (myId !== requestIdRef.current) return; // stale
       const isAbort = err?.name === "AbortError";
-      if (isLocalExpert) {
+      if (isLocalExpert && standalone) {
+        setError(
+          isAbort
+            ? "Asking the locals took too long, and there were no standard results to fall back on. Try again in a moment."
+            : "Couldn't reach the local sources right now, and there were no standard results to fall back on. Try again in a moment.",
+        );
+      } else if (isLocalExpert) {
         setError(
           isAbort
             ? "Asking the locals took too long. Your original results above are unchanged — try again later."
@@ -10888,32 +10914,39 @@ function FindView({ embedded = false } = {}) {
     );
   };
 
-  // Auto-fire the local-expert pass as soon as standard results land. Users
-  // shouldn't have to know about, or click, a second button to get the
-  // locals' picks — the value of the feature is invisible until they see
-  // both lists side by side. Only auto-fires when:
-  //   • standard results just arrived (results truthy)
-  //   • we haven't already run the local pass for this query
-  //     (localExpertResults nullable)
-  //   • we're not already running anything
-  // Encoded as a query-signature dependency so re-running the same query
-  // (e.g. after a clear/re-submit) re-triggers it but no-ops on incidental
-  // re-renders.
+  // Auto-fire the local-expert pass once the standard pass settles. Users
+  // shouldn't have to know about, or click, a second button to get the locals'
+  // picks — the value of the feature is invisible until they see it.
+  //
+  // Keyed off the *submitted query*, not off `results`: a location that returns
+  // nothing (or 422s) is precisely where regional press and forums beat the
+  // model's own recall, so gating on the standard pass having succeeded
+  // withheld the pass from the queries that needed it most. Gating logic lives
+  // in shouldAutoFireLocalPass so it can be unit-tested outside React.
+  //
+  // `loading` is a dependency because this effect first runs while the standard
+  // pass is still in flight; it must re-evaluate when that flips false.
   const lastAutoLocalsKeyRef = useRef(null);
   useEffect(() => {
-    if (!results || loading || askingLocals) return;
-    if (localExpertResults) return;
-    const sig = `${results.queryUsed.location}|${results.queryUsed.category}|${results.queryUsed.guidelines}`;
-    if (lastAutoLocalsKeyRef.current === sig) return;
-    lastAutoLocalsKeyRef.current = sig;
+    const fire = shouldAutoFireLocalPass({
+      submittedQuery,
+      results,
+      localExpertResults,
+      loading,
+      askingLocals,
+      lastFiredKey: lastAutoLocalsKeyRef.current,
+    });
+    if (!fire) return;
+    lastAutoLocalsKeyRef.current = fire.sig;
     runSearch(
-      results.queryUsed.location,
-      results.queryUsed.category,
-      results.queryUsed.guidelines,
+      submittedQuery.location,
+      submittedQuery.category,
+      submittedQuery.guidelines,
       "local_expert",
+      { standalone: fire.standalone },
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [results]);
+  }, [submittedQuery, loading]);
 
   // -------- lazy menu fetch --------
   // Opens the menu modal in a loading state, then resolves with menu data
@@ -11036,6 +11069,7 @@ function FindView({ embedded = false } = {}) {
     setGuidelines("");
     setResults(null);
     setLocalExpertResults(null);
+    setSubmittedQuery(null);
     setError("");
     setSourcesExpanded(false);
     setSuggestions([]);
@@ -11366,6 +11400,12 @@ function FindView({ embedded = false } = {}) {
                 <span style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", fontStyle: "italic" }}>local-source retrieval not configured</span>
               )}
             </div>
+            {!results && (
+              <p style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", margin: "0 0 1rem", lineHeight: 1.55 }}>
+                The standard search came back empty for this location, so everything below was
+                sourced from regional press, local forums, and area guides.
+              </p>
+            )}
             {sourcesExpanded && localExpertResults.localExpert?.sources?.length > 0 && (
               <ul style={{ margin: "0 0 12px", padding: "0 0 0 18px", fontSize: "11.5px", color: ACCENT_DARK }}>
                 {localExpertResults.localExpert.sources.map((s) => (
