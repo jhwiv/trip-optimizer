@@ -5089,7 +5089,10 @@ function useLocalProviders(plan, inputs, legCities, active) {
               location: city,
               category: "activities",
               guidelines: meta.guidelines || "",
-              mode: "standard",
+              // local_expert: tours/tastings are exactly the category where
+              // regional press and forums beat the model's own recall. This tab
+              // is a deliberate user-initiated load, so Sonar latency is fine.
+              mode: "local_expert",
               // Make tours + tastings go through the SAME real Google Places
               // existence/status check as drivers/guides (activities store
               // their name in `text`, so the server must derive it).
