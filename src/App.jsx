@@ -13970,9 +13970,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       })();
 
       // Background pass: verify every named venue (restaurants, backups,
-      // activities) against Google Places (New) via /api/places-verify-batch.
+      // activities, hotels) against Google Places (New) via
+      // /api/places-verify-batch.
       // CLOSED_PERMANENTLY / CLOSED_TEMPORARILY / NOT_FOUND items are
-      // DROPPED from the plan entirely; OPERATIONAL items get their
+      // DROPPED from the plan entirely — except hotels, which are kept
+      // carrying their block flag so the export gate reports them rather
+      // than the plan quietly losing its accommodation. OPERATIONAL items get their
       // contact.{address,phone,website} overwritten with authoritative
       // Places values and contact.hours_verified populated. UNVERIFIED
       // venues (Places key missing or network error) are kept with a warn
@@ -14039,7 +14042,16 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                   .map((g) => ({ name: g.name, lat: g.lat, lng: g.lng }));
                 if (centers.length > 0) {
                   const legs = computeLegRadii(centers);
-                  const locResult = findVenuesOutsideRadius(allVerifications, legs);
+                  // Hotels are included here (the default is restaurants +
+                  // activities). This is how "is this property in the city
+                  // the itinerary says?" gets answered — by distance from
+                  // the geocoded leg centroids, not by string-matching the
+                  // city name against the address Places returned, which
+                  // would fire on every exonym (Venice/Venezia,
+                  // Munich/München). Coordinates have no language.
+                  const locResult = findVenuesOutsideRadius(allVerifications, legs, {
+                    kinds: ["restaurant", "activity", "hotel"],
+                  });
                   if (locResult.blocked > 0) {
                     // Attach the WRONG_LOCATION flag to the venues in
                     // the verifications array so mergePlacesVerifications
