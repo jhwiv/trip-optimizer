@@ -24,6 +24,7 @@ Routing lives in `src/main.jsx`, **before** any component tree mounts:
 - `introduction.js` — pure helpers (`shapeIntroRequest`, `applyGeneratedIntroduction`, `hasIntroduction`, `introPlanSignature`, `buildIntroPromptForExternalAI`). Tested by `tests/test_introduction.mjs` (~47 assertions).
 - `localProviders.js` — Local providers feature (PR #65)
 - `locationCheck.js` — WRONG_LOCATION block for venues outside trip radius (PR #45)
+- `nameMatch.js` — pure name-similarity primitives (`normalizeNameForCompare`, `diceCoefficient`, `isSimilarEnough`, `nameMatchScore`). Shared by `functions/api/places-verify.js` and the client so both score a match the same way
 - `outputsState.js` — Output selections preserved across remounts (PR #64)
 - `pacingCheck.js` — PACING_IMPOSSIBLE / PACING_CONFLICT travel-time grounding (PR #46)
 - `placesVerify.js` — Google Places verification + name-similarity guard (PRs #41, #42, #44)
@@ -54,6 +55,50 @@ Multi-pass check before a venue makes it into the final plan:
 5. Routes API travel-time grounding — `PACING_IMPOSSIBLE`, `PACING_CONFLICT` (PR #46)
 6. Batch verification chunked under the Workers subrequest cap (PR #44)
 7. Pre-export gate (PR #41)
+
+### Hotels
+
+Hotels ran outside this chain until PR #149 — the plan's restaurants and
+activities were verified while the property the traveller was actually sleeping
+in was taken on the model's word. A permanently-closed or invented hotel
+exported clean. Hotels now go through the same batch as every other venue, with
+three deliberate differences:
+
+**No hours check.** Steps 3's `CLOSED_ON_THIS_DAY` / `OUTSIDE_HOURS` never fire
+for a hotel. This is the 2026-06-14 exemption and it is kept on purpose: hotel
+reception is generally 24/7, Places hours data for hotels is sparse and often
+describes a restaurant or spa inside the property, and a 3 PM check-in against
+missing hours produces a false "closed" on a correct booking. The exemption is
+about *hours only* — existence and `business_status` are checked exactly as they
+are for a restaurant.
+
+**Blocked hotels are flagged, not dropped.** Restaurants and activities with a
+block flag are removed from the plan. A hotel is load-bearing structure: drop it
+and the traveller has an itinerary with no bed, and the duplicate-check-in and
+city-continuity validators lose the item they reason about. The flag rides on
+`item.hotel.flags[]` and `findBlockingIssues()` refuses the export.
+
+**Name ambiguity warns; only `business_status` blocks.** "Marriott Marble Arch"
+and "Marriott Regents Park" are three bigrams apart, and chain naming makes a
+wrong-branch match the common failure. A confident write-through of Places'
+address/phone onto `item.hotel` requires `nameMatchScore >= 0.80`; below that the
+property keeps the model's name, has its phone and street address stripped, and
+carries `HOTEL_MATCH_UNCERTAIN` (warn). The server's own 0.55 guard, which turns
+a name mismatch into a `NOT_FOUND` **block** for other kinds, is downgraded to
+that same warn for `kind:"hotel"` in `flagsFor()`.
+
+Whether the property is in the right *city* is answered geographically, not
+lexically: hotels are included in step 4's radius check
+(`findVenuesOutsideRadius(..., { kinds: ["restaurant","activity","hotel"] })`).
+Comparing Places' address string to the itinerary's city name false-positives on
+every exonym — Venice/Venezia, Munich/München, Lisbon/Lisboa — and telling a
+traveller their correct hotel is in the wrong city is worse than not checking.
+Coordinates have no language.
+
+Cost: one Places lookup per *unique* hotel per build. `collectPlanVenues` dedups
+by name + address, so a property checked into on Day 1 and out of on Day 3 is one
+lookup, not two. Measured on the four-day two-city fixture in
+`tests/qa_structural_gate.mjs`: 4 lookups before, 6 after.
 
 ## Structural validation (itinerary hardening)
 
