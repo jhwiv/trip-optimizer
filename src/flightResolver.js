@@ -26,6 +26,7 @@
 // any number lift, so the rule still holds.
 
 import { formatAirportLocalTime } from "./airportTz.js";
+import { normalizeClock } from "./flightTimeConsistency.js";
 
 // Classify what a flight needs from the resolver:
 //   "number" — no usable flight number AND not user-supplied. Run the
@@ -282,17 +283,105 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
   };
 }
 
-// Build the merge payload for the case where every resolve attempt
-// failed AND the model also omitted times. The PDF reads
-// _timesUnconfirmed to render an honest "Times not yet confirmed —
-// check with airline at booking" line in place of a blank.
+// Commit a merge payload onto a Flight item, keeping the item-level header
+// clock equal to the flight's departure time.
 //
-// Returns null when the flight already has both times (no fallback
-// needed) so callers can use this as a "should I commit?" check.
-export function buildUnconfirmedTimesPayload(currentFlight) {
+// buildMergePayload can only describe the flight object; item.time is its
+// sibling, so the two clocks used to drift apart every time the resolver
+// replaced a model-guessed depart_time with the live schedule's — the day
+// header kept the model's number and the flight row got the real one (report
+// bug 4). Doing the sync here rather than in the merge payload keeps
+// buildMergePayload a pure flight→flight function and still gives the
+// propagation its own unit test.
+//
+// The header is normalized to 24h "HH:MM" per the item schema, even though
+// depart_time may arrive from Intl as "8:20 AM".
+export function withFlightMerge(item, merge) {
+  if (!item || typeof item !== "object") return item;
+  const flight = { ...(item.flight || {}), ...(merge || {}) };
+  const next = { ...item, flight };
+  const depart = normalizeClock(flight.depart_time);
+  if (depart !== null) next.time = depart;
+  return next;
+}
+
+// Build the merge payload for the case where the resolver could not confirm
+// the flight against a live schedule at all.
+//
+// _timesUnconfirmed used to be the only marker, and it was scoped to the
+// narrow case where the model ALSO omitted times. That left the worst variant
+// silent: the model invents a complete-looking regional flight (report bug 6 —
+// AF7652 Caen→CDG→AMS, a route Air France does not fly), the schedule API
+// can't confirm it, and because the times were present nothing was written.
+// The card and PDF then rendered it exactly like a confirmed flight.
+//
+// _flightUnverified is the general marker: set whenever both resolve attempts
+// came back empty, times or no times. _timesUnconfirmed is still emitted
+// alongside it when the clocks are actually missing, so the existing PDF
+// fallback line and any in-flight plan objects keep working for one release.
+//
+// `routeExists` distinguishes the two failure shapes the route-only retry can
+// tell apart, and is what makes that retry consequential rather than just a
+// second chance:
+//   true      — the route is scheduled, this carrier isn't on it
+//   false     — no scheduled service on this route at all
+//   undefined — the schedule API never answered
+export function buildUnverifiedFlightPayload(currentFlight, opts = {}) {
   if (!currentFlight || typeof currentFlight !== "object") return null;
   const depart = typeof currentFlight.depart_time === "string" ? currentFlight.depart_time.trim() : "";
   const arrive = typeof currentFlight.arrive_time === "string" ? currentFlight.arrive_time.trim() : "";
-  if (depart.length > 0 && arrive.length > 0) return null;
+  const hasBothTimes = depart.length > 0 && arrive.length > 0;
+  const reason =
+    opts.routeExists === true ? "carrier-not-on-route"
+      : opts.routeExists === false ? "no-scheduled-route"
+        : "schedule-unavailable";
+  return {
+    _flightUnverified: true,
+    _unverifiedReason: reason,
+    ...(hasBothTimes ? {} : { _timesUnconfirmed: true }),
+  };
+}
+
+// Plan walk over the marker above, for applyQualityLayer. Warn, not block:
+// an unconfirmable regional hop is usually still the right plan — the traveller
+// just has to call the airline. What must not happen is it rendering as if the
+// schedule API had confirmed it.
+const UNVERIFIED_REASON_COPY = {
+  "carrier-not-on-route": "the schedule shows service on this route but not by this carrier",
+  "no-scheduled-route": "the schedule shows no service on this route",
+  "schedule-unavailable": "the schedule lookup could not be completed",
+};
+
+export function findUnverifiedFlights(plan) {
+  const days = Array.isArray(plan?.days) ? plan.days : [];
+  const out = [];
+  days.forEach((day, dayIdx) => {
+    const items = Array.isArray(day?.items) ? day.items : [];
+    items.forEach((item, itemIdx) => {
+      const fl = item?.type === "Flight" ? item.flight : null;
+      if (!fl || fl._flightUnverified !== true) return;
+      const label = [fl.carrier, fl.flight_number].filter(Boolean).join(" ").trim() || item.text || `Day ${dayIdx + 1} flight`;
+      const route = fl.from_airport && fl.to_airport ? ` ${fl.from_airport}→${fl.to_airport}` : "";
+      const why = UNVERIFIED_REASON_COPY[fl._unverifiedReason] || UNVERIFIED_REASON_COPY["schedule-unavailable"];
+      out.push({
+        code: "FLIGHT_UNVERIFIED",
+        severity: "warn",
+        dayIdx,
+        itemIdx,
+        day: dayIdx + 1,
+        target: label,
+        message: `${label}${route}: not confirmed against a live schedule — ${why}. Verify with the airline before booking.`,
+      });
+    });
+  });
+  return out;
+}
+
+// Narrow legacy wrapper: the "model omitted times too" case. Returns null when
+// the flight already has both times so callers can use it as a "should I
+// commit?" check. Prefer buildUnverifiedFlightPayload for new call sites.
+export function buildUnconfirmedTimesPayload(currentFlight) {
+  const payload = buildUnverifiedFlightPayload(currentFlight);
+  if (!payload || !payload._timesUnconfirmed) return null;
   return { _timesUnconfirmed: true };
 }
