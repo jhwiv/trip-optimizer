@@ -5856,6 +5856,8 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       setProgressLabel("Finalizing…");
       const { parsed } = parseToolJson(toolJson);
       if (!parsed || !Array.isArray(parsed.findings)) throw new Error("Review returned no findings.");
+      const structural = normalizeStructuralFindings(parsed.structural_findings);
+      if (structural.length > 0) parsed.findings = [...structural, ...parsed.findings];
       setReview(parsed);
       // Reset per-finding toggles to defaults on a fresh review.
       const fresh = {};
@@ -9959,6 +9961,30 @@ const CARD_TARGETED_HINTS = new Set([
   "add_tonight",
 ]);
 
+// structural_findings[] is uncapped and carries no lens/source/mode_hint —
+// those fields only mean something for editorial notes. Reshape them into the
+// finding contract the panel UI and the apply path already speak, so a
+// checklist hit renders at the top of the list (critical sorts first) instead
+// of being parsed and dropped. default_apply stays false: the reviewer is
+// advisory, and the deterministic validators are what actually gate export.
+export function normalizeStructuralFindings(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((f) => f && typeof f === "object" && f.summary)
+    .map((f, i) => ({
+      id: typeof f.id === "string" && f.id ? f.id : `s${i + 1}`,
+      severity: "critical",
+      lens: "editorial",
+      source: "Structural check",
+      target: f.target || "",
+      summary: f.summary,
+      action: f.action || "",
+      mode_hint: "add_flag",
+      default_apply: false,
+      structural_check: f.check || "",
+    }));
+}
+
 // Format a finding.target ({day, time, item} | string) into a short chip label.
 function formatFindingTarget(t) {
   if (!t) return "";
@@ -10017,6 +10043,21 @@ const REVIEW_TOOL = {
           required: ["id", "severity", "lens", "source", "target", "summary", "action", "mode_hint", "default_apply"],
         },
         maxItems: 8,
+      },
+      structural_findings: {
+        type: "array",
+        description: "Hits from the MUST-VERIFY CHECKLIST only: day continuity, night arithmetic, weekday claims, flight times, booking links, route plausibility. UNCAPPED — report every hit. Leave empty if the plan passes all six checks. Do NOT put editorial or taste observations here.",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Stable id: 's1', 's2', 's3', etc." },
+            check: { type: "string", enum: ["day_continuity", "night_arithmetic", "weekday_claims", "flight_times", "booking_links", "route_plausibility"], description: "Which checklist item this hit came from." },
+            target: { type: "string", description: "What this finding is ABOUT, in the user's language. Format: 'Day N · context'. Examples: 'Day 7 · hotel', 'Day 1 · flight UA934'." },
+            summary: { type: "string", description: "One sentence (≤22 words) stating the contradiction, naming both conflicting values. Example: 'Day 7 checks into the Amsterdam Marriott again after Day 6 already checked in.'" },
+            action: { type: "string", description: "One sentence (≤22 words) stating the concrete change to make." },
+          },
+          required: ["id", "check", "target", "summary", "action"],
+        },
       },
     },
     required: ["verdict", "findings"],
@@ -10198,6 +10239,15 @@ function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
     ? `\nUSER'S EXPLICIT GUIDELINES (these override the sources' default taste):\n${(inputs?.guidelines || inputs?.narrative || "").trim().slice(0, 3000)}\n`
     : "";
 
+  // Without the computed table the reviewer can only check the model's weekday
+  // claims against the model's own day labels, which is how "this is a Tuesday"
+  // on a Monday survived review in the 2026-07-28 build.
+  const dateTable = buildDateTable(
+    inputs?.basics?.startDate,
+    Array.isArray(plan?.days) ? plan.days.length : 0,
+  );
+  const dateTableBlock = dateTable ? `\n${dateTable}\n` : "";
+
   return `You are a panel of travel experts conducting a professional review of a finalized trip plan. Your job is to evaluate the plan AGAINST THE USER'S STATED BUDGET, STYLE, AND GUIDELINES — not against your sources' default tier. You will call the submit_review tool exactly once. Do NOT emit any prose — only the tool call.
 
 REVIEWER PANEL — you have access to the taste and editorial voice of these sources, but you adapt their standards to fit the user's stated trip tier:
@@ -10241,6 +10291,23 @@ MODE_HINT GUIDE:
 • rebalance_legs — multi-city night allocation is off. REQUIRES full re-plan.
 • change_hotel_brand_tier — hotel brand or tier is wrong for budget. REQUIRES full re-plan.
 
+MUST-VERIFY CHECKLIST — check each before writing findings. These are
+structural, not editorial; report any hit as severity:"critical".
+1. DAY CONTINUITY — does each day start in the city the previous day ended in?
+   Any hotel checked into twice? Any A→B transition described on two days?
+2. NIGHT ARITHMETIC — count contiguous city runs in days[]. Does the total,
+   and each city's count, match meta and cities[].nights?
+3. WEEKDAY CLAIMS — every weekday named in prose must match the COMPUTED
+   DATE TABLE below. Never infer a weekday yourself.
+4. FLIGHT TIMES — does each flight item's header time equal its depart_time?
+5. BOOKING LINKS — does any booking_url contain a placeholder-looking ID?
+6. ROUTE PLAUSIBILITY — flag any flight from a small regional airport that
+   carries no verification marker.
+
+Report checklist hits in structural_findings[], NOT in findings[].
+structural_findings[] is uncapped — the 3-critical / 8-total caps apply only
+to editorial findings, so a structural problem never displaces a taste note.
+${dateTableBlock}
 PLAN TO REVIEW (JSON):
 ${planForPrompt(plan)}`;
 }
