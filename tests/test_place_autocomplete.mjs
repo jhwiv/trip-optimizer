@@ -27,6 +27,21 @@ function mockUpstream(predictions) {
   };
 }
 
+// Records the body of every upstream call and returns predictions per attempt.
+// `perTier` is an array: entry i is the prediction list for the i-th call, so
+// an empty entry forces the endpoint to fall through to the next type filter.
+function mockTiers(perTier) {
+  const calls = [];
+  globalThis.fetch = async (url, opts) => {
+    if (url !== AUTOCOMPLETE_URL) return new Response("not found", { status: 404 });
+    const body = JSON.parse(opts?.body || "{}");
+    calls.push(body);
+    const predictions = perTier[calls.length - 1] || [];
+    return new Response(JSON.stringify({ suggestions: predictions }), { status: 200 });
+  };
+  return calls;
+}
+
 function pred(text, placeId, mainText, secondaryText) {
   return {
     placePrediction: {
@@ -136,6 +151,122 @@ async function run() {
     const res = await onRequestPost({ request: makeReq({ input: "Place" }), env: { GOOGLE_PLACES_API_KEY: "k" } });
     const body = await res.json();
     assert("suggestions capped at 6", body.suggestions.length === 6, body.suggestions.length);
+  }
+
+  // ---- Tier 1 hits: no widening, only one upstream call ----
+  {
+    const calls = mockTiers([[pred("Chatham, MA, USA", "id_chatham", "Chatham", "MA, USA")]]);
+    const res = await onRequestPost({ request: makeReq({ input: "Chatham" }), env: { GOOGLE_PLACES_API_KEY: "k" } });
+    const body = await res.json();
+    assert("tier 1 hit makes exactly one upstream call", calls.length === 1, calls.length);
+    assert("tier 1 hit reports tier 0", body.tier === 0, JSON.stringify(body));
+    assert(
+      "tier 1 sends locality-family primary types",
+      calls[0].includedPrimaryTypes?.includes("locality"),
+      JSON.stringify(calls[0]),
+    );
+  }
+
+  // ---- Tier 2 fires when the locality filter finds nothing ----
+  // This is the "cape cod" symptom: a region that no locality-type filter
+  // matches, which previously returned zero suggestions and forced the user
+  // into freeform typing.
+  {
+    const calls = mockTiers([
+      [],
+      [pred("Cape Cod, MA, USA", "id_cape_cod", "Cape Cod", "MA, USA")],
+    ]);
+    const res = await onRequestPost({ request: makeReq({ input: "cape cod" }), env: { GOOGLE_PLACES_API_KEY: "k" } });
+    const body = await res.json();
+    assert("tier 2 fallback fires after an empty tier 1", calls.length === 2, calls.length);
+    assert("tier 2 fallback returns the region suggestion", body.suggestions.length === 1, JSON.stringify(body));
+    assert("tier 2 fallback reports tier 1", body.tier === 1, JSON.stringify(body));
+    assert(
+      "tier 2 asks for (regions)",
+      JSON.stringify(calls[1].includedPrimaryTypes) === JSON.stringify(["(regions)"]),
+      JSON.stringify(calls[1]),
+    );
+  }
+
+  // ---- Tier 3 (unfiltered) fires when both typed tiers come back empty ----
+  {
+    const calls = mockTiers([
+      [],
+      [],
+      [pred("Cape Cod National Seashore, MA", "id_seashore", "Cape Cod National Seashore", "MA, USA")],
+    ]);
+    const res = await onRequestPost({ request: makeReq({ input: "cape cod national" }), env: { GOOGLE_PLACES_API_KEY: "k" } });
+    const body = await res.json();
+    assert("tier 3 fallback fires after two empty tiers", calls.length === 3, calls.length);
+    assert("tier 3 fallback returns a suggestion", body.suggestions.length === 1, JSON.stringify(body));
+    assert("tier 3 fallback reports tier 2", body.tier === 2, JSON.stringify(body));
+    assert(
+      "tier 3 sends no type filter at all",
+      calls[2].includedPrimaryTypes === undefined,
+      JSON.stringify(calls[2]),
+    );
+  }
+
+  // ---- All tiers empty: 200 with a note, no invented suggestions ----
+  {
+    const calls = mockTiers([[], [], []]);
+    const res = await onRequestPost({ request: makeReq({ input: "zzzzz nowhere" }), env: { GOOGLE_PLACES_API_KEY: "k" } });
+    const body = await res.json();
+    assert("exhausting every tier still returns 200", res.status === 200, res.status);
+    assert("exhausting every tier tries all three", calls.length === 3, calls.length);
+    assert("exhausting every tier returns empty suggestions", body.suggestions.length === 0, JSON.stringify(body));
+    assert("exhausting every tier notes why", body.note === "autocomplete-no-matches", JSON.stringify(body));
+  }
+
+  // ---- Type-collection contract: (regions) must never share the list ----
+  // Places rejects the request outright if a collection is combined with any
+  // other type, and silently returning 400s is exactly how symptom #2 hid.
+  {
+    const calls = mockTiers([[], [], []]);
+    await onRequestPost({ request: makeReq({ input: "anything" }), env: { GOOGLE_PLACES_API_KEY: "k" } });
+    const collectionsShared = calls.some((c) => {
+      const types = c.includedPrimaryTypes;
+      if (!Array.isArray(types)) return false;
+      return types.some((t) => t.startsWith("(")) && types.length > 1;
+    });
+    assert("(regions) is never sent alongside another type", !collectionsShared, JSON.stringify(calls));
+    const withinCap = calls.every(
+      (c) => !Array.isArray(c.includedPrimaryTypes) || c.includedPrimaryTypes.length <= 5,
+    );
+    assert("no tier exceeds Places' 5-primary-type cap", withinCap, JSON.stringify(calls));
+  }
+
+  // ---- Every tier pins the response language ----
+  {
+    const calls = mockTiers([[], [], []]);
+    await onRequestPost({ request: makeReq({ input: "anything" }), env: { GOOGLE_PLACES_API_KEY: "k" } });
+    assert(
+      "every tier sends languageCode 'en'",
+      calls.length === 3 && calls.every((c) => c.languageCode === "en"),
+      JSON.stringify(calls),
+    );
+    assert(
+      "every tier forwards the user's input",
+      calls.every((c) => c.input === "anything"),
+      JSON.stringify(calls),
+    );
+  }
+
+  // ---- A non-OK tier doesn't abort the ladder ----
+  {
+    const calls = [];
+    globalThis.fetch = async (url, opts) => {
+      calls.push(JSON.parse(opts?.body || "{}"));
+      if (calls.length === 1) return new Response("upstream sad", { status: 400 });
+      return new Response(
+        JSON.stringify({ suggestions: [pred("Cape Cod, MA, USA", "id_cc", "Cape Cod", "MA, USA")] }),
+        { status: 200 },
+      );
+    };
+    const res = await onRequestPost({ request: makeReq({ input: "cape cod" }), env: { GOOGLE_PLACES_API_KEY: "k" } });
+    const body = await res.json();
+    assert("a rejected tier falls through instead of failing the request", res.status === 200, res.status);
+    assert("a rejected tier still yields the later tier's suggestions", body.suggestions.length === 1, JSON.stringify(body));
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
