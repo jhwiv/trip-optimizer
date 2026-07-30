@@ -19,12 +19,14 @@
 // Request body:
 //   {
 //     location: string,                              // required
+//     location_place_id?: string,                    // from the autocomplete pick
 //     category?: "both" | "restaurants" | "activities",
 //     guidelines?: string                            // free text, up to 1000 chars
 //   }
 //
 // Returns:
-//   200 { results: { restaurants: [...], activities: [...] }, note? }
+//   200 { results: { restaurants: [...], activities: [...] }, note?,
+//         location_resolution: { resolved, query_used, fallback_used, raw } }
 //   400 { error: { message } }      — bad request / missing location
 //   422 { error: { message } }      — model returned an empty/unusable result
 //   500 { error: { message } }      — server misconfigured
@@ -56,7 +58,7 @@
 // why, contact{phone,address,website,booking_url,hours}, reservation
 // {platform,url}) are explicitly requested in the schema.
 
-import { verifyOneVenue } from "./places-verify.js";
+import { verifyOneVenue, geocodeCity, geocodePlaceId } from "./places-verify.js";
 
 const FIND_TOOL = {
   name: "submit_find_results",
@@ -407,6 +409,196 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// =========================================================================
+// Location resolution
+// =========================================================================
+// The search box is freeform, so people type things like "Chatham cape cod
+// mass" — a town, an informal region, and a colloquial state abbreviation in
+// one string. That resolves to nothing: "cape cod" is not an address component
+// of Chatham MA, and "mass" is not a state token Google recognizes. Worse, the
+// raw string was previously used verbatim as the `city` term of every per-venue
+// Places Text Search, so every venue came back NOT_FOUND and got dropped —
+// the search appeared to return nothing at all.
+//
+// Fix: before doing anything else, try to resolve the string to a real place
+// via a widening ladder of candidate queries, and carry the resolved name plus
+// its coordinates through the rest of the request.
+//
+// Resolution is advisory, never fatal. If nothing resolves we fall back to the
+// raw string and behave exactly as before.
+
+// Full state names, USPS codes, and the colloquial abbreviations people
+// actually type. Full-name entries lifted from US_STATE_ABBR in src/App.jsx
+// (which serves the wizard's separate Nominatim geocoder); the colloquials and
+// the USPS self-maps are additions — "mass" is precisely the token that broke
+// the reported query.
+const US_STATE_TOKENS = {
+  alabama: "AL", ala: "AL",
+  alaska: "AK",
+  arizona: "AZ", ariz: "AZ",
+  arkansas: "AR", ark: "AR",
+  california: "CA", cal: "CA", calif: "CA",
+  colorado: "CO", colo: "CO",
+  connecticut: "CT", conn: "CT",
+  delaware: "DE", del: "DE",
+  "district of columbia": "DC",
+  florida: "FL", fla: "FL",
+  georgia: "GA",
+  hawaii: "HI",
+  idaho: "ID",
+  illinois: "IL", ill: "IL",
+  indiana: "IN", ind: "IN",
+  iowa: "IA",
+  kansas: "KS", kan: "KS",
+  kentucky: "KY",
+  louisiana: "LA",
+  maine: "ME",
+  maryland: "MD",
+  massachusetts: "MA", mass: "MA",
+  michigan: "MI", mich: "MI",
+  minnesota: "MN", minn: "MN",
+  mississippi: "MS", miss: "MS",
+  missouri: "MO",
+  montana: "MT", mont: "MT",
+  nebraska: "NE", neb: "NE",
+  nevada: "NV", nev: "NV",
+  "new hampshire": "NH",
+  "new jersey": "NJ",
+  "new mexico": "NM",
+  "new york": "NY",
+  "north carolina": "NC",
+  "north dakota": "ND",
+  ohio: "OH",
+  oklahoma: "OK", okla: "OK",
+  oregon: "OR", ore: "OR",
+  pennsylvania: "PA", penn: "PA", penna: "PA",
+  "rhode island": "RI",
+  "south carolina": "SC",
+  "south dakota": "SD",
+  tennessee: "TN", tenn: "TN",
+  texas: "TX", tex: "TX",
+  utah: "UT",
+  vermont: "VT",
+  virginia: "VA",
+  washington: "WA", wash: "WA",
+  "west virginia": "WV",
+  wisconsin: "WI", wis: "WI", wisc: "WI",
+  wyoming: "WY", wyo: "WY",
+  "puerto rico": "PR",
+  // USPS codes map to themselves so an already-correct "Chatham, MA" is
+  // recognized as state-qualified rather than treated as an unknown token.
+  al: "AL", ak: "AK", az: "AZ", ar: "AR", ca: "CA", co: "CO", ct: "CT",
+  dc: "DC", de: "DE", fl: "FL", ga: "GA", hi: "HI", ia: "IA", id: "ID",
+  il: "IL", in: "IN", ks: "KS", ky: "KY", la: "LA", ma: "MA", md: "MD",
+  me: "ME", mi: "MI", mn: "MN", mo: "MO", ms: "MS", mt: "MT", nc: "NC",
+  nd: "ND", ne: "NE", nh: "NH", nj: "NJ", nm: "NM", nv: "NV", ny: "NY",
+  oh: "OH", ok: "OK", or: "OR", pa: "PA", pr: "PR", ri: "RI", sc: "SC",
+  sd: "SD", tn: "TN", tx: "TX", ut: "UT", va: "VA", vt: "VT", wa: "WA",
+  wi: "WI", wv: "WV", wy: "WY",
+};
+
+// Max Places subrequests spent resolving one search string.
+const MAX_LOCATION_CANDIDATES = 5;
+
+// Build ordered candidate queries for a freeform location string, most
+// faithful to what the user typed first. Exported for unit tests.
+export function locationCandidates(raw) {
+  const q = String(raw || "").trim().replace(/\s+/g, " ");
+  if (!q) return [];
+
+  const out = [q];
+  const parts = q.split(/[,\s]+/).filter(Boolean);
+  const stateFor = (token) => US_STATE_TOKENS[String(token || "").toLowerCase()];
+
+  // (a) Normalize a trailing colloquial state token: "mass" → "MA".
+  const trailingState = stateFor(parts[parts.length - 1]);
+  if (trailingState) {
+    out.push([...parts.slice(0, -1), trailingState].join(" "));
+  }
+
+  // (b) Leading token as the locality, any state token as the region hint:
+  //     "Chatham cape cod mass" → "Chatham, MA". Requires the state token to
+  //     come after the first word, otherwise the "locality" would be the
+  //     state itself (e.g. "la jolla ca" must not become "la, CA").
+  if (parts.length >= 2) {
+    const stateIdx = parts.findIndex((p) => stateFor(p));
+    if (stateIdx > 0) out.push(`${parts[0]}, ${stateFor(parts[stateIdx])}`);
+    out.push(parts[0]);
+  }
+
+  // (c) Drop the leading token and read the tail as a region rather than a
+  //     locality: "Chatham cape cod mass" → "cape cod MA".
+  if (parts.length >= 3) {
+    const tail = parts.slice(1);
+    const tailState = stateFor(tail[tail.length - 1]);
+    out.push(
+      tailState ? [...tail.slice(0, -1), tailState].join(" ") : tail.join(" "),
+    );
+  }
+
+  return [...new Set(out.filter(Boolean))].slice(0, MAX_LOCATION_CANDIDATES);
+}
+
+// Resolve a freeform location (or a pre-disambiguated place_id from the
+// autocomplete dropdown) into { resolved, lat, lng } plus metadata describing
+// how we got there. Never throws; falls back to the raw string.
+async function resolveLocation({ env, ctx, raw, placeId }) {
+  // A place_id came from the user picking a suggestion — already
+  // disambiguated, so trust it and skip the ladder entirely.
+  if (placeId) {
+    const hit = await geocodePlaceId({ env, ctx, placeId });
+    if (hit.found) {
+      return {
+        resolved: hit.name || raw,
+        lat: hit.lat,
+        lng: hit.lng,
+        query_used: hit.name || raw,
+        raw,
+        fallback_used: false,
+        source: "place_id",
+      };
+    }
+  }
+
+  for (const candidate of locationCandidates(raw)) {
+    const hit = await geocodeCity({ env, ctx, name: candidate });
+    if (hit.found) {
+      return {
+        resolved: hit.name || candidate,
+        lat: hit.lat,
+        lng: hit.lng,
+        query_used: candidate,
+        raw,
+        fallback_used: candidate !== raw,
+        source: "geocode",
+      };
+    }
+  }
+
+  return {
+    resolved: raw,
+    lat: undefined,
+    lng: undefined,
+    query_used: raw,
+    raw,
+    fallback_used: false,
+    unresolved: true,
+    source: "none",
+  };
+}
+
+// The subset of resolution state worth returning to the client — enough to
+// render "Showing results for X" and enough to debug this class of bug from
+// the network tab.
+function resolutionMeta(r) {
+  return {
+    resolved: r.resolved,
+    query_used: r.query_used,
+    fallback_used: r.fallback_used === true,
+    raw: r.raw,
+  };
+}
+
 export async function onRequestPost(context) {
   const { request, env } = context;
 
@@ -428,6 +620,18 @@ export async function onRequestPost(context) {
   if (location.length > LOCATION_MAX) {
     return json({ error: { message: `Location too long (max ${LOCATION_MAX} chars)` } }, 400);
   }
+
+  // Resolve the freeform string to a real place before it reaches the model or
+  // Places. `resolved` is what we search with; `location` stays the raw string
+  // so the client can show what the user actually typed.
+  const locationPlaceId = String(body?.location_place_id || "").trim();
+  const resolution = await resolveLocation({
+    env,
+    ctx: context,
+    raw: location,
+    placeId: locationPlaceId,
+  });
+  const resolvedLocation = resolution.resolved;
 
   const rawCategory = String(body?.category || "both").toLowerCase().trim();
   const category =
@@ -481,7 +685,7 @@ export async function onRequestPost(context) {
   let localExpertMeta = null; // metadata returned to client
 
   if (mode === "local_expert") {
-    const resolved = resolveLocalSources(location);
+    const resolved = resolveLocalSources(resolvedLocation);
     if (!env.PERPLEXITY_API_KEY) {
       // Soft-fail: continue with no grounding but tell the client.
       localExpertMeta = {
@@ -493,7 +697,7 @@ export async function onRequestPost(context) {
         message: "Local-expert grounding is not configured on this deployment.",
       };
     } else {
-      const sonarResult = await runSonarRetrieval(env, resolved, location, context);
+      const sonarResult = await runSonarRetrieval(env, resolved, resolvedLocation, context);
       localExpertMeta = {
         requested: true,
         status: sonarResult.snippets.length > 0 ? "ok" : "no_results",
@@ -541,7 +745,7 @@ OUTPUT
 Call submit_find_results exactly once. Emit no prose.`;
 
   const userParts = [
-    `Location: ${location}`,
+    `Location: ${resolvedLocation}`,
     `Category: ${category === "both" ? "Restaurants AND activities" : category === "restaurants" ? "Restaurants ONLY" : "Activities ONLY"}`,
   ];
   if (guidelines) {
@@ -634,6 +838,7 @@ Call submit_find_results exactly once. Emit no prose.`;
           message:
             "No results found for that location. Try a more specific city, neighborhood, or landmark.",
         },
+        location_resolution: resolutionMeta(resolution),
       },
       422,
     );
@@ -647,7 +852,9 @@ Call submit_find_results exactly once. Emit no prose.`;
   const verification = await verifyVenuesForFind({
     env,
     ctx: context,
-    location,
+    location: resolvedLocation,
+    lat: resolution.lat,
+    lng: resolution.lng,
     restaurants,
     activities,
     verifyActivitiesByName,
@@ -664,6 +871,7 @@ Call submit_find_results exactly once. Emit no prose.`;
             "No verifiably-open places found for that location. Try a more specific city, neighborhood, or landmark.",
         },
         verification: verification.summary,
+        location_resolution: resolutionMeta(resolution),
       },
       422,
     );
@@ -677,6 +885,7 @@ Call submit_find_results exactly once. Emit no prose.`;
     note: typeof input.note === "string" ? input.note : "",
     local_expert: localExpertMeta,
     verification: verification.summary,
+    location_resolution: resolutionMeta(resolution),
   });
 }
 
@@ -684,12 +893,17 @@ Call submit_find_results exactly once. Emit no prose.`;
 // restaurants[] and activities[] (closed ones dropped, addresses
 // overwritten when found) plus a summary the client can surface.
 //
-// `location` is the raw search string the user typed — it's the best
+// `location` is the RESOLVED location (see resolveLocation) — the best
 // city/area context we have to disambiguate the Places Text Search. The
 // model returns per-venue neighborhood/contact.address too, but those
 // can be wrong; Places is more forgiving when we pass the broader
 // location and let it locality-resolve.
-async function verifyVenuesForFind({ env, ctx, location, restaurants, activities, verifyActivitiesByName = false }) {
+//
+// `lat`/`lng` are the resolved location's centroid when we have one. They
+// drive Places' locationBias, which both sharpens matching and lets
+// verifyOneVenue safely retry without the city term. Absent coordinates the
+// behavior is unchanged from before resolution existed.
+async function verifyVenuesForFind({ env, ctx, location, lat, lng, restaurants, activities, verifyActivitiesByName = false }) {
   const all = [
     ...restaurants.map((r, i) => ({ kind: "restaurant", idx: i, item: r })),
     ...activities.map((a, i) => ({ kind: "activity", idx: i, item: a })),
@@ -722,6 +936,8 @@ async function verifyVenuesForFind({ env, ctx, location, restaurants, activities
           ctx,
           name: verifyName,
           city: location,
+          lat,
+          lng,
         });
         if (result.cached) cacheHits += 1;
         const flag = flagForVerifyResult(result);
