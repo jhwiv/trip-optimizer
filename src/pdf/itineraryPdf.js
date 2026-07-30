@@ -1537,6 +1537,12 @@ function renderFlightBlock(cur, fl, x, maxW) {
   if (fl._timesUnconfirmed && !(fl.depart_time && fl.arrive_time)) {
     renderDetailLine(cur, "Times", "Not yet confirmed — check with airline at booking.", x, maxW);
   }
+  // Widened marker (report bug 6): the resolver could not confirm the flight
+  // exists at all, times or no times. Without this line a fabricated regional
+  // route printed exactly like a schedule-confirmed one.
+  if (fl._flightUnverified) {
+    renderDetailLine(cur, "Unverified", "Route/times not confirmed — verify with the airline.", x, maxW);
+  }
   // confirmation_note is untrusted model prose: suppress it when it asserts a
   // clock time contradicting the resolved depart/arrive times (RCA bug C). The
   // "Verify at booking" line above already carries the essential nudge.

@@ -5,7 +5,7 @@ import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { arrivalOrderExportError } from "./arrivalOrderCheck.js";
 import { findContinuityIssues, findStructuralBlockingIssues } from "./dayContinuityCheck.js";
 import { deriveCityNights, reconcileMetaNights, parseMetaNightsBreakdown } from "./legNights.js";
-import { buildDateTable } from "./dateFacts.js";
+import { buildDateTable, assertWeekdayClaims } from "./dateFacts.js";
 import { pickScheduledFlight, parseClockToMinutes, resolveAirlineIata, normalizeAirportCode } from "./flightSelect.js";
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
 import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, activityHeadName, itemVenueName } from "./swapAlternatives.js";
@@ -13,7 +13,9 @@ import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
-import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnconfirmedTimesPayload } from "./flightResolver.js";
+import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnverifiedFlightPayload, findUnverifiedFlights, withFlightMerge } from "./flightResolver.js";
+import { normalizeClock, findFlightTimeMismatches } from "./flightTimeConsistency.js";
+import { findImplausibleBookingUrls, stripDeadBookingUrls } from "./bookingUrlCheck.js";
 import { applyFlightNumberStrip } from "./flightNumberStrip.js";
 import { classifyActivityCountConstraint, renderActivityCountPromptRule, enforceTripTotalActivityCap } from "./activityCountConstraint.js";
 import { buildFlightCardTitle } from "./flightCardTitle.js";
@@ -1361,6 +1363,14 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
       <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "2px 0 6px", letterSpacing: "0.02em" }}>
         {f.depart_time ? `Approx depart ${formatTime(f.depart_time)}` : ""}{f.arrive_time ? ` · arrive ${formatTime(f.arrive_time)}` : ""}{f.duration ? `  ·  ${f.duration}` : ""}  ·  {stopLabel}
       </p>
+      {/* The resolver couldn't confirm this flight against a live schedule.
+          Report bug 6: a fabricated regional route (AF7652 Caen→AMS) rendered
+          identically to a confirmed one, so nothing told the traveller to check. */}
+      {f._flightUnverified && (
+        <p style={{ fontSize: "11px", color: "var(--color-warning)", margin: "0 0 6px", lineHeight: 1.4, letterSpacing: "0.02em", fontWeight: 500, padding: "6px 8px", background: "rgba(184,92,0,0.06)", borderLeft: "2px solid var(--color-warning)", borderRadius: "2px" }}>
+          ⚠︎ Route/times not confirmed — verify with the airline.
+        </p>
+      )}
       {(f.cabin || f.aircraft) && (
         <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: "0 0 4px" }}>
           {[f.cabin, f.aircraft].filter(Boolean).join("  ·  ")}
@@ -1613,7 +1623,7 @@ function DayBlock({ day, dayIndex, onOpenMenu, legCity, onSwapItem }) {
       {sortedItems.map((item, i) => {
         // Structured flight → rich card.
         if (item.type === "Flight" && item.flight) {
-          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />;
+          return <FlightCard key={i} type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); const hdr = normalizeClock(item.flight.depart_time); if (hdr) item.time = hdr; }} />;
         }
         // Structured hotel → rich card.
         if (item.type === "Hotel" && item.hotel) {
@@ -3401,23 +3411,46 @@ function applyQualityLayer(input, inputs) {
     }
   }
 
-  const out = { ...input, days: cappedDays };
+  let out = { ...input, days: cappedDays };
 
-  // Day-to-day structural continuity (RCA bug A). Runs last so it sees the
-  // normalized city names and the post-cap item lists. Block-severity flags
-  // land on days[].structural_flags, which findStructuralBlockingIssues reads
-  // in the pre-export gate; day.flags is a string array (see day completeness
-  // above) and can't carry a flag object.
+  // Weekday claims in model prose. Day-of-week is code's per CLAUDE.md, so a
+  // wrong claim is corrected in place rather than merely annotated — the
+  // 2026-07-28 build's "this is a Tuesday, confirm open" on a Monday is what
+  // talked the expert review past a Monday closure.
+  const weekdayFlags = [];
+  if (inputs?.basics?.startDate) {
+    const wk = assertWeekdayClaims(out, inputs.basics.startDate);
+    out = wk.plan;
+    weekdayFlags.push(...wk.flags);
+    fixes.push(...wk.corrections);
+  }
+
+  // Structural validators. Each is a pure day-scoped check returning flags in
+  // placesVerify's shape; they run last so they see the normalized city names
+  // and the post-cap item lists. Block-severity flags land on
+  // days[].structural_flags, which findStructuralBlockingIssues reads in the
+  // pre-export gate; day.flags is a string array (see day completeness above)
+  // and can't carry a flag object.
+  //   findContinuityIssues     — day-to-day city/hotel/vehicle continuity
+  //   findFlightTimeMismatches — day header vs flight.depart_time
+  //   findImplausibleBookingUrls — fabricated-looking operator deep links
+  //   weekdayFlags             — wrong weekday claims, already corrected above
   if (Array.isArray(out.days)) {
-    const continuity = findContinuityIssues(out);
-    if (continuity.length > 0) {
+    const structural = [
+      ...findContinuityIssues(out),
+      ...findFlightTimeMismatches(out),
+      ...findImplausibleBookingUrls(out),
+      ...findUnverifiedFlights(out),
+      ...weekdayFlags,
+    ];
+    if (structural.length > 0) {
       out.days = out.days.map((day, dayIdx) => {
-        const dayFlags = continuity.filter(f => f.dayIdx === dayIdx);
+        const dayFlags = structural.filter(f => f.dayIdx === dayIdx);
         if (dayFlags.length === 0) return day;
         const prior = Array.isArray(day?.structural_flags) ? day.structural_flags : [];
         return { ...day, structural_flags: [...prior, ...dayFlags] };
       });
-      for (const f of continuity) warnings.push(`Day ${f.day}: ${f.message}`);
+      for (const f of structural) warnings.push(`Day ${f.day}: ${f.message}`);
     }
   }
 
@@ -4510,7 +4543,7 @@ function FlightsView({ data }) {
       {flights.map(({ item, day, dayIndex }, i) => (
         <div key={i} style={{ marginBottom: "10px" }}>
           <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>{dayShort(day, dayIndex)}</p>
-          <FlightCard type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />
+          <FlightCard type={item.type} time={item.time} end_time={item.end_time} flight={item.flight} text={item.text} flags={item.flags} dayLabel={day?.label} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); const hdr = normalizeClock(item.flight.depart_time); if (hdr) item.time = hdr; }} />
         </div>
       ))}
     </div>
@@ -4925,7 +4958,7 @@ function CategoryView({ data, onOpenMenu }) {
             <div key={i} style={{ marginBottom: "10px" }}>
               <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>{contextLabel(entry)}</p>
               {group.category === "flights" && (
-                <FlightCard type={entry.item.type} time={entry.item.time} end_time={entry.item.end_time} flight={entry.item.flight} text={entry.item.text} flags={entry.item.flags} dayLabel={entry.dayLabel} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(entry.item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); }} />
+                <FlightCard type={entry.item.type} time={entry.item.time} end_time={entry.item.end_time} flight={entry.item.flight} text={entry.item.text} flags={entry.item.flags} dayLabel={entry.dayLabel} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(entry.item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); const hdr = normalizeClock(entry.item.flight.depart_time); if (hdr) entry.item.time = hdr; }} />
               )}
               {group.category === "lodging" && (
                 <HotelCard type={entry.item.type} time={entry.item.time} end_time={entry.item.end_time} hotel={entry.item.hotel} text={entry.item.text} />
@@ -5823,6 +5856,8 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       setProgressLabel("Finalizing…");
       const { parsed } = parseToolJson(toolJson);
       if (!parsed || !Array.isArray(parsed.findings)) throw new Error("Review returned no findings.");
+      const structural = normalizeStructuralFindings(parsed.structural_findings);
+      if (structural.length > 0) parsed.findings = [...structural, ...parsed.findings];
       setReview(parsed);
       // Reset per-finding toggles to defaults on a fresh review.
       const fresh = {};
@@ -7021,7 +7056,7 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
           // strip it entirely and show nothing. Number-mode stays silent
           // because there was no number to display in the first place.
           if (mode === "verify" || mode === "times") {
-            verifyTrustOnly.push({ di, ii, mode });
+            verifyTrustOnly.push({ di, ii, mode, fl: it.flight });
           }
           return;
         }
@@ -7052,7 +7087,9 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
             _scheduleVerified: true,
             _verifyTrusted: true,
             _resolveSource: "verify-precondition-skipped",
-            ...(vt.mode === "times" ? { _timesUnconfirmed: true } : {}),
+            // Never reached the schedule API, so nothing here is confirmed.
+            // CLAUDE.md's fail-safe rule: unverified, not operational.
+            ...buildUnverifiedFlightPayload(vt.fl),
           },
         });
       }
@@ -7061,6 +7098,11 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         const approx = parseClockToMinutes(t.fl.depart_time);
         let pick = null;
         let source = null;
+        // Set by the route-only retry: true when the API knows this route,
+        // false when it returned zero rows for it, undefined when the call
+        // never answered. Distinguishes "wrong airline in the query" from
+        // "no such route" so the unverified marker can say which.
+        let routeExists;
 
         // Attempt 1: airline-filtered query (existing behavior).
         // Special case for verify-mode: prefer the row whose number
@@ -7102,6 +7144,7 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
             const params = new URLSearchParams({ date: t.isoDate, origin: t.fromCode, destination: t.toCode });
             const res = await fetch(`/api/flights-search?${params}`);
             const j = await res.json().catch(() => ({}));
+            if (j.ok && Array.isArray(j.flights)) routeExists = j.flights.length > 0;
             if (j.ok && Array.isArray(j.flights) && j.flights.length > 0) {
               if (t.mode === "times" && t.fl.flight_number) {
                 // times-mode: ONLY accept the row whose number exactly
@@ -7184,6 +7227,9 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
               _scheduleVerified: true,
               _verifyTrusted: true,
               _resolveSource: "verify-fallback",
+              // The flight looks complete but nothing confirmed it exists.
+              // This is the AF7652 Caen→AMS shape from report bug 6.
+              ...buildUnverifiedFlightPayload(t.fl, { routeExists }),
             },
           });
           continue;
@@ -7203,20 +7249,19 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
             merge: {
               _scheduleVerified: true,
               _verifyTrusted: true,
-              _timesUnconfirmed: true,
               _resolveSource: "times-fallback",
+              ...buildUnverifiedFlightPayload(t.fl, { routeExists }),
             },
           });
           continue;
         }
 
         // Total miss for number-mode: model emitted no number and the API
-        // couldn't find one. If the flight also has no times, persist
-        // _timesUnconfirmed so the PDF renders an honest fallback line
-        // instead of blank rows. No _scheduleVerified needed — there is
-        // no number to protect from the strip.
-        const fallback = buildUnconfirmedTimesPayload(t.fl);
-        if (fallback) resolved.push({ di: t.di, ii: t.ii, merge: fallback });
+        // couldn't find one. Persist _flightUnverified (plus _timesUnconfirmed
+        // when the clocks are missing too) so the card and PDF render an
+        // honest line instead of blank rows. No _scheduleVerified needed —
+        // there is no number to protect from the strip.
+        resolved.push({ di: t.di, ii: t.ii, merge: buildUnverifiedFlightPayload(t.fl, { routeExists }) });
       }
 
       if (cancelled || resolved.length === 0) return;
@@ -7234,7 +7279,7 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
           const items = d.items.map((it, ii) => {
             const hit = hits.find(h => h.ii === ii);
             if (!hit) return it;
-            return { ...it, flight: { ...it.flight, ...hit.merge } };
+            return withFlightMerge(it, hit.merge);
           });
           return { ...d, items };
         });
@@ -7556,7 +7601,35 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   };
   // Apply the pass-three quality layer once before render. This dedupes
   // restaurants, fills verify microcopy, and computes a QC summary.
-  const { data, qc } = useMemo(() => applyQualityLayer(rawData, inputs), [rawData, inputs]);
+  const { data: layeredData, qc: layeredQc } = useMemo(() => applyQualityLayer(rawData, inputs), [rawData, inputs]);
+
+  // Collect every vendor URL in the plan (activities / transport / etc.) so we
+  // can ask the server to verify they're reachable. Memoized so we only POST
+  // when the underlying plan actually changes.
+  const urlsToVerify = useMemo(() => collectVendorURLs(layeredData), [layeredData]);
+  const urlVerify = useURLVerification(urlsToVerify);
+
+  // Make the liveness verdict consequential. It used to only swap the on-screen
+  // href to a Google search, so the plan object — and therefore the PDF — kept
+  // printing links we already knew were dead. Strip them at the data layer
+  // instead; the UI fallback below still handles the pending/unknown window.
+  const { data, qc } = useMemo(() => {
+    const { data: stripped, flags, removed } = stripDeadBookingUrls(layeredData, urlVerify.status);
+    if (removed.length === 0) return { data: layeredData, qc: layeredQc };
+    const withFlags = { ...stripped, days: stripped.days.map((day, dayIdx) => {
+      const dayFlags = flags.filter(f => f.dayIdx === dayIdx);
+      if (dayFlags.length === 0) return day;
+      const prior = Array.isArray(day?.structural_flags) ? day.structural_flags : [];
+      return { ...day, structural_flags: [...prior, ...dayFlags] };
+    }) };
+    return {
+      data: withFlags,
+      qc: {
+        fixes: [...layeredQc.fixes, `Removed ${removed.length} booking link${removed.length === 1 ? "" : "s"} that did not respond`],
+        warnings: [...layeredQc.warnings, ...flags.map(f => `Day ${f.day}: ${f.message}`)],
+      },
+    };
+  }, [layeredData, layeredQc, urlVerify.status]);
   // Multi-city: track which day starts a new leg so we can render a divider.
   const cityByDay = (data.days || []).map(d => d.city || null);
   const isMultiCityPlan = Array.isArray(data.cities) && data.cities.length > 1;
@@ -7599,11 +7672,6 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
     return false;
   };
 
-  // Collect every vendor URL in the plan (activities / transport / etc.) so we
-  // can ask the server to verify they're reachable. Memoized so we only POST
-  // when the underlying plan actually changes.
-  const urlsToVerify = useMemo(() => collectVendorURLs(data), [data]);
-  const urlVerify = useURLVerification(urlsToVerify);
   const verifyContextValue = useMemo(() => ({
     status: urlVerify.status,
     isReady: urlVerify.isReady,
@@ -9678,7 +9746,7 @@ const CONTACT_SCHEMA = {
 const DAY_ITEM_SCHEMA = {
   type: "object",
   properties: {
-    time: { type: "string", description: "REQUIRED. Local 24h start time for this item, e.g. '08:30', '12:00', '19:30'. Must be present on EVERY item so the day reads chronologically." },
+    time: { type: "string", description: "REQUIRED. Local 24h start time for this item, e.g. '08:30', '12:00', '19:30'. Must be present on EVERY item so the day reads chronologically. For type=Flight this MUST equal flight.depart_time exactly — it is the scheduled departure, never a 'leave for the airport' time. Put airport-arrival guidance in flight.airport_arrival_buffer, not here." },
     end_time: { type: "string", description: "Optional local 24h end time, e.g. '10:00'. Use for activities and meals with a known duration." },
     type: { type: "string", enum: ["Flight", "Hotel", "Activity", "Breakfast", "Brunch", "Lunch", "Dinner", "Transport", "Note"] },
     text: { type: "string", description: "Short headline of the item — what it is and where, no times (times go in the time field)." },
@@ -9893,6 +9961,30 @@ const CARD_TARGETED_HINTS = new Set([
   "add_tonight",
 ]);
 
+// structural_findings[] is uncapped and carries no lens/source/mode_hint —
+// those fields only mean something for editorial notes. Reshape them into the
+// finding contract the panel UI and the apply path already speak, so a
+// checklist hit renders at the top of the list (critical sorts first) instead
+// of being parsed and dropped. default_apply stays false: the reviewer is
+// advisory, and the deterministic validators are what actually gate export.
+export function normalizeStructuralFindings(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((f) => f && typeof f === "object" && f.summary)
+    .map((f, i) => ({
+      id: typeof f.id === "string" && f.id ? f.id : `s${i + 1}`,
+      severity: "critical",
+      lens: "editorial",
+      source: "Structural check",
+      target: f.target || "",
+      summary: f.summary,
+      action: f.action || "",
+      mode_hint: "add_flag",
+      default_apply: false,
+      structural_check: f.check || "",
+    }));
+}
+
 // Format a finding.target ({day, time, item} | string) into a short chip label.
 function formatFindingTarget(t) {
   if (!t) return "";
@@ -9951,6 +10043,21 @@ const REVIEW_TOOL = {
           required: ["id", "severity", "lens", "source", "target", "summary", "action", "mode_hint", "default_apply"],
         },
         maxItems: 8,
+      },
+      structural_findings: {
+        type: "array",
+        description: "Hits from the MUST-VERIFY CHECKLIST only: day continuity, night arithmetic, weekday claims, flight times, booking links, route plausibility. UNCAPPED — report every hit. Leave empty if the plan passes all six checks. Do NOT put editorial or taste observations here.",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Stable id: 's1', 's2', 's3', etc." },
+            check: { type: "string", enum: ["day_continuity", "night_arithmetic", "weekday_claims", "flight_times", "booking_links", "route_plausibility"], description: "Which checklist item this hit came from." },
+            target: { type: "string", description: "What this finding is ABOUT, in the user's language. Format: 'Day N · context'. Examples: 'Day 7 · hotel', 'Day 1 · flight UA934'." },
+            summary: { type: "string", description: "One sentence (≤22 words) stating the contradiction, naming both conflicting values. Example: 'Day 7 checks into the Amsterdam Marriott again after Day 6 already checked in.'" },
+            action: { type: "string", description: "One sentence (≤22 words) stating the concrete change to make." },
+          },
+          required: ["id", "check", "target", "summary", "action"],
+        },
       },
     },
     required: ["verdict", "findings"],
@@ -10132,6 +10239,15 @@ function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
     ? `\nUSER'S EXPLICIT GUIDELINES (these override the sources' default taste):\n${(inputs?.guidelines || inputs?.narrative || "").trim().slice(0, 3000)}\n`
     : "";
 
+  // Without the computed table the reviewer can only check the model's weekday
+  // claims against the model's own day labels, which is how "this is a Tuesday"
+  // on a Monday survived review in the 2026-07-28 build.
+  const dateTable = buildDateTable(
+    inputs?.basics?.startDate,
+    Array.isArray(plan?.days) ? plan.days.length : 0,
+  );
+  const dateTableBlock = dateTable ? `\n${dateTable}\n` : "";
+
   return `You are a panel of travel experts conducting a professional review of a finalized trip plan. Your job is to evaluate the plan AGAINST THE USER'S STATED BUDGET, STYLE, AND GUIDELINES — not against your sources' default tier. You will call the submit_review tool exactly once. Do NOT emit any prose — only the tool call.
 
 REVIEWER PANEL — you have access to the taste and editorial voice of these sources, but you adapt their standards to fit the user's stated trip tier:
@@ -10175,6 +10291,23 @@ MODE_HINT GUIDE:
 • rebalance_legs — multi-city night allocation is off. REQUIRES full re-plan.
 • change_hotel_brand_tier — hotel brand or tier is wrong for budget. REQUIRES full re-plan.
 
+MUST-VERIFY CHECKLIST — check each before writing findings. These are
+structural, not editorial; report any hit as severity:"critical".
+1. DAY CONTINUITY — does each day start in the city the previous day ended in?
+   Any hotel checked into twice? Any A→B transition described on two days?
+2. NIGHT ARITHMETIC — count contiguous city runs in days[]. Does the total,
+   and each city's count, match meta and cities[].nights?
+3. WEEKDAY CLAIMS — every weekday named in prose must match the COMPUTED
+   DATE TABLE below. Never infer a weekday yourself.
+4. FLIGHT TIMES — does each flight item's header time equal its depart_time?
+5. BOOKING LINKS — does any booking_url contain a placeholder-looking ID?
+6. ROUTE PLAUSIBILITY — flag any flight from a small regional airport that
+   carries no verification marker.
+
+Report checklist hits in structural_findings[], NOT in findings[].
+structural_findings[] is uncapped — the 3-critical / 8-total caps apply only
+to editorial findings, so a structural problem never displaces a taste note.
+${dateTableBlock}
 PLAN TO REVIEW (JSON):
 ${planForPrompt(plan)}`;
 }

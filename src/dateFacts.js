@@ -97,3 +97,180 @@ export function buildDateTable(startISO, totalDays) {
   }
   return lines.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Weekday claims in model prose (report bug 3, validator V3)
+// ---------------------------------------------------------------------------
+//
+// Feeding the model a computed date table stops it inventing the day LABEL,
+// but it still writes weekdays into free prose. The 2026-07-28 build put a
+// Monday-closed restaurant on Monday Oct 5 with a verify note reading "this is
+// a Tuesday, confirm open" — the false premise is what let the closure through
+// the expert review.
+//
+// Day-of-week is code's per CLAUDE.md, so we do not merely flag the claim: we
+// rewrite it to the computed weekday and record the correction. Case and
+// abbreviation are preserved so "Mon" stays "Tue" and "MONDAY" stays "TUESDAY".
+
+// Prose fields the model authors on a day and on its items. Anything the model
+// can write a weekday into needs to be scanned; anything code writes does not.
+const DAY_PROSE_FIELDS = ["headline", "notes", "verify_status", "confirmation_notes"];
+const ITEM_PROSE_FIELDS = ["notes", "verify_status", "confirmation_notes"];
+
+const WD = "(Sun|Mon|Tues?|Wed(?:nes)?|Thur?s?|Fri|Sat(?:ur)?)(day)?";
+
+// Only SELF-REFERENTIAL weekday claims are corrected — prose that asserts what
+// day *this day* is. A blanket rewrite would corrupt the legitimate mentions
+// that share the same fields: "closed Mondays", "market runs Sat–Sun", "book by
+// Friday" are all facts about other days and must survive untouched.
+//
+// Deliberately narrow. A missed claim stays a warn-severity annotation; a
+// wrongly-rewritten closure note silently destroys venue data. The failing
+// string from the 2026-07-28 build ("this is a Tuesday, confirm open") is
+// covered by the second pattern.
+const SELF_REFERENTIAL = [
+  new RegExp(`\\b(?:today|this day)\\s+is\\s+(?:an?\\s+)?${WD}\\b`, "gi"),
+  new RegExp(`\\bthis\\s+is\\s+(?:an?\\s+)?${WD}\\b`, "gi"),
+  new RegExp(`\\bit(?:'s|’s|\\s+is)\\s+(?:an?\\s+)?${WD}\\b`, "gi"),
+];
+
+// A day headline that opens with a bare weekday is asserting the day's own
+// weekday ("Monday in Bayeux — market morning"). Applied to headline only.
+const LEADING_WEEKDAY = new RegExp(`^\\s*${WD}\\b`, "i");
+
+const CANON = {
+  sun: 0, sunday: 0,
+  mon: 1, monday: 1,
+  tue: 2, tues: 2, tuesday: 2,
+  wed: 3, wednes: 3, wednesday: 3,
+  thu: 4, thur: 4, thurs: 4, thursday: 4,
+  fri: 5, friday: 5,
+  sat: 6, satur: 6, saturday: 6,
+};
+
+// Re-case `replacement` to match the shape of `original`: ALL CAPS stays all
+// caps, lowercase stays lowercase, anything else gets Title Case.
+function matchCase(original, replacement) {
+  if (original === original.toUpperCase()) return replacement.toUpperCase();
+  if (original === original.toLowerCase()) return replacement.toLowerCase();
+  return replacement;
+}
+
+// Rewrite the weekday inside a matched self-referential phrase. `stem`/`suffix`
+// are the capture groups from WD; the surrounding phrase is preserved verbatim
+// so "this is a Tuesday" becomes "this is a Monday", not "Monday".
+function rewriteMatch(match, stem, suffix, correctIdx, claims) {
+  const claimedIdx = CANON[stem.toLowerCase()];
+  if (claimedIdx === undefined || claimedIdx === correctIdx) return match;
+  // Keep the writer's abbreviation style: "Mon" → "Tue", "Monday" → "Tuesday".
+  const token = `${stem}${suffix || ""}`;
+  const target = suffix ? WEEKDAY_LONG[correctIdx] : WEEKDAY_SHORT[correctIdx];
+  const corrected = matchCase(token, target);
+  claims.push({ claimed: token, corrected });
+  return match.slice(0, match.length - token.length) + corrected;
+}
+
+// Correct self-referential weekday claims in `text`. Returns { text, claims };
+// claims is empty when the prose said nothing about which day this is, or said
+// it correctly.
+function correctWeekdaysIn(text, correctIdx, { leading = false } = {}) {
+  const claims = [];
+  let next = String(text);
+  for (const re of SELF_REFERENTIAL) {
+    re.lastIndex = 0;
+    next = next.replace(re, (match, stem, suffix) => rewriteMatch(match, stem, suffix, correctIdx, claims));
+  }
+  if (leading) {
+    next = next.replace(LEADING_WEEKDAY, (match, stem, suffix) => rewriteMatch(match, stem, suffix, correctIdx, claims));
+  }
+  return { text: next, claims };
+}
+
+// Cross-check every weekday the model wrote in prose against the computed
+// calendar, correcting as it goes.
+//
+// `startDateISO` is the trip's arrival date; day N is startDate + (N-1). Days
+// are matched by index, not by parsing the label, because the label is itself
+// model-adjacent text this function may be correcting.
+//
+// Returns { plan, flags, corrections }. `plan` is the input reference when
+// nothing changed, so callers can keep memoization cheap.
+export function assertWeekdayClaims(plan, startDateISO) {
+  const days = Array.isArray(plan?.days) ? plan.days : [];
+  if (days.length === 0 || !parseISODate(startDateISO)) {
+    return { plan, flags: [], corrections: [] };
+  }
+
+  const flags = [];
+  const corrections = [];
+  let changed = false;
+
+  const nextDays = days.map((day, dayIdx) => {
+    const iso = addDays(startDateISO, dayIdx);
+    const parsed = parseISODate(iso);
+    if (!parsed || !day || typeof day !== "object") return day;
+    const correctIdx = new Date(Date.UTC(parsed.y, parsed.m - 1, parsed.d)).getUTCDay();
+    const label = day.label || `Day ${dayIdx + 1}`;
+    let nextDay = day;
+
+    const record = (target, field, claims) => {
+      for (const c of claims) {
+        flags.push({
+          code: "WEEKDAY_CLAIM_MISMATCH",
+          severity: "warn",
+          dayIdx,
+          day: dayIdx + 1,
+          target,
+          message: `${target}: "${c.claimed}" is wrong — ${iso} is a ${WEEKDAY_LONG[correctIdx]}. Corrected to "${c.corrected}" in ${field}.`,
+        });
+        corrections.push(`Day ${dayIdx + 1} ${field}: "${c.claimed}" → "${c.corrected}" (${iso} is a ${WEEKDAY_LONG[correctIdx]})`);
+      }
+    };
+
+    for (const field of DAY_PROSE_FIELDS) {
+      if (typeof day[field] !== "string" || !day[field]) continue;
+      const { text, claims } = correctWeekdaysIn(day[field], correctIdx, { leading: field === "headline" });
+      if (claims.length === 0) continue;
+      nextDay = { ...nextDay, [field]: text };
+      record(label, field, claims);
+      changed = true;
+    }
+
+    const items = Array.isArray(day.items) ? day.items : null;
+    if (items) {
+      let itemsChanged = false;
+      const nextItems = items.map((item) => {
+        if (!item || typeof item !== "object") return item;
+        let nextItem = item;
+        const name = item.restaurant?.name || item.text || item.location || label;
+        for (const field of ITEM_PROSE_FIELDS) {
+          if (typeof item[field] !== "string" || !item[field]) continue;
+          const { text, claims } = correctWeekdaysIn(item[field], correctIdx);
+          if (claims.length === 0) continue;
+          nextItem = { ...nextItem, [field]: text };
+          record(name, `item ${field}`, claims);
+          itemsChanged = true;
+        }
+        if (Array.isArray(item.flags) && item.flags.some((f) => typeof f === "string")) {
+          let flagsChanged = false;
+          const nextFlags = item.flags.map((f) => {
+            if (typeof f !== "string") return f;
+            const { text, claims } = correctWeekdaysIn(f, correctIdx);
+            if (claims.length === 0) return f;
+            record(name, "item flag", claims);
+            flagsChanged = true;
+            return text;
+          });
+          if (flagsChanged) { nextItem = { ...nextItem, flags: nextFlags }; itemsChanged = true; }
+        }
+        return nextItem;
+      });
+      if (itemsChanged) { nextDay = { ...nextDay, items: nextItems }; changed = true; }
+    }
+
+    return nextDay;
+  });
+
+  if (!changed) return { plan, flags, corrections };
+  return { plan: { ...plan, days: nextDays }, flags, corrections };
+}

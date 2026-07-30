@@ -12,10 +12,14 @@ Routing lives in `src/main.jsx`, **before** any component tree mounts:
 
 - `App.jsx` — wizard (Essentials → Details → Your plan) for the `/` surface. Includes `IntroductionAutoGenerator` (headless component at ~line 6088).
 - `main.jsx` — entry + routing branch (`/find` vs root)
+- `bookingUrlCheck.js` — vendor booking-link plausibility + dead-link stripping (`BOOKING_URL_IMPLAUSIBLE`, `BOOKING_URL_DEAD`)
 - `categoryGroups.js` — "By category" grouped view (PR #63)
 - `chunkPlan.js` — chunked-build plumbing for large trips (PRs #51, #52)
-- `dateFacts.js` — computed-date helpers used by venue verification
+- `dateFacts.js` — computed-date helpers used by venue verification, plus `assertWeekdayClaims` (`WEEKDAY_CLAIM_MISMATCH`)
+- `dayContinuityCheck.js` — day-to-day structural continuity (`DAY_CITY_DISCONTINUITY`, `DUPLICATE_CHECKIN`, `ORPHANED_TRANSITION`, `CITY_BACKTRACK`, `VEHICLE_STATE_CONFLICT`)
 - `flightSelect.js` — flight selection / display (PRs #59, #62)
+- `flightTimeConsistency.js` — Flight item header time vs `flight.depart_time` (`FLIGHT_TIME_MISMATCH`)
+- `legNights.js` — contiguous city-run night math; reconciles `meta` / `cities[].nights` (`NIGHT_COUNT_MISMATCH`)
 - `hoursParser.js` — hours parsing for OPEN_ON_THIS_DAY / OUTSIDE_HOURS (PR #43)
 - `introduction.js` — pure helpers (`shapeIntroRequest`, `applyGeneratedIntroduction`, `hasIntroduction`, `introPlanSignature`, `buildIntroPromptForExternalAI`). Tested by `tests/test_introduction.mjs` (~47 assertions).
 - `localProviders.js` — Local providers feature (PR #65)
@@ -50,6 +54,20 @@ Multi-pass check before a venue makes it into the final plan:
 5. Routes API travel-time grounding — `PACING_IMPOSSIBLE`, `PACING_CONFLICT` (PR #46)
 6. Batch verification chunked under the Workers subrequest cap (PR #44)
 7. Pre-export gate (PR #41)
+
+## Structural validation (itinerary hardening)
+
+The chain above checks one venue at a time and cannot see a plan that is
+internally contradictory — a hotel checked into on two days, a header time that
+disagrees with its own flight, a weekday claim that contradicts the date. A
+parallel chain of pure validators checks the shape of the itinerary and feeds
+the same pre-export gate via `day.structural_flags[]`:
+
+`dayContinuityCheck.js` · `legNights.js` · `dateFacts.js` ·
+`flightTimeConsistency.js` · `bookingUrlCheck.js` · `flightResolver.js`
+
+See `concepts/structural-validation.md` for the full chain and
+`CLAUDE.md` for the flag taxonomy.
 
 ## Review / re-plan
 

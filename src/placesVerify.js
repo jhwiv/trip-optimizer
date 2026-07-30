@@ -245,7 +245,10 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
       // Per user decision 2026-06-14: hours-check runs on Activity,
       // Dinner, Breakfast/Brunch/Lunch items. Hotels are excluded.
       const itemTime = typeof item.time === "string" ? item.time : null;
-      const dayContext = dayWeekday ? { weekday: dayWeekday, time: itemTime } : null;
+      // `anchor` rides along in dayContext because decorateVenue receives the
+      // restaurant object, not its parent item, and the reservation signal
+      // lives on the item.
+      const dayContext = dayWeekday ? { weekday: dayWeekday, time: itemTime, anchor: classifyAnchor(item) } : null;
 
       if (item.type === "Activity") {
         const next = applyToActivity(item, dayContext);
@@ -270,7 +273,10 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
         // Try to apply the backup; if it's blocked, just remove the
         // backup field. A primary survives without a backup.
         if (nextR.backup && typeof nextR.backup === "object") {
-          const nextBackup = applyToRestaurant(nextR.backup, rDayContext);
+          // A backup is a suggestion, never a booking — it must not inherit
+          // the primary's anchor status and block the export.
+          const backupContext = rDayContext ? { ...rDayContext, anchor: false } : null;
+          const nextBackup = applyToRestaurant(nextR.backup, backupContext);
           if (nextBackup === null) {
             const { backup: _drop, ...rest } = nextR;
             nextItems.push({ ...item, restaurant: rest });
@@ -365,13 +371,59 @@ function addBlockingFlags(flags, location, issues) {
 // (Heuristic: presence of any digit.)
 const HARD_SPECIFIC_FIELDS = ["phone", "hours", "booking_url"];
 
+// Is this item an ANCHOR — something the traveller has committed to, where
+// arriving to a locked door costs them the slot rather than five minutes?
+//
+// Drives the severity of CLOSED_ON_THIS_DAY. The 2026-07-28 build put a
+// reserved Monday dinner at a Monday-closed restaurant and shipped it, because
+// the flag was warn for everything. Blanket-blocking is not the answer either:
+// Places closure data has known gaps (seasonal hours, holiday overrides), and
+// a false block on a walk-in cafe would stop the export of an otherwise good
+// itinerary. So: block the bookings, warn the walk-ins.
+//
+// Ambiguous cases return false (warn) by design — per the maintainer's call
+// 2026-07-30, an unclear classification must not escalate to a block.
+const RESERVATION_PROSE = /\breservations?\s+(?:are\s+)?(?:required|essential|recommended|only)\b|\bbooking\s+(?:is\s+)?(?:required|essential)\b|\bbook\s+(?:well\s+)?(?:in\s+)?advance\b/i;
+const TIMED_ENTRY_PROSE = /\badvance booking\b|\btimed[\s-]?entry\b|\bmust book\b|\bpre[\s-]?book\b|\bticket(?:ed|s)? in advance\b/i;
+const MEAL_TYPES = /^(Breakfast|Brunch|Lunch|Dinner)$/i;
+
+export function classifyAnchor(item) {
+  if (!item || typeof item !== "object") return false;
+  const type = String(item.type || "");
+
+  // A hotel check-in is the hardest anchor there is — there is no walk-in
+  // alternative at 11pm in a city you just flew into.
+  if (/^Hotel$/i.test(type)) return true;
+
+  if (MEAL_TYPES.test(type)) {
+    if (item.contact?.reserve) return true;
+    const r = item.restaurant;
+    if (!r || typeof r !== "object") return false;
+    if (r.reservations_required) return true;
+    const platform = String(r.reservation?.platform || "").toLowerCase();
+    const hasBooking = !!(r.reservation?.url || r.reservation?.phone);
+    if (platform && platform !== "walkin" && hasBooking) return true;
+    return RESERVATION_PROSE.test(`${r.why || ""} ${r.hours_note || ""} ${r.closure_note || ""}`);
+  }
+
+  if (/^Activity$/i.test(type)) {
+    if (item.contact?.booking_url) return true;
+    if (item.timed_entry === true) return true;
+    return TIMED_ENTRY_PROSE.test(`${item.contact?.hours || ""} ${item.contact?.booking_note || ""}`);
+  }
+
+  return false;
+}
+
 // Apply Places fields to a venue (restaurant or activity item) and
 // attach flags. Pure, side-effect free except for the supplied `tally`
 // callback which lets the caller count outcomes.
 //
-// dayContext (optional) = { weekday: 'Monday', time: '19:00' } drives
-// the OPEN_ON_THIS_DAY hours check added in Spec 1 (2026-06-14). Both
-// fields are optional; missing fields degrade the check gracefully.
+// dayContext (optional) = { weekday: 'Monday', time: '19:00', anchor: true }
+// drives the OPEN_ON_THIS_DAY hours check added in Spec 1 (2026-06-14).
+// weekday/time are optional; missing fields degrade the check gracefully.
+// `anchor` (see classifyAnchor) decides whether CLOSED_ON_THIS_DAY blocks the
+// export or merely warns.
 function decorateVenue(venue, v, tally, dayContext) {
   const isOperational = v.found && (!v.business_status || v.business_status === "OPERATIONAL");
   const hasWarn = Array.isArray(v.flags) && v.flags.some((f) => f.severity === "warn");
@@ -399,10 +451,16 @@ function decorateVenue(venue, v, tally, dayContext) {
       const parsed = parseWeekdayDescriptions(v.hours);
       const check = isOpenAt(parsed, dayContext.weekday, dayContext.time || null);
       if (check.status === "closed_all_day") {
+        // Anchor-scoped severity (2026-07-30). A booked table or a timed-entry
+        // ticket on a closed day is a wasted slot the traveller can't recover,
+        // so it blocks; a walk-in stop stays a warning.
+        const anchored = dayContext.anchor === true;
         extraFlags.push({
           code: "CLOSED_ON_THIS_DAY",
-          severity: "warn",
-          message: `Closed on ${dayContext.weekday}s per Google Places hours.`,
+          severity: anchored ? "block" : "warn",
+          message: anchored
+            ? `Closed on ${dayContext.weekday}s per Google Places hours — and this is a booked slot. Move it or replace the venue.`
+            : `Closed on ${dayContext.weekday}s per Google Places hours.`,
         });
       } else if (check.status === "outside_hours") {
         extraFlags.push({

@@ -78,6 +78,14 @@ console.log("\n=== findContinuityIssues — Day 6/7 collision ===");
   assert("VEHICLE_STATE_CONFLICT names the drop-off city",
     codes.get("VEHICLE_STATE_CONFLICT")?.[0].target === "Bayeux");
 
+  assert("CITY_BACKTRACK raised", codes.has("CITY_BACKTRACK"), JSON.stringify([...codes.keys()]));
+  assert("CITY_BACKTRACK is block", codes.get("CITY_BACKTRACK")?.[0].severity === "block");
+  assert("CITY_BACKTRACK is on Day 7", codes.get("CITY_BACKTRACK")?.[0].day === 7);
+  assert("CITY_BACKTRACK names the abandoned city",
+    codes.get("CITY_BACKTRACK")?.[0].target === "Bayeux", codes.get("CITY_BACKTRACK")?.[0].target);
+  assert("CITY_BACKTRACK reports each city once per day",
+    codes.get("CITY_BACKTRACK")?.length === 1, JSON.stringify(codes.get("CITY_BACKTRACK")));
+
   // The catastrophic bug is caught by the two hotel/travel codes. It is NOT
   // caught by DAY_CITY_DISCONTINUITY: Day 7's declared city matches Day 6's,
   // and Day 7 does contain a Flight item, so that rule cannot see it. This
@@ -176,6 +184,69 @@ console.log("\n=== ORPHANED_TRANSITION scoping ===");
   assert("a legitimate A→B→A return is not flagged",
     !findContinuityIssues(roundTrip).some(i => i.code === "ORPHANED_TRANSITION"),
     JSON.stringify(findContinuityIssues(roundTrip)));
+}
+
+console.log("\n=== CITY_BACKTRACK ===");
+{
+  // The belt-and-suspenders rule for the Day 6/7 shape: both days declare the
+  // same city, so DAY_CITY_DISCONTINUITY is blind, but the day's items are
+  // physically in a city the plan finished with.
+  const backtrack = {
+    cities: [{ name: "Bayeux" }, { name: "Amsterdam" }],
+    days: [
+      { day: 1, city: "Bayeux", items: [{ type: "Activity", text: "Bayeux Tapestry", location: "Bayeux" }] },
+      { day: 2, city: "Amsterdam", items: [{ type: "Transport", text: "Drive Bayeux → Amsterdam" }] },
+      { day: 3, city: "Amsterdam", items: [{ type: "Activity", text: "Pointe du Hoc", location: "Bayeux" }] },
+    ],
+  };
+  const issues = findContinuityIssues(backtrack);
+  const b = issues.filter(i => i.code === "CITY_BACKTRACK");
+  assert("an item in an abandoned city is flagged", b.length === 1, JSON.stringify(issues));
+  assert("severity is block", b[0]?.severity === "block");
+  assert("flagged on the offending day", b[0]?.day === 3);
+  assert("message names the city and the day", /Bayeux/.test(b[0]?.message || "") && /Day 3/.test(b[0]?.message || ""), b[0]?.message);
+
+  // Departure mornings are the obvious false positive: the day starts in the
+  // city it is leaving, so its first items are legitimately located there.
+  const departureMorning = {
+    cities: [{ name: "Bayeux" }, { name: "Amsterdam" }],
+    days: [
+      { day: 1, city: "Bayeux", items: [{ type: "Activity", text: "Bayeux Tapestry", location: "Bayeux" }] },
+      { day: 2, city: "Amsterdam", items: [
+        { type: "Breakfast", text: "Breakfast at the hotel", location: "Bayeux" },
+        { type: "Transport", text: "Drive Bayeux → Amsterdam" },
+        { type: "Hotel", text: "Check in", location: "Amsterdam" },
+      ] },
+    ],
+  };
+  assert("a departure morning in the city being left is not flagged",
+    !findContinuityIssues(departureMorning).some(i => i.code === "CITY_BACKTRACK"),
+    JSON.stringify(findContinuityIssues(departureMorning)));
+
+  // Free text must never be read as a location — only item.location is.
+  const pubName = structuredClone(backtrack);
+  pubName.days[2].items = [{ type: "Dinner", text: "A Bayeux-style bistro", location: "Amsterdam" }];
+  assert("a city named in prose is not a trip back there",
+    !findContinuityIssues(pubName).some(i => i.code === "CITY_BACKTRACK"),
+    JSON.stringify(findContinuityIssues(pubName)));
+
+  // Transport items name their origin by design.
+  const originNamed = structuredClone(backtrack);
+  originNamed.days[2].items = [{ type: "Transport", text: "Return leg", location: "Bayeux" }];
+  assert("Transport items are exempt",
+    !findContinuityIssues(originNamed).some(i => i.code === "CITY_BACKTRACK"),
+    JSON.stringify(findContinuityIssues(originNamed)));
+
+  // A planned return is a return, not a backtrack.
+  const plannedReturn = structuredClone(backtrack);
+  plannedReturn.days[2].city = "Bayeux";
+  plannedReturn.days[2].items.unshift({ type: "Transport", text: "Drive Amsterdam → Bayeux" });
+  assert("travelling back on purpose is not flagged",
+    !findContinuityIssues(plannedReturn).some(i => i.code === "CITY_BACKTRACK"),
+    JSON.stringify(findContinuityIssues(plannedReturn)));
+
+  assert("the clean linear plan stays clean",
+    !findContinuityIssues(clean).some(i => i.code === "CITY_BACKTRACK"));
 }
 
 console.log("\n=== VEHICLE_STATE_CONFLICT ===");
