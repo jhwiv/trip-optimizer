@@ -1,7 +1,14 @@
 // Tests for the Ask-the-locals additions to /api/find.
 // All paths through mode handling are mock-driven (no real Sonar calls).
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { onRequestPost } from "../functions/api/find.js";
+import { shouldAutoFireLocalPass, findQuerySignature, FIND_SIG_SEP } from "../src/findLocalPass.js";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const appSrc = readFileSync(join(HERE, "..", "src", "App.jsx"), "utf-8");
 
 let passed = 0, failed = 0;
 function assert(name, cond, detail = "") {
@@ -345,6 +352,162 @@ console.log("\n=== Pass 1: local_expert mode plumbing ===");
   assert("triple-quote injection in snippet neutralized inside grounding block",
     !/"{3,}/.test(insideGrounding),
     `found triple-quote run inside grounding: ${JSON.stringify(insideGrounding.slice(0, 200))}`);
+}
+
+// ============================================================
+// Pass 5: client-side gating of the local-expert auto-fire
+//
+// The decision of *whether* to run the local pass lives in
+// src/findLocalPass.js so it can be exercised here without React. The two
+// call sites that used to hard-code mode:"standard" are asserted against
+// src/App.jsx source text, which is the established pattern in this repo for
+// client code (see test_hyperlocal_match.mjs) — App.jsx can't be imported
+// from a plain-node harness.
+// ============================================================
+
+console.log("\n=== Pass 5: local-expert auto-fire gating (client) ===");
+
+const CHATHAM = { location: "Chatham cape cod mass", category: "both", guidelines: "" };
+
+// 16. Standard pass 422'd → results stayed null → pass still fires, standalone.
+{
+  const fire = shouldAutoFireLocalPass({
+    submittedQuery: CHATHAM,
+    results: null, // 422 leaves results null
+    localExpertResults: null,
+    loading: false,
+    askingLocals: false,
+    lastFiredKey: null,
+  });
+  assert("fires after a standard-pass 422", fire !== null);
+  assert("422 → standalone (local results will be the only ones on the page)", fire?.standalone === true);
+}
+
+// 17. Standard pass returned zero venues → also fires standalone.
+{
+  const fire = shouldAutoFireLocalPass({
+    submittedQuery: CHATHAM,
+    results: null, // empty result set also clears results
+    localExpertResults: null,
+    loading: false,
+    askingLocals: false,
+    lastFiredKey: null,
+  });
+  assert("fires when the standard pass came back empty", fire !== null);
+  assert("empty → standalone", fire?.standalone === true);
+}
+
+// 18. Standard pass succeeded → fires as a supplement, not standalone.
+{
+  const fire = shouldAutoFireLocalPass({
+    submittedQuery: CHATHAM,
+    results: { restaurants: [{ name: "Impudent Oyster" }], activities: [] },
+    localExpertResults: null,
+    loading: false,
+    askingLocals: false,
+    lastFiredKey: null,
+  });
+  assert("still fires when the standard pass succeeded", fire !== null);
+  assert("success → NOT standalone (supplements the list above)", fire?.standalone === false);
+}
+
+// 19. Idempotency — same submitted-query signature must not re-fire.
+{
+  const first = shouldAutoFireLocalPass({
+    submittedQuery: CHATHAM,
+    results: null,
+    localExpertResults: null,
+    loading: false,
+    askingLocals: false,
+    lastFiredKey: null,
+  });
+  // Caller records first.sig, then the effect re-runs (new object identity,
+  // e.g. the same query re-submitted) — must be a no-op.
+  const second = shouldAutoFireLocalPass({
+    submittedQuery: { ...CHATHAM },
+    results: null,
+    localExpertResults: null,
+    loading: false,
+    askingLocals: false,
+    lastFiredKey: first.sig,
+  });
+  assert("does NOT re-fire for the same submitted-query signature", second === null);
+
+  const other = shouldAutoFireLocalPass({
+    submittedQuery: { ...CHATHAM, guidelines: "vegetarian" },
+    results: null,
+    localExpertResults: null,
+    loading: false,
+    askingLocals: false,
+    lastFiredKey: first.sig,
+  });
+  assert("a different signature does fire", other !== null);
+}
+
+// 20. In-flight and already-have-results guards.
+{
+  const base = { submittedQuery: CHATHAM, results: null, localExpertResults: null, loading: false, askingLocals: false, lastFiredKey: null };
+  assert("no fire while the standard pass is loading",
+    shouldAutoFireLocalPass({ ...base, loading: true }) === null);
+  assert("no fire while a local pass is already in flight",
+    shouldAutoFireLocalPass({ ...base, askingLocals: true }) === null);
+  assert("no fire when locals' picks are already on the page",
+    shouldAutoFireLocalPass({ ...base, localExpertResults: { restaurants: [] } }) === null);
+}
+
+// 21. Nothing submitted yet → never fires (guards the initial mount).
+{
+  assert("no fire with no submitted query", shouldAutoFireLocalPass({}) === null);
+  assert("no fire with null submitted query",
+    shouldAutoFireLocalPass({ submittedQuery: null, loading: false, askingLocals: false }) === null);
+  assert("no fire with a blank location",
+    shouldAutoFireLocalPass({ submittedQuery: { location: "   ", category: "both" }, loading: false, askingLocals: false }) === null);
+}
+
+// 22. Signature can't be forged by field contents.
+{
+  const a = findQuerySignature({ location: "Chatham", category: "both", guidelines: "" });
+  const b = findQuerySignature({ location: "Chatham", category: "both", guidelines: "x" });
+  assert("signature separator is NUL", FIND_SIG_SEP === "\u0000");
+  assert("differing guidelines produce differing signatures", a !== b);
+  assert("guidelines containing pipes/commas can't collide across queries",
+    findQuerySignature({ location: "A", category: "both", guidelines: "b|c" }) !==
+    findQuerySignature({ location: "A|both", category: "b", guidelines: "c" }));
+  assert("blank location yields an empty signature", findQuerySignature({ location: "" }) === "");
+  assert("non-object input yields an empty signature", findQuerySignature("Chatham") === "");
+}
+
+// 23. Card swap and the local-providers tab ask the locals.
+{
+  const swapBody = appSrc.match(/const fetchAlternatives = async[\s\S]{0,900}?\}\),\s*\}\);/);
+  assert("card-swap fetch body located in src/App.jsx", !!swapBody);
+  assert("card swap sends mode: local_expert", /mode:\s*"local_expert"/.test(swapBody?.[0] || ""),
+    swapBody?.[0]?.slice(0, 300));
+
+  const providersBody = appSrc.match(/verify_activities_by_name/) ? appSrc.slice(
+    Math.max(0, appSrc.indexOf("verify_activities_by_name") - 700),
+    appSrc.indexOf("verify_activities_by_name") + 60,
+  ) : "";
+  assert("local-providers fetch body located in src/App.jsx", !!providersBody);
+  assert("local-providers tab sends mode: local_expert", /mode:\s*"local_expert"/.test(providersBody),
+    providersBody.slice(-400));
+  assert("local-providers still verifies activities by name (Places existence check)",
+    /verify_activities_by_name:\s*true/.test(appSrc));
+}
+
+// 24. The App wires the extracted gate, and no /find caller hard-codes standard.
+{
+  assert("App.jsx imports shouldAutoFireLocalPass from findLocalPass.js",
+    /import\s*\{[^}]*shouldAutoFireLocalPass[^}]*\}\s*from\s*"\.\/findLocalPass\.js"/.test(appSrc));
+  assert("runSearch records the submitted query for the auto-fire effect",
+    /setSubmittedQuery\(\{\s*location:/.test(appSrc));
+  assert("auto-fire effect depends on submittedQuery + loading, not results",
+    /\}, \[submittedQuery, loading\]\);/.test(appSrc));
+  assert("no outbound /find body still hard-codes mode: \"standard\"",
+    !/mode:\s*"standard",/.test(appSrc),
+    (appSrc.match(/.{80}mode:\s*"standard",/) || [])[0]);
+  assert("standalone local results get an explanatory header line",
+    /standard search came back empty for this location/.test(appSrc));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
