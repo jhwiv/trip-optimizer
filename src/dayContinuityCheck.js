@@ -208,7 +208,64 @@ export function findContinuityIssues(plan) {
     }
   }
 
-  // 4. VEHICLE_STATE_CONFLICT — a rental returned in a city the plan has
+  // 4. CITY_BACKTRACK — an item is physically located in a city the plan has
+  //    already finished with. This is the belt-and-suspenders rule for the
+  //    Day 6/7 shape: both days declare Amsterdam, so DAY_CITY_DISCONTINUITY
+  //    sees nothing wrong, yet Day 7 opens at Pointe du Hoc and returns a
+  //    rental in Bayeux — a city the plan left two days earlier.
+  //
+  //    Scoped tightly to avoid false positives:
+  //      • only item.location, never free text (a "London-style pub" in
+  //        Lisbon must not read as a trip back to London);
+  //      • Flight/Transport items are skipped — naming the origin city is
+  //        exactly what they are for;
+  //      • a day's own start city, end city, and every city its transitions
+  //        touch are all allowed, so departure mornings don't trip it.
+  const runs = []; // ordered city runs, derived from each day's END city
+  const runIdxOf = new Map(); // normalized city → last run index
+  const dayEnd = legs.map((leg) => {
+    const last = leg.transitions.length > 0 ? leg.transitions[leg.transitions.length - 1].to : "";
+    return last || leg.city || "";
+  });
+  const dayRun = legs.map((leg, i) => {
+    const end = dayEnd[i];
+    if (!end) return runs.length - 1;
+    if (runs.length === 0 || norm(runs[runs.length - 1]) !== norm(end)) runs.push(end);
+    runIdxOf.set(norm(end), runs.length - 1);
+    void leg;
+    return runs.length - 1;
+  });
+
+  legs.forEach((leg, i) => {
+    const startRun = i === 0 ? dayRun[0] : dayRun[i - 1];
+    if (startRun < 0) return;
+    const allowed = new Set();
+    const allow = (c) => { if (c) allowed.add(norm(c)); };
+    allow(dayEnd[i]);
+    allow(i === 0 ? dayEnd[0] : dayEnd[i - 1]);
+    allow(leg.city);
+    leg.transitions.forEach((t) => { allow(t.to); allow(t.from); });
+
+    const items = Array.isArray(days[leg.dayIdx]?.items) ? days[leg.dayIdx].items : [];
+    const reported = new Set();
+    for (const item of items) {
+      if (!item || TRANSPORT_TYPES.test(String(item.type || ""))) continue;
+      const where = resolveCity(item.location, canonical);
+      if (!where || allowed.has(norm(where)) || reported.has(norm(where))) continue;
+      const lastRun = runIdxOf.get(norm(where));
+      if (lastRun === undefined || lastRun >= startRun) continue;
+      reported.add(norm(where));
+      add(
+        "CITY_BACKTRACK",
+        "block",
+        leg,
+        where,
+        `Day ${leg.day} has an item in ${where} ("${String(item.text || item.location).trim()}"), but the plan left ${where} before Day ${leg.day} and never travels back.`,
+      );
+    }
+  });
+
+  // 5. VEHICLE_STATE_CONFLICT — a rental returned in a city the plan has
   //    already left. The Caen drop-off happened on Day 7, after Day 6 drove
   //    the same car to Amsterdam. Warn, not block: the model sometimes writes
   //    a drop-off note on the wrong day without the plan being unbuildable.
