@@ -30,6 +30,12 @@
 import { groupItemsByCategory } from "../categoryGroups.js";
 import { bucketProviders, PROVIDER_PDF_CAP } from "../localProviders.js";
 import { parseClockToMinutes } from "../flightSelect.js";
+import { deriveLegNights, deriveCityNights, rewriteMetaNights } from "../legNights.js";
+
+// Re-exported for callers (and tests) that have always imported the night math
+// from this module; the implementation now lives in ../legNights.js so the
+// quality layer can apply it to the plan object, not just the print output.
+export { deriveLegNights, deriveCityNights, rewriteMetaNights };
 
 // Stable key for looking up pre-fetched item photos by name + city.
 // Must match the identical function in App.jsx that builds the photo map.
@@ -639,49 +645,6 @@ export function normalizeRoomType(hotelName, roomType) {
   return out;
 }
 
-// Derive the real per-leg night breakdown from the day-by-day city sequence.
-// The meta string's "(6+1)" grouping is model-emitted and often misleading for
-// A→B→A trips (the return leg vanishes). Walking days[].city gives the true
-// contiguous stays. Returns an ordered [{ city, nights }] or null when there
-// aren't at least two legs with nights to describe.
-//
-// Nights per leg = number of days in the contiguous city run, minus one for the
-// trip's final day (a departure day carries no overnight). This makes the parts
-// sum to (totalDays - 1) = total nights.
-export function deriveLegNights(data) {
-  const days = Array.isArray(data?.days) ? data.days : [];
-  if (days.length < 2) return null;
-  const runs = [];
-  for (let i = 0; i < days.length; i++) {
-    const city = safe(days[i]?.city).trim();
-    if (!city) return null; // incomplete city data — don't guess
-    const prev = runs[runs.length - 1];
-    if (prev && prev.city.toLowerCase() === city.toLowerCase()) prev.dayCount += 1;
-    else runs.push({ city, dayCount: 1 });
-  }
-  // Final day is departure — drop one night from the last leg.
-  runs[runs.length - 1].dayCount -= 1;
-  const legs = runs.map(r => ({ city: r.city, nights: r.dayCount })).filter(l => l.nights > 0);
-  return legs.length >= 2 ? legs : null;
-}
-
-// Total code-derived nights per city, keyed by lower-cased city name, summed
-// across every contiguous leg (so a city visited twice — e.g. Amsterdam at the
-// start and end of an A→B→A trip — reports its combined night count). Returns
-// null when the split can't be derived, so callers omit the token rather than
-// fall back to the model's unverified count (CLAUDE.md: sums computed in code).
-export function deriveCityNights(data) {
-  const legs = deriveLegNights(data);
-  if (!legs) return null;
-  const totals = new Map();
-  for (const leg of legs) {
-    const key = safe(leg.city).trim().toLowerCase();
-    if (!key) continue;
-    totals.set(key, (totals.get(key) || 0) + leg.nights);
-  }
-  return totals.size ? totals : null;
-}
-
 // Look up the derived nights for a display city name in the map returned by
 // deriveCityNights. Returns null (→ omit token) when the map is missing or the
 // city has no derived entry.
@@ -689,20 +652,6 @@ function lookupCityNights(totals, name) {
   if (!totals) return null;
   const n = totals.get(safe(name).trim().toLowerCase());
   return Number.isFinite(n) && n > 0 ? n : null;
-}
-
-// Rewrite the misleading "N nights (a+b)" token in the meta line with the real
-// leg breakdown, e.g. "7 nights (3+3+1)". Leaves meta untouched when the split
-// can't be derived (single leg, missing city data) or meta carries no nights
-// parenthetical to replace.
-export function rewriteMetaNights(meta, data) {
-  const s = safe(meta);
-  if (!s) return s;
-  const legs = deriveLegNights(data);
-  if (!legs) return s;
-  const total = legs.reduce((n, l) => n + l.nights, 0);
-  const notation = legs.map(l => l.nights).join("+");
-  return s.replace(/\b(\d+)\s*nights?\s*\([^)]*\)/i, `${total} nights (${notation})`);
 }
 
 const MONTH_NAMES = [
