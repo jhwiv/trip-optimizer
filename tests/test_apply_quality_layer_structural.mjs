@@ -21,6 +21,10 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { findContinuityIssues, findStructuralBlockingIssues } from "../src/dayContinuityCheck.js";
 import { deriveCityNights, reconcileMetaNights, parseMetaNightsBreakdown } from "../src/legNights.js";
+import { assertWeekdayClaims } from "../src/dateFacts.js";
+import { findFlightTimeMismatches } from "../src/flightTimeConsistency.js";
+import { findImplausibleBookingUrls } from "../src/bookingUrlCheck.js";
+import { findUnverifiedFlights } from "../src/flightResolver.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const fixture = (name) => JSON.parse(readFileSync(join(HERE, "fixtures", name), "utf8"));
@@ -34,21 +38,35 @@ function assert(name, cond, detail = "") {
 // -----------------------------------------------------------------------------
 // Mirror of src/App.jsx:3404-3472 (applyQualityLayer tail)
 // -----------------------------------------------------------------------------
-function structuralQualityTail(input) {
+function structuralQualityTail(input, inputs) {
   const fixes = [];
   const warnings = [];
-  const out = { ...input, days: Array.isArray(input?.days) ? input.days : input?.days };
+  let out = { ...input, days: Array.isArray(input?.days) ? input.days : input?.days };
+
+  const weekdayFlags = [];
+  if (inputs?.basics?.startDate) {
+    const wk = assertWeekdayClaims(out, inputs.basics.startDate);
+    out = wk.plan;
+    weekdayFlags.push(...wk.flags);
+    fixes.push(...wk.corrections);
+  }
 
   if (Array.isArray(out.days)) {
-    const continuity = findContinuityIssues(out);
-    if (continuity.length > 0) {
+    const structural = [
+      ...findContinuityIssues(out),
+      ...findFlightTimeMismatches(out),
+      ...findImplausibleBookingUrls(out),
+      ...findUnverifiedFlights(out),
+      ...weekdayFlags,
+    ];
+    if (structural.length > 0) {
       out.days = out.days.map((day, dayIdx) => {
-        const dayFlags = continuity.filter(f => f.dayIdx === dayIdx);
+        const dayFlags = structural.filter(f => f.dayIdx === dayIdx);
         if (dayFlags.length === 0) return day;
         const prior = Array.isArray(day?.structural_flags) ? day.structural_flags : [];
         return { ...day, structural_flags: [...prior, ...dayFlags] };
       });
-      for (const f of continuity) warnings.push(`Day ${f.day}: ${f.message}`);
+      for (const f of structural) warnings.push(`Day ${f.day}: ${f.message}`);
     }
   }
 
@@ -170,11 +188,12 @@ console.log("\n=== failing plan: structural flags reach the plan object ===");
   assert("Day 7 carries structural_flags", Array.isArray(day7.structural_flags), JSON.stringify(day7.structural_flags));
   assert("DUPLICATE_CHECKIN present", codes.includes("DUPLICATE_CHECKIN"), JSON.stringify(codes));
   assert("ORPHANED_TRANSITION present", codes.includes("ORPHANED_TRANSITION"), JSON.stringify(codes));
+  assert("CITY_BACKTRACK present", codes.includes("CITY_BACKTRACK"), JSON.stringify(codes));
   assert("VEHICLE_STATE_CONFLICT present", codes.includes("VEHICLE_STATE_CONFLICT"), JSON.stringify(codes));
   assert("clean days get no structural_flags", !data.days[1].structural_flags);
   assert("day.flags string array is untouched", data.days[6].flags === undefined);
   assert("each finding is echoed as a warning",
-    qc.warnings.filter(w => /^Day 7: /.test(w)).length === 3, JSON.stringify(qc.warnings));
+    qc.warnings.filter(w => /^Day 7: /.test(w)).length === 4, JSON.stringify(qc.warnings));
 }
 
 console.log("\n=== failing plan: gate blocks the export ===");
@@ -184,10 +203,13 @@ console.log("\n=== failing plan: gate blocks the export ===");
 
   assert("gate throws", err instanceof Error);
   assert("code is VERIFICATION_BLOCK", err.code === "VERIFICATION_BLOCK");
-  assert("only the two block-severity flags count", err.issues.length === 2, JSON.stringify(err.issues.map(i => i.flag.code)));
+  // Day 1's UA934 row carries the header/depart_time mismatch (report bug 4),
+  // so the same fixture trips the flight validator as well as the three
+  // continuity rules.
+  assert("only the four block-severity flags count", err.issues.length === 4, JSON.stringify(err.issues.map(i => i.flag.code)));
   assert("the warn-severity vehicle flag does not block",
     !err.issues.some(i => i.flag.code === "VEHICLE_STATE_CONFLICT"));
-  assert("message counts both arms", /0 venue verification, 2 itinerary structure/.test(err.message), err.message);
+  assert("message counts both arms", /0 venue verification, 4 itinerary structure/.test(err.message), err.message);
   assert("message no longer claims a venue failed verification",
     !/venues? failed verification/.test(err.message), err.message);
   assert("message names the offending day", /Day 7:/.test(err.message), err.message);
@@ -196,7 +218,7 @@ console.log("\n=== failing plan: gate blocks the export ===");
     { dayIdx: 3, name: "La Rapiere", flag: { code: "CLOSED_PERMANENTLY" } },
   ]);
   assert("venue and structural issues are counted separately",
-    /3 blocking issues — 1 venue verification, 2 itinerary structure/.test(withVenue.message), withVenue.message);
+    /5 blocking issues — 1 venue verification, 4 itinerary structure/.test(withVenue.message), withVenue.message);
 }
 
 console.log("\n=== failing plan: night counts overwritten in place ===");
@@ -266,6 +288,86 @@ console.log("\n=== underivable nights are stripped, not printed ===");
     data.cities[0].nights === 1 && data.cities[1].nights === 2, JSON.stringify(data.cities));
   assert("no NIGHT_COUNT_MISMATCH when nothing could be compared",
     !(data.structural_flags || []).some(f => f.code === "NIGHT_COUNT_MISMATCH"));
+}
+
+console.log("\n=== every structural validator fires through one pass ===");
+{
+  // One plan carrying every failure the 2026-07-28 build shipped, so the tail
+  // is proven to run all of them and to route each flag to the right day.
+  // Oct 5 2026 is a Monday; the plan claims it is a Tuesday.
+  const plan = {
+    meta: "4 days · 3 nights (1+2)",
+    cities: [{ name: "London", nights: 2 }, { name: "Amsterdam", nights: 1 }],
+    days: [
+      {
+        day: 1,
+        city: "London",
+        items: [
+          {
+            type: "Flight",
+            time: "09:30",
+            text: "UA934 EWR → LHR",
+            flight: { flight_number: "UA934", from_airport: "EWR", to_airport: "LHR", depart_time: "08:20", arrive_time: "20:40" },
+          },
+        ],
+      },
+      {
+        day: 2,
+        city: "London",
+        notes: "Dinner tonight — this is a Tuesday, confirm the kitchen is open.",
+        items: [
+          {
+            type: "Activity",
+            time: "14:00",
+            text: "WWII walking tour",
+            location: "London",
+            contact: { booking_url: "https://www.viator.com/tours/London/walk/d737-123456LONDONWW2" },
+          },
+        ],
+      },
+      {
+        day: 3,
+        city: "Amsterdam",
+        items: [
+          {
+            type: "Flight",
+            time: "11:00",
+            text: "Fly London to Amsterdam",
+            flight: { flight_number: "AF7652", from_airport: "LHR", to_airport: "AMS", depart_time: "11:00", arrive_time: "13:35", _flightUnverified: true, _unverifiedReason: "no-scheduled-route" },
+          },
+          { type: "Hotel", time: "16:30", text: "Check in", location: "Amsterdam", hotel: { name: "Amsterdam Marriott Hotel" } },
+        ],
+      },
+      { day: 4, city: "Amsterdam", items: [] },
+    ],
+  };
+
+  const { data, qc } = structuralQualityTail(plan, { basics: { startDate: "2026-10-04" } });
+  const codesOn = (i) => (data.days[i].structural_flags || []).map(f => f.code);
+
+  assert("FLIGHT_TIME_MISMATCH on Day 1", codesOn(0).includes("FLIGHT_TIME_MISMATCH"), JSON.stringify(codesOn(0)));
+  assert("BOOKING_URL_IMPLAUSIBLE on Day 2", codesOn(1).includes("BOOKING_URL_IMPLAUSIBLE"), JSON.stringify(codesOn(1)));
+  assert("WEEKDAY_CLAIM_MISMATCH on Day 2", codesOn(1).includes("WEEKDAY_CLAIM_MISMATCH"), JSON.stringify(codesOn(1)));
+  assert("FLIGHT_UNVERIFIED on Day 3", codesOn(2).includes("FLIGHT_UNVERIFIED"), JSON.stringify(codesOn(2)));
+  assert("NIGHT_COUNT_MISMATCH at plan level",
+    (data.structural_flags || []).some(f => f.code === "NIGHT_COUNT_MISMATCH"), JSON.stringify(data.structural_flags));
+
+  assert("the wrong weekday claim is corrected in place",
+    /this is a Monday/.test(data.days[1].notes), data.days[1].notes);
+  assert("the correction is logged as a fix",
+    qc.fixes.some(f => /Tuesday/.test(f) && /Monday/.test(f)), JSON.stringify(qc.fixes));
+
+  const err = exportGateError(data, [
+    { dayIdx: 1, name: "La Rapiere", flag: { code: "CLOSED_ON_THIS_DAY" } },
+  ]);
+  assert("both block flags reach the gate",
+    err.issues.filter(i => ["FLIGHT_TIME_MISMATCH", "BOOKING_URL_IMPLAUSIBLE"].includes(i.flag.code)).length === 2,
+    JSON.stringify(err.issues.map(i => i.flag.code)));
+  assert("the two warn flags do not",
+    !err.issues.some(i => ["FLIGHT_UNVERIFIED", "WEEKDAY_CLAIM_MISMATCH", "NIGHT_COUNT_MISMATCH"].includes(i.flag.code)),
+    JSON.stringify(err.issues.map(i => i.flag.code)));
+  assert("an anchored closure blocks alongside them",
+    /1 venue verification, 2 itinerary structure/.test(err.message), err.message);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
