@@ -17,6 +17,10 @@
 //  13.  Kind echoed in response
 //  14.  Address/phone/hours/website passthrough
 //  15.  Soft-fail: malformed entries skipped, others processed
+//  16.  Name mismatch: blocks a restaurant, only warns a hotel
+//  17.  Zero results still blocks a hotel
+//  18.  CLOSED_PERMANENTLY still blocks a hotel
+//  19.  Hotels share the kind-agnostic name+city cache
 
 import { onRequestPost } from "../functions/api/places-verify-batch.js";
 
@@ -81,7 +85,10 @@ function mockPlaces(specs) {
       pending = name;
       return textSearchResp([{
         id: `id_${name.replace(/\s+/g, "_")}`,
-        displayName: { text: name },
+        // `resolvesTo` simulates Places' fuzzy matching answering with a
+        // different venue than the one asked for — the case the
+        // name-similarity guard exists to catch.
+        displayName: { text: spec.resolvesTo || name },
         location: { latitude: spec.lat ?? 0, longitude: spec.lng ?? 0 },
       }]);
     }
@@ -477,6 +484,117 @@ console.log("\n[15] Malformed entries skipped");
   const body = await res.json();
   assert("only 1 venue processed", body.verifications.length === 1);
   assert("name RealOne", body.verifications[0].name === "RealOne");
+  globalThis.fetch = originalFetch;
+}
+
+// ============================================================
+// Test 16: a rejected name match blocks a restaurant but only warns a hotel
+// ============================================================
+// The name-similarity guard turns "Places answered with something else"
+// into not-found. For a restaurant that means the model invented a venue.
+// For a hotel it usually means Places picked the wrong property of a real
+// chain, so it must not take the export down with it.
+console.log("\n[16] Name mismatch is kind-sensitive");
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = mockPlaces({
+    "Marriott London Marble Arch": { resolvesTo: "Marriott Regents Park" },
+    "Geronimo": { resolvesTo: "Cafe Pasqual's" },
+  });
+  const ctx = {
+    request: makeReq({
+      venues: [
+        { name: "Marriott London Marble Arch", city: "London", kind: "hotel" },
+        { name: "Geronimo", city: "Santa Fe", kind: "restaurant" },
+      ],
+    }),
+    env: { GOOGLE_PLACES_API_KEY: "k", PLACES: makeKV() },
+    waitUntil: (p) => p,
+  };
+  const body = await (await onRequestPost(ctx)).json();
+  const hotel = body.verifications.find((v) => v.kind === "hotel");
+  const rest = body.verifications.find((v) => v.kind === "restaurant");
+
+  assert("hotel mismatch → HOTEL_MATCH_UNCERTAIN",
+    hotel.flags.some((f) => f.code === "HOTEL_MATCH_UNCERTAIN"), JSON.stringify(hotel.flags));
+  assert("hotel mismatch never blocks",
+    !hotel.flags.some((f) => f.severity === "block"), JSON.stringify(hotel.flags));
+  assert("hotel mismatch names the property Places actually returned",
+    hotel.flags[0].message.includes("Marriott Regents Park"), hotel.flags[0].message);
+  assert("restaurant mismatch still blocks as NOT_FOUND",
+    rest.flags.some((f) => f.code === "NOT_FOUND" && f.severity === "block"), JSON.stringify(rest.flags));
+  assert("the rejected candidate is echoed for the client to score",
+    hotel.resolved_name === "Marriott Regents Park", hotel.resolved_name);
+  assert("the rejection reason is echoed", hotel.reason === "name-mismatch", hotel.reason);
+  assert("summary counts the hotel as a warning, not a block",
+    body.summary.blocked === 1 && body.summary.warnings === 1, JSON.stringify(body.summary));
+  globalThis.fetch = originalFetch;
+}
+
+// ============================================================
+// Test 17: a hotel Places genuinely cannot find still blocks
+// ============================================================
+console.log("\n[17] Zero results still blocks a hotel");
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = mockPlaces({ "Hotel Nonexistent": { notFound: true } });
+  const ctx = {
+    request: makeReq({ venues: [{ name: "Hotel Nonexistent", city: "Bayeux", kind: "hotel" }] }),
+    env: { GOOGLE_PLACES_API_KEY: "k", PLACES: makeKV() },
+    waitUntil: (p) => p,
+  };
+  const body = await (await onRequestPost(ctx)).json();
+  assert("zero matches → NOT_FOUND block even for a hotel",
+    body.verifications[0].flags.some((f) => f.code === "NOT_FOUND" && f.severity === "block"),
+    JSON.stringify(body.verifications[0].flags));
+  globalThis.fetch = originalFetch;
+}
+
+// ============================================================
+// Test 18: a permanently-closed hotel blocks
+// ============================================================
+console.log("\n[18] Closed hotel blocks");
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = mockPlaces({ "Villa Lara": { closed: "CLOSED_PERMANENTLY" } });
+  const ctx = {
+    request: makeReq({ venues: [{ name: "Villa Lara", city: "Bayeux", kind: "hotel" }] }),
+    env: { GOOGLE_PLACES_API_KEY: "k", PLACES: makeKV() },
+    waitUntil: (p) => p,
+  };
+  const body = await (await onRequestPost(ctx)).json();
+  assert("business_status still blocks a hotel",
+    body.verifications[0].flags.some((f) => f.code === "CLOSED_PERMANENTLY" && f.severity === "block"));
+  globalThis.fetch = originalFetch;
+}
+
+// ============================================================
+// Test 19: hotels share the venue cache
+// ============================================================
+// The API-cost claim for this feature ("+1 Places call per unique hotel")
+// only holds if hotels hit the same KV cache as every other venue. The
+// cache key is name+city, kind-agnostic — assert that stays true.
+console.log("\n[19] Hotels share the name+city cache");
+{
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const inner = mockPlaces({ "Villa Lara": { open: true, address: "6 Place de Quebec" } });
+  globalThis.fetch = async (...args) => { calls += 1; return inner(...args); };
+  const kv = makeKV();
+  const run = async () => {
+    const ctx = {
+      request: makeReq({ venues: [{ name: "Villa Lara", city: "Bayeux", kind: "hotel" }] }),
+      env: { GOOGLE_PLACES_API_KEY: "k", PLACES: kv },
+      waitUntil: (p) => p,
+    };
+    return await (await onRequestPost(ctx)).json();
+  };
+  await run();
+  const firstCalls = calls;
+  const second = await run();
+  assert("first hotel lookup costs Places calls", firstCalls > 0);
+  assert("second lookup of the same hotel costs none", calls === firstCalls, `${calls} vs ${firstCalls}`);
+  assert("second lookup is served from cache", second.summary.cache_hits === 1, JSON.stringify(second.summary));
   globalThis.fetch = originalFetch;
 }
 

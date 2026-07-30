@@ -10,8 +10,9 @@ function assert(name, cond, detail) {
 }
 
 // Sample plan with a restaurant, a backup restaurant, an activity, and
-// a hotel item (which should be ignored by the venue collector — hotels
-// are out of scope for Places verification at this stage).
+// a bare hotel item. That hotel item carries no .hotel object, so the
+// venue collector still skips it — only Hotel items with a named .hotel
+// property are verifiable.
 function makePlan() {
   return {
     destination: "Santa Fe, NM",
@@ -598,5 +599,213 @@ console.log("\n[hours check — Hotel items are exempt]");
   const r = next.days[0].items[0].restaurant;
   assert("Hotel + .restaurant: no CLOSED_ON_THIS_DAY", !r.flags?.some((f) => f.code === "CLOSED_ON_THIS_DAY"));
 }
+// ---------------------------------------------------------------------------
+// Hotels. Until now a permanently-closed or nonexistent hotel shipped in the
+// PDF untouched: hotels were never collected, never verified, and the export
+// gate never looked at them.
+// ---------------------------------------------------------------------------
+
+function hotelItem(name, address, extra = {}) {
+  return { type: "Hotel", text: `Check in — ${name}`, time: "15:00", hotel: { name, address, ...extra } };
+}
+
+console.log("\n[collectPlanVenues — hotels]");
+{
+  const plan = {
+    destination: "Bayeux → Amsterdam",
+    days: [
+      { city: "Bayeux, Normandy", items: [hotelItem("Villa Lara", "6 Place de Quebec, Bayeux")] },
+      { city: "Bayeux, Normandy", items: [hotelItem("Villa Lara", "6 Place de Quebec, Bayeux")] },
+      { city: "Bayeux → Amsterdam", items: [hotelItem("Amsterdam Marriott", "Stadhouderskade 12")] },
+    ],
+  };
+  const venues = collectPlanVenues(plan);
+  const hotels = venues.filter((v) => v.kind === "hotel");
+  assert("hotels are collected", hotels.length === 2, JSON.stringify(hotels));
+  assert("a property repeated across days costs one Places call",
+    hotels.filter((h) => h.name === "Villa Lara").length === 1, JSON.stringify(hotels));
+  assert("hotel city comes from the day, not plan.destination",
+    hotels[0].city === "Bayeux, Normandy", JSON.stringify(hotels[0]));
+  assert("a transit day resolves to the arrival city",
+    hotels[1].city === "Amsterdam", JSON.stringify(hotels[1]));
+}
+{
+  // Same brand, two properties: distinct addresses must survive dedup or the
+  // second city's hotel silently inherits the first city's verification.
+  const plan = {
+    destination: "London",
+    days: [
+      { city: "London", items: [hotelItem("Marriott", "Marble Arch, London")] },
+      { city: "Amsterdam", items: [hotelItem("Marriott", "Stadhouderskade, Amsterdam")] },
+    ],
+  };
+  const hotels = collectPlanVenues(plan).filter((v) => v.kind === "hotel");
+  assert("same name + different address = two venues", hotels.length === 2, JSON.stringify(hotels));
+}
+{
+  const plan = { destination: "Santa Fe", days: [{ items: [{ type: "Hotel", text: "Check in", time: "15:00" }] }] };
+  assert("a Hotel item with no .hotel object is skipped",
+    collectPlanVenues(plan).filter((v) => v.kind === "hotel").length === 0);
+}
+
+console.log("\n[hotels — closed and missing properties reach the gate]");
+{
+  const plan = {
+    destination: "Bayeux",
+    days: [{ city: "Bayeux", items: [hotelItem("Villa Lara", "6 Place de Quebec, Bayeux")] }],
+  };
+  const next = mergePlacesVerifications(plan, [{
+    name: "Villa Lara", kind: "hotel", found: true, business_status: "CLOSED_PERMANENTLY",
+    flags: [{ code: "CLOSED_PERMANENTLY", severity: "block", message: "Permanently closed per Google Places" }],
+  }]);
+  const item = next.days[0].items[0];
+  assert("a closed hotel is NOT dropped from the day", !!item && item.type === "Hotel", JSON.stringify(item));
+  assert("the block flag lands on item.hotel.flags",
+    item.hotel.flags.some((f) => f.code === "CLOSED_PERMANENTLY" && f.severity === "block"),
+    JSON.stringify(item.hotel.flags));
+  assert("a closed hotel is never marked _verified", item.hotel._verified !== true);
+
+  const issues = findBlockingIssues(next);
+  assert("the export gate reports it", issues.length === 1, JSON.stringify(issues));
+  assert("reported as kind:hotel", issues[0]?.kind === "hotel", JSON.stringify(issues[0]));
+  assert("reported with the property name", issues[0]?.name === "Villa Lara", JSON.stringify(issues[0]));
+}
+{
+  const plan = {
+    destination: "Bayeux",
+    days: [{ city: "Bayeux", items: [hotelItem("Hotel Nonexistent", "12 Rue Imaginaire, Bayeux")] }],
+  };
+  const next = mergePlacesVerifications(plan, [{
+    name: "Hotel Nonexistent", kind: "hotel", found: false, error: "not-found",
+    flags: [{ code: "NOT_FOUND", severity: "block", message: "Google Places returned zero matches for this name + city" }],
+  }]);
+  assert("a nonexistent hotel blocks the export",
+    findBlockingIssues(next).some((i) => i.flag.code === "NOT_FOUND" && i.kind === "hotel"));
+}
+
+console.log("\n[hotels — a confident match is written through]");
+{
+  const plan = {
+    destination: "Santa Fe, NM",
+    days: [{ city: "Santa Fe, NM", items: [hotelItem("Hotel Santa Fe", "OLD ADDR", { phone: "WRONG", website: "https://old.example" })] }],
+  };
+  const next = mergePlacesVerifications(plan, [{
+    name: "Hotel Santa Fe", kind: "hotel", found: true, business_status: "OPERATIONAL",
+    resolved_name: "Hotel Santa Fe", address: "1501 Paseo de Peralta, Santa Fe, NM 87501",
+    phone: "+1 505-982-1200", website: "https://hotelsantafe.com", place_id: "abc", lat: 35.68, lng: -105.95,
+    flags: [],
+  }]);
+  const h = next.days[0].items[0].hotel;
+  assert("address overwritten with the Places value", h.address === "1501 Paseo de Peralta, Santa Fe, NM 87501", h.address);
+  assert("phone overwritten with the Places value", h.phone === "+1 505-982-1200", h.phone);
+  assert("website overwritten with the Places value", h.website === "https://hotelsantafe.com", h.website);
+  assert("marked _verified", h._verified === true);
+  assert("coordinates carried through", h.lat === 35.68 && h.lng === -105.95);
+  assert("no flags on a clean match", !h.flags, JSON.stringify(h.flags));
+}
+
+console.log("\n[hotels — an uncertain match warns, never blocks]");
+{
+  // The chain-sibling case: Places returns a real Marriott, just not this one.
+  const plan = {
+    destination: "London",
+    days: [{ city: "London", items: [hotelItem("Marriott London Marble Arch", "1 Marble Arch, London", { phone: "+44 20 7000 0000" })] }],
+  };
+  const next = mergePlacesVerifications(plan, [{
+    name: "Marriott London Marble Arch", kind: "hotel", found: true, business_status: "OPERATIONAL",
+    resolved_name: "Marriott Regents Park", address: "128 King Henry's Road, London",
+    phone: "+44 20 7722 7711", flags: [],
+  }]);
+  const h = next.days[0].items[0].hotel;
+  assert("uncertain match warns", h.flags.some((f) => f.code === "HOTEL_MATCH_UNCERTAIN" && f.severity === "warn"),
+    JSON.stringify(h.flags));
+  assert("uncertain match does NOT block the export", findBlockingIssues(next).length === 0);
+  assert("uncertain match is not marked _verified", h._verified !== true);
+  assert("the wrong property's phone is not written onto the hotel", h.phone !== "+44 20 7722 7711");
+  assert("the model's unconfirmed phone is stripped", !h.phone, h.phone);
+  assert("stripping is disclosed", h.flags.some((f) => f.code === "UNVERIFIED_SPECIFIC"), JSON.stringify(h.flags));
+}
+{
+  // Places likes to append venue-class words, and it answers in the local
+  // language. Neither makes it a different property. An earlier draft of
+  // this check string-matched the plan's city against the returned address
+  // and warned on "Venice" vs "Venezia" — a false alarm on a correct hotel.
+  const plan = {
+    destination: "Venice",
+    days: [{ city: "Venice", items: [hotelItem("Aman Venice", "Calle Tiepolo 1364, Venice")] }],
+  };
+  const next = mergePlacesVerifications(plan, [{
+    name: "Aman Venice", kind: "hotel", found: true, business_status: "OPERATIONAL",
+    resolved_name: "Aman Venice Hotel", address: "Calle Tiepolo 1364, 30125 Venezia VE, Italy", flags: [],
+  }]);
+  const h = next.days[0].items[0].hotel;
+  assert("a venue-class suffix is still a confident match", h._verified === true, JSON.stringify(h.flags));
+  assert("an exonym in the address raises no flag", !h.flags, JSON.stringify(h.flags));
+}
+{
+  // Wrong region is caught geographically, not lexically: App.jsx runs the
+  // per-leg location check over the verifications (hotels included) and
+  // attaches WRONG_LOCATION before the merge. Simulate that hand-off.
+  const plan = {
+    destination: "Santa Fe, NM",
+    days: [{ city: "Santa Fe, NM", items: [hotelItem("Grand Plaza", "100 Plaza, Santa Fe")] }],
+  };
+  const next = mergePlacesVerifications(plan, [{
+    name: "Grand Plaza", kind: "hotel", found: true, business_status: "OPERATIONAL",
+    resolved_name: "Grand Plaza", address: "12 Boylston St, Boston, MA",
+    flags: [{ code: "WRONG_LOCATION", severity: "block", message: "3,000 km from any trip city" }],
+  }]);
+  assert("a wrong-region hotel blocks the export",
+    findBlockingIssues(next).some((i) => i.kind === "hotel" && i.flag.code === "WRONG_LOCATION"));
+  assert("a wrong-region hotel is not marked _verified",
+    next.days[0].items[0].hotel._verified !== true);
+}
+
+console.log("\n[hotels — the 2026-06-14 hours exemption survives]");
+{
+  const plan = {
+    startDate: "2026-10-05", // a Monday
+    destination: "Bayeux",
+    days: [{ city: "Bayeux", items: [hotelItem("Villa Lara", "6 Place de Quebec, Bayeux")] }],
+  };
+  const next = mergePlacesVerifications(plan, [{
+    name: "Villa Lara", kind: "hotel", found: true, business_status: "OPERATIONAL",
+    resolved_name: "Villa Lara", address: "6 Place de Quebec, Bayeux",
+    hours: ["Monday: Closed", "Tuesday: Closed", "Wednesday: Closed", "Thursday: Closed",
+            "Friday: Closed", "Saturday: Closed", "Sunday: Closed"],
+    flags: [],
+  }]);
+  const h = next.days[0].items[0].hotel;
+  assert("hotels never get CLOSED_ON_THIS_DAY", !(h.flags || []).some((f) => f.code === "CLOSED_ON_THIS_DAY"),
+    JSON.stringify(h.flags));
+  assert("hotels never get OUTSIDE_HOURS", !(h.flags || []).some((f) => f.code === "OUTSIDE_HOURS"),
+    JSON.stringify(h.flags));
+  assert("hotels with all-closed posted hours still verify", h._verified === true);
+}
+
+console.log("\n[hotels — an unverifiable lookup strips specifics]");
+{
+  const plan = {
+    destination: "Lisbon",
+    days: [{ city: "Lisbon", items: [hotelItem("Hotel Avenida", "45 Avenida da Liberdade", { phone: "+351 21 000 0000" })] }],
+  };
+  const next = mergePlacesVerifications(plan, [{
+    name: "Hotel Avenida", kind: "hotel", found: false, error: "no-key",
+    flags: [{ code: "UNVERIFIED", severity: "warn", message: "no-key" }],
+  }]);
+  const h = next.days[0].items[0].hotel;
+  assert("UNVERIFIED hotel keeps its place in the day", next.days[0].items.length === 1);
+  assert("UNVERIFIED hotel does not block", findBlockingIssues(next).length === 0);
+  assert("its phone is stripped", !h.phone);
+  assert("its numbered address is stripped", !h.address, h.address);
+  assert("UNVERIFIED_SPECIFIC discloses the strip", h.flags.some((f) => f.code === "UNVERIFIED_SPECIFIC"));
+}
+{
+  const plan = { destination: "Lisbon", days: [{ city: "Lisbon", items: [hotelItem("Unknown Inn", "Alfama")] }] };
+  const next = mergePlacesVerifications(plan, [{ name: "Some Other Hotel", kind: "hotel", found: true, flags: [] }]);
+  assert("a hotel with no matching verification is left alone",
+    next.days[0].items[0].hotel.address === "Alfama");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

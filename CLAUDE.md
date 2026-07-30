@@ -62,16 +62,24 @@ consumed by the merge helper and the pre-export gate.
 | `UNVERIFIED_SPECIFIC` | info | Client stripped phone / numbered-address / hours / booking_url from an UNVERIFIED venue |
 | `CLOSED_ON_THIS_DAY` | warn / **block** | Venue verified open but closed all day on the item's scheduled weekday. Blocks only when the item is an *anchor* — see below |
 | `OUTSIDE_HOURS` | warn | Venue verified open but item's time is outside Places' posted hours |
+| `HOTEL_MATCH_UNCERTAIN` | warn | Places resolved a hotel to a name too far from the itinerary's (`nameMatchScore < 0.80`). Phone + street address are stripped; the booking is never blocked on a name judgement |
 | `WRONG_LOCATION` | block | Verified venue is too far (>50 km or per-leg widened radius) from any trip city — likely a wrong-city match |
 | `PACING_IMPOSSIBLE` | block | Adjacent items can't be reached in the scheduled gap (travel time > gap) |
 | `PACING_CONFLICT` | warn | Adjacent items have <15 min buffer after travel — tight but possible |
 
 `CLOSED_ON_THIS_DAY` is **anchor-scoped**: it blocks for a booking the traveller
 cannot improvise around — a restaurant with a reservation, a timed-entry
-activity, a hotel check-in — and stays a warn for walk-in stops. Places closure
+activity — and stays a warn for walk-in stops. Places closure
 data has known gaps, so an ambiguous classification deliberately falls back to
 warn rather than blocking a correct plan. `classifyAnchor()` in
 `src/placesVerify.js` is the single decision point.
+
+Hotels are exempt from the hours check entirely (`CLOSED_ON_THIS_DAY` /
+`OUTSIDE_HOURS` never fire for a hotel) — reception is 24/7 and Places hours for
+a property usually describe its restaurant. Existence and `business_status` are
+checked exactly as for any other venue, and a hotel with a block flag is kept in
+the plan rather than dropped, because an itinerary with no bed hides the problem.
+See `docs/wiki/concepts/architecture.md` → "Verification chain → Hotels".
 
 ### Structural flags (computed client-side)
 

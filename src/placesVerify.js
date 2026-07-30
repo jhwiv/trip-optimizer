@@ -1,5 +1,6 @@
 import { parseWeekdayDescriptions, isOpenAt } from "./hoursParser.js";
 import { addDays, weekdayOf } from "./dateFacts.js";
+import { nameMatchScore } from "./nameMatch.js";
 
 // Re-export the leg helpers so a single placesVerify.js import covers
 // both venue verification and location checking on the client.
@@ -10,8 +11,8 @@ export { findVenuesOutsideRadius, computeLegRadii } from "./locationCheck.js";
 // Two pure functions:
 //   - collectPlanVenues(plan)         walks days[].items[] and pulls
 //                                     every named venue (restaurants,
-//                                     their backups, activities) into
-//                                     a deduplicated list shaped for
+//                                     their backups, activities, hotels)
+//                                     into a deduplicated list shaped for
 //                                     /api/places-verify-batch.
 //   - mergePlacesVerifications(plan,
 //                              verifications, options)
@@ -60,6 +61,23 @@ function normName(s) {
 // We do NOT use per-item neighborhood as the city — Places' Text Search
 // works better with the broader city/region than with a sub-area string
 // that may not be a recognized locality.
+//
+// Hotels (kind:'hotel') are collected too, but on different terms than
+// restaurants and activities:
+//
+//   - City comes from the DAY, not the plan. A four-city trip's
+//     plan.destination is "London → Normandy → Amsterdam → Lisbon",
+//     which is useless as a Places disambiguator, and hotels are the
+//     venue class where that matters most: every large city has a
+//     Marriott, so a weak city hint is how you resolve the London
+//     property to the Amsterdam one.
+//   - Dedup is by name + address, not name alone. The same property
+//     appears on every day of a leg (check-in Day 1, check-out Day 3),
+//     and each appearance would otherwise cost a Places call.
+//   - A name-based mismatch on a hotel never blocks the export — see
+//     applyToHotel(). Chain naming makes false mismatches common, and a
+//     blocked export on a correct itinerary is worse than a warning on
+//     an ambiguous one.
 export function collectPlanVenues(plan) {
   if (!plan || !Array.isArray(plan.days)) return [];
   const cityHint = String(
@@ -71,18 +89,19 @@ export function collectPlanVenues(plan) {
   const seen = new Set();
   const out = [];
 
-  const push = (rawName, kind) => {
+  const push = (rawName, kind, cityOverride, dedupExtra) => {
     if (typeof rawName !== "string") return;
     const name = rawName.trim();
     if (!name) return;
-    const key = `${kind}|${normName(name)}`;
+    const key = `${kind}|${normName(name)}${dedupExtra ? `|${normName(dedupExtra)}` : ""}`;
     if (seen.has(key)) return;
     seen.add(key);
-    out.push({ name, city: cityHint, kind });
+    out.push({ name, city: cityOverride || cityHint, kind });
   };
 
   for (const day of plan.days) {
     if (!Array.isArray(day?.items)) continue;
+    const dayCity = typeof day.city === "string" ? day.city.trim() : "";
     for (const item of day.items) {
       if (!item || typeof item !== "object") continue;
       if (item.restaurant && typeof item.restaurant === "object") {
@@ -94,9 +113,21 @@ export function collectPlanVenues(plan) {
       if (item.type === "Activity") {
         push(item.name, "activity");
       }
+      if (item.type === "Hotel" && item.hotel && typeof item.hotel === "object") {
+        push(item.hotel.name, "hotel", hotelCityFor(dayCity, cityHint), item.hotel.address);
+      }
     }
   }
   return out;
+}
+
+// A transit day's city is "Bayeux → Amsterdam"; the hotel on that day is
+// in the destination half. Take the last segment so Places gets a real
+// locality rather than a route label.
+function hotelCityFor(dayCity, cityHint) {
+  if (!dayCity) return cityHint;
+  const parts = dayCity.split(/\s*(?:→|->)\s*/).map((p) => p.trim()).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : cityHint;
 }
 
 // Collect the distinct leg city names from a plan. Used for per-leg
@@ -229,6 +260,26 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
     return decorateVenue(item, v, (n) => { if (n === "verified") verified += 1; else if (n === "warn") warnings += 1; else if (n === "block") blocked += 1; }, dayContext);
   };
 
+  // Apply Places data to a Hotel item. Unlike restaurants and activities
+  // this NEVER returns null: a hotel is load-bearing structure, not a
+  // suggestion. Silently deleting it would leave the traveller with an
+  // itinerary that has no bed in it, and would hide the collision from
+  // the duplicate-check-in and city-continuity validators that read
+  // Hotel items. A blocked hotel stays in the plan carrying its block
+  // flag, and findBlockingIssues() stops the export instead.
+  const applyToHotel = (item) => {
+    const h = item.hotel;
+    if (!h || typeof h.name !== "string") return item;
+    const v = byKey.get(`hotel|${normName(h.name)}`);
+    if (!v) return item;
+    const nextHotel = decorateHotel(h, v, (n) => {
+      if (n === "verified") verified += 1;
+      else if (n === "warn") warnings += 1;
+      else if (n === "block") blocked += 1;
+    });
+    return { ...item, hotel: nextHotel };
+  };
+
   const nextDays = plan.days.map((day, dayIdx) => {
     if (!Array.isArray(day?.items)) return day;
     // Compute this day's weekday from start date + day index. Null when
@@ -253,6 +304,18 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
       if (item.type === "Activity") {
         const next = applyToActivity(item, dayContext);
         if (next !== null) nextItems.push(next);
+        continue;
+      }
+
+      // Hotels get existence and business_status checking but NOT the
+      // hours check — dayContext is deliberately not passed. Reception is
+      // 24/7 at essentially every property, so Places' posted hours (when
+      // it has any) describe the front desk or the restaurant, not whether
+      // you can check in. Emitting CLOSED_ON_THIS_DAY off that would be a
+      // guaranteed false positive on an anchor, which blocks the export.
+      // This is the 2026-06-14 exemption; it survives intact.
+      if (item.type === "Hotel" && item.hotel && typeof item.hotel === "object") {
+        nextItems.push(applyToHotel(item));
         continue;
       }
 
@@ -311,7 +374,7 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
 // (severity:'block' flags). Returns [] when the plan is safe to render.
 //
 // Shape per issue:
-//   { dayIdx, itemIdx, kind: 'restaurant' | 'activity' | 'backup',
+//   { dayIdx, itemIdx, kind: 'restaurant' | 'activity' | 'backup' | 'hotel',
 //     name, flag: { code, severity, message } }
 //
 // The PDF export path MUST call this before invoking the itinerary
@@ -337,6 +400,9 @@ export function findBlockingIssues(plan) {
       if (item.type === "Activity") {
         addBlockingFlags(item.flags, { dayIdx, itemIdx, kind: "activity", name: item.name || item.text || "(unnamed activity)" }, issues);
         continue;
+      }
+      if (item.hotel && typeof item.hotel === "object") {
+        addBlockingFlags(item.hotel.flags, { dayIdx, itemIdx, kind: "hotel", name: item.hotel.name || "(unnamed hotel)" }, issues);
       }
       if (item.restaurant && typeof item.restaurant === "object") {
         addBlockingFlags(item.restaurant.flags, { dayIdx, itemIdx, kind: "restaurant", name: item.restaurant.name || "(unnamed restaurant)" }, issues);
@@ -393,6 +459,15 @@ export function classifyAnchor(item) {
 
   // A hotel check-in is the hardest anchor there is — there is no walk-in
   // alternative at 11pm in a city you just flew into.
+  //
+  // In practice this branch decides nothing today. `anchor` is read in
+  // exactly one place: the CLOSED_ON_THIS_DAY severity in decorateVenue,
+  // and hotels never reach decorateVenue — mergePlacesVerifications routes
+  // Hotel items to decorateHotel, which skips the hours check entirely
+  // (the 2026-06-14 exemption). The branch is kept, and kept correct,
+  // because the classification is a statement about hotels rather than
+  // about the hours check, and a future caller asking "is this an anchor?"
+  // should get the right answer without rediscovering why.
   if (/^Hotel$/i.test(type)) return true;
 
   if (MEAL_TYPES.test(type)) {
@@ -413,6 +488,103 @@ export function classifyAnchor(item) {
   }
 
   return false;
+}
+
+// Hotels clear a higher bar than the 0.55 the server applies to every
+// venue. "Hilton London Bankside" and "Hilton London Paddington" are
+// different buildings four miles apart that share most of their letters,
+// and the traveller finds out at midnight with luggage. 0.80 rejects the
+// chain-sibling class of match while still accepting the venue-class
+// suffixes Places likes to append.
+const HOTEL_NAME_CONFIDENCE = 0.8;
+
+// "Is this property in the right city?" is deliberately NOT answered here
+// by string-matching the city name against the address Places returned.
+// That test fails on exonyms — a plan that says Venice gets an address in
+// Venezia, Munich gets München, Lisbon gets Lisboa — and warning a
+// traveller that their correct hotel is in the wrong city is worse than
+// not checking at all.
+//
+// The question is answered geographically instead, by the existing
+// per-leg check in locationCheck.js: geocode each trip city, Haversine
+// the venue's coordinates against the leg centroids, flag WRONG_LOCATION
+// beyond the radius. Coordinates have no language. Hotels are included in
+// that check from the App.jsx call site; the resulting flag arrives here
+// in v.flags like any other.
+
+// Apply Places data to a hotel object from a Hotel item.
+//
+// Hotels do not use the shared decorateVenue path: their address / phone /
+// website live directly on item.hotel per HOTEL_ITEM_SCHEMA, not under a
+// .contact block, so writing through decorateVenue would populate fields
+// no card reads.
+//
+// Three outcomes:
+//   1. Found, operational, and the match is confident → overwrite contact
+//      details with Places values and mark _verified.
+//   2. Found and operational but the name match is NOT confident → keep
+//      the model's data minus the verify-or-strip fields, and warn. We do
+//      not write Places' address or phone onto the property, because if
+//      this is the wrong Marriott then those details are actively harmful.
+//   3. business_status says closed, Places found nothing at all, or the
+//      per-leg location check placed it in the wrong region → the block
+//      flag rides on the hotel and the export gate catches it.
+function decorateHotel(hotel, v, tally) {
+  const isOperational = v.found && (!v.business_status || v.business_status === "OPERATIONAL");
+  const serverFlags = Array.isArray(v.flags) ? v.flags : [];
+  const hasBlock = serverFlags.some((f) => f.severity === "block");
+  const extraFlags = [];
+
+  const next = { ...hotel };
+
+  // A block flag from any source — business_status, or the per-leg
+  // location check — disqualifies the match outright. Writing Places'
+  // address onto a property we are about to refuse to export would
+  // overwrite the traveller's data with a venue we don't believe in.
+  let confident = isOperational && !hasBlock;
+  if (confident && v.resolved_name && nameMatchScore(hotel.name, v.resolved_name) < HOTEL_NAME_CONFIDENCE) {
+    confident = false;
+    extraFlags.push({
+      code: "HOTEL_MATCH_UNCERTAIN",
+      severity: "warn",
+      message: `Google Places resolved this to "${v.resolved_name}" — confirm it is the right property before booking.`,
+    });
+  }
+
+  if (confident) {
+    if (v.address) next.address = v.address;
+    if (v.phone) next.phone = v.phone;
+    if (v.website) next.website = v.website;
+    next._verified = true;
+    if (v.place_id) next.place_id = v.place_id;
+    if (typeof v.lat === "number") next.lat = v.lat;
+    if (typeof v.lng === "number") next.lng = v.lng;
+    tally("verified");
+  } else if (!hasBlock) {
+    // Verify-or-strip, same rule as decorateVenue: an unconfirmed property's
+    // model-supplied phone number is the one a traveller would actually dial.
+    let stripped = false;
+    if (next.phone) { delete next.phone; stripped = true; }
+    if (next.address && /\d/.test(next.address)) { delete next.address; stripped = true; }
+    if (stripped) {
+      extraFlags.push({
+        code: "UNVERIFIED_SPECIFIC",
+        severity: "info",
+        message: "Phone and exact address stripped — Places couldn't confirm this property.",
+      });
+    }
+    tally("warn");
+  } else {
+    tally("block");
+  }
+
+  const allFlags = [
+    ...(Array.isArray(hotel.flags) ? hotel.flags : []),
+    ...serverFlags,
+    ...extraFlags,
+  ];
+  if (allFlags.length) next.flags = allFlags;
+  return next;
 }
 
 // Apply Places fields to a venue (restaurant or activity item) and

@@ -108,8 +108,12 @@ export function computeLegRadii(centers, opts = {}) {
 //   blocks a venue that's plausibly part of the trip.
 //
 // `opts.kinds` (default ['restaurant', 'activity']) limits which kinds
-//   to check. Hotels are excluded by default per user decision
-//   2026-06-14.
+//   to check. The default excludes hotels, per user decision 2026-06-14,
+//   from the era when hotels were not verified at all. Callers that do
+//   verify hotels opt in explicitly — the App.jsx post-build pass passes
+//   ['restaurant', 'activity', 'hotel'], because distance from a geocoded
+//   leg centroid is the only exonym-proof way to ask whether a property
+//   is in the city the itinerary claims.
 //
 // Returns: { flagsByName: Map<name, flag>, checked: N, blocked: M }
 //   where flag = { code: 'WRONG_LOCATION', severity: 'block', message }

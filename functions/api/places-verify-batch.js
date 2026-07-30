@@ -59,7 +59,12 @@
 //     CLOSED_TEMPORARILY  — Places confirmed temporary closure
 //     NOT_FOUND           — Places Text Search returned zero candidates for name+city
 //   warn:
-//     UNVERIFIED          — Places lookup couldn't run (missing key, network, timeout)
+//     UNVERIFIED             — Places lookup couldn't run (missing key, network, timeout)
+//     HOTEL_MATCH_UNCERTAIN  — kind=hotel only. The name-similarity guard rejected
+//                              the candidate Places returned. For a hotel that
+//                              usually means the wrong property of a real chain,
+//                              not a nonexistent venue, so it warns instead of
+//                              blocking. See flagsFor().
 //
 // Severity=warn is downgraded relative to block so the client can choose
 // to surface a banner ("we couldn't verify 3 venues") without refusing
@@ -135,7 +140,17 @@ async function mapParallel(items, concurrency, fn) {
 }
 
 // Produce the canonical flags array from a verifyOneVenue() result.
-function flagsFor(result) {
+//
+// `kind` matters in exactly one place: a hotel whose Places match was
+// rejected by the name-similarity guard. For restaurants and activities
+// that verdict means "the model invented this venue" and blocks. Hotel
+// names are chain-shaped — "Marriott London Marble Arch" against a
+// resolved "Marriott Regents Park" — so the same signal much more often
+// means "Places picked the wrong property of a real chain" than "this
+// hotel doesn't exist". Blocking the export on that would strand correct
+// itineraries, so it degrades to a warn and the traveller sees an
+// unconfirmed-property notice instead.
+function flagsFor(result, kind) {
   const flags = [];
   if (result.found) {
     if (result.business_status === "CLOSED_PERMANENTLY") {
@@ -144,7 +159,17 @@ function flagsFor(result) {
       flags.push({ code: "CLOSED_TEMPORARILY", severity: "block", message: "Temporarily closed per Google Places" });
     }
   } else if (result.error === "not-found") {
-    flags.push({ code: "NOT_FOUND", severity: "block", message: "Google Places returned zero matches for this name + city" });
+    if (kind === "hotel" && result.reason === "name-mismatch") {
+      flags.push({
+        code: "HOTEL_MATCH_UNCERTAIN",
+        severity: "warn",
+        message: result.resolved_name
+          ? `Google Places resolved this to "${result.resolved_name}" — confirm it is the right property before booking.`
+          : "Google Places could not confirm this exact property.",
+      });
+    } else {
+      flags.push({ code: "NOT_FOUND", severity: "block", message: "Google Places returned zero matches for this name + city" });
+    }
   } else if (result.error) {
     // no-key, timeout, 5xx, etc. — warn, not block. Fail safe per the
     // CLAUDE.md hard rule: treat as UNVERIFIED, never as operational.
@@ -225,7 +250,7 @@ export async function onRequestPost(context) {
   // without surprise.
   const verifications = [];
   for (const { entry, result } of verifiedPerEntry) {
-    const flags = flagsFor(result);
+    const flags = flagsFor(result, entry.kind);
     for (const echoName of entry.echoes) {
       verifications.push({
         name: echoName,
@@ -233,7 +258,12 @@ export async function onRequestPost(context) {
         found: result.found === true,
         ...(result.place_id ? { place_id: result.place_id } : {}),
         ...(result.business_status ? { business_status: result.business_status } : {}),
-        ...(result.name ? { resolved_name: result.name } : {}),
+        // On the name-mismatch path verifyOneVenue reports the rejected
+        // candidate as `resolved_name`; on the success path the canonical
+        // name arrives as `name`. The client needs it in both cases to
+        // score the match itself.
+        ...(result.name || result.resolved_name ? { resolved_name: result.name || result.resolved_name } : {}),
+        ...(result.reason ? { reason: result.reason } : {}),
         ...(result.address ? { address: result.address } : {}),
         ...(result.phone ? { phone: result.phone } : {}),
         ...(Array.isArray(result.hours) && result.hours.length ? { hours: result.hours } : {}),
