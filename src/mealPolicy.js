@@ -115,10 +115,15 @@ function normalize(value) {
   return String(value == null ? "" : value).replace(/[‘’ʼ]/g, "'").toLowerCase();
 }
 
+// Split on sentence punctuation AND on contrastive conjunctions. "but",
+// "however" and friends explicitly reset polarity, so in "no breakfast
+// normally, but book breakfast at Tia Sophia's on Day 2" the negator
+// belongs only to the first half. Without this split the 8-token window
+// reaches across the "but" and negates the actual ask.
 function toClauses(text) {
   return normalize(text)
-    .split(/[.!?;\n\r]+/g)
-    .map((c) => c.trim())
+    .split(/[.!?;\n\r]+|\b(?:but|however|although|though|whereas|except)\b/g)
+    .map((c) => (c || "").trim())
     .filter(Boolean);
 }
 
