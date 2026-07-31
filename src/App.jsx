@@ -20,6 +20,7 @@ import { findCarrierCodeMismatches } from "./carrierCodeCheck.js";
 import { pickClosureChip } from "./closureChip.js";
 import { applyFlightNumberStrip } from "./flightNumberStrip.js";
 import { classifyActivityCountConstraint, renderActivityCountPromptRule, enforceTripTotalActivityCap } from "./activityCountConstraint.js";
+import { classifyMealPolicy, renderMealPolicyPromptRule, mealPolicyAllowsBreakfast, mealPolicyAllowsLunch } from "./mealPolicy.js";
 import { buildFlightCardTitle } from "./flightCardTitle.js";
 import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, isPdfDownloadReady } from "./introduction.js";
 import { shouldShowWelcome, markWelcomeDismissed, detectPlatform } from "./appIntro.js";
@@ -2849,21 +2850,14 @@ function applyQualityLayer(input, inputs) {
   //     known breakfast/lunch venue. Hotel breakfast included with the room
   //     does NOT count.
   if (Array.isArray(days)) {
-    const blob = `${inputs?.narrative || ""}\n${inputs?.guidelines || ""}\n${inputs?.dining || ""}`.toLowerCase();
-    // Detect explicit asks. "casual lunches" / "light breakfasts" as a vibe
-    // note does NOT count — we look for verbs of intent (book, reserve, want,
-    // schedule, plan) OR a specific named venue paired with the meal word.
-    const explicitBreakfast =
-      /\b(book|reserve|plan|schedule|want|need|include|add)\b[^.]{0,40}\b(breakfast|brunch)\b/.test(blob) ||
-      /\b(breakfast|brunch)\b[^.]{0,40}\b(at|in|reservation|book|reserve)\b/.test(blob) ||
-      /\bbreakfast at \w/.test(blob) ||
-      /\bbrunch at \w/.test(blob) ||
-      /\bbrunch on (sun|mon|tue|wed|thu|fri|sat)/.test(blob);
-    const explicitLunch =
-      /\b(book|reserve|plan|schedule|want|need|include|add)\b[^.]{0,40}\blunch\b/.test(blob) ||
-      /\blunch\b[^.]{0,40}\b(at|in|reservation|book|reserve)\b/.test(blob) ||
-      /\blunch at \w/.test(blob) ||
-      /\blunch on (day\s*\d|sun|mon|tue|wed|thu|fri|sat)/.test(blob);
+    // Same classifier that renders the per-trip MEAL POLICY line in the
+    // build prompt, so what the model is told and what we enforce can
+    // never drift apart. It reads narrative, guidelines, dining (as an
+    // object) and the restaurants[] chips, and handles negation — see
+    // src/mealPolicy.js.
+    const mealPolicy = classifyMealPolicy(inputs);
+    const explicitBreakfast = mealPolicyAllowsBreakfast(mealPolicy);
+    const explicitLunch = mealPolicyAllowsLunch(mealPolicy);
     days.forEach((day, dayIdx) => {
       if (!Array.isArray(day.items)) return;
       day.items = day.items.filter(item => {
@@ -13126,12 +13120,12 @@ TRIP REQUIREMENTS:
 • TIME FORMAT IN PROSE: The structured "time"/"end_time" fields stay 24h as specified above — the app converts them for display. But in all human-readable prose you write (headlines, why-blurbs, notes, confirmation_notes, flags, tonight, and any recommended/arrival/pickup time mentioned in text), write clock times in 12-hour AM/PM format (e.g. "7:00 PM", never "19:00"). Never use 24-hour/military time in prose.
 
 MEAL POLICY — STRICT, OPT-IN ONLY FOR BREAKFAST & LUNCH (POST-PROCESSED):
-*** CRITICAL: LUNCH IS A HARD EXCLUSION BY DEFAULT. Same severity as breakfast.
-*** The traveler has explicitly added LUNCH to the meal-exclusion list. Treat
-*** "don't plan lunch" with the same weight as "don't plan breakfast" — they
-*** are co-equal exclusions. Any Lunch item in your output without an explicit
-*** named ask ("lunch at Atardi", "book lunch Day 3") will be removed by the
-*** post-processor and counted as a defect. DO NOT EMIT LUNCH ITEMS.
+*** CRITICAL: BREAKFAST AND LUNCH ARE HARD EXCLUSIONS BY DEFAULT. They are
+*** co-equal — neither is emitted unless this trip's MEAL POLICY (per-trip)
+*** line in the PER-TRIP REQUIREMENTS block says the traveler requested it.
+*** That per-trip line is authoritative; when it and anything below disagree,
+*** follow the per-trip line. Any Breakfast / Brunch / Lunch item emitted
+*** against it will be removed by the post-processor and counted as a defect.
 *** Activities that span the noon window (e.g. 09:00–14:00 catamaran with food
 *** included, or a wine tasting that includes a small plate) are fine as
 *** Activity items — but DO NOT add a separate Lunch item alongside them.
@@ -13158,8 +13152,8 @@ Every Activity item MUST include a "contact" object with AT LEAST one of {phone,
 Also add "why" — a 1–2 sentence opinionated reason this activity is on the trip (mirrors restaurant.why). Phone numbers and websites for major museums, tours, and attractions are well-known public information — use them. Do NOT fabricate. If you genuinely don't know the phone for a specific venue, provide the website only.
 
 VARIETY RULES — STRICT, NON-NEGOTIABLE:
-• Each unique restaurant name MUST appear AT MOST ONCE across ALL days. Before emitting any restaurant, mentally check: have I already used this name on an earlier day? If yes, pick a different one. The same name for breakfast Day 2 AND breakfast Day 4 is a violation. The same name for dinner Day 1 AND lunch Day 2 is a violation.
-• The hotel's in-house restaurant counts as a restaurant. It may appear AT MOST ONCE across the entire trip. For other breakfasts, pick named local spots (e.g. Tia Sophia's, Café Pasqual's, Clafoutis) — never default to the hotel restaurant.
+• Each unique restaurant name MUST appear AT MOST ONCE across ALL days. Before emitting any restaurant, mentally check: have I already used this name on an earlier day? If yes, pick a different one. The same restaurant on Day 2 AND Day 4 is a violation. The same name in two different meal slots is a violation.
+• The hotel's in-house restaurant counts as a restaurant. It may appear AT MOST ONCE across the entire trip. Never default to the hotel restaurant for any meal — pick named local spots.
 • If the user asked for a specific cuisine focus, give each day a different EXPRESSION of that cuisine: a market café, an institution, a chef-driven spot, a wine bar, a hole-in-the-wall.
 • Never repeat the same activity venue across days. Vary neighborhoods — Plaza one day, Railyard another, Tesuque another.
 
@@ -13320,7 +13314,16 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
     const _activityCountConstraint = classifyActivityCountConstraint({ narrative, guidelines });
     const _activityCountRuleBlock = renderActivityCountPromptRule(_activityCountConstraint) || "";
 
-    const dynamicPreamble = `PER-TRIP REQUIREMENTS (these are the trip-specific values + overrides referenced by the static rulebook above — follow them strictly):${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}${_activityCountRuleBlock}
+    // Per-trip meal state. The MEAL POLICY block in staticRules can only
+    // state the default (exclude); it is byte-identical across every build
+    // of every trip. The traveler's actual ask rides here, in the uncached
+    // preamble, from the same classifier applyQualityLayer §1c enforces
+    // with — so prompt and enforcement cannot disagree.
+    const _mealPolicyRuleBlock = renderMealPolicyPromptRule(
+      classifyMealPolicy({ narrative, guidelines, dining, restaurants }),
+    );
+
+    const dynamicPreamble = `PER-TRIP REQUIREMENTS (these are the trip-specific values + overrides referenced by the static rulebook above — follow them strictly):${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}${_activityCountRuleBlock}${_mealPolicyRuleBlock}
 ${_destinationFactsBlock}
 
 ${totalDaysLine}${_multiCityFieldOrder}${multiCityBlock}${_marqueePreamble}${_airportPreamble}${_routePreamble}`;
@@ -13417,7 +13420,7 @@ ${dateTable ? dateTable + "\n" : ""}
 IMPORTANT: Return a complete days[] array with ${(isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)) + 1} entries (arrival day + ${isMultiCity ? totalNightsFromCities : (parseInt(basics.nights,10)||3)} nights). Do not collapse the plan into the logistics chip list.${isMultiCity ? `
 IMPORTANT: This is a ${cities.length}-city trip. Emit cities[] with ${cities.length} entries. Each day's "city" field must match a city in cities[] (or use From→To format for transit days). Inter-city transit is a Transport item at the start of legs 2+ with realistic drive time + distance.` : ""}
 IMPORTANT: Write days[] BEFORE logistics, flags, planb, snobs, or tonight. days[] comes immediately after destination + meta in the tool input.
-IMPORTANT: NO RESTAURANT MAY APPEAR TWICE. Each named restaurant gets ONE meal slot across the entire trip. Vary breakfasts — use real local spots, not the hotel restaurant on repeat.
+IMPORTANT: NO RESTAURANT MAY APPEAR TWICE. Each named restaurant gets ONE meal slot across the entire trip. The hotel restaurant may be used at most once across the entire trip.
 IMPORTANT: Each day MUST have a "headline" (the one signature moment) and a "weather" line (seasonal expectation). Top-level MUST include weather_window, pack[≥3], planb[≥5], tonight (with priority prefixes).
 ${userWantsPrivateDriver ? `IMPORTANT — PRIVATE DRIVER REQUESTED: The user wants a private chauffeur, not a rental car or rideshare. Each activity-heavy day MUST have a Transport item with a named LOCAL operator that actually serves this destination (do NOT default to Blacklane outside the cities it covers — see PRIVATE DRIVER block for guidance), pickup time, return time, and vehicle type. If unsure of the operator, write "Concierge to book — verify operator" rather than guessing. Add a logistics chip "Driver · <operator>". The airport arrival on Day 1 is a driver meet-and-greet, not a self-drive pickup.` : ""}
 ${userWantsPrivateTour ? `IMPORTANT — PRIVATE TOURS / GUIDES REQUESTED: Marquee sights MUST be done with a named PRIVATE guide (Context Travel, Walks of Italy private, Through Eternity private, ToursByLocals, or destination-specific licensed-guide bureau). Group bus tours and audio walks do NOT satisfy this. Each private-tour Activity item must include: duration, guide credential, advance-booking lead time, and pickup/meet location. Add a flags[] entry urging immediate booking.` : ""}

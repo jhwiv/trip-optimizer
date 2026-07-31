@@ -46,6 +46,7 @@ unavailable at runtime, fail safe: treat the venue as UNVERIFIED, not as operati
 | Server-side verify inside `/api/find` (drops closed venues) | `functions/api/find.js` (`verifyVenuesForFind`) |
 | Client-side merge + verify-or-strip | `src/placesVerify.js` |
 | Computed weekday / date table injected into the build prompt | `src/dateFacts.js` |
+| Per-trip Breakfast/Lunch opt-in — one classifier feeds both the prompt and the post-build strip | `src/mealPolicy.js` (see `docs/wiki/concepts/meal-policy.md`) |
 | Pre-export gate before PDF render | `src/App.jsx` (PDF export path) |
 
 ## Flag taxonomy (authoritative)
