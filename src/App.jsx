@@ -20,6 +20,7 @@ import { findCarrierCodeMismatches } from "./carrierCodeCheck.js";
 import { pickClosureChip } from "./closureChip.js";
 import { applyFlightNumberStrip } from "./flightNumberStrip.js";
 import { classifyActivityCountConstraint, renderActivityCountPromptRule, enforceTripTotalActivityCap } from "./activityCountConstraint.js";
+import { classifyMealPolicy, renderMealPolicyPromptRule, mealPolicyAllowsBreakfast, mealPolicyAllowsLunch } from "./mealPolicy.js";
 import { buildFlightCardTitle } from "./flightCardTitle.js";
 import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, isPdfDownloadReady } from "./introduction.js";
 import { shouldShowWelcome, markWelcomeDismissed, detectPlatform } from "./appIntro.js";
@@ -13126,12 +13127,12 @@ TRIP REQUIREMENTS:
 • TIME FORMAT IN PROSE: The structured "time"/"end_time" fields stay 24h as specified above — the app converts them for display. But in all human-readable prose you write (headlines, why-blurbs, notes, confirmation_notes, flags, tonight, and any recommended/arrival/pickup time mentioned in text), write clock times in 12-hour AM/PM format (e.g. "7:00 PM", never "19:00"). Never use 24-hour/military time in prose.
 
 MEAL POLICY — STRICT, OPT-IN ONLY FOR BREAKFAST & LUNCH (POST-PROCESSED):
-*** CRITICAL: LUNCH IS A HARD EXCLUSION BY DEFAULT. Same severity as breakfast.
-*** The traveler has explicitly added LUNCH to the meal-exclusion list. Treat
-*** "don't plan lunch" with the same weight as "don't plan breakfast" — they
-*** are co-equal exclusions. Any Lunch item in your output without an explicit
-*** named ask ("lunch at Atardi", "book lunch Day 3") will be removed by the
-*** post-processor and counted as a defect. DO NOT EMIT LUNCH ITEMS.
+*** CRITICAL: BREAKFAST AND LUNCH ARE HARD EXCLUSIONS BY DEFAULT. They are
+*** co-equal — neither is emitted unless this trip's MEAL POLICY (per-trip)
+*** line in the PER-TRIP REQUIREMENTS block says the traveler requested it.
+*** That per-trip line is authoritative; when it and anything below disagree,
+*** follow the per-trip line. Any Breakfast / Brunch / Lunch item emitted
+*** against it will be removed by the post-processor and counted as a defect.
 *** Activities that span the noon window (e.g. 09:00–14:00 catamaran with food
 *** included, or a wine tasting that includes a small plate) are fine as
 *** Activity items — but DO NOT add a separate Lunch item alongside them.
@@ -13320,7 +13321,16 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
     const _activityCountConstraint = classifyActivityCountConstraint({ narrative, guidelines });
     const _activityCountRuleBlock = renderActivityCountPromptRule(_activityCountConstraint) || "";
 
-    const dynamicPreamble = `PER-TRIP REQUIREMENTS (these are the trip-specific values + overrides referenced by the static rulebook above — follow them strictly):${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}${_activityCountRuleBlock}
+    // Per-trip meal state. The MEAL POLICY block in staticRules can only
+    // state the default (exclude); it is byte-identical across every build
+    // of every trip. The traveler's actual ask rides here, in the uncached
+    // preamble, from the same classifier applyQualityLayer §1c enforces
+    // with — so prompt and enforcement cannot disagree.
+    const _mealPolicyRuleBlock = renderMealPolicyPromptRule(
+      classifyMealPolicy({ narrative, guidelines, dining, restaurants }),
+    );
+
+    const dynamicPreamble = `PER-TRIP REQUIREMENTS (these are the trip-specific values + overrides referenced by the static rulebook above — follow them strictly):${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}${_activityCountRuleBlock}${_mealPolicyRuleBlock}
 ${_destinationFactsBlock}
 
 ${totalDaysLine}${_multiCityFieldOrder}${multiCityBlock}${_marqueePreamble}${_airportPreamble}${_routePreamble}`;
