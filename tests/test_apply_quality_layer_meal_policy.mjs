@@ -36,22 +36,38 @@ function stripMeals(days, inputs) {
     const explicitLunch = mealPolicyAllowsLunch(mealPolicy);
     days.forEach((day, dayIdx) => {
       if (!Array.isArray(day.items)) return;
+      const stripFlags = [];
       day.items = day.items.filter((item) => {
         const t = (item.type || "").toLowerCase();
-        if ((t === "breakfast" || t === "brunch") && !explicitBreakfast) {
-          fixes.push(`Day ${dayIdx + 1}: removed unrequested ${t} (${item.restaurant?.name || item.title || "meal"}) per meal policy`);
-          return false;
-        }
-        if (t === "lunch" && !explicitLunch) {
-          fixes.push(`Day ${dayIdx + 1}: removed unrequested lunch (${item.restaurant?.name || item.title || "meal"}) per meal policy`);
-          return false;
-        }
-        return true;
+        const isBreakfast = (t === "breakfast" || t === "brunch") && !explicitBreakfast;
+        const isLunch = t === "lunch" && !explicitLunch;
+        if (!isBreakfast && !isLunch) return true;
+        const name = item.restaurant?.name || item.title || "meal";
+        const meal = isLunch ? "lunch" : t;
+        fixes.push(`Day ${dayIdx + 1}: removed unrequested ${meal} (${name}) per meal policy`);
+        stripFlags.push({
+          code: "MEAL_POLICY_STRIP",
+          severity: "info",
+          dayIdx,
+          day: dayIdx + 1,
+          target: name,
+          item_name: name,
+          reason: `${isLunch ? "lunch" : "breakfast"} excluded by policy`,
+          message: `Removed unrequested ${meal} (${name}) — the trip's meal policy excludes ${isLunch ? "lunch" : "breakfast"}.`,
+        });
+        return false;
       });
+      if (stripFlags.length > 0) {
+        const prior = Array.isArray(day.structural_flags) ? day.structural_flags : [];
+        day.structural_flags = [...prior, ...stripFlags];
+      }
     });
   }
   return { days, fixes };
 }
+
+const allFlags = (days) =>
+  (days || []).flatMap((d) => (Array.isArray(d.structural_flags) ? d.structural_flags : []));
 
 // 3 breakfasts + 2 lunches, plus dinners/activities that must never be touched.
 function makePlan() {
@@ -198,7 +214,61 @@ console.log("=== D. REGRESSION — dining object no longer '[object Object]' ===
     empty.fixes.length === 1);
 }
 
-console.log("=== E. Malformed input is survivable ===");
+console.log("=== E. MEAL_POLICY_STRIP info flags ===");
+{
+  // 3 breakfasts, no explicit ask → 3 removals AND 3 info flags. qc.fixes
+  // alone is not enough: QualityBadge truncates at 2, so a silent strip of a
+  // wanted meal was invisible past the second one.
+  const days = [
+    { label: "Day 1", items: [{ type: "Breakfast", restaurant: { name: "Cafe A" } }, { type: "Dinner" }] },
+    { label: "Day 2", items: [{ type: "Brunch", restaurant: { name: "Brunch B" } }, { type: "Dinner" }] },
+    { label: "Day 3", items: [{ type: "Breakfast", restaurant: { name: "Cafe C" } }, { type: "Dinner" }] },
+  ];
+  const r = stripMeals(days, { narrative: "Three days in Porto, great dinners" });
+  const flags = allFlags(r.days);
+
+  assert("3 breakfasts removed", r.fixes.length === 3, JSON.stringify(r.fixes));
+  assert("3 MEAL_POLICY_STRIP flags emitted", flags.length === 3, JSON.stringify(flags));
+  assert("every flag is code MEAL_POLICY_STRIP",
+    flags.every((f) => f.code === "MEAL_POLICY_STRIP"));
+  assert("every flag is severity info — must never block export",
+    flags.every((f) => f.severity === "info"));
+  assert("flags carry the removed venue name",
+    ["Cafe A", "Brunch B", "Cafe C"].every((n) => flags.some((f) => f.item_name === n)),
+    JSON.stringify(flags.map((f) => f.item_name)));
+  assert("flags carry the 1-based day",
+    flags.map((f) => f.day).join(",") === "1,2,3", flags.map((f) => f.day).join(","));
+  assert("flags carry a breakfast reason",
+    flags.every((f) => f.reason === "breakfast excluded by policy"));
+  assert("the day that lost nothing gets no flags",
+    !r.days.some((d) => Array.isArray(d.structural_flags) && d.structural_flags.length === 0));
+
+  // Lunch side, and the reason must distinguish the two meals.
+  const lunchDays = [{ label: "Day 1", items: [{ type: "Lunch", restaurant: { name: "L1" } }, { type: "Dinner" }] }];
+  const lr = stripMeals(lunchDays, { narrative: "Great dinners only" });
+  assert("lunch strip flags read 'lunch excluded by policy'",
+    allFlags(lr.days).every((f) => f.reason === "lunch excluded by policy"),
+    JSON.stringify(allFlags(lr.days)));
+
+  // Nothing stripped → no flags at all, so the day object is untouched.
+  const kept = stripMeals(
+    [{ label: "Day 1", items: [{ type: "Lunch", restaurant: { name: "O Gaveto" } }] }],
+    { narrative: "reserve lunch at O Gaveto" },
+  );
+  assert("no strip → no structural_flags key added", allFlags(kept.days).length === 0);
+
+  // Pre-existing flags on the day must survive the append.
+  const withPrior = stripMeals(
+    [{ label: "Day 1", structural_flags: [{ code: "NIGHT_COUNT_MISMATCH", severity: "warn" }], items: [{ type: "Breakfast" }] }],
+    { narrative: "dinners" },
+  );
+  const priorFlags = allFlags(withPrior.days);
+  assert("existing structural_flags are preserved, not replaced",
+    priorFlags.length === 2 && priorFlags[0].code === "NIGHT_COUNT_MISMATCH",
+    JSON.stringify(priorFlags));
+}
+
+console.log("=== F. Malformed input is survivable ===");
 {
   assert("null days → no throw",
     stripMeals(null, { narrative: "x" }).fixes.length === 0);

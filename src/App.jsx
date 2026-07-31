@@ -2860,18 +2860,37 @@ function applyQualityLayer(input, inputs) {
     const explicitLunch = mealPolicyAllowsLunch(mealPolicy);
     days.forEach((day, dayIdx) => {
       if (!Array.isArray(day.items)) return;
+      // Every removal also lands as an info-severity MEAL_POLICY_STRIP flag on
+      // the day. qc.fixes already records the strip, but QualityBadge shows
+      // only the first two and the classifier reads free text — if a negation
+      // misfires and a wanted meal disappears, the per-item flag is the record
+      // that says which one and why. Info never blocks export; the pre-export
+      // gate filters on severity === "block".
+      const stripFlags = [];
       day.items = day.items.filter(item => {
         const t = (item.type || "").toLowerCase();
-        if ((t === "breakfast" || t === "brunch") && !explicitBreakfast) {
-          fixes.push(`Day ${dayIdx + 1}: removed unrequested ${t} (${item.restaurant?.name || item.title || "meal"}) per meal policy`);
-          return false;
-        }
-        if (t === "lunch" && !explicitLunch) {
-          fixes.push(`Day ${dayIdx + 1}: removed unrequested lunch (${item.restaurant?.name || item.title || "meal"}) per meal policy`);
-          return false;
-        }
-        return true;
+        const isBreakfast = (t === "breakfast" || t === "brunch") && !explicitBreakfast;
+        const isLunch = t === "lunch" && !explicitLunch;
+        if (!isBreakfast && !isLunch) return true;
+        const name = item.restaurant?.name || item.title || "meal";
+        const meal = isLunch ? "lunch" : t;
+        fixes.push(`Day ${dayIdx + 1}: removed unrequested ${meal} (${name}) per meal policy`);
+        stripFlags.push({
+          code: "MEAL_POLICY_STRIP",
+          severity: "info",
+          dayIdx,
+          day: dayIdx + 1,
+          target: name,
+          item_name: name,
+          reason: `${isLunch ? "lunch" : "breakfast"} excluded by policy`,
+          message: `Removed unrequested ${meal} (${name}) — the trip's meal policy excludes ${isLunch ? "lunch" : "breakfast"}.`,
+        });
+        return false;
       });
+      if (stripFlags.length > 0) {
+        const prior = Array.isArray(day.structural_flags) ? day.structural_flags : [];
+        day.structural_flags = [...prior, ...stripFlags];
+      }
     });
   }
 
@@ -5631,6 +5650,18 @@ function TripSectionView({ tab, data, inputs, onOpenMenu, providers }) {
 // All result/state writes go up through onPlanRevised / onReviewChange so the
 // parent (TripOptimizer) can persist them into saved trips.
 // ============================================================================
+
+// Findings the user can still act on. The reviewer is told to set
+// default_apply:true on every critical finding, and the auto-apply effect
+// fires those the instant the review lands — so "how many findings came back"
+// and "how many are still pending" are different numbers, and the header
+// counts have to use the second one.
+export function pendingFindings(findings, appliedIds) {
+  const list = Array.isArray(findings) ? findings : [];
+  const applied = Array.isArray(appliedIds) ? appliedIds : [];
+  return list.filter(f => f && !applied.includes(f.id));
+}
+
 function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false, externalSourceIds, onSourcesChange, onRunEnd, onProgressChange }) {
   // --- review state ------------------------------------------------------
   // 'idle' — banner card with picker
@@ -5762,9 +5793,15 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   const findings = Array.isArray(review?.findings) ? review.findings : [];
   const selectedForApply = findings.filter(f => applyState[f.id]);
   const revisionMode = routeRevisionMode(selectedForApply);
-  const criticalCount = findings.filter(f => f.severity === "critical").length;
-  const suggestedCount = findings.filter(f => f.severity === "suggested").length;
-  const niceCount = findings.filter(f => f.severity === "nice").length;
+  // Findings still pending — the list below renders exactly this subset, and
+  // the header counts must agree with it. Critical findings ship
+  // default_apply:true and auto-apply the moment the review lands (see the
+  // auto-apply effect below), so counting all findings made the header read
+  // "3 critical" above a list holding one.
+  const applicable = pendingFindings(findings, appliedIds);
+  const criticalCount = applicable.filter(f => f.severity === "critical").length;
+  const suggestedCount = applicable.filter(f => f.severity === "suggested").length;
+  const niceCount = applicable.filter(f => f.severity === "nice").length;
 
   // ----- handlers --------------------------------------------------------
   // Note on the eslint-disable comments below: react-hooks/purity flags any
@@ -6323,7 +6360,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             </div>
           </div>
           <p style={{ fontSize: "15px", color: "var(--color-text-primary)", margin: "0 0 10px", lineHeight: 1.5, fontFamily: "var(--font-serif)", fontStyle: "italic" }}>{review.verdict}</p>
-          {findings.length > 0 && (
+          {applicable.length > 0 && (
             <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 12px" }}>
               {criticalCount > 0 && <span style={{ color: "var(--color-text-danger)", fontWeight: 600 }}>{criticalCount} critical</span>}
               {criticalCount > 0 && (suggestedCount + niceCount) > 0 && <span>  ·  </span>}
@@ -6338,7 +6375,6 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             </p>
           )}
           {findings.length > 0 && (() => {
-            const applicable = findings.filter(f => !appliedIds.includes(f.id));
             const allChecked = applicable.length > 0 && applicable.every(f => applyState[f.id]);
             const noneChecked = applicable.every(f => !applyState[f.id]);
             // User reported the 'accept all' control was 'broken'. Two issues:
@@ -7791,8 +7827,26 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       {/* Professional review surface. During the initial auto-run (autoReviewRunning),
           only this component is visible — TripHero/sections are hidden below so the
           review progress card occupies the same visual slot as the build progress bar. */}
+      {/* plan={layeredData}, NOT rawData — deliberate, and surprising enough to
+          spell out. Every other writer on this screen takes rawData; the
+          reviewer is the exception because it both reads and rewrites the plan:
+            · Reading rawData showed it items the quality layer had already
+              deleted (meals stripped by meal policy, capped activities), so it
+              spent its 8-finding budget on venues the user never sees.
+            · Its patches are POSITIONAL (applyPatchesToPlan indexes
+              day_index/item_index), so reading one array and writing another
+              would land edits on the wrong items. Read and write must be the
+              same array — which is why this is layeredData on both sides
+              rather than a read-only swap.
+          Consequence: a reviewer apply persists the post-strip plan back as
+          canonical via onPlanRevised, so quality-layer removals become
+          permanent at that point. Acceptable — rawData is already a mutable
+          working plan (handleSwapItem and full-replan both rewrite it), the
+          strips are reported in qc.fixes and, since this PR, in
+          MEAL_POLICY_STRIP flags, and the rendered itinerary is identical
+          either way. */}
       <ReviewPanel
-        plan={rawData}
+        plan={layeredData}
         inputs={inputs}
         onPlanRevised={onPlanRevised}
         onReviewChange={(state) => { clearAutoReviewRunning(); onReviewChange(state); }}
@@ -10267,6 +10321,47 @@ function planForPrompt(plan) {
 
 // full result object) plus the list of selected reviewer source objects so the
 // model knows which lenses to weight.
+// Total characters of free-form user text handed to the reviewer / reviser
+// prompts. The old cap was 3000, chosen when only one of the two fields was
+// ever sent; a real narrative plus real guidelines routinely exceeds that and
+// the tail is where the hard constraints tend to live ("no museums on Day 4",
+// "confirmation ABC123"). 8000 chars is ~2k tokens against a prompt already
+// carrying a 12k-char plan JSON — a rounding error next to the cost of the
+// reviewer contradicting a stated constraint.
+const MAX_REVIEWER_PROMPT_CHARS = 8000;
+
+// Both of the user's free-form fields, each in its own labelled block, mirroring
+// the build prompt's TRIP GUIDELINES / TRAVELER NARRATIVE pair so the reviewer
+// and the planner never read a different version of what the user asked for.
+//
+// When the two together exceed the budget, each gets at least half and any
+// headroom the other leaves unused, and the cut is announced in-prompt rather
+// than dropping text on the floor — a model that knows it is reading a
+// fragment will not treat the absence of a constraint as permission.
+export function renderUserContextBlock(inputs, maxChars = MAX_REVIEWER_PROMPT_CHARS) {
+  const guidelines = String(inputs?.guidelines || "").trim();
+  const narrative = String(inputs?.narrative || "").trim();
+  if (!guidelines && !narrative) return "";
+
+  const half = Math.floor(maxChars / 2);
+  const guidelinesCap = Math.max(half, maxChars - narrative.length);
+  const narrativeCap = maxChars - Math.min(guidelines.length, guidelinesCap);
+
+  const clip = (text, cap) =>
+    text.length <= cap
+      ? text
+      : `${text.slice(0, cap)}\n… [truncated — ${cap} of ${text.length} characters shown]`;
+
+  const blocks = [];
+  if (guidelines) {
+    blocks.push(`TRIP GUIDELINES (the user's own words — these override the sources' default taste):\n"""\n${clip(guidelines, guidelinesCap)}\n"""`);
+  }
+  if (narrative) {
+    blocks.push(`TRAVELER NARRATIVE (highest priority — overrides any conflict with the structured fields):\n"""\n${clip(narrative, narrativeCap)}\n"""`);
+  }
+  return `\n${blocks.join("\n\n")}\n`;
+}
+
 function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
   const lensesActive = Array.from(new Set(sources.map(s => s.lens)));
   const sourceList = sources.map(s => `• ${s.name} (${s.lens}) — ${s.blurb}`).join("\n");
@@ -10287,9 +10382,13 @@ function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
   // doesn't push more luxury than the user asked for. "Moderate excursions",
   // "family-friendly", "avoid Michelin", etc. live in these fields and they
   // are the user's explicit constraints, not the sources' defaults.
-  const userGuidelinesBlock = ((inputs?.guidelines || "").trim() || (inputs?.narrative || "").trim())
-    ? `\nUSER'S EXPLICIT GUIDELINES (these override the sources' default taste):\n${(inputs?.guidelines || inputs?.narrative || "").trim().slice(0, 3000)}\n`
-    : "";
+  //
+  // BOTH fields, always. This used to be `(guidelines || narrative)`, which
+  // silently dropped the second one whenever both were filled — so a reviewer
+  // could re-suggest the very restaurant the narrative named. The two labelled
+  // blocks mirror the build prompt (TRIP GUIDELINES / TRAVELER NARRATIVE) so
+  // the reviewer and the planner read the user's words the same way.
+  const userGuidelinesBlock = renderUserContextBlock(inputs);
 
   // Without the computed table the reviewer can only check the model's weekday
   // claims against the model's own day labels, which is how "this is a Tuesday"
@@ -10379,8 +10478,16 @@ function buildRevisionSystemPromptSurgical(plan, findings, inputs) {
     inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
     inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
-  const userGuidelinesBlock = ((inputs?.guidelines || "").trim() || (inputs?.narrative || "").trim())
-    ? `\nUSER'S EXPLICIT GUIDELINES (hard constraints — do not violate):\n${(inputs?.guidelines || inputs?.narrative || "").trim().slice(0, 2000)}\n`
+  // BOTH free-form fields, same helper the reviewer uses — the old `guidelines
+  // || narrative` sent whichever came first and silently dropped the other, so
+  // a patch could contradict a constraint the user had actually stated. The
+  // 2000-char cap is preserved from the original and is deliberately tighter
+  // than the full re-plan's: a surgical pass only rewrites one card. It now
+  // covers the two fields together, and the helper splits the budget rather
+  // than letting either starve the other.
+  const userContext = renderUserContextBlock(inputs, 2000);
+  const userGuidelinesBlock = userContext
+    ? `\nUSER'S EXPLICIT GUIDELINES (hard constraints — do not violate):${userContext}`
     : "";
 
   return `You are applying surgical card-level patches to an existing trip plan. Call submit_revision_patches exactly once with a small patches[] array — one patch per finding. No prose.
@@ -10432,8 +10539,12 @@ function buildRevisionSystemPromptFull(plan, findings, inputs) {
     inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
     inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
-  const userGuidelinesBlock = ((inputs?.guidelines || "").trim() || (inputs?.narrative || "").trim())
-    ? `\nUSER'S EXPLICIT GUIDELINES (hard constraints — do not violate):\n${(inputs?.guidelines || inputs?.narrative || "").trim().slice(0, 3000)}\n`
+  // Same fix as the surgical prompt above; 3000-char cap preserved from the
+  // original, since a full re-plan rewrites every day and needs more of the
+  // user's own words than a single-card patch does.
+  const userContext = renderUserContextBlock(inputs, 3000);
+  const userGuidelinesBlock = userContext
+    ? `\nUSER'S EXPLICIT GUIDELINES (hard constraints — do not violate):${userContext}`
     : "";
   const nightsNum = parseInt(inputs?.basics?.nights, 10) || (Array.isArray(plan?.days) ? Math.max(1, plan.days.length - 1) : 3);
   const totalDays = nightsNum + 1;
