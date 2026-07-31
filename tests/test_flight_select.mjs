@@ -15,6 +15,8 @@ import {
   pickScheduledFlight,
   resolveAirlineIata,
   normalizeAirportCode,
+  IATA_TO_CARRIER_NAME,
+  carrierCodeConflict,
 } from "../src/flightSelect.js";
 
 let passed = 0, failed = 0;
@@ -188,6 +190,67 @@ assert(
   "resolved TP filters to the TP row (no UA leak)",
   pickScheduledFlight(codeshare, 59, "TP").flightNumber === "TP8470",
 );
+
+console.log("=== P3: widened carrier map ===");
+// LOT's absence is what let a "LOT" leg resolve to null and pick up UA940.
+assert("LOT → LO", resolveAirlineIata("LOT") === "LO", String(resolveAirlineIata("LOT")));
+assert("LOT Polish → LO", resolveAirlineIata("LOT Polish") === "LO");
+assert("LOT Polish Airlines → LO", resolveAirlineIata("LOT Polish Airlines") === "LO");
+assert("Air Europa → UX", resolveAirlineIata("Air Europa") === "UX");
+assert("Vueling → VY", resolveAirlineIata("Vueling") === "VY");
+assert("Wizz → W6", resolveAirlineIata("Wizz") === "W6");
+assert("WizzAir → W6", resolveAirlineIata("WizzAir") === "W6");
+assert("Wizz Air → W6", resolveAirlineIata("Wizz Air") === "W6");
+assert("Brussels Airlines → SN", resolveAirlineIata("Brussels Airlines") === "SN");
+assert("Eurowings → EW", resolveAirlineIata("Eurowings") === "EW");
+assert("Azul → AD", resolveAirlineIata("Azul") === "AD");
+assert("Azul Brazilian Airlines → AD", resolveAirlineIata("Azul Brazilian Airlines") === "AD");
+// Pre-existing entries must not have shifted.
+assert("United still → UA", resolveAirlineIata("United") === "UA");
+assert("TAP Portugal still → TP", resolveAirlineIata("TAP Portugal") === "TP");
+
+console.log("=== P3: IATA_TO_CARRIER_NAME ===");
+assert("LO → 'LOT'", IATA_TO_CARRIER_NAME.LO === "LOT", String(IATA_TO_CARRIER_NAME.LO));
+assert("UA → 'United'", IATA_TO_CARRIER_NAME.UA === "United", String(IATA_TO_CARRIER_NAME.UA));
+assert("first-listed alias wins for TP", IATA_TO_CARRIER_NAME.TP === "TAP Air", String(IATA_TO_CARRIER_NAME.TP));
+assert("first-listed alias wins for W6", IATA_TO_CARRIER_NAME.W6 === "Wizz", String(IATA_TO_CARRIER_NAME.W6));
+assert("acronym casing preserved (SK → 'SAS')", IATA_TO_CARRIER_NAME.SK === "SAS", String(IATA_TO_CARRIER_NAME.SK));
+assert("multi-word title-cased (BA → 'British Airways')",
+  IATA_TO_CARRIER_NAME.BA === "British Airways", String(IATA_TO_CARRIER_NAME.BA));
+assert("unknown code absent", IATA_TO_CARRIER_NAME.ZZ === undefined);
+
+console.log("=== P3: carrierCodeConflict ===");
+{
+  // The shipped failure: Day 1 said "LOT flight via Warsaw" over UA940.
+  const out = carrierCodeConflict("LOT", "UA940");
+  assert("LOT + UA940 → conflict",
+    out && out.claimed === "LO" && out.actual === "UA" && out.actualName === "United",
+    JSON.stringify(out));
+}
+{
+  // Day 15's variant, with the space the sample PDF prints.
+  const out = carrierCodeConflict("LOT", "LH 2224");
+  assert("space between prefix and digits still parses",
+    out && out.claimed === "LO" && out.actual === "LH" && out.actualName === "Lufthansa",
+    JSON.stringify(out));
+}
+assert("agreement → null", carrierCodeConflict("United", "UA940") === null,
+  JSON.stringify(carrierCodeConflict("United", "UA940")));
+assert("LOT + LO123 agreement → null", carrierCodeConflict("LOT", "LO123") === null,
+  JSON.stringify(carrierCodeConflict("LOT", "LO123")));
+assert("multi-carrier string claims nothing → null",
+  carrierCodeConflict("Delta / KLM", "DL100") === null,
+  JSON.stringify(carrierCodeConflict("Delta / KLM", "DL100")));
+assert("unresolvable carrier → null (no claim to contradict)",
+  carrierCodeConflict("SomeUnknownAirline", "UA940") === null,
+  JSON.stringify(carrierCodeConflict("SomeUnknownAirline", "UA940")));
+assert("unparseable flight number → null", carrierCodeConflict("LOT", "see itinerary") === null);
+assert("empty flight number → null", carrierCodeConflict("LOT", "") === null);
+assert("empty carrier → null", carrierCodeConflict("", "UA940") === null);
+assert("conflict on an unmapped actual code still reports, actualName null", (() => {
+  const out = carrierCodeConflict("LOT", "ZZ100");
+  return out && out.claimed === "LO" && out.actual === "ZZ" && out.actualName === null;
+})(), JSON.stringify(carrierCodeConflict("LOT", "ZZ100")));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
