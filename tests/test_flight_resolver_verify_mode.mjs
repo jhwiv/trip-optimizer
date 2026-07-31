@@ -246,5 +246,89 @@ console.log("=== Verify case 6 — carrier disagrees → defensive downgrade ===
     merge._scheduleVerified === true);
 }
 
+console.log("=== Verify case 7 — carrier unresolved (P2: LOT → UA940) ===");
+{
+  // The shipped bug: "LOT" is not in CARRIER_NAME_TO_IATA, so resolveAirlineIata
+  // returns null, the route-only pool is never filtered by airline, and the
+  // resolver used to lift United's real UA940 onto a LOT leg and stamp it
+  // _scheduleVerified — which exempts it from the number-strip pass.
+  const flight = {
+    carrier: "LOT",
+    flight_number: "LO26",
+    from_airport: "EWR",
+    to_airport: "WAW",
+    depart_time: "5:15 PM",
+    arrive_time: "8:30 AM",
+  };
+  const pick = { flightNumber: "UA940", scheduledOut: "2026-08-15T21:40:00Z", scheduledIn: "2026-08-16T11:05:00Z" };
+
+  for (const mode of ["verify", "number"]) {
+    const merge = buildMergePayload({ mode, pick, currentFlight: flight, source: "route-only", airlineIata: null });
+    assert(`case 7 (${mode}): does NOT lift UA940 onto the LOT leg`,
+      merge.flight_number === undefined, JSON.stringify(merge));
+    assert(`case 7 (${mode}): _scheduleVerified withheld (number stays strippable)`,
+      merge._scheduleVerified === undefined, JSON.stringify(merge));
+    assert(`case 7 (${mode}): _carrierUnresolved flagged`,
+      merge._carrierUnresolved === true, JSON.stringify(merge));
+    assert(`case 7 (${mode}): _autoResolvedFlightNumber not claimed`,
+      merge._autoResolvedFlightNumber === undefined, JSON.stringify(merge));
+    assert(`case 7 (${mode}): times still refreshed from the schedule row`,
+      typeof merge.depart_time === "string" && typeof merge.arrive_time === "string",
+      JSON.stringify(merge));
+  }
+}
+
+console.log("=== Verify case 8 — resolvable carrier still lifts (regression) ===");
+{
+  // "United" resolves to UA, the pool row is UA940 — same-carrier, so the
+  // schedule number is authoritative and the lift must still happen.
+  const flight = {
+    carrier: "United",
+    flight_number: "UA111",
+    from_airport: "EWR",
+    to_airport: "LHR",
+    depart_time: "5:15 PM",
+    arrive_time: "5:30 AM",
+  };
+  const pick = { flightNumber: "UA940", scheduledOut: "2026-08-15T21:40:00Z", scheduledIn: "2026-08-16T09:05:00Z" };
+  for (const mode of ["verify", "number"]) {
+    const merge = buildMergePayload({ mode, pick, currentFlight: flight, source: "airline", airlineIata: "UA" });
+    assert(`case 8 (${mode}): schedule number lifted`, merge.flight_number === "UA940", JSON.stringify(merge));
+    assert(`case 8 (${mode}): _scheduleVerified set`, merge._scheduleVerified === true, JSON.stringify(merge));
+    assert(`case 8 (${mode}): not flagged _carrierUnresolved`,
+      merge._carrierUnresolved === undefined, JSON.stringify(merge));
+  }
+}
+
+console.log("=== Verify case 9 — cross-carrier pick unchanged by P2 (regression) ===");
+{
+  // BA resolves fine; the pool row is a different BA number. Same carrier →
+  // the number IS lifted. A genuinely cross-carrier row (below) still
+  // refreshes times only and keeps _scheduleVerified, exactly as before P2.
+  const flight = {
+    carrier: "British Airways",
+    flight_number: "BA112",
+    from_airport: "JFK",
+    to_airport: "LHR",
+    depart_time: "6:30 PM",
+    arrive_time: "6:30 AM",
+  };
+  const samePick = { flightNumber: "BA178", scheduledOut: "2026-08-15T22:30:00Z", scheduledIn: "2026-08-16T10:30:00Z" };
+  const merge = buildMergePayload({ mode: "verify", pick: samePick, currentFlight: flight, source: "airline", airlineIata: "BA" });
+  assert("case 9: same-carrier BA row lifts its number", merge.flight_number === "BA178", JSON.stringify(merge));
+  assert("case 9: substitution flagged _autoResolvedFlightNumber",
+    merge._autoResolvedFlightNumber === true, JSON.stringify(merge));
+
+  const crossPick = { flightNumber: "AA100", scheduledOut: "2026-08-15T22:30:00Z", scheduledIn: "2026-08-16T10:30:00Z" };
+  const cross = buildMergePayload({ mode: "verify", pick: crossPick, currentFlight: flight, source: "airline", airlineIata: "BA" });
+  assert("case 9: cross-carrier row does NOT lift its number",
+    cross.flight_number === undefined, JSON.stringify(cross));
+  assert("case 9: cross-carrier keeps _scheduleVerified (pre-P2 behavior)",
+    cross._scheduleVerified === true, JSON.stringify(cross));
+  assert("case 9: cross-carrier is not _carrierUnresolved",
+    cross._carrierUnresolved === undefined, JSON.stringify(cross));
+  assert("case 9: cross-carrier times refreshed", typeof cross.depart_time === "string", JSON.stringify(cross));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
