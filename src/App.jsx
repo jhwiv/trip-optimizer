@@ -16,6 +16,7 @@ import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResume
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnverifiedFlightPayload, findUnverifiedFlights, withFlightMerge } from "./flightResolver.js";
 import { normalizeClock, findFlightTimeMismatches } from "./flightTimeConsistency.js";
 import { findImplausibleBookingUrls, stripDeadBookingUrls } from "./bookingUrlCheck.js";
+import { findCarrierCodeMismatches } from "./carrierCodeCheck.js";
 import { pickClosureChip } from "./closureChip.js";
 import { applyFlightNumberStrip } from "./flightNumberStrip.js";
 import { classifyActivityCountConstraint, renderActivityCountPromptRule, enforceTripTotalActivityCap } from "./activityCountConstraint.js";
@@ -3440,12 +3441,18 @@ function applyQualityLayer(input, inputs) {
   //   findContinuityIssues     — day-to-day city/hotel/vehicle continuity
   //   findFlightTimeMismatches — day header vs flight.depart_time
   //   findImplausibleBookingUrls — fabricated-looking operator deep links
+  //   findCarrierCodeMismatches — carrier name vs flight-number prefix
   //   weekdayFlags             — wrong weekday claims, already corrected above
+  //
+  // findCarrierCodeMismatches runs BEFORE findUnverifiedFlights: its Case B
+  // repair sets _flightUnverified on the flight it strips, and the unverified
+  // walk should see that.
   if (Array.isArray(out.days)) {
     const structural = [
       ...findContinuityIssues(out),
       ...findFlightTimeMismatches(out),
       ...findImplausibleBookingUrls(out),
+      ...findCarrierCodeMismatches(out),
       ...findUnverifiedFlights(out),
       ...weekdayFlags,
     ];
@@ -7010,6 +7017,32 @@ function introPlanSignature(plan) {
 //
 // Runs once per build, resolves only flights that have NO usable number, and
 // is fully resilient — any failure is silent and never touches the itinerary.
+
+// How far out the schedule API can be believed when it says "no service".
+//
+// /api/flights-search is a thin Cloudflare Functions proxy to a shared Worker
+// (flight-status.jhwiv-online.workers.dev?mode=schedules) which itself wraps
+// FlightAware AeroAPI's schedules endpoint — see functions/api/flights-search.js.
+// Neither the proxy nor the Worker documents how far into the future AeroAPI
+// publishes timetables, and airlines load their own schedules on staggered
+// windows (typically 11–12 months), so a zero-row answer for a far-future date
+// is "not filed yet", not "nobody flies this".
+//
+// TODO: probe /api/flights-search empirically and tighten. As of 2026-07-31,
+// provider window not documented.
+const SCHEDULE_HORIZON_DAYS = 330;
+
+function beyondHorizon(isoDate) {
+  const depart = new Date(isoDate);
+  if (Number.isNaN(depart.getTime())) return false;
+  const daysUntilDeparture = Math.ceil((depart - new Date()) / 86400000);
+  if (daysUntilDeparture <= SCHEDULE_HORIZON_DAYS) return false;
+  console.log(
+    `[flights] ${isoDate} is ${daysUntilDeparture} days out (> ${SCHEDULE_HORIZON_DAYS}) — skipping the route-only retry; a zero-row answer this far ahead would not mean the route has no service.`
+  );
+  return true;
+}
+
 function FlightNumberAutoResolver({ plan, onPlanRevised }) {
   const attemptedRef = useRef("");
   // Keep a ref to the latest onPlanRevised so the effect doesn't re-run on
@@ -7145,7 +7178,13 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         // (the codeshare honesty rule applies to times the same way it
         // applies to numbers — an AA flight cannot honestly inherit an
         // NH redeye's clock times just because they share a route).
-        if (!pick) {
+        //
+        // Skipped entirely beyond the schedule horizon. A zero-row answer for
+        // a departure a year out means "not published yet", not "nobody flies
+        // this" — and since routeExists:false is now a blocking severity, a
+        // horizon miss would block export on a perfectly good plan. Leaving
+        // routeExists undefined lands the flight on schedule-unavailable (warn).
+        if (!pick && !beyondHorizon(t.isoDate)) {
           try {
             const params = new URLSearchParams({ date: t.isoDate, origin: t.fromCode, destination: t.toCode });
             const res = await fetch(`/api/flights-search?${params}`);
@@ -7227,12 +7266,23 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         // protects the number, and tag _verifyTrusted so downstream
         // tooling (PDF qualifier, future audits) can distinguish a
         // truly schedule-confirmed flight from a fallback-trusted one.
+        //
+        // EXCEPT when the API affirmatively reported no service on this
+        // route. _scheduleVerified + _flightUnverified normally ride
+        // together on purpose — the pairing keeps a model number visible
+        // rather than letting the strip blank the row. But routeExists
+        // === false is not "we couldn't check", it is "we checked and
+        // this route has no flights", so the number cannot be anything
+        // but invented. Withhold the strip exemption and null it here.
+        // The horizon guard above is what makes a zero-row answer
+        // trustworthy enough to act on. Report §2 / §7 Q3.
         if (t.mode === "verify" && t.fl.flight_number) {
+          const noSuchRoute = routeExists === false;
           resolved.push({
             di: t.di,
             ii: t.ii,
             merge: {
-              _scheduleVerified: true,
+              ...(noSuchRoute ? { flight_number: null } : { _scheduleVerified: true }),
               _verifyTrusted: true,
               _resolveSource: "verify-fallback",
               // The flight looks complete but nothing confirmed it exists.

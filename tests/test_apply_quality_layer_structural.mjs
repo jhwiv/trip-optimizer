@@ -25,6 +25,7 @@ import { assertWeekdayClaims } from "../src/dateFacts.js";
 import { findFlightTimeMismatches } from "../src/flightTimeConsistency.js";
 import { findImplausibleBookingUrls } from "../src/bookingUrlCheck.js";
 import { findUnverifiedFlights } from "../src/flightResolver.js";
+import { findCarrierCodeMismatches } from "../src/carrierCodeCheck.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const fixture = (name) => JSON.parse(readFileSync(join(HERE, "fixtures", name), "utf8"));
@@ -56,6 +57,7 @@ function structuralQualityTail(input, inputs) {
       ...findContinuityIssues(out),
       ...findFlightTimeMismatches(out),
       ...findImplausibleBookingUrls(out),
+      ...findCarrierCodeMismatches(out),
       ...findUnverifiedFlights(out),
       ...weekdayFlags,
     ];
@@ -363,11 +365,111 @@ console.log("\n=== every structural validator fires through one pass ===");
   assert("both block flags reach the gate",
     err.issues.filter(i => ["FLIGHT_TIME_MISMATCH", "BOOKING_URL_IMPLAUSIBLE"].includes(i.flag.code)).length === 2,
     JSON.stringify(err.issues.map(i => i.flag.code)));
-  assert("the two warn flags do not",
-    !err.issues.some(i => ["FLIGHT_UNVERIFIED", "WEEKDAY_CLAIM_MISMATCH", "NIGHT_COUNT_MISMATCH"].includes(i.flag.code)),
+  // Day 3's flight is marked no-scheduled-route — the API answered and knew of
+  // no service. That is a block now, alongside the other two.
+  assert("the no-scheduled-route flight blocks too",
+    err.issues.some(i => i.flag.code === "FLIGHT_UNVERIFIED"),
+    JSON.stringify(err.issues.map(i => i.flag.code)));
+  assert("the genuinely-warn flags still do not block",
+    !err.issues.some(i => ["WEEKDAY_CLAIM_MISMATCH", "NIGHT_COUNT_MISMATCH"].includes(i.flag.code)),
     JSON.stringify(err.issues.map(i => i.flag.code)));
   assert("an anchored closure blocks alongside them",
-    /1 venue verification, 2 itinerary structure/.test(err.message), err.message);
+    /1 venue verification, 3 itinerary structure/.test(err.message), err.message);
+}
+
+console.log("\n=== the LOT/UA940 card reaches the gate as a block ===");
+{
+  // Report §1, verbatim from the 2026-07-28 PDF: Day 1 read "LOT flight from
+  // Newark to London Heathrow" over UA940, note "Book directly on lot.com".
+  // Nothing confirmed the number, so the validator strips it and blocks.
+  const plan = {
+    days: [{
+      day: 1,
+      city: "London",
+      items: [{
+        type: "Flight",
+        time: "21:00",
+        text: "LOT flight from Newark to London Heathrow via Warsaw",
+        flight: {
+          carrier: "LOT",
+          flight_number: "UA940",
+          from_airport: "EWR",
+          to_airport: "LHR",
+          depart_time: "21:00",
+          arrive_time: "09:20",
+          confirmation_note: "Book directly on lot.com.",
+          _flightUnverified: true,
+        },
+      }],
+    }],
+  };
+
+  const { data, qc } = structuralQualityTail(plan);
+  const codes = (data.days[0].structural_flags || []).map(f => f.code);
+  assert("CARRIER_CODE_MISMATCH lands on the day", codes.includes("CARRIER_CODE_MISMATCH"), JSON.stringify(codes));
+
+  const err = exportGateError(data);
+  assert("the gate blocks the export", err instanceof Error, String(err));
+  assert("the mismatch is one of the blocking issues",
+    err.issues.some(i => i.flag.code === "CARRIER_CODE_MISMATCH"), JSON.stringify(err.issues.map(i => i.flag.code)));
+  assert("the block count includes it",
+    /1 blocking issue — 0 venue verification, 1 itinerary structure/.test(err.message), err.message);
+  assert("the fabricated number is gone from the plan",
+    data.days[0].items[0].flight.flight_number === null,
+    String(data.days[0].items[0].flight.flight_number));
+  assert("the finding is echoed as a warning",
+    qc.warnings.some(w => /UA940/.test(w)), JSON.stringify(qc.warnings));
+}
+
+console.log("\n=== the LH2224 CDG→NUE card reaches the gate as a block ===");
+{
+  // Report §2, verbatim from the 2026-07-28 PDF: "LH 2224 CDG Approx. 1:30 PM
+  // → NUE Approx. 3:00 PM · nonstop", with a one-line UNVERIFIED caveat under
+  // an 11pt flight number. Lufthansa does not fly CDG→NUE and the schedule API
+  // said so. A warn let it print; it blocks now.
+  const plan = {
+    days: [{
+      day: 4,
+      city: "Nuremberg",
+      items: [{
+        type: "Flight",
+        time: "13:30",
+        text: "Fly Paris to Nuremberg",
+        flight: {
+          carrier: "Lufthansa",
+          flight_number: "LH2224",
+          from_airport: "CDG",
+          to_airport: "NUE",
+          depart_time: "13:30",
+          arrive_time: "15:00",
+          _flightUnverified: true,
+          _unverifiedReason: "no-scheduled-route",
+        },
+      }],
+    }],
+  };
+
+  const { data } = structuralQualityTail(plan);
+  const flags = data.days[0].structural_flags || [];
+  const unverified = flags.find(f => f.code === "FLIGHT_UNVERIFIED");
+  assert("FLIGHT_UNVERIFIED raised", !!unverified, JSON.stringify(flags.map(f => f.code)));
+  assert("its severity is block", unverified?.severity === "block", unverified?.severity);
+  assert("the carrier check stays quiet — LH2224 really is a Lufthansa number",
+    !flags.some(f => String(f.code).startsWith("CARRIER_CODE")), JSON.stringify(flags.map(f => f.code)));
+
+  const err = exportGateError(data);
+  assert("the gate blocks the export", err instanceof Error, String(err));
+  assert("the flight is the blocking issue",
+    err.issues.length === 1 && err.issues[0].flag.code === "FLIGHT_UNVERIFIED",
+    JSON.stringify(err.issues.map(i => i.flag.code)));
+  assert("the message names the flight",
+    /Lufthansa LH2224/.test(err.message), err.message);
+
+  // The same flight with a reason we could not establish stays exportable.
+  const unknown = structuredClone(plan);
+  unknown.days[0].items[0].flight._unverifiedReason = "schedule-unavailable";
+  assert("schedule-unavailable does not block",
+    exportGateError(structuralQualityTail(unknown).data) === null);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
