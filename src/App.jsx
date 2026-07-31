@@ -10302,6 +10302,47 @@ function planForPrompt(plan) {
 
 // full result object) plus the list of selected reviewer source objects so the
 // model knows which lenses to weight.
+// Total characters of free-form user text handed to the reviewer / reviser
+// prompts. The old cap was 3000, chosen when only one of the two fields was
+// ever sent; a real narrative plus real guidelines routinely exceeds that and
+// the tail is where the hard constraints tend to live ("no museums on Day 4",
+// "confirmation ABC123"). 8000 chars is ~2k tokens against a prompt already
+// carrying a 12k-char plan JSON — a rounding error next to the cost of the
+// reviewer contradicting a stated constraint.
+const MAX_REVIEWER_PROMPT_CHARS = 8000;
+
+// Both of the user's free-form fields, each in its own labelled block, mirroring
+// the build prompt's TRIP GUIDELINES / TRAVELER NARRATIVE pair so the reviewer
+// and the planner never read a different version of what the user asked for.
+//
+// When the two together exceed the budget, each gets at least half and any
+// headroom the other leaves unused, and the cut is announced in-prompt rather
+// than dropping text on the floor — a model that knows it is reading a
+// fragment will not treat the absence of a constraint as permission.
+export function renderUserContextBlock(inputs, maxChars = MAX_REVIEWER_PROMPT_CHARS) {
+  const guidelines = String(inputs?.guidelines || "").trim();
+  const narrative = String(inputs?.narrative || "").trim();
+  if (!guidelines && !narrative) return "";
+
+  const half = Math.floor(maxChars / 2);
+  const guidelinesCap = Math.max(half, maxChars - narrative.length);
+  const narrativeCap = maxChars - Math.min(guidelines.length, guidelinesCap);
+
+  const clip = (text, cap) =>
+    text.length <= cap
+      ? text
+      : `${text.slice(0, cap)}\n… [truncated — ${cap} of ${text.length} characters shown]`;
+
+  const blocks = [];
+  if (guidelines) {
+    blocks.push(`TRIP GUIDELINES (the user's own words — these override the sources' default taste):\n"""\n${clip(guidelines, guidelinesCap)}\n"""`);
+  }
+  if (narrative) {
+    blocks.push(`TRAVELER NARRATIVE (highest priority — overrides any conflict with the structured fields):\n"""\n${clip(narrative, narrativeCap)}\n"""`);
+  }
+  return `\n${blocks.join("\n\n")}\n`;
+}
+
 function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
   const lensesActive = Array.from(new Set(sources.map(s => s.lens)));
   const sourceList = sources.map(s => `• ${s.name} (${s.lens}) — ${s.blurb}`).join("\n");
@@ -10322,9 +10363,13 @@ function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
   // doesn't push more luxury than the user asked for. "Moderate excursions",
   // "family-friendly", "avoid Michelin", etc. live in these fields and they
   // are the user's explicit constraints, not the sources' defaults.
-  const userGuidelinesBlock = ((inputs?.guidelines || "").trim() || (inputs?.narrative || "").trim())
-    ? `\nUSER'S EXPLICIT GUIDELINES (these override the sources' default taste):\n${(inputs?.guidelines || inputs?.narrative || "").trim().slice(0, 3000)}\n`
-    : "";
+  //
+  // BOTH fields, always. This used to be `(guidelines || narrative)`, which
+  // silently dropped the second one whenever both were filled — so a reviewer
+  // could re-suggest the very restaurant the narrative named. The two labelled
+  // blocks mirror the build prompt (TRIP GUIDELINES / TRAVELER NARRATIVE) so
+  // the reviewer and the planner read the user's words the same way.
+  const userGuidelinesBlock = renderUserContextBlock(inputs);
 
   // Without the computed table the reviewer can only check the model's weekday
   // claims against the model's own day labels, which is how "this is a Tuesday"
