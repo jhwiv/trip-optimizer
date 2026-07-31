@@ -5631,6 +5631,18 @@ function TripSectionView({ tab, data, inputs, onOpenMenu, providers }) {
 // All result/state writes go up through onPlanRevised / onReviewChange so the
 // parent (TripOptimizer) can persist them into saved trips.
 // ============================================================================
+
+// Findings the user can still act on. The reviewer is told to set
+// default_apply:true on every critical finding, and the auto-apply effect
+// fires those the instant the review lands — so "how many findings came back"
+// and "how many are still pending" are different numbers, and the header
+// counts have to use the second one.
+export function pendingFindings(findings, appliedIds) {
+  const list = Array.isArray(findings) ? findings : [];
+  const applied = Array.isArray(appliedIds) ? appliedIds : [];
+  return list.filter(f => f && !applied.includes(f.id));
+}
+
 function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false, externalSourceIds, onSourcesChange, onRunEnd, onProgressChange }) {
   // --- review state ------------------------------------------------------
   // 'idle' — banner card with picker
@@ -5762,9 +5774,15 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
   const findings = Array.isArray(review?.findings) ? review.findings : [];
   const selectedForApply = findings.filter(f => applyState[f.id]);
   const revisionMode = routeRevisionMode(selectedForApply);
-  const criticalCount = findings.filter(f => f.severity === "critical").length;
-  const suggestedCount = findings.filter(f => f.severity === "suggested").length;
-  const niceCount = findings.filter(f => f.severity === "nice").length;
+  // Findings still pending — the list below renders exactly this subset, and
+  // the header counts must agree with it. Critical findings ship
+  // default_apply:true and auto-apply the moment the review lands (see the
+  // auto-apply effect below), so counting all findings made the header read
+  // "3 critical" above a list holding one.
+  const applicable = pendingFindings(findings, appliedIds);
+  const criticalCount = applicable.filter(f => f.severity === "critical").length;
+  const suggestedCount = applicable.filter(f => f.severity === "suggested").length;
+  const niceCount = applicable.filter(f => f.severity === "nice").length;
 
   // ----- handlers --------------------------------------------------------
   // Note on the eslint-disable comments below: react-hooks/purity flags any
@@ -6323,7 +6341,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             </div>
           </div>
           <p style={{ fontSize: "15px", color: "var(--color-text-primary)", margin: "0 0 10px", lineHeight: 1.5, fontFamily: "var(--font-serif)", fontStyle: "italic" }}>{review.verdict}</p>
-          {findings.length > 0 && (
+          {applicable.length > 0 && (
             <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 12px" }}>
               {criticalCount > 0 && <span style={{ color: "var(--color-text-danger)", fontWeight: 600 }}>{criticalCount} critical</span>}
               {criticalCount > 0 && (suggestedCount + niceCount) > 0 && <span>  ·  </span>}
@@ -6338,7 +6356,6 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
             </p>
           )}
           {findings.length > 0 && (() => {
-            const applicable = findings.filter(f => !appliedIds.includes(f.id));
             const allChecked = applicable.length > 0 && applicable.every(f => applyState[f.id]);
             const noneChecked = applicable.every(f => !applyState[f.id]);
             // User reported the 'accept all' control was 'broken'. Two issues:
