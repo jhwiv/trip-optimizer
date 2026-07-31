@@ -22,6 +22,11 @@ const CARRIER_NAME_TO_IATA = {
   iberia: "IB", "aer lingus": "EI", "tap air": "TP", "tap portugal": "TP",
   sas: "SK", scandinavian: "SK", finnair: "AY", norse: "N0",
   icelandair: "FI", ryanair: "FR", easyjet: "U2", "ita airways": "AZ",
+  lot: "LO", "lot polish": "LO", "lot polish airlines": "LO",
+  "air europa": "UX", vueling: "VY",
+  wizz: "W6", wizzair: "W6", "wizz air": "W6",
+  "brussels airlines": "SN", eurowings: "EW",
+  azul: "AD", "azul brazilian airlines": "AD",
   emirates: "EK", qatar: "QR", etihad: "EY", turkish: "TK",
   "singapore airlines": "SQ", cathay: "CX",
   "japan airlines": "JL", jal: "JL", ana: "NH", "all nippon": "NH",
@@ -63,6 +68,43 @@ export function resolveAirlineIata(carrier) {
   // longer unknown name.
   if (/^[A-Z][A-Z0-9]$/.test(raw.toUpperCase())) return raw.toUpperCase();
   return null;
+}
+
+// Display casing for carriers whose brand name isn't plain title case —
+// acronyms (KLM, SAS, LOT) and house styles (JetBlue, easyJet). Everything
+// else title-cases cleanly from its lowercase key.
+const CARRIER_DISPLAY_OVERRIDES = {
+  jetblue: "JetBlue", westjet: "WestJet", easyjet: "easyJet",
+  klm: "KLM", sas: "SAS", jal: "JAL", ana: "ANA", lot: "LOT",
+  "tap air": "TAP Air", "ita airways": "ITA Airways",
+};
+
+// IATA code → canonical carrier display name. Built first-wins over
+// CARRIER_NAME_TO_IATA, so where several aliases share a code the first one
+// listed above is canonical ("lot" for LO, "tap air" for TP, "wizz" for W6).
+export const IATA_TO_CARRIER_NAME = Object.entries(CARRIER_NAME_TO_IATA).reduce((acc, [name, code]) => {
+  if (!(code in acc)) {
+    acc[code] = CARRIER_DISPLAY_OVERRIDES[name] || name.replace(/\b[a-z]/g, (c) => c.toUpperCase());
+  }
+  return acc;
+}, {});
+
+// Detect a flight number whose IATA prefix contradicts the carrier it is
+// labelled with — the "LOT flight UA940" class of error.
+//
+// Returns null when there is no contradiction to report: an unresolvable
+// carrier, a flight number with no readable prefix, a multi-carrier string
+// ("Delta / KLM", where no single code is claimed), or agreement. Otherwise
+// returns { claimed, actual, actualName } describing the mismatch.
+//
+// Pure detection — no caller wires this in yet.
+export function carrierCodeConflict(carrier, flightNumber) {
+  if (isMultiCarrier(String(carrier || ""))) return null;
+  const claimed = resolveAirlineIata(carrier);
+  const m = String(flightNumber || "").trim().toUpperCase().match(/^([A-Z][A-Z0-9])\s?\d/);
+  const actual = m ? m[1] : null;
+  if (!claimed || !actual || claimed === actual) return null;
+  return { claimed, actual, actualName: IATA_TO_CARRIER_NAME[actual] || null };
 }
 
 // Extract a clean 3-letter IATA airport code from a build field, or null.

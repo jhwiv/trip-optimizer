@@ -140,6 +140,11 @@ export function pickFromPool({ flights, airlineIata, approxMinutes, pickSchedule
 //   3. _timesUnconfirmed is set when the resolver gave up on a flight
 //      that had no times to begin with — the PDF uses this to render
 //      an honest "confirm at booking" line in place of a blank.
+//   4. A falsy airlineIata means the carrier never resolved to an IATA
+//      code, so the schedule pool was never filtered by airline and the
+//      pick may be some other carrier's flight. Those payloads refresh
+//      times only, keep the model's number, carry _carrierUnresolved, and
+//      never set _scheduleVerified.
 //
 // Returns either a partial flight object to merge, or null if nothing
 // should be written (e.g. mode mismatch). Never throws.
@@ -162,13 +167,25 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
   // carrier prefix disagrees with the requested airline. pickFromPool
   // already enforces this, but this second check makes the helper safe
   // even when a future caller hands us a pick from somewhere else.
-  if (mode === "number" && airlineIata) {
-    const pickPrefix =
-      typeof pick.flightNumber === "string" ? pick.flightNumber.slice(0, 2).toUpperCase() : "";
-    if (pickPrefix && pickPrefix !== airlineIata.toUpperCase()) {
-      // Cross-carrier candidate — could be a codeshare we don't want to
-      // mislabel. Fall back to times-only.
+  //
+  // A null airlineIata is the more dangerous case: the pool was never
+  // filtered by carrier, so the pick can belong to any airline that flies
+  // the route (a "LOT" leg picking up UA940). Downgrade to times-only and
+  // record _carrierUnresolved so the times tail withholds _scheduleVerified
+  // — the model's number stays subject to the number-strip pass.
+  let carrierUnresolved = false;
+  if (mode === "number") {
+    if (!airlineIata) {
+      carrierUnresolved = true;
       mode = "times";
+    } else {
+      const pickPrefix =
+        typeof pick.flightNumber === "string" ? pick.flightNumber.slice(0, 2).toUpperCase() : "";
+      if (pickPrefix && pickPrefix !== airlineIata.toUpperCase()) {
+        // Cross-carrier candidate — could be a codeshare we don't want to
+        // mislabel. Fall back to times-only.
+        mode = "times";
+      }
     }
   }
 
@@ -205,28 +222,32 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
     // airline, do NOT lift the number — refresh times only, keep model's
     // number, but still mark _scheduleVerified so applyQualityLayer's
     // exemption keeps the model's number safe.
-    if (airlineIata) {
-      const pickPrefix =
-        typeof pick.flightNumber === "string" ? pick.flightNumber.slice(0, 2).toUpperCase() : "";
-      if (pickPrefix && pickPrefix !== airlineIata.toUpperCase()) {
-        const pickDepart = toDepart(pick.scheduledOut);
-        const pickArrive = toArrive(pick.scheduledIn);
-        // Cross-carrier pick: we're keeping the model's number and only
-        // refreshing times where the schedule has them. If neither time
-        // came from the schedule (or the schedule field was empty), the
-        // shipped time is the model's guess — tag _verifyTrusted.
-        const departFromModel = !pickDepart && !!currentFlight.depart_time;
-        const arriveFromModel = !pickArrive && !!currentFlight.arrive_time;
-        const anyTimeFromModel = departFromModel || arriveFromModel;
-        return {
-          depart_time: pickDepart || currentFlight.depart_time,
-          arrive_time: pickArrive || currentFlight.arrive_time,
-          ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
-          _scheduleVerified: true,
-          ...(anyTimeFromModel ? { _verifyTrusted: true } : {}),
-          _resolveSource: source || "airline",
-        };
-      }
+    //
+    // Same treatment when the carrier couldn't be resolved to an IATA code
+    // at all, with one difference: an unresolved carrier means the pool was
+    // never filtered by airline, so nothing here confirms the model's number
+    // and _scheduleVerified is withheld.
+    const pickPrefix =
+      typeof pick.flightNumber === "string" ? pick.flightNumber.slice(0, 2).toUpperCase() : "";
+    const crossCarrier = !!airlineIata && !!pickPrefix && pickPrefix !== airlineIata.toUpperCase();
+    if (!airlineIata || crossCarrier) {
+      const pickDepart = toDepart(pick.scheduledOut);
+      const pickArrive = toArrive(pick.scheduledIn);
+      // We're keeping the model's number and only refreshing times where the
+      // schedule has them. If neither time came from the schedule (or the
+      // schedule field was empty), the shipped time is the model's guess —
+      // tag _verifyTrusted.
+      const departFromModel = !pickDepart && !!currentFlight.depart_time;
+      const arriveFromModel = !pickArrive && !!currentFlight.arrive_time;
+      const anyTimeFromModel = departFromModel || arriveFromModel;
+      return {
+        depart_time: pickDepart || currentFlight.depart_time,
+        arrive_time: pickArrive || currentFlight.arrive_time,
+        ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
+        ...(airlineIata ? { _scheduleVerified: true } : { _carrierUnresolved: true }),
+        ...(anyTimeFromModel ? { _verifyTrusted: true } : {}),
+        _resolveSource: source || "airline",
+      };
     }
     // The pick's number may be identical to the model's (the API confirmed
     // it) or different (the model fabricated, the schedule corrected). In
@@ -265,7 +286,9 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
   // mode === "times": fill missing times only. Never touch the number,
   // never set _autoResolvedFlightNumber (PDF only adds the qualifier
   // when we resolved the number too). _scheduleVerified is set because
-  // the pick came from the live schedule API. But if the schedule row
+  // the pick came from the live schedule API — except when we arrived here
+  // by downgrading an unresolved-carrier number-resolve, where the pick
+  // can't be attributed to this airline at all. But if the schedule row
   // lacked one of the times and we ended up preserving the model's,
   // tag _verifyTrusted so the PDF renders concierge tone.
   const pickDepart = toDepart(pick.scheduledOut);
@@ -277,7 +300,7 @@ export function buildMergePayload({ mode, pick, currentFlight, source, airlineIa
     depart_time: currentFlight.depart_time || pickDepart,
     arrive_time: currentFlight.arrive_time || pickArrive,
     ...(pick.aircraft && !currentFlight.aircraft ? { aircraft: pick.aircraft } : {}),
-    _scheduleVerified: true,
+    ...(carrierUnresolved ? { _carrierUnresolved: true } : { _scheduleVerified: true }),
     ...(anyTimeFromModel ? { _verifyTrusted: true } : {}),
     _resolveSource: source || "airline",
   };

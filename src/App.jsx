@@ -7195,7 +7195,9 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
               } else {
                 // No carrier known (mode === "number" with no IATA, or
                 // any other path) → existing behavior. buildMergePayload
-                // still gates number-lifts on prefix match.
+                // gates number-lifts on IATA presence, so a pick from this
+                // unfiltered pool refreshes times only and never lifts its
+                // number onto a carrier we couldn't identify.
                 pick = pickFromPool({ flights: j.flights, airlineIata: null, approxMinutes: approx, pickScheduledFlight });
               }
               if (pick) source = "route-only";
