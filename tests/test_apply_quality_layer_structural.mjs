@@ -25,6 +25,7 @@ import { assertWeekdayClaims } from "../src/dateFacts.js";
 import { findFlightTimeMismatches } from "../src/flightTimeConsistency.js";
 import { findImplausibleBookingUrls } from "../src/bookingUrlCheck.js";
 import { findUnverifiedFlights } from "../src/flightResolver.js";
+import { findCarrierCodeMismatches } from "../src/carrierCodeCheck.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const fixture = (name) => JSON.parse(readFileSync(join(HERE, "fixtures", name), "utf8"));
@@ -56,6 +57,7 @@ function structuralQualityTail(input, inputs) {
       ...findContinuityIssues(out),
       ...findFlightTimeMismatches(out),
       ...findImplausibleBookingUrls(out),
+      ...findCarrierCodeMismatches(out),
       ...findUnverifiedFlights(out),
       ...weekdayFlags,
     ];
@@ -368,6 +370,50 @@ console.log("\n=== every structural validator fires through one pass ===");
     JSON.stringify(err.issues.map(i => i.flag.code)));
   assert("an anchored closure blocks alongside them",
     /1 venue verification, 2 itinerary structure/.test(err.message), err.message);
+}
+
+console.log("\n=== the LOT/UA940 card reaches the gate as a block ===");
+{
+  // Report §1, verbatim from the 2026-07-28 PDF: Day 1 read "LOT flight from
+  // Newark to London Heathrow" over UA940, note "Book directly on lot.com".
+  // Nothing confirmed the number, so the validator strips it and blocks.
+  const plan = {
+    days: [{
+      day: 1,
+      city: "London",
+      items: [{
+        type: "Flight",
+        time: "21:00",
+        text: "LOT flight from Newark to London Heathrow via Warsaw",
+        flight: {
+          carrier: "LOT",
+          flight_number: "UA940",
+          from_airport: "EWR",
+          to_airport: "LHR",
+          depart_time: "21:00",
+          arrive_time: "09:20",
+          confirmation_note: "Book directly on lot.com.",
+          _flightUnverified: true,
+        },
+      }],
+    }],
+  };
+
+  const { data, qc } = structuralQualityTail(plan);
+  const codes = (data.days[0].structural_flags || []).map(f => f.code);
+  assert("CARRIER_CODE_MISMATCH lands on the day", codes.includes("CARRIER_CODE_MISMATCH"), JSON.stringify(codes));
+
+  const err = exportGateError(data);
+  assert("the gate blocks the export", err instanceof Error, String(err));
+  assert("the mismatch is one of the blocking issues",
+    err.issues.some(i => i.flag.code === "CARRIER_CODE_MISMATCH"), JSON.stringify(err.issues.map(i => i.flag.code)));
+  assert("the block count includes it",
+    /1 blocking issue — 0 venue verification, 1 itinerary structure/.test(err.message), err.message);
+  assert("the fabricated number is gone from the plan",
+    data.days[0].items[0].flight.flight_number === null,
+    String(data.days[0].items[0].flight.flight_number));
+  assert("the finding is echoed as a warning",
+    qc.warnings.some(w => /UA940/.test(w)), JSON.stringify(qc.warnings));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -16,6 +16,7 @@ import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResume
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnverifiedFlightPayload, findUnverifiedFlights, withFlightMerge } from "./flightResolver.js";
 import { normalizeClock, findFlightTimeMismatches } from "./flightTimeConsistency.js";
 import { findImplausibleBookingUrls, stripDeadBookingUrls } from "./bookingUrlCheck.js";
+import { findCarrierCodeMismatches } from "./carrierCodeCheck.js";
 import { pickClosureChip } from "./closureChip.js";
 import { applyFlightNumberStrip } from "./flightNumberStrip.js";
 import { classifyActivityCountConstraint, renderActivityCountPromptRule, enforceTripTotalActivityCap } from "./activityCountConstraint.js";
@@ -3440,12 +3441,18 @@ function applyQualityLayer(input, inputs) {
   //   findContinuityIssues     — day-to-day city/hotel/vehicle continuity
   //   findFlightTimeMismatches — day header vs flight.depart_time
   //   findImplausibleBookingUrls — fabricated-looking operator deep links
+  //   findCarrierCodeMismatches — carrier name vs flight-number prefix
   //   weekdayFlags             — wrong weekday claims, already corrected above
+  //
+  // findCarrierCodeMismatches runs BEFORE findUnverifiedFlights: its Case B
+  // repair sets _flightUnverified on the flight it strips, and the unverified
+  // walk should see that.
   if (Array.isArray(out.days)) {
     const structural = [
       ...findContinuityIssues(out),
       ...findFlightTimeMismatches(out),
       ...findImplausibleBookingUrls(out),
+      ...findCarrierCodeMismatches(out),
       ...findUnverifiedFlights(out),
       ...weekdayFlags,
     ];
