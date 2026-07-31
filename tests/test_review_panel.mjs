@@ -27,6 +27,23 @@ ${contextSrc.replace("export ", "")}
 globalThis.__rp = { MAX_REVIEWER_PROMPT_CHARS, pendingFindings, renderUserContextBlock };`);
 const { MAX_REVIEWER_PROMPT_CHARS, pendingFindings, renderUserContextBlock } = globalThis.__rp;
 
+// The two revision prompts, evaluated for real rather than asserted against
+// source text — their pure dependencies come along so the strings under test
+// are the ones the model actually receives.
+const surgicalSrc = extract(/function buildRevisionSystemPromptSurgical\(plan, findings, inputs\) \{[\s\S]*?\n\}/, "buildRevisionSystemPromptSurgical");
+const fullSrc = extract(/function buildRevisionSystemPromptFull\(plan, findings, inputs\) \{[\s\S]*?\n\}/, "buildRevisionSystemPromptFull");
+
+// eslint-disable-next-line no-eval
+eval(`${maxCharsSrc}
+${contextSrc.replace("export ", "")}
+${extract(/function prefToText\(v\) \{[\s\S]*?\n\}/, "prefToText")}
+${extract(/function formatFindingTarget\(t\) \{[\s\S]*?\n\}/, "formatFindingTarget")}
+${extract(/function planForPrompt\(plan\) \{[\s\S]*?\n\}/, "planForPrompt")}
+${surgicalSrc}
+${fullSrc}
+globalThis.__rev = { buildRevisionSystemPromptSurgical, buildRevisionSystemPromptFull };`);
+const { buildRevisionSystemPromptSurgical, buildRevisionSystemPromptFull } = globalThis.__rev;
+
 let passed = 0, failed = 0;
 function assert(name, cond, detail) {
   if (cond) { passed++; console.log(`  ✓ ${name}`); }
@@ -151,6 +168,62 @@ console.log("\n[6] The reviewer prompt actually calls the helper");
   assert("the || that dropped one field is gone from the reviewer prompt",
     !/inputs\?\.guidelines \|\| inputs\?\.narrative/.test(body));
   assert("the block is still embedded in the prompt", body.includes("${userGuidelinesBlock}"));
+}
+
+console.log("\n[7] The revision prompts carry BOTH fields too");
+{
+  // Both revisers had the same `guidelines || narrative` bug the reviewer had.
+  // They matter more, not less: the reviewer only proposes, these two write the
+  // plan the user ends up with — a dropped constraint here ships.
+  const plan = { destination: "Porto", days: [{ label: "Day 1", items: [] }] };
+  const findings = [{ id: "f1", severity: "critical", mode_hint: "swap_restaurant", target: { day: 1 }, summary: "s", action: "a" }];
+  const build = (inputs) => ({
+    surgical: buildRevisionSystemPromptSurgical(plan, findings, inputs),
+    full: buildRevisionSystemPromptFull(plan, findings, inputs),
+  });
+  const both = build({ guidelines: "AAA-guidelines", narrative: "BBB-narrative" });
+
+  for (const [which, out] of Object.entries(both)) {
+    assert(`${which}: guidelines present`, out.includes("AAA-guidelines"));
+    assert(`${which}: narrative present`, out.includes("BBB-narrative"));
+    assert(`${which}: each in its own labelled block`,
+      out.includes("TRIP GUIDELINES") && out.includes("TRAVELER NARRATIVE"));
+    assert(`${which}: the hard-constraint framing the rules below reference survives`,
+      out.includes("USER'S EXPLICIT GUIDELINES (hard constraints — do not violate)"));
+  }
+
+  const gOnly = build({ guidelines: "only-guidelines" });
+  assert("surgical: guidelines-only trip", gOnly.surgical.includes("only-guidelines") && !gOnly.surgical.includes("TRAVELER NARRATIVE"));
+  assert("full: guidelines-only trip", gOnly.full.includes("only-guidelines") && !gOnly.full.includes("TRAVELER NARRATIVE"));
+
+  const nOnly = build({ narrative: "only-narrative" });
+  assert("surgical: narrative-only trip", nOnly.surgical.includes("only-narrative") && !nOnly.surgical.includes("TRIP GUIDELINES"));
+  assert("full: narrative-only trip", nOnly.full.includes("only-narrative") && !nOnly.full.includes("TRIP GUIDELINES"));
+
+  const none = build({});
+  assert("neither → no empty guidelines heading in either prompt",
+    !none.surgical.includes("USER'S EXPLICIT GUIDELINES") && !none.full.includes("USER'S EXPLICIT GUIDELINES"));
+
+  // Oversized input truncates honestly, and the per-caller caps are preserved:
+  // surgical stays tighter than full because it only rewrites one card.
+  const long = build({ guidelines: "short-g", narrative: "n".repeat(10000) });
+  for (const [which, out] of Object.entries(long)) {
+    assert(`${which}: short field survives whole`, out.includes("short-g"));
+    assert(`${which}: long field is truncated, and says so`,
+      /truncated — \d+ of 10000 characters shown/.test(out));
+  }
+  const shown = (s) => Number(s.match(/truncated — (\d+) of/)[1]);
+  assert("surgical keeps its 2000-char budget", shown(long.surgical) === 2000 - "short-g".length, String(shown(long.surgical)));
+  assert("full keeps its larger 3000-char budget", shown(long.full) === 3000 - "short-g".length, String(shown(long.full)));
+  assert("surgical is the tighter of the two", shown(long.surgical) < shown(long.full));
+
+  // And the bug itself cannot come back in either function.
+  for (const [which, fnSrc] of Object.entries({ surgical: surgicalSrc, full: fullSrc })) {
+    assert(`${which}: the dropping || is gone`,
+      !/inputs\?\.guidelines \|\| inputs\?\.narrative/.test(fnSrc));
+    assert(`${which}: routes through the shared helper`,
+      /renderUserContextBlock\(inputs, \d+\)/.test(fnSrc));
+  }
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

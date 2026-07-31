@@ -10478,8 +10478,16 @@ function buildRevisionSystemPromptSurgical(plan, findings, inputs) {
     inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
     inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
-  const userGuidelinesBlock = ((inputs?.guidelines || "").trim() || (inputs?.narrative || "").trim())
-    ? `\nUSER'S EXPLICIT GUIDELINES (hard constraints — do not violate):\n${(inputs?.guidelines || inputs?.narrative || "").trim().slice(0, 2000)}\n`
+  // BOTH free-form fields, same helper the reviewer uses — the old `guidelines
+  // || narrative` sent whichever came first and silently dropped the other, so
+  // a patch could contradict a constraint the user had actually stated. The
+  // 2000-char cap is preserved from the original and is deliberately tighter
+  // than the full re-plan's: a surgical pass only rewrites one card. It now
+  // covers the two fields together, and the helper splits the budget rather
+  // than letting either starve the other.
+  const userContext = renderUserContextBlock(inputs, 2000);
+  const userGuidelinesBlock = userContext
+    ? `\nUSER'S EXPLICIT GUIDELINES (hard constraints — do not violate):${userContext}`
     : "";
 
   return `You are applying surgical card-level patches to an existing trip plan. Call submit_revision_patches exactly once with a small patches[] array — one patch per finding. No prose.
@@ -10531,8 +10539,12 @@ function buildRevisionSystemPromptFull(plan, findings, inputs) {
     inputs?.basics?.style?.length ? `Style: ${inputs.basics.style.join(", ")}` : null,
     inputs?.basics?.pace && `Pace: ${inputs.basics.pace}`,
   ].filter(Boolean).join(" · ");
-  const userGuidelinesBlock = ((inputs?.guidelines || "").trim() || (inputs?.narrative || "").trim())
-    ? `\nUSER'S EXPLICIT GUIDELINES (hard constraints — do not violate):\n${(inputs?.guidelines || inputs?.narrative || "").trim().slice(0, 3000)}\n`
+  // Same fix as the surgical prompt above; 3000-char cap preserved from the
+  // original, since a full re-plan rewrites every day and needs more of the
+  // user's own words than a single-card patch does.
+  const userContext = renderUserContextBlock(inputs, 3000);
+  const userGuidelinesBlock = userContext
+    ? `\nUSER'S EXPLICIT GUIDELINES (hard constraints — do not violate):${userContext}`
     : "";
   const nightsNum = parseInt(inputs?.basics?.nights, 10) || (Array.isArray(plan?.days) ? Math.max(1, plan.days.length - 1) : 3);
   const totalDays = nightsNum + 1;
