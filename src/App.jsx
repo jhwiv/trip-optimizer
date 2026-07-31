@@ -2860,18 +2860,37 @@ function applyQualityLayer(input, inputs) {
     const explicitLunch = mealPolicyAllowsLunch(mealPolicy);
     days.forEach((day, dayIdx) => {
       if (!Array.isArray(day.items)) return;
+      // Every removal also lands as an info-severity MEAL_POLICY_STRIP flag on
+      // the day. qc.fixes already records the strip, but QualityBadge shows
+      // only the first two and the classifier reads free text — if a negation
+      // misfires and a wanted meal disappears, the per-item flag is the record
+      // that says which one and why. Info never blocks export; the pre-export
+      // gate filters on severity === "block".
+      const stripFlags = [];
       day.items = day.items.filter(item => {
         const t = (item.type || "").toLowerCase();
-        if ((t === "breakfast" || t === "brunch") && !explicitBreakfast) {
-          fixes.push(`Day ${dayIdx + 1}: removed unrequested ${t} (${item.restaurant?.name || item.title || "meal"}) per meal policy`);
-          return false;
-        }
-        if (t === "lunch" && !explicitLunch) {
-          fixes.push(`Day ${dayIdx + 1}: removed unrequested lunch (${item.restaurant?.name || item.title || "meal"}) per meal policy`);
-          return false;
-        }
-        return true;
+        const isBreakfast = (t === "breakfast" || t === "brunch") && !explicitBreakfast;
+        const isLunch = t === "lunch" && !explicitLunch;
+        if (!isBreakfast && !isLunch) return true;
+        const name = item.restaurant?.name || item.title || "meal";
+        const meal = isLunch ? "lunch" : t;
+        fixes.push(`Day ${dayIdx + 1}: removed unrequested ${meal} (${name}) per meal policy`);
+        stripFlags.push({
+          code: "MEAL_POLICY_STRIP",
+          severity: "info",
+          dayIdx,
+          day: dayIdx + 1,
+          target: name,
+          item_name: name,
+          reason: `${isLunch ? "lunch" : "breakfast"} excluded by policy`,
+          message: `Removed unrequested ${meal} (${name}) — the trip's meal policy excludes ${isLunch ? "lunch" : "breakfast"}.`,
+        });
+        return false;
       });
+      if (stripFlags.length > 0) {
+        const prior = Array.isArray(day.structural_flags) ? day.structural_flags : [];
+        day.structural_flags = [...prior, ...stripFlags];
+      }
     });
   }
 

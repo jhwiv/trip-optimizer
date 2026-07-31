@@ -102,6 +102,7 @@ They ride on `day.structural_flags[]` and reach the pre-export gate through
 | `BOOKING_URL_IMPLAUSIBLE` | block | A `booking_url` has a vendor host but a product ID that does not match that vendor's format — a fabricated link is a fabricated fact | yes |
 | `BOOKING_URL_DEAD` | warn | `/api/verify-url` found the link dead. The URL is stripped from the plan; the flag records what was removed | no |
 | `FLIGHT_UNVERIFIED` | warn | The flight resolver could not confirm the route or times against a live schedule. Fail safe — annotate, never remove | no |
+| `MEAL_POLICY_STRIP` | info | An item was removed by meal-policy enforcement (`applyQualityLayer` §1c). Carries `item_name` + `reason` so a misfiring negation is traceable to the specific meal it deleted | no |
 
 A venue with any `severity:"block"` flag must NOT reach the PDF
 exporter. The pre-export gate is the last line of defense; it is not
