@@ -12,6 +12,9 @@
 // genuinely absent so the existing PDF line and any in-flight plan objects
 // survive one more release.
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import {
   buildUnverifiedFlightPayload,
   buildUnconfirmedTimesPayload,
@@ -19,6 +22,8 @@ import {
   filterPoolByAirline,
   pickFromPool,
 } from "../src/flightResolver.js";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 let passed = 0, failed = 0;
 function assert(name, cond, detail = "") {
@@ -107,9 +112,9 @@ console.log("\n=== findUnverifiedFlights ===");
   const hits = findUnverifiedFlights(plan);
   assert("only the unconfirmed flight is flagged", hits.length === 1, JSON.stringify(hits));
   assert("code is FLIGHT_UNVERIFIED", hits[0]?.code === "FLIGHT_UNVERIFIED");
-  // Warn, not block: an unconfirmable regional hop is usually still the right
-  // plan. What must not happen is it printing as schedule-confirmed.
-  assert("severity is warn", hits[0]?.severity === "warn", hits[0]?.severity);
+  // Block: the API answered and reported no service on CFR→AMS. Mirrors the
+  // venue precedent — NOT_FOUND blocks, UNVERIFIED warns.
+  assert("severity is block for no-scheduled-route", hits[0]?.severity === "block", hits[0]?.severity);
   assert("dayIdx is 0-based", hits[0]?.dayIdx === 0);
   assert("day is 1-based and numeric", hits[0]?.day === 1, JSON.stringify(hits[0]?.day));
   assert("itemIdx points at the flight", hits[0]?.itemIdx === 0);
@@ -129,6 +134,27 @@ console.log("\n=== findUnverifiedFlights ===");
   unknownReason.days[0].items[0].flight._unverifiedReason = "who-knows";
   assert("an unrecognized reason falls back to the generic copy",
     /lookup could not be completed/.test(findUnverifiedFlights(unknownReason)[0]?.message || ""));
+
+  console.log("\n=== severity depends on WHICH failure it was ===");
+  // CLAUDE.md's venue precedent, applied to flights: the API answering "no
+  // service on this route" is the NOT_FOUND shape (block); the API not
+  // answering, or answering about a different carrier, is the UNVERIFIED
+  // shape (warn).
+  const severityFor = (reason) => {
+    const p = structuredClone(plan);
+    if (reason === undefined) delete p.days[0].items[0].flight._unverifiedReason;
+    else p.days[0].items[0].flight._unverifiedReason = reason;
+    return findUnverifiedFlights(p)[0]?.severity;
+  };
+  assert("no-scheduled-route → block", severityFor("no-scheduled-route") === "block", severityFor("no-scheduled-route"));
+  assert("carrier-not-on-route → warn — the route is real, call the airline",
+    severityFor("carrier-not-on-route") === "warn", severityFor("carrier-not-on-route"));
+  assert("schedule-unavailable → warn — we never got an answer to act on",
+    severityFor("schedule-unavailable") === "warn", severityFor("schedule-unavailable"));
+  // Back-compat: plans built before the reason was recorded must not start
+  // blocking export retroactively.
+  assert("a missing reason → warn", severityFor(undefined) === "warn", severityFor(undefined));
+  assert("an unknown reason → warn", severityFor("who-knows") === "warn", severityFor("who-knows"));
 
   const unnamed = { days: [{ day: 1, items: [{ type: "Flight", text: "Hop to Amsterdam", flight: { _flightUnverified: true } }] }] };
   assert("a flight with no carrier falls back to the item text",
@@ -177,6 +203,58 @@ console.log("\n=== the airline-filter retry that makes the reason meaningful ===
     pickFromPool({ flights: pool, airlineIata: null, approxMinutes: 615, pickScheduledFlight: () => ({}) }) === null);
   assert("a missing pickScheduledFlight is safe",
     pickFromPool({ flights: pool, airlineIata: "AF", approxMinutes: 615 }) === null);
+}
+
+console.log("\n=== the schedule horizon guard (src/App.jsx beyondHorizon) ===");
+{
+  // beyondHorizon lives in App.jsx (JSX, React) and can't be imported from a
+  // DOM-free Node test, so the ~6 lines are mirrored here and the source is
+  // read back to prove the mirror is honest. Keep both in sync.
+  const SCHEDULE_HORIZON_DAYS = 330;
+  function beyondHorizon(isoDate) {
+    const depart = new Date(isoDate);
+    if (Number.isNaN(depart.getTime())) return false;
+    const daysUntilDeparture = Math.ceil((depart - new Date()) / 86400000);
+    if (daysUntilDeparture <= SCHEDULE_HORIZON_DAYS) return false;
+    return true;
+  }
+  const inDays = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+
+  assert("a departure 60 days out is inside the horizon", beyondHorizon(inDays(60)) === false);
+  assert("a departure 400 days out is beyond it", beyondHorizon(inDays(400)) === true);
+  assert("today is inside the horizon", beyondHorizon(inDays(0)) === false);
+  assert("a past date is inside the horizon", beyondHorizon(inDays(-30)) === false);
+  assert("an unparseable date does not skip the retry", beyondHorizon("not a date") === false);
+
+  // Why the guard matters now: routeExists:false is a blocking severity, and a
+  // zero-row answer 400 days out means "not filed yet", not "no such route".
+  // Skipping the retry leaves routeExists undefined → schedule-unavailable.
+  const reasonAfterRetry = (isoDate, apiRowCount) => {
+    let routeExists;
+    if (!beyondHorizon(isoDate)) routeExists = apiRowCount > 0;
+    return buildUnverifiedFlightPayload(AF7652, { routeExists })._unverifiedReason;
+  };
+  assert("60 days out + zero rows → no-scheduled-route",
+    reasonAfterRetry(inDays(60), 0) === "no-scheduled-route", reasonAfterRetry(inDays(60), 0));
+  assert("60 days out + rows on the route → carrier-not-on-route",
+    reasonAfterRetry(inDays(60), 8) === "carrier-not-on-route", reasonAfterRetry(inDays(60), 8));
+  assert("400 days out + zero rows → schedule-unavailable, NOT no-scheduled-route",
+    reasonAfterRetry(inDays(400), 0) === "schedule-unavailable", reasonAfterRetry(inDays(400), 0));
+  assert("…so a far-future plan warns instead of blocking export",
+    findUnverifiedFlights({
+      days: [{ items: [{ type: "Flight", flight: { ...AF7652, _flightUnverified: true, _unverifiedReason: reasonAfterRetry(inDays(400), 0) } }] }],
+    })[0].severity === "warn");
+
+  const appSrc = readFileSync(join(HERE, "..", "src", "App.jsx"), "utf8");
+  assert("App.jsx defines the horizon at 330 days",
+    /const SCHEDULE_HORIZON_DAYS = 330;/.test(appSrc));
+  assert("App.jsx still carries the TODO to measure the real window",
+    /TODO: probe \/api\/flights-search empirically and tighten/.test(appSrc));
+  assert("the route-only retry is gated on the guard",
+    /if \(!pick && !beyondHorizon\(t\.isoDate\)\) \{/.test(appSrc));
+  assert("the mirror matches the App.jsx body",
+    appSrc.includes("const daysUntilDeparture = Math.ceil((depart - new Date()) / 86400000);") &&
+    appSrc.includes("if (daysUntilDeparture <= SCHEDULE_HORIZON_DAYS) return false;"));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

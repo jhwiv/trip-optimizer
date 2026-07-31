@@ -365,10 +365,22 @@ export function buildUnverifiedFlightPayload(currentFlight, opts = {}) {
   };
 }
 
-// Plan walk over the marker above, for applyQualityLayer. Warn, not block:
-// an unconfirmable regional hop is usually still the right plan — the traveller
-// just has to call the airline. What must not happen is it rendering as if the
-// schedule API had confirmed it.
+// Plan walk over the marker above, for applyQualityLayer. Severity depends on
+// WHICH failure it was, mirroring the venue precedent in CLAUDE.md: NOT_FOUND
+// (the API answered and knew nothing) blocks, UNVERIFIED (the lookup could not
+// run) warns.
+//
+// An unconfirmable regional hop is usually still the right plan — the traveller
+// just has to call the airline, so those stay warns. A route the schedule API
+// affirmatively reports no service on is the LH2224 CDG→NUE shape: a flight
+// nobody operates, printed in 11pt beside a one-line caveat. That is a
+// fabricated fact and must not reach the PDF.
+const UNVERIFIED_SEVERITY = {
+  "no-scheduled-route": "block",       // API answered, zero service on this route
+  "carrier-not-on-route": "warn",      // API answered; route exists but not via this carrier
+  "schedule-unavailable": "warn",      // API never answered / horizon exceeded
+};
+
 const UNVERIFIED_REASON_COPY = {
   "carrier-not-on-route": "the schedule shows service on this route but not by this carrier",
   "no-scheduled-route": "the schedule shows no service on this route",
@@ -386,9 +398,12 @@ export function findUnverifiedFlights(plan) {
       const label = [fl.carrier, fl.flight_number].filter(Boolean).join(" ").trim() || item.text || `Day ${dayIdx + 1} flight`;
       const route = fl.from_airport && fl.to_airport ? ` ${fl.from_airport}→${fl.to_airport}` : "";
       const why = UNVERIFIED_REASON_COPY[fl._unverifiedReason] || UNVERIFIED_REASON_COPY["schedule-unavailable"];
+      // Unknown or absent reason → warn. Plans built before the reason was
+      // recorded must not start blocking export retroactively.
+      const severity = UNVERIFIED_SEVERITY[fl._unverifiedReason] || "warn";
       out.push({
         code: "FLIGHT_UNVERIFIED",
-        severity: "warn",
+        severity,
         dayIdx,
         itemIdx,
         day: dayIdx + 1,
