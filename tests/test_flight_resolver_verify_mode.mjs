@@ -13,7 +13,7 @@
 // rules in a small simulation. Both sides must agree — the matching is
 // enforced by the test names referencing the App.jsx line ranges.
 
-import { flightNeedsResolve, pickFromPool, buildMergePayload } from "../src/flightResolver.js";
+import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnverifiedFlightPayload } from "../src/flightResolver.js";
 import { pickScheduledFlight } from "../src/flightSelect.js";
 
 let passed = 0, failed = 0;
@@ -25,7 +25,7 @@ function assert(name, cond, detail = "") {
 // Helper that mirrors App.jsx ~6614-6679 verify-mode resolver loop.
 // Given a target flight and two mock API responses (airline-filtered
 // and route-only), produces the same merge payload App.jsx would write.
-function simulateVerifyResolve({ flight, airlineIata, approxMinutes, airlineFilteredRows, routeOnlyRows }) {
+function simulateVerifyResolve({ flight, airlineIata, approxMinutes, airlineFilteredRows, routeOnlyRows, routeExists }) {
   let pick = null;
   let source = null;
 
@@ -57,10 +57,16 @@ function simulateVerifyResolve({ flight, airlineIata, approxMinutes, airlineFilt
     return buildMergePayload({ mode: "verify", pick, currentFlight: flight, source, airlineIata });
   }
   // Verify-mode total miss → the App.jsx-side verify-trusted fallback.
+  // routeExists === false means the route-only retry got an answer and it was
+  // "no service here", so the model's number cannot be real: null it and
+  // withhold the strip exemption. Any other value means we never established
+  // that, so the number stays visible behind an unverified marker.
+  const noSuchRoute = routeExists === false;
   return {
-    _scheduleVerified: true,
+    ...(noSuchRoute ? { flight_number: null } : { _scheduleVerified: true }),
     _verifyTrusted: true,
     _resolveSource: "verify-fallback",
+    ...buildUnverifiedFlightPayload(flight, { routeExists }),
   };
 }
 
@@ -221,6 +227,53 @@ console.log("=== Verify case 5 — total miss (no API rows anywhere) ===");
     merge._verifyTrusted === true);
   assert("case 5: no flight_number override",
     merge.flight_number === undefined);
+  assert("case 5: reason is schedule-unavailable (routeExists never established)",
+    merge._unverifiedReason === "schedule-unavailable", merge._unverifiedReason);
+}
+
+console.log("=== Verify case 10 — the API says the route has no service (P5) ===");
+{
+  // Report §2: "LH 2224 CDG → NUE · nonstop". Lufthansa does not fly it and
+  // the route-only retry came back with zero rows for the route itself, not
+  // just for the carrier. A number on a route nobody flies is fabricated.
+  const flight = {
+    carrier: "Lufthansa",
+    flight_number: "LH2224",
+    from_airport: "CDG",
+    to_airport: "NUE",
+    depart_time: "1:30 PM",
+    arrive_time: "3:00 PM",
+  };
+  const merge = simulateVerifyResolve({
+    flight,
+    airlineIata: "LH",
+    approxMinutes: 13 * 60 + 30,
+    airlineFilteredRows: [],
+    routeOnlyRows: [],
+    routeExists: false,
+  });
+  assert("case 10: the fabricated number is nulled",
+    merge.flight_number === null, String(merge.flight_number));
+  assert("case 10: _scheduleVerified is WITHHELD — nothing earned the exemption",
+    merge._scheduleVerified === undefined, String(merge._scheduleVerified));
+  assert("case 10: still marked unverified", merge._flightUnverified === true);
+  assert("case 10: reason is no-scheduled-route",
+    merge._unverifiedReason === "no-scheduled-route", merge._unverifiedReason);
+
+  // The pairing only breaks for this one reason. A route the API confirmed
+  // exists (just not via this carrier) keeps the model's number visible.
+  const carrierMiss = simulateVerifyResolve({
+    flight,
+    airlineIata: "LH",
+    approxMinutes: 13 * 60 + 30,
+    airlineFilteredRows: [],
+    routeOnlyRows: [],
+    routeExists: true,
+  });
+  assert("case 10: carrier-not-on-route keeps the number",
+    carrierMiss.flight_number === undefined && carrierMiss._scheduleVerified === true,
+    JSON.stringify(carrierMiss));
+  assert("case 10: …and says why", carrierMiss._unverifiedReason === "carrier-not-on-route");
 }
 
 console.log("=== Verify case 6 — carrier disagrees → defensive downgrade ===");

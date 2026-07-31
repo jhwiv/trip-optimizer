@@ -7266,12 +7266,23 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         // protects the number, and tag _verifyTrusted so downstream
         // tooling (PDF qualifier, future audits) can distinguish a
         // truly schedule-confirmed flight from a fallback-trusted one.
+        //
+        // EXCEPT when the API affirmatively reported no service on this
+        // route. _scheduleVerified + _flightUnverified normally ride
+        // together on purpose — the pairing keeps a model number visible
+        // rather than letting the strip blank the row. But routeExists
+        // === false is not "we couldn't check", it is "we checked and
+        // this route has no flights", so the number cannot be anything
+        // but invented. Withhold the strip exemption and null it here.
+        // The horizon guard above is what makes a zero-row answer
+        // trustworthy enough to act on. Report §2 / §7 Q3.
         if (t.mode === "verify" && t.fl.flight_number) {
+          const noSuchRoute = routeExists === false;
           resolved.push({
             di: t.di,
             ii: t.ii,
             merge: {
-              _scheduleVerified: true,
+              ...(noSuchRoute ? { flight_number: null } : { _scheduleVerified: true }),
               _verifyTrusted: true,
               _resolveSource: "verify-fallback",
               // The flight looks complete but nothing confirmed it exists.
