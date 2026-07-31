@@ -7808,8 +7808,26 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       {/* Professional review surface. During the initial auto-run (autoReviewRunning),
           only this component is visible — TripHero/sections are hidden below so the
           review progress card occupies the same visual slot as the build progress bar. */}
+      {/* plan={layeredData}, NOT rawData — deliberate, and surprising enough to
+          spell out. Every other writer on this screen takes rawData; the
+          reviewer is the exception because it both reads and rewrites the plan:
+            · Reading rawData showed it items the quality layer had already
+              deleted (meals stripped by meal policy, capped activities), so it
+              spent its 8-finding budget on venues the user never sees.
+            · Its patches are POSITIONAL (applyPatchesToPlan indexes
+              day_index/item_index), so reading one array and writing another
+              would land edits on the wrong items. Read and write must be the
+              same array — which is why this is layeredData on both sides
+              rather than a read-only swap.
+          Consequence: a reviewer apply persists the post-strip plan back as
+          canonical via onPlanRevised, so quality-layer removals become
+          permanent at that point. Acceptable — rawData is already a mutable
+          working plan (handleSwapItem and full-replan both rewrite it), the
+          strips are reported in qc.fixes and, since this PR, in
+          MEAL_POLICY_STRIP flags, and the rendered itinerary is identical
+          either way. */}
       <ReviewPanel
-        plan={rawData}
+        plan={layeredData}
         inputs={inputs}
         onPlanRevised={onPlanRevised}
         onReviewChange={(state) => { clearAutoReviewRunning(); onReviewChange(state); }}
