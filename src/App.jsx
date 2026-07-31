@@ -2850,21 +2850,14 @@ function applyQualityLayer(input, inputs) {
   //     known breakfast/lunch venue. Hotel breakfast included with the room
   //     does NOT count.
   if (Array.isArray(days)) {
-    const blob = `${inputs?.narrative || ""}\n${inputs?.guidelines || ""}\n${inputs?.dining || ""}`.toLowerCase();
-    // Detect explicit asks. "casual lunches" / "light breakfasts" as a vibe
-    // note does NOT count — we look for verbs of intent (book, reserve, want,
-    // schedule, plan) OR a specific named venue paired with the meal word.
-    const explicitBreakfast =
-      /\b(book|reserve|plan|schedule|want|need|include|add)\b[^.]{0,40}\b(breakfast|brunch)\b/.test(blob) ||
-      /\b(breakfast|brunch)\b[^.]{0,40}\b(at|in|reservation|book|reserve)\b/.test(blob) ||
-      /\bbreakfast at \w/.test(blob) ||
-      /\bbrunch at \w/.test(blob) ||
-      /\bbrunch on (sun|mon|tue|wed|thu|fri|sat)/.test(blob);
-    const explicitLunch =
-      /\b(book|reserve|plan|schedule|want|need|include|add)\b[^.]{0,40}\blunch\b/.test(blob) ||
-      /\blunch\b[^.]{0,40}\b(at|in|reservation|book|reserve)\b/.test(blob) ||
-      /\blunch at \w/.test(blob) ||
-      /\blunch on (day\s*\d|sun|mon|tue|wed|thu|fri|sat)/.test(blob);
+    // Same classifier that renders the per-trip MEAL POLICY line in the
+    // build prompt, so what the model is told and what we enforce can
+    // never drift apart. It reads narrative, guidelines, dining (as an
+    // object) and the restaurants[] chips, and handles negation — see
+    // src/mealPolicy.js.
+    const mealPolicy = classifyMealPolicy(inputs);
+    const explicitBreakfast = mealPolicyAllowsBreakfast(mealPolicy);
+    const explicitLunch = mealPolicyAllowsLunch(mealPolicy);
     days.forEach((day, dayIdx) => {
       if (!Array.isArray(day.items)) return;
       day.items = day.items.filter(item => {
