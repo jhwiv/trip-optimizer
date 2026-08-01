@@ -18,6 +18,7 @@ const SHELL_URLS = [
   '/apple-touch-icon.png',
   '/favicon-32.png',
   '/favicon-64.png',
+  '/favicon-16.png',
 ];
 
 self.addEventListener('install', (event) => {
