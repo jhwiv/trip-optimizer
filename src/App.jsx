@@ -11487,7 +11487,11 @@ function FindView({ embedded = false } = {}) {
         {!embedded && (
           <div style={{ paddingTop: "1.25rem", paddingBottom: "1rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
             <div>
-              <img src="/rs3-wordmark.svg?v=3" alt="Route Smith" style={{ display: "block", height: vp.isMobile ? "28px" : "38px", width: "auto", margin: 0 }} />
+              {/* Wordmark + ™ service mark, matched to the /find header scale. */}
+              <span aria-label="RouteSmith trademark" role="img" style={{ display: "inline-flex", alignItems: "flex-start", gap: "2px" }}>
+                <img src="/rs3-wordmark.svg?v=3" alt="" style={{ display: "block", height: vp.isMobile ? "28px" : "38px", width: "auto", margin: 0 }} />
+                <sup aria-hidden="true" style={{ fontFamily: "var(--font-sans)", fontSize: vp.isMobile ? "8px" : "10px", color: "var(--color-text-secondary)", lineHeight: 1, marginTop: "3px", fontWeight: 500 }}>™</sup>
+              </span>
               <p style={{ fontSize: "22px", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "2px 0 0", color: "var(--color-text-primary)" }}>Find</p>
             </div>
             <a href="/" style={{ fontSize: "11px", color: ACCENT, textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase", padding: "10px 14px", border: `0.5px solid ${ACCENT}`, borderRadius: "var(--border-radius-md)", display: "inline-flex", alignItems: "center", minHeight: "40px" }}>← Trip Builder</a>
@@ -12036,7 +12040,12 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
 
         {/* RouteSmith wordmark + tagline — centered near top */}
         <div style={{ position: "absolute", top: "clamp(80px, 16%, 130px)", left: 0, right: 0, zIndex: 10, display: "flex", flexDirection: "column", alignItems: "center", padding: "0 28px" }}>
-          <img src="/rs3-wordmark.svg?v=3" alt="Route Smith" style={{ height: "clamp(42px, 6vw, 62px)", width: "auto", filter: "brightness(0) invert(1)", opacity: 0.92 }} />
+          {/* Wordmark + ™ — white-on-dark treatment for the hero, matches
+              the wordmark's filter/opacity so the mark reads as one unit. */}
+          <span aria-label="RouteSmith trademark" role="img" style={{ display: "inline-flex", alignItems: "flex-start", gap: "3px" }}>
+            <img src="/rs3-wordmark.svg?v=3" alt="" style={{ height: "clamp(42px, 6vw, 62px)", width: "auto", filter: "brightness(0) invert(1)", opacity: 0.92 }} />
+            <sup aria-hidden="true" style={{ fontFamily: "var(--font-sans)", fontSize: "clamp(10px, 1.4vw, 14px)", color: "rgba(255,255,255,0.75)", lineHeight: 1, marginTop: "4px", fontWeight: 500 }}>™</sup>
+          </span>
           <p style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", color: "rgba(255,255,255,0.55)", fontSize: "clamp(12px, 1.8vw, 16px)", margin: "10px 0 0", letterSpacing: "0.02em" }}>
             Journeys planned to the last detail.
           </p>
@@ -12551,25 +12560,28 @@ function PreBuildScreen({
             </>
           ) : (
             <>
-              <div style={{ display: "flex", gap: "10px" }}>
-                <button onClick={onBack} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>← Back</button>
+              {/* flexWrap + minWidth:0 keeps the button row safe under iOS
+                  page zoom and narrow visual viewports — the Plan CTA can
+                  wrap under Back rather than overflow the card. */}
+              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                <button onClick={onBack} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", minWidth: 0, flexShrink: 0 }}>← Back</button>
                 {extractingFromGuidelines ? (
                   // Extraction is fast (~2s) and not cancellable. A disabled
                   // "reading…" state says the build is in motion; phase 1
                   // above carries the actual indeterminate bar.
                   <button disabled aria-busy="true"
-                    style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "not-allowed", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", opacity: 0.7 }}>
+                    style={{ flex: "1 1 180px", minWidth: 0, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "not-allowed", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", opacity: 0.7 }}>
                     Reading your narrative…
                   </button>
                 ) : (
                   <button onClick={onBuild}
-                    style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
+                    style={{ flex: "1 1 180px", minWidth: 0, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
                     Plan my trip
                   </button>
                 )}
               </div>
               <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "10px 0 0", textAlign: "center", lineHeight: 1.5, fontStyle: "italic" }}>
-                Every venue verified open · Plans draw on Michelin, Condé Nast Traveler, NYT&nbsp;36&nbsp;Hours, Eater, and more
+                Every venue verified open · Plans draw on Michelin, Condé Nast Traveler, NYT 36 Hours, Eater, and more
               </p>
             </>
           )}
@@ -15656,7 +15668,17 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
           <div style={{ minWidth: 0, flex: 1 }}>
             <p style={{ fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 8px", color: "var(--color-text-secondary)" }}>Travel planning</p>
-            <img src="/rs3-wordmark.svg?v=3" alt="Route Smith" style={{ display: "block", height: vp.isMobile ? "44px" : "64px", width: "auto", margin: "0 0 10px" }} />
+            {/* Wordmark + ™ service mark. Flex container keeps the mark
+                tight to the top-right of the wordmark like a proper service
+                mark; the sup element gives it a smaller, superscript-styled
+                glyph that scales with the wordmark height. */}
+            <span aria-label="RouteSmith trademark" role="img" style={{ display: "inline-flex", alignItems: "flex-start", gap: "2px", margin: "0 0 10px" }}>
+              <img src="/rs3-wordmark.svg?v=3" alt="" style={{ display: "block", height: vp.isMobile ? "44px" : "64px", width: "auto", margin: 0 }} />
+              {/* Live ™ glyph rendered as text (accessible via aria-label
+                  on the wrapping span below) so screen readers announce
+                  "RouteSmith trademark" once, not twice. */}
+              <sup aria-hidden="true" style={{ fontSize: vp.isMobile ? "11px" : "14px", fontFamily: "var(--font-sans)", fontWeight: 500, color: "var(--color-text-secondary)", lineHeight: 1, marginTop: "4px", letterSpacing: 0 }}>™</sup>
+            </span>
             <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
               <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Powered by</span>
               <img
