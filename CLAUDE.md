@@ -221,6 +221,34 @@ Before pushing to master, run through:
 The Playwright script at `scratchpad/qa_final.mjs` in the session scratchpad covers all 8.
 Re-run it or adapt it. 56/56 checks passing on 2026-07-02 is the baseline.
 
+### Never say "deployed" / "should be live" / "reload and check" without having looked
+
+**The user's explicit complaint (2026-08-01):** after merging a fix to `master`, an agent told
+the user to reload routesmith.ai and see if it worked — instead of loading routesmith.ai itself
+and looking first. The user's words: "Hardwire this into future behavior do not guess when you
+are fixing things like this pull up the actual browser and look at it. I am sick of you wasting
+my money on tokens for you to guess and make up bullshit."
+
+"Verified locally" and "verified in production" are two different claims. Do not blur them.
+
+- A fix confirmed on the local dev server (`npm run dev` + Playwright) is evidence the CODE
+  works. It is NOT evidence the DEPLOY worked, or that the user is looking at the new build.
+  Say exactly which one you checked. Never let "it's fixed" imply the second when you only
+  checked the first.
+- Before telling the user to go check something themselves, load the actual URL yourself with
+  Chromium (`/opt/pw-browsers/chromium`) and look. If you can look, look — don't delegate the
+  looking back to the user and call it done.
+- **Known constraint, discovered 2026-08-01: this sandbox's egress policy blocks outbound
+  HTTPS to `routesmith.ai` (proxy returns 403 on CONNECT).** Check
+  `curl -sS http://127.0.0.1:34811/__agentproxy/status` (or equivalent for the current
+  environment) once, up front, before promising to "pull up the browser and check prod." If the
+  live domain is unreachable, say so immediately and plainly — do not retry, do not route around
+  it, and do not fall back to guessing dressed up as an answer. Verify what you can (the merge
+  happened, the local build renders correctly) and be explicit about the one thing you couldn't
+  check and why.
+- Cloudflare Pages deploys are not instant. A push to `master` does not mean the edge is serving
+  the new build yet. "I pushed it" and "it's live" are different facts — do not collapse them.
+
 ---
 
 ## KEY TECHNICAL PATTERNS (learned 2026-07-01 → 07-02)
