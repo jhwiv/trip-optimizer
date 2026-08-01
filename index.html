@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
@@ -100,15 +100,25 @@
         --color-gold: #e7e9ee;
       }
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-      /* Aggressive horizontal containment for iOS Chrome.
+      /* Aggressive horizontal containment for iOS Safari and Chrome.
          html, body, AND #root all clip horizontally so no descendant can
-         force a horizontal scroll, even when transforms or absolute positioning
-         try to escape. position: relative on root is required for clip to work
-         on iOS as a containing block. */
+         force a horizontal scroll, even when transforms, absolute positioning,
+         iOS Safari page zoom, URL-bar chrome animations, or the visual
+         viewport differing from the layout viewport try to escape.
+         overflow-x: clip (stricter than hidden) + contain: paint on #root
+         guarantee no descendant paints past the visual viewport.
+         position: relative on root is required for clip to work on iOS as a
+         containing block. */
       html, body {
         width: 100%;
+        /* 100dvw excludes iOS Safari chrome (URL bar / bottom bar) reliably;
+           100vw is a fallback for older browsers. overflow-x: clip is stricter
+           than hidden — it never creates a scroll container, so no descendant
+           can trigger a horizontal scroll even under text zoom or when the
+           browser toolbar animates. */
         max-width: 100vw;
-        overflow-x: hidden;
+        max-width: 100dvw;
+        overflow-x: clip;
         overscroll-behavior-x: none;
       }
       body {
@@ -123,7 +133,13 @@
       #root {
         width: 100%;
         max-width: 100vw;
-        overflow-x: hidden;
+        max-width: 100dvw;
+        /* overflow-x: clip + contain: paint means anything a child paints past
+           the right edge (absolute positioning, transforms, oversized inline
+           images, iOS Safari page-zoom widening the column) is clipped to the
+           root's paint box and cannot force horizontal scroll. */
+        overflow-x: clip;
+        contain: paint;
         position: relative;
       }
       /* Prevent any long word/URL from blowing out a container and shifting layout */
