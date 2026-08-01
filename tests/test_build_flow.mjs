@@ -118,5 +118,43 @@ assert(
   "Step 1 Continue should land on the Details sub-view, not Outputs"
 );
 
+// --- 7. Narrative mode lands on Outputs, not Details ----------------------
+//
+// Regression guard for 25bd571, which flipped this one boolean to false and
+// stranded narrative users on the Details form — the sub-view that assertion
+// set 4 above proves has no build trigger at all. Cheap source-text belt; the
+// full click-through lives in tests/qa_narrative_to_outputs.mjs.
+console.log("\n[narrative defer-nav lands on outputs]");
+const deferIdx = SRC.indexOf("if (!pendingBuildFromGuidelines) return;");
+assert("the defer-nav effect is still findable", deferIdx > -1);
+// The effect ends at its dependency array; slice to there so nothing after it
+// can satisfy these assertions.
+// Comments are stripped so the "No handleBuild() here" note below the
+// navigation calls can't satisfy the last assertion.
+const deferBody = SRC
+  .slice(deferIdx, SRC.indexOf("}, [pendingBuildFromGuidelines", deferIdx))
+  .replace(/\/\/[^\n]*/g, "");
+assert(
+  "defer-nav sets outputsStep=true before setStep(2)",
+  /setOutputsStep\(true\);\s*setStep\(2\);/.test(deferBody),
+  "narrative mode must land on Outputs — Details has no handleBuild call site"
+);
+assert(
+  "defer-nav does NOT send step 2 to the Details form",
+  !/setOutputsStep\(false\);\s*setStep\(2\);/.test(deferBody),
+  "this is the 25bd571 regression: outputsStep=false strands the user"
+);
+// The no-destination branch bails to step 1, where outputsStep is meaningless.
+assert(
+  "the no-destination branch still resets to step 1",
+  /setOutputsStep\(false\);\s*setStep\(1\);/.test(deferBody),
+  "the error path should return to Essentials, not Outputs"
+);
+assert(
+  "defer-nav still does not start the build itself",
+  !deferBody.includes("handleBuild("),
+  "the user must confirm output choices before a build starts (df5051e)"
+);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
