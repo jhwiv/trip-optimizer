@@ -15070,11 +15070,17 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         return;
       }
       // Clear the extraction loading message now that extraction is done.
-      // Land on ESSENTIALS (not DETAILS) so the user sees the extracted
-      // destination + build button immediately, not the outputs config.
+      // Land on the OUTPUTS pane — step 2 with outputsStep=true. The wizard
+      // carries two orthogonal state pieces (`step` and `outputsStep`, declared
+      // together near the top of this component), so step 2 has two sub-panes:
+      // the Details form (outputsStep=false) and Outputs (outputsStep=true).
+      // The stepper labels BOTH of them "Details", which makes them easy to
+      // confuse — but only Outputs renders the build trigger, and handleBuild
+      // has exactly one call site. Landing on the Details form leaves the
+      // narrative user with no way to start the build.
       setPendingBuildFromGuidelines(false);
       setLoadingMsg("");
-      setOutputsStep(false);
+      setOutputsStep(true);
       setStep(2);
       // No handleBuild() here — user chooses outputs/sources then clicks the button.
     }, 0);
