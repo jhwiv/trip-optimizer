@@ -10,8 +10,8 @@
 //   1. Step 2 is split by an `outputsStep` boolean that defaults to false.
 //   2. The Details sub-view advances with a "Jump to select outputs" button
 //      that ONLY navigates (sets outputsStep=true) — it never starts a build.
-//   3. The build trigger is a single "Build itinerary" button, and it is the
-//      only thing wired to handleBuild in the Step-2 render.
+//   3. The build trigger is a single "Plan my trip" button, and handleBuild
+//      reaches it only via PreBuildScreen's `onBuild` prop.
 //   4. The Details sub-view contains neither the build trigger (handleBuild)
 //      nor the progress panel — so reaching output selection cannot start a
 //      build or show progress (the premature-build bug this fix addresses).
@@ -69,14 +69,30 @@ assert(
   "Jump button must not start a build"
 );
 
-// The "Plan my trip" button's onClick must be handleBuild.
+// The "Plan my trip" button's onClick must be the build trigger. The button
+// moved into the PreBuildScreen component, which receives handleBuild as its
+// `onBuild` prop, so the wiring is now checked in both halves — the CTA calls
+// its prop, and the call site passes handleBuild to that prop. Asserting only
+// one half would let the chain be broken at the other end.
 const buildIdx = SRC.search(buildLabel);
 const buildBtnStart = SRC.lastIndexOf("<button", buildIdx);
 const buildBtnTag = SRC.slice(buildBtnStart, buildIdx);
 assert(
-  "Plan my trip button is wired to handleBuild",
-  /onClick=\{handleBuild\}/.test(buildBtnTag),
+  "Plan my trip button is wired to its build-trigger prop",
+  /onClick=\{onBuild\}/.test(buildBtnTag),
   buildBtnTag.slice(0, 160)
+);
+const preBuildCallIdx = SRC.indexOf("<PreBuildScreen");
+assert(
+  "PreBuildScreen is rendered by the wizard",
+  preBuildCallIdx > -1,
+  "could not find the <PreBuildScreen ... /> call site"
+);
+const preBuildCall = SRC.slice(preBuildCallIdx, SRC.indexOf("/>", preBuildCallIdx));
+assert(
+  "PreBuildScreen receives handleBuild as onBuild",
+  /onBuild=\{handleBuild\}/.test(preBuildCall),
+  "the pre-build screen's build trigger must be handleBuild"
 );
 
 // --- 4. Details sub-view has no build trigger / no progress panel ---------
@@ -106,8 +122,8 @@ assert(
 );
 assert(
   "progress panel renders after the build trigger (outputs sub-view)",
-  SRC.indexOf(progressGateStr) > buildIdx,
-  "progress panel should follow the Build itinerary button in source order"
+  SRC.indexOf(progressGateStr) > preBuildCallIdx,
+  "progress panel should follow the pre-build screen in source order"
 );
 
 // --- 6. Step 1 → Step 2 resets to the Details sub-view --------------------

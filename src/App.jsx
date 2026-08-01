@@ -26,6 +26,7 @@ import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntrod
 import { shouldShowWelcome, markWelcomeDismissed, detectPlatform } from "./appIntro.js";
 import { partitionTabs, isActiveTabInOverflow, activeOverflowLabel } from "./tabStrip.js";
 import { savePdfShareFirst } from "./pdf/savePdfShareFirst.js";
+import { resolveDynamicSources } from "./citySources.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -12214,6 +12215,189 @@ function BuildAndReviewOverlay({
   );
 }
 
+// Collapse a preview value to a display string, or null when there's nothing
+// to show. Arrays flatten to a comma list so a chip field reads as prose.
+function preBuildText(v) {
+  const flat = Array.isArray(v) ? v.filter(Boolean).join(", ") : v;
+  const s = flat === 0 || flat ? String(flat).trim() : "";
+  return s || null;
+}
+
+// One line of the read-only trip summary. Empty fields render as "not
+// specified" rather than disappearing: a gap in the plan is the single most
+// useful thing this screen can show, and a hidden row reads as "we've got
+// it covered".
+function PreBuildRow({ label, value }) {
+  const shown = preBuildText(value);
+  return (
+    <div style={{ display: "flex", gap: "12px", padding: "7px 0", borderBottom: "0.5px solid var(--color-border-tertiary)", alignItems: "baseline" }}>
+      <span style={{ flex: "0 0 34%", fontSize: "10.5px", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--color-text-secondary)" }}>{label}</span>
+      <span style={{ flex: 1, fontSize: "13px", lineHeight: 1.5, color: "var(--color-text-primary)", minWidth: 0, overflowWrap: "anywhere" }}>
+        {shown ?? <span style={{ color: "var(--color-text-tertiary)", fontStyle: "italic" }}>not specified</span>}
+      </span>
+    </div>
+  );
+}
+
+// Pre-build review-and-launch screen. This is the last surface before a
+// build starts, so it answers one question: "is this what you meant?".
+//
+// It is a destination, not a card inside the Details form — the caller
+// suppresses the wizard chrome while it is up. The trip summary is
+// deliberately READ-ONLY: editing lives one tap back, on the Details form,
+// so there is exactly one place a value can be changed and the preview can
+// never disagree with what gets sent to the build.
+function PreBuildScreen({
+  basics, flights, hotel, restaurants, activities, mealPolicyText,
+  dynamicSources, outputs, outputDefs, togOut, activeCount,
+  reviewerSourceIds, setReviewerSourceIds,
+  extractingFromGuidelines, loading, onBack, onBuild, onCancel,
+  cardStyleR, vp,
+}) {
+  const dates = basics.startDate && basics.endDate
+    ? `${basics.startDate} → ${basics.endDate}`
+    : basics.startDate || basics.endDate;
+  const cityLine = (basics.cities || [])
+    .filter((c) => c && c.name)
+    .map((c) => (preBuildText(c.nights) ? `${c.name} (${c.nights} nights)` : c.name));
+  const flightLine = flights.noFlight
+    ? "No flights — arriving another way"
+    : [flights.homeAirport, flights.airline, flights.cabin, flights.flex];
+
+  return (
+    <div>
+      <p style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, color: ACCENT_DARK, margin: "0 0 6px" }}>
+        Last step
+      </p>
+      <p style={{ fontSize: vp.isMobile ? "19px" : "22px", fontWeight: 600, margin: "0 0 4px", lineHeight: 1.25 }}>
+        Ready to build{basics.destination ? ` · ${basics.destination}` : ""}
+      </p>
+      <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 1.25rem", lineHeight: 1.5, maxWidth: "56ch" }}>
+        Review before we start. Anything wrong or missing — go back to edit.
+      </p>
+
+      <div style={cardStyleR}>
+        <p style={ctStyle}>What we understood</p>
+        <PreBuildRow label="Destination" value={basics.destination} />
+        <PreBuildRow label="Dates" value={dates} />
+        <PreBuildRow label="Nights" value={basics.nights} />
+        <PreBuildRow label="Travelers" value={basics.travelers} />
+        <PreBuildRow label="Cities" value={cityLine} />
+        <PreBuildRow label="Base area" value={basics.baseArea} />
+        <PreBuildRow label="Pace" value={basics.pace} />
+        <PreBuildRow label="Style" value={basics.style} />
+        <PreBuildRow label="Budget" value={basics.budget} />
+        <PreBuildRow label="Flights" value={flightLine} />
+        <PreBuildRow label="Hotel" value={[...(hotel.brand || []), hotel.tier, hotel.mustHave]} />
+        <PreBuildRow label="Restaurants" value={restaurants} />
+        <PreBuildRow label="Activities" value={activities} />
+        <PreBuildRow label="Meals" value={mealPolicyText} />
+        <button
+          type="button"
+          onClick={onBack}
+          style={{ marginTop: "12px", background: "transparent", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: "11px", letterSpacing: "0.06em", color: ACCENT, textDecoration: "underline" }}
+        >
+          Back to edit these
+        </button>
+      </div>
+
+      <div style={cardStyleR}>
+        <p style={ctStyle}>{`Output sections  ·  ${activeCount} of 12 active`}</p>
+        {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} disabled={k === "itinerary"} />)}
+      </div>
+
+      {/* #8 Pre-build expert-review source picker. The review runs
+          automatically after the build (#8 part 1); choosing the sources
+          HERE means the pre-build local-knowledge pass and the auto-review
+          both use exactly what the user wants. Selected = navy pill w/
+          light label (ON_ACCENT, avoiding the navy-on-navy contrast bug). */}
+      <div style={cardStyleR}>
+        <p style={ctStyle}>{`Expert review sources  ·  ${reviewerSourceIds.length} selected`}</p>
+        <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 10px", lineHeight: 1.4 }}>
+          After the build, a panel of these sources reviews your plan and suggests fixes. Tap to add or remove.
+        </p>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+          {REVIEWER_SOURCES.filter(s => s.lens !== "hyperlocal").map(s => {
+            const on = reviewerSourceIds.includes(s.id);
+            return (
+              <button
+                key={s.id}
+                type="button"
+                title={s.blurb}
+                onClick={() => setReviewerSourceIds(prev => prev.includes(s.id) ? prev.filter(x => x !== s.id) : [...prev, s.id])}
+                style={{ fontSize: "11px", padding: "6px 12px", borderRadius: "999px", border: `0.5px solid ${on ? "var(--color-text-primary)" : "var(--color-border-secondary)"}`, background: on ? "var(--color-text-primary)" : "transparent", color: on ? ON_ACCENT : "var(--color-text-secondary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", whiteSpace: "nowrap" }}
+              >{on ? "✓ " : ""}{s.name}</button>
+            );
+          })}
+        </div>
+        {/* Auto-added city sources. Not toggleable: the server resolves these
+            from the destination and the client only mirrors the labels, so a
+            toggle here would be a control that doesn't control anything. */}
+        {dynamicSources.length > 0 && (
+          <div style={{ marginTop: "14px", paddingTop: "12px", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 8px", lineHeight: 1.4 }}>
+              Auto-added for this destination:
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+              {dynamicSources.map(s => (
+                <span
+                  key={s.id}
+                  title="Added automatically from your destination"
+                  style={{ fontSize: "11px", padding: "6px 12px", borderRadius: "999px", border: `0.5px dashed ${ACCENT}`, background: ACCENT_LIGHT, color: ACCENT_DARK, fontFamily: "inherit", letterSpacing: "0.02em", whiteSpace: "nowrap" }}
+                >+ {s.label}</span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Fixed action bar. The screen's content is taller than a 390×844
+          viewport no matter how it is arranged, and `position: sticky` is
+          inert app-wide (index.html sets overflow-x on html/body/#root, which
+          resolves overflow-y to `auto` and gives sticky a scroll container it
+          can't escape). Pinning matches BuildAndReviewOverlay's bottom sheet
+          and keeps the build trigger reachable without scrolling. */}
+      <div style={{
+        position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 700,
+        background: "var(--color-background-primary)",
+        borderTop: "0.5px solid var(--color-border-secondary)",
+        boxShadow: "0 -6px 24px rgba(0,0,0,0.10)",
+        padding: vp.isMobile ? "12px 1rem calc(14px + env(safe-area-inset-bottom))" : "14px 1.5rem 16px",
+      }}>
+        <div style={{ maxWidth: vp.isMobile ? "100%" : "960px", margin: "0 auto" }}>
+          <div style={{ display: "flex", gap: "10px" }}>
+            <button onClick={onBack} disabled={loading} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", opacity: loading ? 0.5 : 1 }}>← Back</button>
+            {loading ? (
+              <button onClick={onCancel}
+                style={{ flex: 1, border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}>
+                Cancel
+              </button>
+            ) : extractingFromGuidelines ? (
+              // Extraction is fast (~2s) and not cancellable. Show a disabled
+              // "reading…" state so the user knows the build is in motion;
+              // the loading panel below renders the actual spinner + label.
+              <button disabled aria-busy="true"
+                style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "not-allowed", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", opacity: 0.7 }}>
+                Reading your narrative…
+              </button>
+            ) : (
+              <button onClick={onBuild} disabled={loading}
+                style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
+                Plan my trip
+              </button>
+            )}
+          </div>
+          {!loading && (
+            <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "8px 0 0", textAlign: "center", lineHeight: 1.5, fontStyle: "italic" }}>
+              Every venue verified open · Plans draw on Michelin, Condé Nast Traveler, NYT&nbsp;36&nbsp;Hours, Eater, and more
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function TripOptimizer() {
 
   // Viewport awareness drives a few container widths so the wizard form
@@ -12807,24 +12991,20 @@ export default function TripOptimizer() {
   // the state change — i.e. before the new (taller) screen painted — so the
   // browser kept a stale offset and the user landed partway down (on the newly
   // added Expert review sources card) instead of the Output sections card.
-  // Scrolling in an effect after the render lands it correctly, and fixes all
-  // entry points at once. (Same scroll-before-render class as the #2 fix.)
+  // Pre-warms the PDF module when the pre-build screen opens so the dynamic
+  // import resolves before the user finishes reading and clicks "Save as
+  // PDF". jsPDF is ~500 KB; starting the fetch now hides the cold-load
+  // latency behind the time the user spends reviewing the plan.
   //
-  // Also pre-warms the PDF module here so the dynamic import resolves
-  // before the user finishes reading and clicks "Save as PDF". jsPDF is
-  // ~500 KB; starting the fetch now hides the cold-load latency behind
-  // the time the user spends reviewing the plan.
+  // This used to also scroll to top. It no longer does: each entry point
+  // scrolls itself, instantly, at the moment it sets outputsStep. Doing it
+  // here as well meant the narrative path fired an instant scroll and then a
+  // smooth one a frame later, which read as the page jumping and then
+  // sliding for no reason.
   useEffect(() => {
     if (!outputsStep) return;
-    // Pre-warm PDF module while the user chooses options.
     import("./pdf/itineraryPdf.js").catch(() => {});
     import("jspdf").catch(() => {});
-    // Defer past this render so the (taller) outputs screen has painted first;
-    // a 0ms timeout lands after layout. (rAF isn't in the lint globals here.)
-    const id = setTimeout(() => {
-      try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); }
-    }, 0);
-    return () => clearTimeout(id);
   }, [outputsStep]);
 
   // Itinerary is locked on; never let it be toggled into an empty build.
@@ -15258,6 +15438,30 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   // wide desktops while the cards sit in a centered column.
   const colMaxWidth = vp.isMobile ? "100%" : vp.isTablet ? "720px" : vp.isDesktop ? "960px" : "1180px";
 
+  // The pre-build screen is a destination in its own right, not a card inside
+  // the Details form. When it is up, the wizard chrome (mode toggle, hero
+  // banner, stepper, the step-2 "← Essentials" row) is suppressed so the
+  // review-and-launch surface owns the viewport.
+  const showPreBuild = !findOnly && step === 2 && outputsStep;
+
+  // Preview-only mirror of the sources the server will auto-add. The server
+  // is the one that actually resolves them (see functions/api/review-retrieve.js);
+  // this call exists so the screen can name them, and both sides read the
+  // same registry so the labels can't drift from what actually gets queried.
+  const dynamicSourcePreview = showPreBuild
+    ? resolveDynamicSources(basics.cities?.[0]?.name || basics.destination)
+    : [];
+
+  // Same classifier call the build prompt makes (see the dynamic preamble
+  // assembly below), so the preview can never claim a meal policy the build
+  // won't apply.
+  const mealPolicySummary = (() => {
+    if (!showPreBuild) return "";
+    const p = classifyMealPolicy({ narrative, guidelines, dining, restaurants });
+    const word = (s) => (s === "included" ? "planned" : s === "excluded" ? "excluded" : "not requested");
+    return `Dinner planned · Breakfast ${word(p.breakfast)} · Lunch ${word(p.lunch)}`;
+  })();
+
   return (
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--color-text-primary)" }}>
 
@@ -15309,13 +15513,14 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             <span>Reset</span>
           </button>
         </div>
-        <hr style={{ border: "none", borderTop: `1px solid ${ACCENT}`, width: "32px", margin: "14px 0 18px" }} />
+        {!showPreBuild && <hr style={{ border: "none", borderTop: `1px solid ${ACCENT}`, width: "32px", margin: "14px 0 18px" }} />}
 
         {/* Single primary surface (full trip build) with a mode toggle for
             find-only. The toggle lives here — outside the wizard module — so
             flipping it swaps the whole body to the inline FindView without
             navigating to /find. The intro copy tracks the active mode so the
             header never reads as an orphaned card. */}
+        {!showPreBuild && (
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px", flexWrap: "wrap" }}>
           <div style={{ minWidth: 0, flex: "1 1 280px" }}>
             <p style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, color: ACCENT_DARK, margin: "0 0 6px" }}>
@@ -15368,11 +15573,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             </span>
           </button>
         </div>
+        )}
         </div>
       </div>
 
       {/* Welcome banner — shown after arriving from the hero carousel */}
-      {heroEntry && basics.destination && (
+      {!showPreBuild && heroEntry && basics.destination && (
         <div style={{
           background: `${heroEntry.accent}18`,
           borderBottom: `0.5px solid ${heroEntry.accent}35`,
@@ -15422,6 +15628,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             plan pill is only navigable when a result exists; Essentials
             and Details are always navigable. Current step is bold + teal,
             other navigable steps render as buttons styled like text. */}
+        {!showPreBuild && (
         <div style={{ marginBottom: "1.75rem" }}>
           {/* Thin gradient progress bar */}
           <div style={{ height: "2px", background: "var(--color-border-tertiary)", borderRadius: "2px", marginBottom: "10px", overflow: "hidden" }}>
@@ -15470,6 +15677,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             </span>
           </div>
         </div>
+        )}
 
         {step === 1 && (
           <div>
@@ -15677,6 +15885,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
         {step === 2 && (
           <div>
+            {!showPreBuild && (
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", gap: "10px" }}>
               <button
                 type="button"
@@ -15724,7 +15933,8 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                 ← Essentials
               </button>
             </div>
-            <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={dismissStale} />
+            )}
+            {!showPreBuild && <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={dismissStale} />}
 
             {/* Step 2 is a two-screen flow. The Details screen collects the
                 structured inputs + the written description; the build trigger
@@ -15808,76 +16018,39 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
             {/* Primary CTA off the Details screen — pure navigation to the
                 Outputs screen. It does NOT start a build (see Issue 1). */}
-            <button onClick={() => { setOutputsStep(true); /* #20 scroll handled by the outputsStep effect (after render) */ }}
+            <button onClick={() => { setOutputsStep(true); try { window.scrollTo({ top: 0, left: 0, behavior: "instant" }); } catch { window.scrollTo(0, 0); } }}
               style={{ border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", width: "100%", marginTop: "0.25rem", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
               Jump to select outputs →
             </button>
             </>
             ) : (
             <>
-            {/* OUTPUTS SCREEN — the output-section choices plus the single build
-                trigger. The progress panel only mounts here, and only once
-                `loading` is true from an explicit "Build itinerary" tap. */}
-            <div style={cardStyleR}>
-              <p style={ctStyle}>{`Output sections  ·  ${activeCount} of 12 active`}</p>
-              {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} disabled={k === "itinerary"} />)}
-            </div>
-
-            {/* #8 Pre-build expert-review source picker. The review runs
-                automatically after the build (#8 part 1); choosing the sources
-                HERE means the pre-build local-knowledge pass and the auto-review
-                both use exactly what the user wants. Selected = navy pill w/
-                light label (ON_ACCENT, avoiding the navy-on-navy contrast bug). */}
-            {!findOnly && (
-              <div style={cardStyleR}>
-                <p style={ctStyle}>{`Expert review sources  ·  ${reviewerSourceIds.length} selected`}</p>
-                <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 10px", lineHeight: 1.4 }}>
-                  After the build, a panel of these sources reviews your plan and suggests fixes. Tap to add or remove.
-                </p>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-                  {REVIEWER_SOURCES.filter(s => s.lens !== "hyperlocal").map(s => {
-                    const on = reviewerSourceIds.includes(s.id);
-                    return (
-                      <button
-                        key={s.id}
-                        type="button"
-                        title={s.blurb}
-                        onClick={() => setReviewerSourceIds(prev => prev.includes(s.id) ? prev.filter(x => x !== s.id) : [...prev, s.id])}
-                        style={{ fontSize: "11px", padding: "6px 12px", borderRadius: "999px", border: `0.5px solid ${on ? "var(--color-text-primary)" : "var(--color-border-secondary)"}`, background: on ? "var(--color-text-primary)" : "transparent", color: on ? ON_ACCENT : "var(--color-text-secondary)", fontWeight: on ? 600 : 400, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em", whiteSpace: "nowrap" }}
-                      >{on ? "\u2713 " : ""}{s.name}</button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            <div style={{ display: "flex", gap: "10px", marginTop: "0.5rem" }}>
-              <button onClick={() => { setOutputsStep(false); try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }} disabled={loading} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", opacity: loading ? 0.5 : 1 }}>← Back</button>
-              {loading ? (
-                <button onClick={handleCancel}
-                  style={{ flex: 1, border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}>
-                  Cancel
-                </button>
-              ) : extractingFromGuidelines ? (
-                // Extraction is fast (~2s) and not cancellable. Show a disabled
-                // "reading…" state so the user knows the build is in motion;
-                // the loading panel below renders the actual spinner + label.
-                <button disabled aria-busy="true"
-                  style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "not-allowed", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", opacity: 0.7 }}>
-                  Reading your narrative…
-                </button>
-              ) : (
-                <button onClick={handleBuild} disabled={loading}
-                  style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
-                  Plan my trip
-                </button>
-              )}
-            </div>
-            {!loading && (
-              <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", marginTop: "10px", textAlign: "center", lineHeight: 1.7, fontStyle: "italic" }}>
-                Every venue verified open · Plans draw on Michelin, Condé Nast Traveler, NYT&nbsp;36&nbsp;Hours, Eater, and more
-              </p>
-            )}
+            {/* PRE-BUILD SCREEN — read-only trip summary, output-section
+                choices, review sources, and the single build trigger. The
+                progress panel only mounts here, and only once `loading` is
+                true from an explicit "Plan my trip" tap. */}
+            <PreBuildScreen
+              basics={basics}
+              flights={flights}
+              hotel={hotel}
+              restaurants={restaurants}
+              activities={activities}
+              mealPolicyText={mealPolicySummary}
+              dynamicSources={dynamicSourcePreview}
+              outputs={outputs}
+              outputDefs={outputDefs}
+              togOut={togOut}
+              activeCount={activeCount}
+              reviewerSourceIds={reviewerSourceIds}
+              setReviewerSourceIds={setReviewerSourceIds}
+              extractingFromGuidelines={extractingFromGuidelines}
+              loading={loading}
+              onBack={() => { setOutputsStep(false); try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }}
+              onBuild={handleBuild}
+              onCancel={handleCancel}
+              cardStyleR={cardStyleR}
+              vp={vp}
+            />
             {/* Uncertain-name confirmation. Surfaces as a modal card so the
                 question is impossible to miss regardless of scroll position. */}
             {pendingNameChecks && pendingNameChecks.checks.length > 0 && (
@@ -15983,6 +16156,9 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               }
               return "Can take more than 5 minutes. Stays building if you switch tabs.";
             })()}</p>
+            {/* Clearance for the pre-build screen's fixed action bar. Last in
+                flow so the caption above it isn't stranded in dead space. */}
+            <div style={{ height: "168px" }} aria-hidden="true" />
             </>
             )}
           </div>
