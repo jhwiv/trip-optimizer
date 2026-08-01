@@ -101,6 +101,13 @@ function writeCache(env, key, results, ctx) {
   if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(p);
 }
 
+// Shared with the client, which renders the same entries as "auto-added"
+// chips on the pre-build screen. Importing from src/ inside a Pages Function
+// is established here (see places-verify.js → src/nameMatch.js and
+// share.js → src/webExport.js); one copy means the labels the user is shown
+// can't drift from the queries actually issued.
+import { resolveDynamicSources } from "../../src/citySources.js";
+
 // Map each reviewer source id → query builder + domain filter.
 // `q(ctx)` returns the single best query for that source given trip context.
 // `domains` scopes Sonar to authoritative URLs only (max 20 per Sonar docs).
@@ -303,6 +310,29 @@ export async function onRequestPost(context) {
         recency: cfg.recency || null,
       };
     });
+
+  // Auto-add the destination's own subreddit and local press. Resolved here
+  // rather than sent by the client because the client only ever transmits
+  // source ids, and ids not in SOURCE_CONFIG are silently dropped by the
+  // filter above — a client-invented id would vanish without an error.
+  //
+  // Capped at the two the registry returns (one subreddit, one press bundle)
+  // for the first city only: the pre-build pass runs against a 15s budget
+  // that the six default sources already consume 5–10s of.
+  for (const dyn of resolveDynamicSources(ctx.destination)) {
+    if (queries.some((q) => q.source_id === dyn.id)) continue;
+    queries.push({
+      source_id: dyn.id,
+      source_name: dyn.label,
+      // A subreddit can't be expressed as a domain filter — reddit.com is a
+      // single host — so it has to be named in the query text instead.
+      query: dyn.kind === "reddit"
+        ? `r/${dyn.subreddit} ${ctx.destination} restaurant and activity recommendations from locals`
+        : `${ctx.destination} restaurant openings, closures and things to do`,
+      domains: dyn.domains,
+      recency: dyn.kind === "press" ? "year" : null,
+    });
+  }
 
   if (queries.length === 0) {
     return json({

@@ -82,8 +82,8 @@ const ndjson = (text) => [
 // body: submit_review is the post-build review, everything else is the build.
 const buildCalls = [];
 
-async function makePage(browser) {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+async function makePage(browser, viewport = { width: 1280, height: 900 }) {
+  const ctx = await browser.newContext({ viewport });
   const page = await ctx.newPage();
   const errs = [];
   page.on('console', m => {
@@ -141,13 +141,44 @@ chk('lands on a pane showing "Output sections"', landed);
 await page.screenshot({ path: join(SC, 'qa_narrative_outputs_pane.png'), fullPage: true });
 
 const body = await page.locator('body').innerText();
-chk('stepper reports step 2', /2\s*\/\s*3/.test(body), body.slice(0, 80));
+// The pre-build screen is a destination, not a wizard sub-pane, so it hides
+// the stepper rather than showing "2 / 3". A visible step counter here means
+// the screen was only half-promoted.
+chk('the stepper is hidden on the pre-build screen', !/\d\s*\/\s*3/.test(body), body.slice(0, 120));
 chk('Outputs pane marker: "Output sections · N of 12 active"',
   /output sections\s*·\s*\d+ of 12 active/i.test(body));
 chk('Outputs pane marker: "Expert review sources"',
   /expert review sources/i.test(body));
 chk('Outputs pane marker: "← Back" to the Details form',
   await page.locator('button').filter({ hasText: /←\s*Back/ }).first().isVisible().catch(() => false));
+
+console.log('\n── The read-only trip preview ──\n');
+chk('the screen is titled for the destination', /ready to build\s*·\s*porto/i.test(body), body.slice(0, 120));
+chk('the summary card renders', /what we understood/i.test(body));
+chk('the destination the extractor found is shown', /destination\s*\n?\s*porto/i.test(body));
+// The narrative names no travelers, so that row must say so rather than
+// disappear — surfacing the gap is the point of the preview.
+chk('unfilled fields read "not specified"', /not specified/i.test(body));
+chk('the meal-policy line is present', /breakfast\s+not requested/i.test(body), body.slice(0, 200));
+// Read-only: the SUMMARY CARD must not be editable in place. (The output
+// toggles further down the screen are controls by design, so scope the count
+// to the card rather than the page.)
+const summaryInputs = await page.evaluate(() => {
+  const heading = [...document.querySelectorAll('p')].find(p => /what we understood/i.test(p.textContent || ''));
+  const card = heading && heading.parentElement;
+  return card ? card.querySelectorAll('input, textarea, select, [contenteditable="true"]').length : -1;
+});
+chk('the summary card exposes no editable trip fields', summaryInputs === 0, `found ${summaryInputs}`);
+chk('editing is one tap away',
+  await page.locator('button').filter({ hasText: /back to edit these/i }).count() === 1);
+
+console.log('\n── Auto-added city sources (Porto is in the registry) ──\n');
+chk('the auto-added heading renders', /auto-added for this destination/i.test(body));
+chk('the subreddit chip names the real subreddit', /\+\s*r\/porto/i.test(body), body.slice(0, 200));
+chk('the local-press chip renders', /\+\s*porto local press/i.test(body));
+// These are resolved server-side; a toggle here would control nothing.
+chk('auto-added chips are not buttons',
+  await page.locator('button').filter({ hasText: /^\+\s*r\/porto$/i }).count() === 0);
 
 // The Details form's CTA. Its presence would mean we are on the wrong pane —
 // this is the exact symptom 25bd571 produced.
@@ -182,6 +213,53 @@ if (haveBuildBtn) {
 chk('zero console errors', errs.length === 0, errs.join(' | ').slice(0, 300));
 
 await ctx.close();
+
+// ── Mobile: the CTA must be reachable without scrolling ────────────────────
+//
+// The pre-build screen carries a summary card, twelve output toggles and
+// sixteen source chips; it is taller than a phone viewport no matter how it
+// is arranged. position:sticky is inert app-wide (index.html sets overflow-x
+// on html/body/#root, which resolves overflow-y to `auto`), so the action bar
+// is pinned with position:fixed instead. This proves it lands in-viewport on
+// the smallest phone we target, before any scrolling.
+console.log('\n── Mobile 390×844: the build CTA is above the fold ──\n');
+const { page: mp, ctx: mctx, errs: merrs } = await makePage(browser, { width: 390, height: 844 });
+await mp.goto(`${APP}?direct=1`, { waitUntil: 'domcontentloaded' });
+const mta = mp.locator('textarea').first();
+const mtaReady = await mta.waitFor({ state: 'visible', timeout: 20000 }).then(() => true).catch(() => false);
+chk('mobile step 1 renders the narrative textarea', mtaReady);
+await mta.fill('Two nights in Porto in September. Moderate budget, no Michelin.');
+await mp.locator('button').filter({ hasText: /plan my trip/i }).first().click();
+const mLanded = await waitForText(mp, 'output sections', 25000);
+chk('mobile lands on the pre-build screen', mLanded);
+await mp.screenshot({ path: join(SC, 'qa_prebuild_mobile_390x844.png'), fullPage: false });
+
+const mBuildBtn = mp.locator('button').filter({ hasText: /^plan my trip$/i }).first();
+const mBox = await mBuildBtn.boundingBox().catch(() => null);
+chk('the build CTA has a layout box', !!mBox, JSON.stringify(mBox));
+chk('the build CTA is inside the 844px viewport without scrolling',
+  !!mBox && mBox.y >= 0 && mBox.y + mBox.height <= 844,
+  mBox ? `y=${Math.round(mBox.y)} h=${Math.round(mBox.height)}` : 'no box');
+const mScrollY = await mp.evaluate(() => window.scrollY);
+chk('the page has not been scrolled', mScrollY === 0, `scrollY=${mScrollY}`);
+// The fixed bar must not sit on top of the last card's content.
+const lastCardClear = await mp.evaluate(() => {
+  const bar = [...document.querySelectorAll('div')].find(d => getComputedStyle(d).position === 'fixed' && getComputedStyle(d).bottom === '0px');
+  if (!bar) return false;
+  return document.body.scrollHeight > window.innerHeight + bar.getBoundingClientRect().height;
+});
+chk('content reserves room below the fixed bar', lastCardClear);
+// Scrolled proof that the auto-added chips render as chips, and that the
+// pinned bar stays pinned once the page moves.
+await mp.locator('text=Auto-added for this destination').scrollIntoViewIfNeeded().catch(() => {});
+await mp.screenshot({ path: join(SC, 'qa_prebuild_mobile_sources.png'), fullPage: false });
+const barStillPinned = await mBuildBtn.boundingBox().catch(() => null);
+chk('the CTA stays pinned after scrolling',
+  !!barStillPinned && barStillPinned.y + barStillPinned.height <= 844,
+  JSON.stringify(barStillPinned));
+chk('mobile: zero console errors', merrs.length === 0, merrs.join(' | ').slice(0, 300));
+
+await mctx.close();
 await browser.close();
 
 if (_failures.length) {
