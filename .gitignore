@@ -5,3 +5,4 @@ dist
 .wrangler
 # Visual regression captures (large binaries; see scripts/visual-baseline.md)
 scripts/visual-baseline/
+scratchpad/

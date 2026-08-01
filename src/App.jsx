@@ -12093,22 +12093,22 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
   );
 }
 
-function BuildAndReviewOverlay({
+// The two-stage build progress display: ① Initial build, ② Expert review.
+// Presentational and position-agnostic on purpose — it renders both inside
+// BuildAndReviewOverlay's bottom sheet (step 3, while the review runs) and
+// inline in the pre-build screen's "Plan my trip" card, where it takes the
+// place of the CTA. One definition so the two surfaces can never drift.
+function BuildPhaseBars({
   loading,
   buildProgress,
   buildProgressLabel,
   loadingMsg,
   buildElapsedSec,
-  onCancelBuild,
   reviewRunning,
   reviewProgress,
   reviewProgressLabel,
   reviewElapsedSec,
-  destination,
 }) {
-  const visible = loading || reviewRunning;
-  if (!visible) return null;
-
   const buildDone = !loading && reviewRunning;
 
   const fmtElapsed = (sec) =>
@@ -12143,6 +12143,91 @@ function BuildAndReviewOverlay({
 
   return (
     <>
+      {/* Stage 1: Initial build */}
+      <div style={{ marginBottom: "18px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "4px" }}>
+          <p style={{ fontSize: "12px", fontWeight: 600, color: buildDone ? "var(--color-text-tertiary)" : "var(--color-text-primary)", margin: 0 }}>
+            {buildDone ? "✓ Initial build" : "① Initial build"}
+          </p>
+          {buildRightLabel && (
+            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums" }}>
+              {buildRightLabel}
+            </p>
+          )}
+        </div>
+        {!buildDone && (
+          <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 6px", minHeight: "16px", lineHeight: 1.4 }}>
+            {buildProgressLabel || loadingMsg || "Working…"}
+          </p>
+        )}
+        {renderBar(buildProgress, buildDone, loading)}
+      </div>
+
+      {/* Stage 2: Expert review */}
+      <div style={{ marginBottom: "22px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "4px" }}>
+          <p style={{ fontSize: "12px", fontWeight: 600, color: reviewRunning ? "var(--color-text-primary)" : "var(--color-text-tertiary)", margin: 0 }}>
+            ② Expert review
+          </p>
+          {reviewRightLabel && (
+            <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums" }}>
+              {reviewRightLabel}
+            </p>
+          )}
+        </div>
+        {reviewRunning && (
+          <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 6px", minHeight: "16px", lineHeight: 1.4 }}>
+            {reviewProgressLabel || "Reviewing your plan…"}
+          </p>
+        )}
+        {renderBar(reviewProgress, false, reviewRunning)}
+      </div>
+    </>
+  );
+}
+
+// Cancel control for a build in flight. Shared by the overlay and the
+// pre-build screen's card #4 so the two can't diverge in wording or weight.
+function BuildCancelButton({ onCancel }) {
+  return (
+    <button
+      onClick={onCancel}
+      style={{
+        width: "100%", border: "0.5px solid var(--color-border-secondary)",
+        borderRadius: "var(--border-radius-md)", padding: "10px 16px",
+        fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase",
+        cursor: "pointer", fontFamily: "inherit",
+        background: "transparent", color: "var(--color-text-secondary)",
+      }}
+    >
+      Cancel
+    </button>
+  );
+}
+
+// Bottom-sheet build progress. Suppressed while the pre-build screen is up —
+// that screen renders the same bars inline, in card #4, so the sheet would be
+// a second copy on top of them. This covers every other context, most
+// importantly the post-build review phase on step 3, by which point the
+// pre-build screen has unmounted and the sheet is the only progress surface.
+function BuildAndReviewOverlay({
+  loading,
+  buildProgress,
+  buildProgressLabel,
+  loadingMsg,
+  buildElapsedSec,
+  onCancelBuild,
+  reviewRunning,
+  reviewProgress,
+  reviewProgressLabel,
+  reviewElapsedSec,
+  destination,
+}) {
+  const visible = loading || reviewRunning;
+  if (!visible) return null;
+
+  return (
+    <>
       <div style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.45)", backdropFilter: "blur(2px)" }} />
       <div style={{
         position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 9999,
@@ -12155,61 +12240,18 @@ function BuildAndReviewOverlay({
         <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.13em", textTransform: "uppercase", margin: "0 0 22px" }}>
           Building your trip{destination ? ` · ${destination}` : ""}
         </p>
-
-        {/* Stage 1: Initial build */}
-        <div style={{ marginBottom: "18px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "4px" }}>
-            <p style={{ fontSize: "12px", fontWeight: 600, color: buildDone ? "var(--color-text-tertiary)" : "var(--color-text-primary)", margin: 0 }}>
-              {buildDone ? "✓ Initial build" : "① Initial build"}
-            </p>
-            {buildRightLabel && (
-              <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums" }}>
-                {buildRightLabel}
-              </p>
-            )}
-          </div>
-          {!buildDone && (
-            <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 6px", minHeight: "16px", lineHeight: 1.4 }}>
-              {buildProgressLabel || loadingMsg || "Working…"}
-            </p>
-          )}
-          {renderBar(buildProgress, buildDone, loading)}
-        </div>
-
-        {/* Stage 2: Expert review */}
-        <div style={{ marginBottom: "22px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "4px" }}>
-            <p style={{ fontSize: "12px", fontWeight: 600, color: reviewRunning ? "var(--color-text-primary)" : "var(--color-text-tertiary)", margin: 0 }}>
-              ② Expert review
-            </p>
-            {reviewRightLabel && (
-              <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: 0, fontVariantNumeric: "tabular-nums" }}>
-                {reviewRightLabel}
-              </p>
-            )}
-          </div>
-          {reviewRunning && (
-            <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 6px", minHeight: "16px", lineHeight: 1.4 }}>
-              {reviewProgressLabel || "Reviewing your plan…"}
-            </p>
-          )}
-          {renderBar(reviewProgress, false, reviewRunning)}
-        </div>
-
-        {loading && (
-          <button
-            onClick={onCancelBuild}
-            style={{
-              width: "100%", border: "0.5px solid var(--color-border-secondary)",
-              borderRadius: "var(--border-radius-md)", padding: "10px 16px",
-              fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase",
-              cursor: "pointer", fontFamily: "inherit",
-              background: "transparent", color: "var(--color-text-secondary)",
-            }}
-          >
-            Cancel
-          </button>
-        )}
+        <BuildPhaseBars
+          loading={loading}
+          buildProgress={buildProgress}
+          buildProgressLabel={buildProgressLabel}
+          loadingMsg={loadingMsg}
+          buildElapsedSec={buildElapsedSec}
+          reviewRunning={reviewRunning}
+          reviewProgress={reviewProgress}
+          reviewProgressLabel={reviewProgressLabel}
+          reviewElapsedSec={reviewElapsedSec}
+        />
+        {loading && <BuildCancelButton onCancel={onCancelBuild} />}
       </div>
     </>
   );
@@ -12223,46 +12265,142 @@ function preBuildText(v) {
   return s || null;
 }
 
-// One line of the read-only trip summary. Empty fields render as "not
-// specified" rather than disappearing: a gap in the plan is the single most
-// useful thing this screen can show, and a hidden row reads as "we've got
-// it covered".
-function PreBuildRow({ label, value }) {
-  const shown = preBuildText(value);
+// One-line "here's what we read out of your prompt" confirmation, composed
+// from whatever extraction actually resolved. Deliberately 2–4 fields, not a
+// full echo: this line is what stays on screen once the card collapses, and
+// its job is to let the user spot a misread destination or night count at a
+// glance. Missing fields are skipped rather than rendered as "not specified" —
+// on a collapsed row, absence of a claim reads better than a column of gaps.
+function extractionSummary(basics) {
+  const nights = preBuildText(basics?.nights);
+  const parts = [
+    nights ? `${nights} night${String(nights).trim() === "1" ? "" : "s"}` : null,
+    preBuildText(basics?.destination),
+    preBuildText(basics?.pace),
+    preBuildText(basics?.style),
+  ].filter(Boolean);
+  return parts.length ? parts.join(", ") : null;
+}
+
+// One phase of the pre-build flow, as a card that expands and collapses.
+//
+// The pre-build screen is a sequence of phases, not a form, so each card
+// carries its own state: `pending` (dimmed, nothing to do yet),
+// `in-progress` (working — content stays visible regardless of `expanded`,
+// with an indeterminate bar), and `done` (collapses to ✓ + a one-line
+// summary + an Edit affordance that re-expands it).
+//
+// The collapsed row deliberately mirrors ReviewPanel's collapse convention
+// (10.5px underlined text button on the right of a summary line) rather than
+// introducing a second way to say "there's more behind this".
+function PhaseCard({ title, status = "pending", summary, expanded, onToggle, cardStyleR, children }) {
+  const working = status === "in-progress";
+  const done = status === "done";
+  // In-progress content is never hidden: collapsing a card whose phase is
+  // actively running would hide the only feedback that it is running.
+  const showBody = expanded || working;
+
+  if (done && !expanded) {
+    return (
+      <div style={{ ...cardStyleR, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", padding: "12px 14px" }}>
+        <p style={{ display: "flex", alignItems: "baseline", gap: "8px", margin: 0, minWidth: 0, flex: "1 1 auto" }}>
+          <span aria-hidden="true" style={{ color: "var(--color-success)", fontWeight: 700, fontSize: "12px" }}>✓</span>
+          <span style={{ fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>{title}</span>
+          {summary && (
+            <span style={{ fontSize: "12px", color: "var(--color-text-tertiary)", minWidth: 0, overflowWrap: "anywhere" }}>{summary}</span>
+          )}
+        </p>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded="false"
+          style={{ fontSize: "10.5px", color: "var(--color-text-secondary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", padding: 0, flex: "0 0 auto" }}
+        >
+          Edit
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div style={{ display: "flex", gap: "12px", padding: "7px 0", borderBottom: "0.5px solid var(--color-border-tertiary)", alignItems: "baseline" }}>
-      <span style={{ flex: "0 0 34%", fontSize: "10.5px", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--color-text-secondary)" }}>{label}</span>
-      <span style={{ flex: 1, fontSize: "13px", lineHeight: 1.5, color: "var(--color-text-primary)", minWidth: 0, overflowWrap: "anywhere" }}>
-        {shown ?? <span style={{ color: "var(--color-text-tertiary)", fontStyle: "italic" }}>not specified</span>}
-      </span>
+    <div style={cardStyleR}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "10px", ...(showBody ? {} : { marginBottom: 0 }) }}>
+        {/* A pending card dims only when it has nothing in it. Card #4 is
+            pending until the user taps Build, but it holds the primary CTA,
+            so dimming it there would mute the one control that matters. */}
+        <p style={{ ...ctStyle, flex: "1 1 auto", margin: showBody ? "0 0 1.1rem" : 0, borderBottom: showBody ? ctStyle.borderBottom : "none", paddingBottom: showBody ? "10px" : 0, opacity: status === "pending" && !showBody ? 0.45 : 1 }}>
+          {title}
+        </p>
+        {done && expanded && (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded="true"
+            style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", padding: 0, flex: "0 0 auto" }}
+          >
+            Done
+          </button>
+        )}
+      </div>
+      {working && (
+        // Indeterminate bar — same slideBar keyframes the build progress uses,
+        // so "something is running" reads identically across the app.
+        <div style={{ height: "3px", borderRadius: "2px", background: "var(--color-border-tertiary)", overflow: "hidden", position: "relative", margin: "0 0 12px" }}>
+          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "40%", background: ACCENT, animation: "slideBar 1.6s ease-in-out infinite" }} />
+        </div>
+      )}
+      {showBody && children}
     </div>
   );
 }
 
-// Pre-build review-and-launch screen. This is the last surface before a
-// build starts, so it answers one question: "is this what you meant?".
+// Pre-build phase flow. This is the last surface before a build starts, and
+// it is a FLOW, not a form: four stacked cards, one per phase of getting a
+// trip built, top to bottom.
 //
-// It is a destination, not a card inside the Details form — the caller
-// suppresses the wizard chrome while it is up. The trip summary is
-// deliberately READ-ONLY: editing lives one tap back, on the Details form,
-// so there is exactly one place a value can be changed and the preview can
-// never disagree with what gets sent to the build.
+//   1. Reading your prompt   — what extraction made of the narrative
+//   2. Expert review sources — who reviews the plan afterwards
+//   3. Output sections       — what the document contains
+//   4. Plan my trip          — the trigger, which becomes the progress bars
+//
+// Progressive disclosure is the point. Phases 2 and 3 arrive already answered
+// (both have real defaults), so they render collapsed as "✓ … Edit" and only
+// open if the user wants them. Phase 1 collapses the moment extraction lands.
+// The result is that all four phases are visible at once and the build CTA
+// sits above the fold on a 390×844 phone without a fixed action bar.
+//
+// Trip values stay READ-ONLY here: editing lives one tap back on the Details
+// form, so there is exactly one place a value can be changed.
 function PreBuildScreen({
-  basics, flights, hotel, restaurants, activities, mealPolicyText,
+  basics, narrative, guidelines, mealPolicyText,
   dynamicSources, outputs, outputDefs, togOut, activeCount,
   reviewerSourceIds, setReviewerSourceIds,
   extractingFromGuidelines, loading, onBack, onBuild, onCancel,
-  cardStyleR, vp,
+  cardStyleR, vp, progressPanelRef,
+  buildProgress, buildProgressLabel, loadingMsg, buildElapsedSec,
+  reviewRunning, reviewProgress, reviewProgressLabel, reviewElapsedSec,
 }) {
-  const dates = basics.startDate && basics.endDate
-    ? `${basics.startDate} → ${basics.endDate}`
-    : basics.startDate || basics.endDate;
-  const cityLine = (basics.cities || [])
-    .filter((c) => c && c.name)
-    .map((c) => (preBuildText(c.nights) ? `${c.name} (${c.nights} nights)` : c.name));
-  const flightLine = flights.noFlight
-    ? "No flights — arriving another way"
-    : [flights.homeAirport, flights.airline, flights.cabin, flights.flex];
+  // Phase 1 opens only while extraction is actually running. Arriving with it
+  // already finished (the usual case — the narrative path resolves extraction
+  // before it navigates here) means there is nothing to watch, so the card
+  // starts collapsed on its result.
+  const [readingExpanded, setReadingExpanded] = useState(extractingFromGuidelines);
+  const [sourcesExpanded, setSourcesExpanded] = useState(false);
+  const [outputsExpanded, setOutputsExpanded] = useState(false);
+
+  // Auto-collapse phase 1 on the true -> false edge of extraction. Edge, not
+  // level: collapsing on the level would slam the card shut again every time
+  // the user re-opened it with Edit.
+  const wasExtractingRef = useRef(extractingFromGuidelines);
+  useEffect(() => {
+    if (wasExtractingRef.current && !extractingFromGuidelines) setReadingExpanded(false);
+    wasExtractingRef.current = extractingFromGuidelines;
+  }, [extractingFromGuidelines]);
+
+  const promptText = preBuildText(narrative) || preBuildText(guidelines);
+  const understood = extractionSummary(basics);
+  const buildRunning = loading || reviewRunning;
+  const dynamicCount = dynamicSources.length;
 
   return (
     <div>
@@ -12273,46 +12411,66 @@ function PreBuildScreen({
         Ready to build{basics.destination ? ` · ${basics.destination}` : ""}
       </p>
       <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 1.25rem", lineHeight: 1.5, maxWidth: "56ch" }}>
-        Review before we start. Anything wrong or missing — go back to edit.
+        Four steps, top to bottom. Tap Edit on any of them to change it.
       </p>
 
-      <div style={cardStyleR}>
-        <p style={ctStyle}>What we understood</p>
-        <PreBuildRow label="Destination" value={basics.destination} />
-        <PreBuildRow label="Dates" value={dates} />
-        <PreBuildRow label="Nights" value={basics.nights} />
-        <PreBuildRow label="Travelers" value={basics.travelers} />
-        <PreBuildRow label="Cities" value={cityLine} />
-        <PreBuildRow label="Base area" value={basics.baseArea} />
-        <PreBuildRow label="Pace" value={basics.pace} />
-        <PreBuildRow label="Style" value={basics.style} />
-        <PreBuildRow label="Budget" value={basics.budget} />
-        <PreBuildRow label="Flights" value={flightLine} />
-        <PreBuildRow label="Hotel" value={[...(hotel.brand || []), hotel.tier, hotel.mustHave]} />
-        <PreBuildRow label="Restaurants" value={restaurants} />
-        <PreBuildRow label="Activities" value={activities} />
-        <PreBuildRow label="Meals" value={mealPolicyText} />
+      {/* ── PHASE 1 ─────────────────────────────────────────────────────── */}
+      <PhaseCard
+        title="Reading your prompt"
+        status={extractingFromGuidelines ? "in-progress" : "done"}
+        summary={understood}
+        expanded={readingExpanded}
+        onToggle={() => setReadingExpanded((v) => !v)}
+        cardStyleR={cardStyleR}
+      >
+        {extractingFromGuidelines ? (
+          <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 10px", lineHeight: 1.5 }}>
+            Reading your prompt…
+          </p>
+        ) : understood ? (
+          <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 10px", lineHeight: 1.5 }}>
+            Understood: {understood}
+          </p>
+        ) : (
+          <p style={{ fontSize: "12px", color: "var(--color-text-tertiary)", margin: "0 0 10px", lineHeight: 1.5, fontStyle: "italic" }}>
+            Nothing specific picked up yet — go back and add a destination.
+          </p>
+        )}
+        {/* The full prompt is echoed in the expanded state ONLY. Once the card
+            collapses, the one-line summary is what remains — a wall of the
+            user's own text tells them nothing they don't already know. */}
+        {promptText && (
+          <blockquote style={{ margin: "0 0 10px", padding: "10px 12px", background: "var(--color-surface-2)", borderLeft: `2px solid ${ACCENT}`, borderRadius: "var(--border-radius-md)", fontSize: "12px", lineHeight: 1.55, color: "var(--color-text-secondary)", fontStyle: "italic", maxHeight: "180px", overflowY: "auto", overflowWrap: "anywhere" }}>
+            {promptText}
+          </blockquote>
+        )}
+        {mealPolicyText && (
+          <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 10px", lineHeight: 1.5 }}>
+            Meals: {mealPolicyText}
+          </p>
+        )}
         <button
           type="button"
           onClick={onBack}
-          style={{ marginTop: "12px", background: "transparent", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: "11px", letterSpacing: "0.06em", color: ACCENT, textDecoration: "underline" }}
+          style={{ background: "transparent", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: "11px", letterSpacing: "0.06em", color: ACCENT, textDecoration: "underline" }}
         >
           Back to edit these
         </button>
-      </div>
+      </PhaseCard>
 
-      <div style={cardStyleR}>
-        <p style={ctStyle}>{`Output sections  ·  ${activeCount} of 12 active`}</p>
-        {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} disabled={k === "itinerary"} />)}
-      </div>
-
-      {/* #8 Pre-build expert-review source picker. The review runs
-          automatically after the build (#8 part 1); choosing the sources
+      {/* ── PHASE 2 ─────────────────────────────────────────────────────────
+          The review runs automatically after the build, so choosing sources
           HERE means the pre-build local-knowledge pass and the auto-review
-          both use exactly what the user wants. Selected = navy pill w/
-          light label (ON_ACCENT, avoiding the navy-on-navy contrast bug). */}
-      <div style={cardStyleR}>
-        <p style={ctStyle}>{`Expert review sources  ·  ${reviewerSourceIds.length} selected`}</p>
+          both use exactly what the user wants. Selected = navy pill w/ light
+          label (ON_ACCENT, avoiding the navy-on-navy contrast bug). */}
+      <PhaseCard
+        title="Expert review sources"
+        status="done"
+        summary={`${reviewerSourceIds.length} selected${dynamicCount ? ` · ${dynamicCount} auto-added` : ""}`}
+        expanded={sourcesExpanded}
+        onToggle={() => setSourcesExpanded((v) => !v)}
+        cardStyleR={cardStyleR}
+      >
         <p style={{ fontSize: "11px", color: "var(--color-text-secondary)", margin: "0 0 10px", lineHeight: 1.4 }}>
           After the build, a panel of these sources reviews your plan and suggests fixes. Tap to add or remove.
         </p>
@@ -12349,50 +12507,73 @@ function PreBuildScreen({
             </div>
           </div>
         )}
-      </div>
+      </PhaseCard>
 
-      {/* Fixed action bar. The screen's content is taller than a 390×844
-          viewport no matter how it is arranged, and `position: sticky` is
-          inert app-wide (index.html sets overflow-x on html/body/#root, which
-          resolves overflow-y to `auto` and gives sticky a scroll container it
-          can't escape). Pinning matches BuildAndReviewOverlay's bottom sheet
-          and keeps the build trigger reachable without scrolling. */}
-      <div style={{
-        position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 700,
-        background: "var(--color-background-primary)",
-        borderTop: "0.5px solid var(--color-border-secondary)",
-        boxShadow: "0 -6px 24px rgba(0,0,0,0.10)",
-        padding: vp.isMobile ? "12px 1rem calc(14px + env(safe-area-inset-bottom))" : "14px 1.5rem 16px",
-      }}>
-        <div style={{ maxWidth: vp.isMobile ? "100%" : "960px", margin: "0 auto" }}>
-          <div style={{ display: "flex", gap: "10px" }}>
-            <button onClick={onBack} disabled={loading} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", opacity: loading ? 0.5 : 1 }}>← Back</button>
-            {loading ? (
-              <button onClick={onCancel}
-                style={{ flex: 1, border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}>
-                Cancel
-              </button>
-            ) : extractingFromGuidelines ? (
-              // Extraction is fast (~2s) and not cancellable. Show a disabled
-              // "reading…" state so the user knows the build is in motion;
-              // the loading panel below renders the actual spinner + label.
-              <button disabled aria-busy="true"
-                style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "not-allowed", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", opacity: 0.7 }}>
-                Reading your narrative…
-              </button>
-            ) : (
-              <button onClick={onBuild} disabled={loading}
-                style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
-                Plan my trip
-              </button>
-            )}
-          </div>
-          {!loading && (
-            <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "8px 0 0", textAlign: "center", lineHeight: 1.5, fontStyle: "italic" }}>
-              Every venue verified open · Plans draw on Michelin, Condé Nast Traveler, NYT&nbsp;36&nbsp;Hours, Eater, and more
-            </p>
+      {/* ── PHASE 3 ─────────────────────────────────────────────────────── */}
+      <PhaseCard
+        title="Output sections"
+        status="done"
+        summary={`${activeCount} of 12 active`}
+        expanded={outputsExpanded}
+        onToggle={() => setOutputsExpanded((v) => !v)}
+        cardStyleR={cardStyleR}
+      >
+        {outputDefs.map(([k, l, d]) => <Toggle key={k} label={l} desc={d} checked={outputs[k]} onChange={() => togOut(k)} disabled={k === "itinerary"} />)}
+      </PhaseCard>
+
+      {/* ── PHASE 4 ─────────────────────────────────────────────────────────
+          The trigger and the progress display occupy the same slot: tapping
+          Plan my trip swaps the button out for the two build bars in place,
+          so the phase the user just started is the phase they are looking at.
+          progressPanelRef lands here so the build-start auto-scroll targets
+          the bars themselves. */}
+      <div ref={progressPanelRef}>
+        <PhaseCard
+          title="Plan my trip"
+          status={buildRunning ? "in-progress" : "pending"}
+          expanded
+          cardStyleR={cardStyleR}
+        >
+          {buildRunning ? (
+            <>
+              <BuildPhaseBars
+                loading={loading}
+                buildProgress={buildProgress}
+                buildProgressLabel={buildProgressLabel}
+                loadingMsg={loadingMsg}
+                buildElapsedSec={buildElapsedSec}
+                reviewRunning={reviewRunning}
+                reviewProgress={reviewProgress}
+                reviewProgressLabel={reviewProgressLabel}
+                reviewElapsedSec={reviewElapsedSec}
+              />
+              {loading && <BuildCancelButton onCancel={onCancel} />}
+            </>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button onClick={onBack} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>← Back</button>
+                {extractingFromGuidelines ? (
+                  // Extraction is fast (~2s) and not cancellable. A disabled
+                  // "reading…" state says the build is in motion; phase 1
+                  // above carries the actual indeterminate bar.
+                  <button disabled aria-busy="true"
+                    style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "not-allowed", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", opacity: 0.7 }}>
+                    Reading your narrative…
+                  </button>
+                ) : (
+                  <button onClick={onBuild}
+                    style={{ flex: 1, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
+                    Plan my trip
+                  </button>
+                )}
+              </div>
+              <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "10px 0 0", textAlign: "center", lineHeight: 1.5, fontStyle: "italic" }}>
+                Every venue verified open · Plans draw on Michelin, Condé Nast Traveler, NYT&nbsp;36&nbsp;Hours, Eater, and more
+              </p>
+            </>
           )}
-        </div>
+        </PhaseCard>
       </div>
     </div>
   );
@@ -16050,6 +16231,17 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               onCancel={handleCancel}
               cardStyleR={cardStyleR}
               vp={vp}
+              progressPanelRef={progressPanelRef}
+              buildProgress={progress}
+              buildProgressLabel={progressLabel}
+              loadingMsg={loadingMsg}
+              buildElapsedSec={elapsedSec}
+              reviewRunning={reviewPhaseRunning}
+              reviewProgress={reviewPhaseProgress}
+              reviewProgressLabel={reviewPhaseLabel}
+              reviewElapsedSec={reviewPhaseElapsed}
+              narrative={narrative}
+              guidelines={guidelines}
             />
             {/* Uncertain-name confirmation. Surfaces as a modal card so the
                 question is impossible to miss regardless of scroll position. */}
@@ -16265,19 +16457,26 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       </div>
       )}
 
-      <BuildAndReviewOverlay
-        loading={loading}
-        buildProgress={progress}
-        buildProgressLabel={progressLabel}
-        loadingMsg={loadingMsg}
-        buildElapsedSec={elapsedSec}
-        onCancelBuild={() => abortRef.current?.abort()}
-        reviewRunning={reviewPhaseRunning}
-        reviewProgress={reviewPhaseProgress}
-        reviewProgressLabel={reviewPhaseLabel}
-        reviewElapsedSec={reviewPhaseElapsed}
-        destination={basics?.destination || ""}
-      />
+      {/* BuildAndReviewOverlay is suppressed when the pre-build phase flow
+          is active: card #4 in PreBuildScreen renders BuildPhaseBars inline
+          in the same slot as the Plan-my-trip button, so two competing
+          progress surfaces would drift. The overlay stays as a fallback for
+          any code path that reaches loading===true without outputsStep. */}
+      {!outputsStep && (
+        <BuildAndReviewOverlay
+          loading={loading}
+          buildProgress={progress}
+          buildProgressLabel={progressLabel}
+          loadingMsg={loadingMsg}
+          buildElapsedSec={elapsedSec}
+          onCancelBuild={() => abortRef.current?.abort()}
+          reviewRunning={reviewPhaseRunning}
+          reviewProgress={reviewPhaseProgress}
+          reviewProgressLabel={reviewPhaseLabel}
+          reviewElapsedSec={reviewPhaseElapsed}
+          destination={basics?.destination || ""}
+        />
+      )}
     </div>
   );
 }
