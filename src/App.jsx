@@ -25,6 +25,7 @@ import { buildFlightCardTitle } from "./flightCardTitle.js";
 import { shapeIntroRequest, applyGeneratedIntroduction, shouldAutoGenerateIntroduction, isPdfDownloadReady } from "./introduction.js";
 import { shouldShowWelcome, markWelcomeDismissed, detectPlatform } from "./appIntro.js";
 import { partitionTabs, isActiveTabInOverflow, activeOverflowLabel } from "./tabStrip.js";
+import { savePdfShareFirst } from "./pdf/savePdfShareFirst.js";
 
 // URL verification context. The ItineraryView builds a Map<url, "ok"|"dead"|"pending">
 // by POSTing every vendor URL it finds in the plan to /api/verify-url, then makes
@@ -3808,7 +3809,7 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers
 
       const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers, coverPhoto, cityPhotos, itemPhotos });
       setStatus("Saving…");
-      pdf.save(filename);
+      await savePdfShareFirst(pdf, filename);
       return;
     } catch (err) {
       // Fall through to the DOM-screenshot fallback so the user still gets
@@ -3886,7 +3887,7 @@ async function saveItineraryAsPDF_LegacyDom(filename, setStatus) {
     }
 
     setStatus("Saving…");
-    pdf.save(filename);
+    await savePdfShareFirst(pdf, filename);
   } finally {
     printOnly.forEach((el, i) => { el.style.display = prevPrintOnly[i]; });
     noPrint.forEach((el, i) => { el.style.display = prevNoPrint[i]; });
@@ -11457,7 +11458,7 @@ function FindView({ embedded = false } = {}) {
       const pdf = await buildFindPdf(payload, { setStatus: setPdfStatus, buildId });
       setPdfStatus("Saving\u2026");
       const safeLocation = String(results.queryUsed.location || "find").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "find";
-      pdf.save(`routesmith-find-${safeLocation}.pdf`);
+      await savePdfShareFirst(pdf, `routesmith-find-${safeLocation}.pdf`);
     } catch (err) {
       setPdfError(`Couldn't build the PDF. ${String(err?.message || err).slice(0, 120)}`);
     } finally {

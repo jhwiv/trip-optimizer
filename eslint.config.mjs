@@ -20,7 +20,7 @@ export default [
                  Promise: "readonly", JSON: "readonly", __BUILD_ID__: "readonly",
                  __API_BASE__: "readonly", encodeURIComponent: "readonly",
                  FormData: "readonly", URLSearchParams: "readonly", URL: "readonly",
-                 FileReader: "readonly", Blob: "readonly" },
+                 FileReader: "readonly", Blob: "readonly", File: "readonly" },
     },
     plugins: { "react-hooks": reactHooks },
     rules: {

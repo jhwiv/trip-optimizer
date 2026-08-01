@@ -48,6 +48,24 @@ unavailable at runtime, fail safe: treat the venue as UNVERIFIED, not as operati
 | Computed weekday / date table injected into the build prompt | `src/dateFacts.js` |
 | Per-trip Breakfast/Lunch opt-in — one classifier feeds both the prompt and the post-build strip | `src/mealPolicy.js` (see `docs/wiki/concepts/meal-policy.md`) |
 | Pre-export gate before PDF render | `src/App.jsx` (PDF export path) |
+| Share-first PDF save (iOS Share Sheet, anchor download fallback) | `src/pdf/savePdfShareFirst.js` |
+
+### PDF save is share-first — do not "simplify" it back to `pdf.save()`
+
+All three PDF call sites (`saveItineraryAsPDF`, its DOM-screenshot fallback, and
+`/find`'s `onDownloadPdf`) route through `savePdfShareFirst()` rather than calling
+jsPDF's `save()` directly. Reason: on iOS 13+ Safari, `pdf.save()` writes silently
+to the Files app's Downloads folder with no chooser, and users lose the file.
+It did not always do that — jsPDF's bundled FileSaver branches on `"download" in
+HTMLAnchorElement.prototype`, and pre-iOS-13 Safari failed that check, so the PDF
+went to `window.open` and rendered inline where Safari's own Share button offered
+"Save to Files" with a folder picker. iOS 13 added `download` support, the anchor
+branch started winning, and the picker vanished. The platform changed, not this
+repo. `navigator.share({ files })` restores that chooser deliberately. The helper
+feature-detects with `canShare({ files })` — never a user-agent sniff — falls back
+to `pdf.save()` on any failure, and deliberately does **not** fall back when the
+user cancels the sheet (`AbortError`), because downloading a file someone just
+declined to save is the exact behavior this replaces.
 
 ## Flag taxonomy (authoritative)
 
