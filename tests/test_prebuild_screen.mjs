@@ -1,27 +1,35 @@
 // Tests for the pre-build screen in src/App.jsx.
 //
+// The screen is a linear phase FLOW, not a form: four stacked PhaseCards,
+// one per phase of getting a trip built. Cards 2 and 3 arrive already
+// answered (defaults exist) and render collapsed; card 1 opens only while
+// extraction is running; card 4 always holds the CTA and swaps in place to
+// the two-bar progress display when a build starts.
+//
 // Why source-text assertions instead of rendering?
 //   The screen renders inside the giant TripOptimizer component in a .jsx
-//   file; there is no harness that imports App.jsx in a plain node script
-//   (see test_build_flow.mjs and test_form_defaults.mjs for the same
-//   rationale). The click-through lives in tests/qa_narrative_to_outputs.mjs.
+//   file; there is no harness that imports App.jsx in a plain node script.
+//   The click-through lives in tests/qa_narrative_to_outputs.mjs.
 //
 // What this locks in:
-//   1. PreBuildScreen exists and the wizard renders it.
-//   2. It is gated on a single `showPreBuild` predicate, and that same
+//   1. PhaseCard exists and is composable (title, status, summary, expanded, onToggle).
+//   2. PreBuildScreen exists and the wizard renders it.
+//   3. It is gated on a single `showPreBuild` predicate, and that same
 //      predicate suppresses the wizard chrome — so the screen can never end
 //      up half-promoted (content swapped, stepper still showing).
-//   3. The trip summary is READ-ONLY: no inputs, no setters for trip fields.
-//      Editing lives one tap back on the Details form, so there is exactly
-//      one place a value can change.
-//   4. Every summary row is rendered, including empty ones. A hidden row
-//      reads as "we've got it covered" — surfacing the gap is the point.
-//   5. The meal-policy line uses the SAME classifier input shape as the build
-//      prompt, so the preview cannot promise a policy the build won't apply.
-//   6. Auto-added city sources are labelled from the shared registry and are
+//   4. There are exactly four PhaseCards, in the specified order:
+//      Reading your prompt → Expert review sources → Output sections → Plan my trip.
+//   5. Card #1 auto-collapses on the true→false edge of extractingFromGuidelines
+//      (edge, not level — otherwise Edit is undone every render).
+//   6. Card #4 renders BuildPhaseBars inline when a build is running, and the
+//      Plan-my-trip button when it isn't — same slot, same anchor.
+//   7. Progress is rendered in exactly ONE place while outputsStep is true:
+//      the fixed BuildAndReviewOverlay is suppressed. Two competing progress
+//      surfaces would drift.
+//   8. Auto-added city sources are labelled from the shared registry and are
 //      NOT toggleable — the server resolves them, so a toggle would be a
 //      control that controls nothing.
-//   7. Exactly one scroll-to-top per entry into the screen.
+//   9. Exactly one scroll-to-top per entry into the screen.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -36,34 +44,62 @@ function assert(name, cond, detail) {
   else { failed++; console.log("  ✗", name, detail || ""); }
 }
 
-// Isolate the component body so "the screen contains X" can't be satisfied by
+// Isolate PreBuildScreen so "the screen contains X" can't be satisfied by
 // something elsewhere in a 16k-line file.
-const compStart = SRC.indexOf("function PreBuildScreen({");
-const compEnd = SRC.indexOf("\nexport default function TripOptimizer()");
-const COMP = compStart > -1 && compEnd > compStart ? SRC.slice(compStart, compEnd) : "";
+const preBuildStart = SRC.indexOf("function PreBuildScreen({");
+const preBuildEnd = SRC.indexOf("\nexport default function TripOptimizer()");
+const COMP = preBuildStart > -1 && preBuildEnd > preBuildStart ? SRC.slice(preBuildStart, preBuildEnd) : "";
 
-console.log("\n[1] the component exists and is rendered");
+// Isolate PhaseCard too — some invariants (edit affordance, done-state row)
+// live in the shared component, not the flow.
+const phaseCardStart = SRC.indexOf("function PhaseCard({");
+const phaseCardEnd = SRC.indexOf("\n// Pre-build phase flow", phaseCardStart);
+const PHASE = phaseCardStart > -1 && phaseCardEnd > phaseCardStart ? SRC.slice(phaseCardStart, phaseCardEnd) : "";
+
+console.log("\n[1] PhaseCard exists and carries the collapse contract");
 {
-  assert("PreBuildScreen is declared", compStart > -1);
-  assert("component body was isolated", COMP.length > 0);
-  assert("the wizard renders <PreBuildScreen", SRC.includes("<PreBuildScreen"));
+  assert("PhaseCard is declared at module scope", phaseCardStart > -1);
+  assert("PhaseCard body was isolated", PHASE.length > 0);
   assert(
-    "it is declared before TripOptimizer (module scope, not inside render)",
-    compStart > -1 && compEnd > compStart,
-    "PreBuildScreen must be a module-level component"
+    "signature is { title, status, summary, expanded, onToggle, cardStyleR, children }",
+    /function PhaseCard\(\{ title, status[^}]*expanded, onToggle[^}]*children \}\)/.test(PHASE)
+  );
+  assert(
+    "the done+collapsed row has an Edit affordance",
+    PHASE.includes("Edit") && /aria-expanded="false"/.test(PHASE),
+    "done + !expanded must let the user re-open the card"
+  );
+  assert(
+    "in-progress cards render their body regardless of expanded",
+    PHASE.includes("const showBody = expanded || working;"),
+    "hiding an active phase would remove its only feedback that it's running"
+  );
+  assert(
+    "the done+collapsed row shows a ✓",
+    PHASE.includes("✓"),
+    "success needs to read at a glance"
   );
 }
 
-console.log("\n[2] one predicate gates the screen and the chrome");
+console.log("\n[2] PreBuildScreen exists and the wizard renders it");
+{
+  assert("PreBuildScreen is declared at module scope", preBuildStart > -1);
+  assert("PreBuildScreen body was isolated", COMP.length > 0);
+  assert("the wizard renders <PreBuildScreen", SRC.includes("<PreBuildScreen"));
+  assert(
+    "it is declared before TripOptimizer (module scope, not inside render)",
+    preBuildStart > -1 && preBuildEnd > preBuildStart
+  );
+}
+
+console.log("\n[3] one predicate gates the screen and the chrome");
 {
   assert(
     "showPreBuild is derived from findOnly + step + outputsStep",
     /const showPreBuild = !findOnly && step === 2 && outputsStep;/.test(SRC),
     "missing the single showPreBuild predicate"
   );
-  // Four chrome blocks must be suppressed: mode toggle row, hero welcome
-  // banner, the stepper, and step 2's Home/← Essentials row. Each is gated by
-  // its own `!showPreBuild`, so count the guards rather than locating each.
+  // Chrome blocks must be suppressed by the same predicate.
   const guards = (SRC.match(/!showPreBuild/g) || []).length;
   assert("at least four chrome blocks are suppressed", guards >= 4, `found ${guards}`);
   assert(
@@ -77,84 +113,103 @@ console.log("\n[2] one predicate gates the screen and the chrome");
   );
   assert(
     "the find-only mode toggle row is suppressed",
-    SRC.includes('{!showPreBuild && <hr style={{ border: "none"'),
+    SRC.includes('{!showPreBuild && <hr style={{ border: "none"')
   );
 }
 
-console.log("\n[3] the trip summary is read-only");
+console.log("\n[4] four phase cards in the specified order");
 {
-  const summaryStart = COMP.indexOf("What we understood");
-  const summaryEnd = COMP.indexOf("Output sections");
-  const summary = summaryStart > -1 && summaryEnd > summaryStart ? COMP.slice(summaryStart, summaryEnd) : "";
-  assert("summary card was isolated", summary.length > 0);
-  assert("no <input in the summary", !summary.includes("<input"), "the summary must not be editable");
-  assert("no <textarea in the summary", !summary.includes("<textarea"));
-  assert("no <select in the summary", !summary.includes("<select"));
-  assert("no <Field in the summary", !summary.includes("<Field"));
-  assert("no <Sel in the summary", !summary.includes("<Sel"));
-  assert("no <TagInput in the summary", !summary.includes("<TagInput"));
-  // The whole component receives no setter for any trip input bucket.
-  for (const setter of ["setB", "setF", "setH", "setD", "setRest", "setActs", "setInt", "setNarrative", "setBasics"]) {
-    assert(`no ${setter} anywhere in the component`, !COMP.includes(setter), `${setter} would make the preview editable`);
-  }
+  const cardTitles = [];
+  const re = /<PhaseCard\s[^>]*?title="([^"]+)"/g;
+  let m;
+  while ((m = re.exec(COMP)) !== null) cardTitles.push(m[1]);
   assert(
-    "there is a way back to the editable form",
-    COMP.includes("Back to edit these") && /onClick=\{onBack\}/.test(COMP),
-    "read-only is only acceptable if editing is one tap away"
+    "exactly four PhaseCards render",
+    cardTitles.length === 4,
+    `found ${cardTitles.length}: ${JSON.stringify(cardTitles)}`
+  );
+  assert(
+    "phase 1 is Reading your prompt",
+    cardTitles[0] === "Reading your prompt",
+    cardTitles[0]
+  );
+  assert(
+    "phase 2 is Expert review sources",
+    cardTitles[1] === "Expert review sources",
+    cardTitles[1]
+  );
+  assert(
+    "phase 3 is Output sections",
+    cardTitles[2] === "Output sections",
+    cardTitles[2]
+  );
+  assert(
+    "phase 4 is Plan my trip",
+    cardTitles[3] === "Plan my trip",
+    cardTitles[3]
   );
 }
 
-console.log("\n[4] every summary row renders, empty ones included");
+console.log("\n[5] phase 1 auto-collapses on the true→false edge of extraction");
 {
-  const EXPECTED_ROWS = [
-    "Destination", "Dates", "Nights", "Travelers", "Cities", "Base area",
-    "Pace", "Style", "Budget", "Flights", "Hotel", "Restaurants",
-    "Activities", "Meals",
-  ];
-  for (const label of EXPECTED_ROWS) {
-    assert(`row: ${label}`, COMP.includes(`<PreBuildRow label="${label}"`), `missing the ${label} row`);
-  }
+  // Edge, not level — collapsing on the level would slam the card shut
+  // every time the user re-opens it with Edit while extraction is still
+  // running (it isn't, at that point, but the invariant matters).
   assert(
-    "rows are never conditionally hidden",
-    !/\{\s*\w+\s*&&\s*<PreBuildRow/.test(COMP),
-    "a hidden row reads as 'we've got it covered' — render 'not specified' instead"
+    "a ref tracks the previous extraction state",
+    /wasExtractingRef\s*=\s*useRef\(extractingFromGuidelines\)/.test(COMP),
+    "need to detect the edge, not the level"
   );
   assert(
-    "the empty-value placeholder exists",
-    SRC.includes("not specified"),
-    "empty fields must say so rather than vanish"
+    "collapse fires only on the true→false transition",
+    /if \(wasExtractingRef\.current && !extractingFromGuidelines\) setReadingExpanded\(false\)/.test(COMP),
+    "level-based collapse would undo the user's Edit toggle"
   );
   assert(
-    "the placeholder lives in the shared row component",
-    /function PreBuildRow\(\{ label, value \}\)[\s\S]{0,900}not specified/.test(SRC),
-    "every row must fall back the same way"
+    "reading-card starts expanded only when extraction is still running",
+    /useState\(extractingFromGuidelines\)/.test(COMP)
   );
 }
 
-console.log("\n[5] meal policy matches the build prompt's classifier input");
+console.log("\n[6] card #4 swaps the CTA for progress bars in the same slot");
 {
-  // The build prompt calls classifyMealPolicy({ narrative, guidelines,
-  // dining, restaurants }). The preview must pass the same four fields or it
-  // can display a policy the build then contradicts.
-  const calls = SRC.match(/classifyMealPolicy\(\{[^}]*\}\)/g) || [];
-  assert("at least two classifyMealPolicy call sites", calls.length >= 2, JSON.stringify(calls));
-  const previewCall = calls.find((c) => c.includes("narrative") && c.includes("guidelines"));
+  const phase4Start = COMP.indexOf('title="Plan my trip"');
+  const phase4End = COMP.length;
+  const phase4 = phase4Start > -1 ? COMP.slice(phase4Start, phase4End) : "";
+  assert("phase 4 was isolated", phase4.length > 0);
   assert(
-    "preview passes narrative + guidelines + dining + restaurants",
-    !!previewCall && ["narrative", "guidelines", "dining", "restaurants"].every((f) => previewCall.includes(f)),
-    previewCall || "none"
+    "phase 4 renders BuildPhaseBars while a build is running",
+    phase4.includes("<BuildPhaseBars"),
+    "inline progress in the same slot as the button"
   );
   assert(
-    "the preview summary is derived, not hardcoded",
-    /const mealPolicySummary = \(\(\) => \{/.test(SRC)
+    "phase 4 renders the Plan-my-trip button when idle",
+    />\s*Plan my trip\s*</.test(phase4)
   );
   assert(
-    "the summary is passed to the screen",
-    /mealPolicyText=\{mealPolicySummary\}/.test(SRC)
+    "phase 4 renders Cancel while loading",
+    phase4.includes("BuildCancelButton") && /onCancel=\{onCancel\}/.test(COMP)
+  );
+  assert(
+    "phase 4 is anchored by progressPanelRef",
+    /<div ref=\{progressPanelRef\}>[\s\S]*?<PhaseCard[\s\S]{0,400}title="Plan my trip"/.test(COMP),
+    "the auto-scroll on build-start must land on the bars themselves"
   );
 }
 
-console.log("\n[6] auto-added city sources are labelled but not toggleable");
+console.log("\n[7] the fixed overlay is suppressed on the pre-build screen");
+{
+  // BuildAndReviewOverlay is a fixed bottom sheet with progress. Rendering
+  // it AND phase #4's inline BuildPhaseBars simultaneously would give two
+  // progress surfaces that can drift.
+  assert(
+    "BuildAndReviewOverlay is gated on !outputsStep",
+    /\{!outputsStep && \([\s\S]{0,200}<BuildAndReviewOverlay/.test(SRC),
+    "the fixed overlay must not render when the phase-flow is showing progress inline"
+  );
+}
+
+console.log("\n[8] auto-added city sources are labelled but not toggleable");
 {
   assert(
     "the client mirrors the shared registry",
@@ -186,12 +241,8 @@ console.log("\n[6] auto-added city sources are labelled but not toggleable");
   );
 }
 
-console.log("\n[7] exactly one scroll per entry into the screen");
+console.log("\n[9] exactly one scroll per entry into the screen");
 {
-  // Two entry points set outputsStep=true: the "Jump to select outputs"
-  // button and the narrative defer-nav path. Each scrolls itself. The
-  // outputsStep effect must NOT scroll as well — that produced an instant
-  // jump followed by a smooth slide.
   const effectIdx = SRC.indexOf("if (!outputsStep) return;");
   assert("the outputsStep effect is still findable", effectIdx > -1);
   const effectBody = SRC.slice(effectIdx, SRC.indexOf("}, [outputsStep]);", effectIdx));
@@ -214,24 +265,26 @@ console.log("\n[7] exactly one scroll per entry into the screen");
   );
 }
 
-console.log("\n[8] the build CTA stays reachable");
+console.log("\n[10] handleBuild remains reachable from exactly one call site");
 {
-  // The screen is taller than a 390x844 viewport no matter how it is
-  // arranged, and position:sticky is inert app-wide (index.html sets
-  // overflow-x on html/body/#root). The action bar is pinned instead.
+  // Regression guard: PR #156 established this invariant. Phase 4's Plan
+  // button is the only handleBuild trigger.
+  const calls = (SRC.match(/onClick=\{handleBuild\}|onClick=\{onBuild\}/g) || []).length;
+  // The wizard passes handleBuild as onBuild={handleBuild}, and phase 4 uses
+  // onClick={onBuild}. So we expect exactly one direct handleBuild callsite
+  // (the prop wiring) and one onBuild use (the phase 4 button).
+  const directHandleBuild = (SRC.match(/onBuild=\{handleBuild\}/g) || []).length;
+  const onBuildClicks = (SRC.match(/onClick=\{onBuild\}/g) || []).length;
   assert(
-    "the action bar is fixed to the bottom",
-    /position: "fixed", bottom: 0, left: 0, right: 0/.test(COMP),
-    "the CTA must not require scrolling on a phone"
+    "handleBuild is wired to PreBuildScreen exactly once",
+    directHandleBuild === 1,
+    `found ${directHandleBuild} onBuild={handleBuild} references`
   );
   assert(
-    "content reserves room for the fixed bar",
-    /height: "168px"/.test(SRC),
-    "without a clearance spacer the last element hides behind the action bar"
+    "onBuild is used exactly once inside PreBuildScreen",
+    onBuildClicks === 1,
+    `found ${onBuildClicks} onClick={onBuild} in App.jsx`
   );
-  assert("the bar carries the primary CTA", />\s*Plan my trip\s*</.test(COMP));
-  assert("the bar carries the back affordance", COMP.includes("← Back"));
-  assert("the bar swaps to Cancel while loading", /onClick=\{onCancel\}/.test(COMP));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
