@@ -22,6 +22,67 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   </React.StrictMode>,
 )
 
+// TEMPORARY diagnostic overlay — opt-in via ?debugoverflow=1, invisible to
+// every normal visitor. Investigating a real, confirmed (swipe-to-reveal)
+// horizontal overflow reported on iOS Chrome/Safari (WebKit) that has never
+// once reproduced in this repo's Chromium-based testing. Rather than keep
+// guessing at CSS from a browser that can't show the bug, this renders the
+// actual scrollWidth/clientWidth/visualViewport numbers AND the specific
+// offending element straight onto the failing device's screen. Remove once
+// the root cause is confirmed and fixed.
+if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debugoverflow') === '1') {
+  const panel = document.createElement('div')
+  panel.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#b00020;color:#fff;font:11px/1.4 monospace;padding:8px 10px;max-height:45vh;overflow:auto;white-space:pre-wrap;word-break:break-all;'
+  document.body.appendChild(panel)
+
+  function isClippedByAncestor(el, vw) {
+    let p = el.parentElement
+    let hops = 0
+    while (p && hops < 8) {
+      const cs = window.getComputedStyle(p)
+      const clips = cs.overflowX === 'hidden' || cs.overflowX === 'clip' || cs.overflow === 'hidden' || cs.overflow === 'clip'
+      if (clips) {
+        const pr = p.getBoundingClientRect()
+        if (pr.right <= vw + 1) return true // ancestor itself is on-screen and clips -> el's overflow is invisible
+      }
+      p = p.parentElement
+      hops++
+    }
+    return false
+  }
+
+  function scan() {
+    const de = document.documentElement
+    const vw = de.clientWidth
+    const vv = window.visualViewport
+    const offenders = []
+    document.querySelectorAll('body *').forEach((el) => {
+      const r = el.getBoundingClientRect()
+      if (r.right > vw + 1 && r.width > 0 && !isClippedByAncestor(el, vw)) {
+        offenders.push({ el, r })
+      }
+    })
+    offenders.sort((a, b) => b.r.right - a.r.right)
+    const lines = []
+    lines.push(`UA: ${navigator.userAgent}`)
+    lines.push(`innerWidth=${window.innerWidth} outerWidth=${window.outerWidth} dpr=${window.devicePixelRatio}`)
+    lines.push(`visualViewport: width=${vv ? vv.width.toFixed(1) : 'n/a'} scale=${vv ? vv.scale.toFixed(3) : 'n/a'} offsetLeft=${vv ? vv.offsetLeft.toFixed(1) : 'n/a'}`)
+    lines.push(`document.documentElement: scrollWidth=${de.scrollWidth} clientWidth=${de.clientWidth} OVERFLOW=${de.scrollWidth - de.clientWidth}px`)
+    lines.push(`body: scrollWidth=${document.body.scrollWidth} clientWidth=${document.body.clientWidth}`)
+    lines.push(`--- ${offenders.length} unclipped overflowing element(s), widest first ---`)
+    offenders.slice(0, 5).forEach((o, i) => {
+      lines.push(`#${i + 1} right=${Math.round(o.r.right)} width=${Math.round(o.r.width)} tag=${o.el.tagName} class="${(o.el.className + '').slice(0, 40)}"`)
+      lines.push(`    ${o.el.outerHTML.slice(0, 220)}`)
+    })
+    panel.textContent = lines.join('\n')
+  }
+
+  scan()
+  setInterval(scan, 1000)
+  window.addEventListener('resize', scan)
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', scan)
+}
+
 // Register the service worker so the app is installable to the home screen and
 // usable offline. Only in production builds (dev uses Vite HMR and a SW would
 // fight it).
