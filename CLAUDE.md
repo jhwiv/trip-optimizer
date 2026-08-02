@@ -249,6 +249,36 @@ my money on tokens for you to guess and make up bullshit."
 - Cloudflare Pages deploys are not instant. A push to `master` does not mean the edge is serving
   the new build yet. "I pushed it" and "it's live" are different facts — do not collapse them.
 
+### When a real device shows a layout bug Chromium won't reproduce, suspect the device before the code
+
+**What happened (2026-08-02):** a user reported horizontal clipping on iOS Chrome — Reset button,
+captions, buttons all cut off at the right edge. It was 100% reproducible on their phone across many
+screenshots and totally unreproducible in this repo's Chromium-based testing at every viewport width
+tried (300–402px), on both the dev server and the actual production bundle. Two commits went in to
+"harden" the layout against a hypothesized WebKit engine difference. Both were reverted a short time
+later: the real cause was a stuck browser-level pinch/double-tap zoom on ONE tab (`visualViewport.scale`
+stuck above 1.0), unrelated to any app setting, CSS, or code path. Double-tapping/pinching out on that
+tab fixed it instantly. No code was ever broken.
+
+Two cheap tests would have found this immediately, before any CSS was touched:
+1. **Swipe/pan test.** If content believed to be "cut off" can be revealed by swiping sideways, the
+   page is genuinely wider than the viewport and pannable — consistent with either a real overflow
+   OR a zoomed-in page (both produce this). If it does NOT reveal on swipe, that's a different failure
+   mode (actually missing/cropped, not just off-screen) — don't treat these as the same bug.
+2. **Fresh tab / fresh load comparison.** Reproduce the exact same flow in a brand-new tab (or ask the
+   user to). If a fresh load doesn't reproduce it but the user's existing tab does, the bug is stuck
+   TAB STATE (zoom, scroll position, an old service worker registration scoped to that tab) — not the
+   code, which is identical in both.
+
+This repo has no WebKit engine available in its sandboxed dev environment (`npx playwright install
+webkit` fails with a 403 from the egress policy — checked, not assumed) and cannot reach `routesmith.ai`
+directly. When those two constraints combine with a real, reproducible-on-device bug, the fastest honest
+path is an on-device diagnostic: a tiny, query-param-gated script (e.g. `?debugoverflow=1`) that renders
+`document.documentElement.scrollWidth/clientWidth`, `window.visualViewport.scale`, and a DOM scan for
+genuinely unclipped overflowing elements directly onto the failing screen, so the user can screenshot
+real numbers instead of the agent inferring pixel counts from photos. Delete it once root cause is
+confirmed — don't leave diagnostic scaffolding in shipped code.
+
 ---
 
 ## KEY TECHNICAL PATTERNS (learned 2026-07-01 → 07-02)
