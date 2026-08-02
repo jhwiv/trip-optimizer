@@ -11485,13 +11485,13 @@ function FindView({ embedded = false } = {}) {
         {/* Header band — only when standalone (/find route). When embedded in
             the wizard surface the host renders the brand header + mode toggle. */}
         {!embedded && (
-          <div style={{ paddingTop: "1.25rem", paddingBottom: "1rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
-            <div>
+          <div style={{ paddingTop: "1.25rem", paddingBottom: "1rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            <div style={{ minWidth: 0, maxWidth: "100%" }}>
               {/* Compass logomark + wordmark + ™ service mark, matched to the /find header scale. */}
-              <span aria-label="RouteSmith trademark" role="img" style={{ display: "inline-flex", alignItems: "flex-start", gap: "6px" }}>
-                <img src="/routesmith-compass.svg?v=3" alt="" style={{ display: "block", alignSelf: "center", height: vp.isMobile ? "22px" : "30px", width: "auto" }} />
-                <span style={{ display: "inline-flex", alignItems: "flex-start", gap: "2px" }}>
-                  <img src="/rs3-wordmark.svg?v=3" alt="" style={{ display: "block", height: vp.isMobile ? "28px" : "38px", width: "auto", margin: 0 }} />
+              <span aria-label="RouteSmith trademark" role="img" style={{ display: "inline-flex", alignItems: "flex-start", gap: "6px", maxWidth: "100%", flexWrap: "wrap" }}>
+                <img src="/routesmith-compass.svg?v=3" alt="" style={{ display: "block", alignSelf: "center", height: vp.isMobile ? "22px" : "30px", width: "auto", maxWidth: "100%" }} />
+                <span style={{ display: "inline-flex", alignItems: "flex-start", gap: "2px", maxWidth: "100%" }}>
+                  <img src="/rs3-wordmark.svg?v=3" alt="" style={{ display: "block", height: vp.isMobile ? "28px" : "38px", width: "auto", maxWidth: "100%", margin: 0 }} />
                   <sup aria-hidden="true" style={{ fontFamily: "var(--font-sans)", fontSize: vp.isMobile ? "8px" : "10px", color: "var(--color-text-secondary)", lineHeight: 1, marginTop: "3px", fontWeight: 500 }}>™</sup>
                 </span>
               </span>
@@ -12047,10 +12047,10 @@ function AppIntroOverlay({ onBeginPlanning } = {}) {
               hero, matches the wordmark's filter/opacity so the mark reads as
               one unit. The compass keeps its true navy/teal colors (not
               inverted) so it reads as a discrete brand mark against the photo. */}
-          <span aria-label="RouteSmith trademark" role="img" style={{ display: "inline-flex", alignItems: "flex-start", gap: "10px" }}>
-            <img src="/routesmith-compass.svg?v=3" alt="" style={{ alignSelf: "center", height: "clamp(34px, 4.8vw, 50px)", width: "auto" }} />
-            <span style={{ display: "inline-flex", alignItems: "flex-start", gap: "3px" }}>
-              <img src="/rs3-wordmark.svg?v=3" alt="" style={{ height: "clamp(42px, 6vw, 62px)", width: "auto", filter: "brightness(0) invert(1)", opacity: 0.92 }} />
+          <span aria-label="RouteSmith trademark" role="img" style={{ display: "inline-flex", alignItems: "flex-start", gap: "10px", maxWidth: "100%", flexWrap: "wrap", justifyContent: "center" }}>
+            <img src="/routesmith-compass.svg?v=3" alt="" style={{ alignSelf: "center", height: "clamp(34px, 4.8vw, 50px)", width: "auto", maxWidth: "100%" }} />
+            <span style={{ display: "inline-flex", alignItems: "flex-start", gap: "3px", maxWidth: "100%" }}>
+              <img src="/rs3-wordmark.svg?v=3" alt="" style={{ height: "clamp(42px, 6vw, 62px)", width: "auto", maxWidth: "100%", filter: "brightness(0) invert(1)", opacity: 0.92 }} />
               <sup aria-hidden="true" style={{ fontFamily: "var(--font-sans)", fontSize: "clamp(10px, 1.4vw, 14px)", color: "rgba(255,255,255,0.75)", lineHeight: 1, marginTop: "4px", fontWeight: 500 }}>™</sup>
             </span>
           </span>
@@ -15673,17 +15673,20 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
       <div style={{ padding: vp.isMobile ? "1.5rem 0 1.25rem" : "2rem 0 1.75rem", borderBottom: "0.5px solid var(--color-border-secondary)", background: heroEntry ? `linear-gradient(160deg, ${heroEntry.accent}28 0%, var(--color-background-primary) 62%)` : "var(--color-background-primary)", transition: "background 0.6s ease" }}>
         <div style={{ maxWidth: colMaxWidth, margin: "0 auto", padding: vp.isMobile ? "0 1rem" : "0 1.5rem" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
-          <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", flexWrap: "wrap" }}>
+          <div style={{ minWidth: 0, flex: "1 1 220px", maxWidth: "100%" }}>
             <p style={{ fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 8px", color: "var(--color-text-secondary)" }}>Travel planning</p>
             {/* Compass logomark + wordmark + ™ service mark. The compass icon
                 (also the favicon/home-screen icon) sits beside the wordmark
                 as the actual brand mark; the ™ stays tight to the top-right
-                of the wordmark text via the inner flex span. */}
-            <span aria-label="RouteSmith trademark" role="img" style={{ display: "inline-flex", alignItems: "flex-start", gap: "8px", margin: "0 0 10px" }}>
-              <img src="/routesmith-compass.svg?v=3" alt="" style={{ display: "block", alignSelf: "center", height: vp.isMobile ? "34px" : "50px", width: "auto" }} />
-              <span style={{ display: "inline-flex", alignItems: "flex-start", gap: "2px" }}>
-                <img src="/rs3-wordmark.svg?v=3" alt="" style={{ display: "block", height: vp.isMobile ? "44px" : "64px", width: "auto", margin: 0 }} />
+                of the wordmark text via the inner flex span. maxWidth:100% +
+                width:auto on both images is a hard floor against any single
+                replaced element (image) forcing this row wider than its
+                container regardless of font/engine differences. */}
+            <span aria-label="RouteSmith trademark" role="img" style={{ display: "inline-flex", alignItems: "flex-start", gap: "8px", margin: "0 0 10px", maxWidth: "100%", flexWrap: "wrap" }}>
+              <img src="/routesmith-compass.svg?v=3" alt="" style={{ display: "block", alignSelf: "center", height: vp.isMobile ? "34px" : "50px", width: "auto", maxWidth: "100%" }} />
+              <span style={{ display: "inline-flex", alignItems: "flex-start", gap: "2px", maxWidth: "100%" }}>
+                <img src="/rs3-wordmark.svg?v=3" alt="" style={{ display: "block", height: vp.isMobile ? "44px" : "64px", width: "auto", maxWidth: "100%", margin: 0 }} />
                 {/* Live ™ glyph rendered as text (accessible via aria-label
                     on the wrapping span above) so screen readers announce
                     "RouteSmith trademark" once, not twice. */}
