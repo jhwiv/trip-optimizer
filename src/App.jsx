@@ -12392,10 +12392,9 @@ function PreBuildScreen({
   basics, narrative, guidelines, mealPolicyText,
   dynamicSources, outputs, outputDefs, togOut, activeCount,
   reviewerSourceIds, setReviewerSourceIds,
-  extractingFromGuidelines, loading, onBack, onBuild, onCancel,
+  extractingFromGuidelines, loading, onBack, onBuild,
   cardStyleR, vp, progressPanelRef,
-  buildProgress, buildProgressLabel, loadingMsg, buildElapsedSec,
-  reviewRunning, reviewProgress, reviewProgressLabel, reviewElapsedSec,
+  reviewRunning,
 }) {
   // Phase 1 opens only while extraction is actually running. Arriving with it
   // already finished (the usual case — the narrative path resolves extraction
@@ -12539,11 +12538,13 @@ function PreBuildScreen({
       </PhaseCard>
 
       {/* ── PHASE 4 ─────────────────────────────────────────────────────────
-          The trigger and the progress display occupy the same slot: tapping
-          Plan my trip swaps the button out for the two build bars in place,
-          so the phase the user just started is the phase they are looking at.
-          progressPanelRef lands here so the build-start auto-scroll targets
-          the bars themselves. */}
+          The trigger lives here; the progress display does not. Tapping
+          Plan my trip hands off to BuildAndReviewOverlay — a fixed modal
+          that covers the whole screen — instead of swapping in progress
+          bars inline, so starting a build no longer yanks the page into a
+          scroll-jump to reveal a panel buried below three phase cards. This
+          card just reflects that a build is running (dimmed, disabled CTA);
+          the overlay owns the bars, the elapsed time, and Cancel. */}
       <div ref={progressPanelRef}>
         <PhaseCard
           title="Plan my trip"
@@ -12552,20 +12553,10 @@ function PreBuildScreen({
           cardStyleR={cardStyleR}
         >
           {buildRunning ? (
-            <>
-              <BuildPhaseBars
-                loading={loading}
-                buildProgress={buildProgress}
-                buildProgressLabel={buildProgressLabel}
-                loadingMsg={loadingMsg}
-                buildElapsedSec={buildElapsedSec}
-                reviewRunning={reviewRunning}
-                reviewProgress={reviewProgress}
-                reviewProgressLabel={reviewProgressLabel}
-                reviewElapsedSec={reviewElapsedSec}
-              />
-              {loading && <BuildCancelButton onCancel={onCancel} />}
-            </>
+            <button disabled aria-busy="true"
+              style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "not-allowed", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", opacity: 0.7 }}>
+              {reviewRunning ? "Reviewing your plan…" : "Building your trip…"}
+            </button>
           ) : (
             <>
               {/* flexWrap + minWidth:0 keeps the button row safe under iOS
@@ -15414,17 +15405,23 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   // is already running — which means if the user manually scrolls away
   // mid-build, we don't snap them back. Cancelling resets loading to false
   // (handleCancel), so a fresh start gives a new rising edge and re-scrolls.
+  //
+  // Skipped entirely on the pre-build phase flow (outputsStep): progress
+  // there shows in BuildAndReviewOverlay, a fixed + backdropped modal that
+  // covers the full screen regardless of scroll position, so yanking the
+  // page down to a panel underneath it would just be a jarring scroll with
+  // nothing to show for it.
   useEffect(() => {
     const rising = loading && !prevLoadingRef.current;
     prevLoadingRef.current = loading;
-    if (!rising) return;
+    if (!rising || outputsStep) return;
     // Wait one frame so the panel (gated on `loading`) has mounted before we
     // measure/scroll to it; the ref is null on the render that flips loading.
     const raf = window.requestAnimationFrame(() => {
       progressPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
     });
     return () => window.cancelAnimationFrame(raf);
-  }, [loading]);
+  }, [loading, outputsStep]);
 
   // Deferred navigation for the "Build from this" shortcut.
   // buildFromGuidelines extracts fields from the narrative, calls all the
@@ -16261,18 +16258,10 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               loading={loading}
               onBack={() => { setOutputsStep(false); try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }}
               onBuild={handleBuild}
-              onCancel={handleCancel}
               cardStyleR={cardStyleR}
               vp={vp}
               progressPanelRef={progressPanelRef}
-              buildProgress={progress}
-              buildProgressLabel={progressLabel}
-              loadingMsg={loadingMsg}
-              buildElapsedSec={elapsedSec}
               reviewRunning={reviewPhaseRunning}
-              reviewProgress={reviewPhaseProgress}
-              reviewProgressLabel={reviewPhaseLabel}
-              reviewElapsedSec={reviewPhaseElapsed}
               narrative={narrative}
               guidelines={guidelines}
             />
@@ -16490,26 +16479,27 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       </div>
       )}
 
-      {/* BuildAndReviewOverlay is suppressed when the pre-build phase flow
-          is active: card #4 in PreBuildScreen renders BuildPhaseBars inline
-          in the same slot as the Plan-my-trip button, so two competing
-          progress surfaces would drift. The overlay stays as a fallback for
-          any code path that reaches loading===true without outputsStep. */}
-      {!outputsStep && (
-        <BuildAndReviewOverlay
-          loading={loading}
-          buildProgress={progress}
-          buildProgressLabel={progressLabel}
-          loadingMsg={loadingMsg}
-          buildElapsedSec={elapsedSec}
-          onCancelBuild={() => abortRef.current?.abort()}
-          reviewRunning={reviewPhaseRunning}
-          reviewProgress={reviewPhaseProgress}
-          reviewProgressLabel={reviewPhaseLabel}
-          reviewElapsedSec={reviewPhaseElapsed}
-          destination={basics?.destination || ""}
-        />
-      )}
+      {/* BuildAndReviewOverlay is now the single progress surface for every
+          path that reaches loading/reviewRunning, including the pre-build
+          phase flow — it used to be suppressed there in favor of an inline
+          copy of the same bars in PreBuildScreen's card #4, which meant
+          starting a build scrolled the page down to reveal them. The modal
+          is fixed + backdropped, so it doesn't need the page to scroll to
+          it; PreBuildScreen's card #4 just shows a disabled "Building…"
+          state underneath now. */}
+      <BuildAndReviewOverlay
+        loading={loading}
+        buildProgress={progress}
+        buildProgressLabel={progressLabel}
+        loadingMsg={loadingMsg}
+        buildElapsedSec={elapsedSec}
+        onCancelBuild={handleCancel}
+        reviewRunning={reviewPhaseRunning}
+        reviewProgress={reviewPhaseProgress}
+        reviewProgressLabel={reviewPhaseLabel}
+        reviewElapsedSec={reviewPhaseElapsed}
+        destination={basics?.destination || ""}
+      />
     </div>
   );
 }

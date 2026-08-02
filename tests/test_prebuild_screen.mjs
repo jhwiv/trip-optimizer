@@ -171,41 +171,57 @@ console.log("\n[5] phase 1 auto-collapses on the true→false edge of extraction
   );
 }
 
-console.log("\n[6] card #4 swaps the CTA for progress bars in the same slot");
+console.log("\n[6] card #4 defers progress to the fixed overlay");
 {
   const phase4Start = COMP.indexOf('title="Plan my trip"');
   const phase4End = COMP.length;
   const phase4 = phase4Start > -1 ? COMP.slice(phase4Start, phase4End) : "";
   assert("phase 4 was isolated", phase4.length > 0);
   assert(
-    "phase 4 renders BuildPhaseBars while a build is running",
-    phase4.includes("<BuildPhaseBars"),
-    "inline progress in the same slot as the button"
+    "phase 4 does NOT render BuildPhaseBars inline",
+    !phase4.includes("<BuildPhaseBars"),
+    "progress bars live only in BuildAndReviewOverlay now — an inline copy would drift"
+  );
+  assert(
+    "phase 4 shows a disabled status button while a build is running",
+    /buildRunning \? \(\s*<button disabled aria-busy="true"/.test(phase4)
   );
   assert(
     "phase 4 renders the Plan-my-trip button when idle",
     />\s*Plan my trip\s*</.test(phase4)
   );
   assert(
-    "phase 4 renders Cancel while loading",
-    phase4.includes("BuildCancelButton") && /onCancel=\{onCancel\}/.test(COMP)
+    "phase 4 does NOT render its own Cancel button",
+    !phase4.includes("BuildCancelButton"),
+    "Cancel lives only in BuildAndReviewOverlay now"
   );
   assert(
     "phase 4 is anchored by progressPanelRef",
     /<div ref=\{progressPanelRef\}>[\s\S]*?<PhaseCard[\s\S]{0,400}title="Plan my trip"/.test(COMP),
-    "the auto-scroll on build-start must land on the bars themselves"
+    "kept for the effect that skips auto-scroll on outputsStep, see section 7"
   );
 }
 
-console.log("\n[7] the fixed overlay is suppressed on the pre-build screen");
+console.log("\n[7] the fixed overlay is the single progress surface, and doesn't yank scroll");
 {
-  // BuildAndReviewOverlay is a fixed bottom sheet with progress. Rendering
-  // it AND phase #4's inline BuildPhaseBars simultaneously would give two
-  // progress surfaces that can drift.
+  // BuildAndReviewOverlay used to be suppressed while the pre-build phase
+  // flow was up, in favor of an inline copy of the same bars in card #4 —
+  // which meant starting a build scrolled the page down to reveal them.
+  // The overlay is fixed + backdropped now, so it no longer needs the guard,
+  // and the build-start auto-scroll skips outputsStep entirely.
   assert(
-    "BuildAndReviewOverlay is gated on !outputsStep",
-    /\{!outputsStep && \([\s\S]{0,200}<BuildAndReviewOverlay/.test(SRC),
-    "the fixed overlay must not render when the phase-flow is showing progress inline"
+    "BuildAndReviewOverlay is no longer gated on outputsStep",
+    !/\{!outputsStep && \([\s\S]{0,200}<BuildAndReviewOverlay/.test(SRC),
+    "it must render for every loading/reviewRunning path, including the phase flow"
+  );
+  assert(
+    "BuildAndReviewOverlay renders unconditionally",
+    /<BuildAndReviewOverlay\s/.test(SRC)
+  );
+  assert(
+    "the build-start auto-scroll effect skips outputsStep",
+    /if \(!rising \|\| outputsStep\) return;/.test(SRC),
+    "the modal doesn't need the page scrolled to it"
   );
 }
 
