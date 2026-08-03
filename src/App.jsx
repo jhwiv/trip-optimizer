@@ -3305,13 +3305,26 @@ function applyQualityLayer(input, inputs) {
   ];
 
   // Combine destination + all city names (multi-city trips put per-city info
-  // in inputs.cities[].name) so the matcher fires even when only the joined
-  // arrow string is missing a particular substring.
+  // in cities[].name) so the matcher fires even when only the joined arrow
+  // string is missing a particular substring.
+  //
+  // Read BOTH the plan's own destination/cities (top-level fields on the
+  // built plan, "input" — the first param) and the wizard's basics
+  // (nested under "inputs.basics" — the second param). This used to read
+  // inputs?.destination/inputs?.cities, which don't exist on either shape:
+  // applyQualityLayer's ONLY call site (ItineraryView) passes
+  // {basics, flights, hotel, ...} as `inputs`, where destination/cities live
+  // at inputs.basics.destination/inputs.basics.cities, not the top level.
+  // destStr was therefore ALWAYS the empty string for every real build, so
+  // the entire MARQUEE_REQUIRED check above — every curated destination,
+  // including the Pink Jeep group just added — never fired once in
+  // production, independent of any of the haystack fixes in this section.
+  // Confirmed 2026-08-03 via a live Playwright run that captured the actual
+  // network request and found the marquee warning was never generated.
   const destStr = (() => {
-    const parts = [inputs?.destination, inputs?.destinations];
-    if (Array.isArray(inputs?.cities)) {
-      inputs.cities.forEach(c => { if (c?.name) parts.push(c.name); });
-    }
+    const parts = [input?.destination, inputs?.basics?.destination];
+    const cityLists = [input?.cities, inputs?.basics?.cities].filter(Array.isArray);
+    cityLists.forEach(list => list.forEach(c => { if (c?.name) parts.push(c.name); }));
     return parts.filter(Boolean).join(" ").toLowerCase();
   })();
   if (destStr && Array.isArray(days)) {
@@ -5762,7 +5775,7 @@ export function pendingFindings(findings, appliedIds) {
   return list.filter(f => f && !applied.includes(f.id));
 }
 
-function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false, externalSourceIds, onSourcesChange, onRunEnd, onProgressChange }) {
+function ReviewPanel({ plan, qc, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false, externalSourceIds, onSourcesChange, onRunEnd, onProgressChange }) {
   // --- review state ------------------------------------------------------
   // 'idle' — banner card with picker
   // 'running' — review in flight
@@ -5975,7 +5988,7 @@ function ReviewPanel({ plan, inputs, onPlanRevised, onReviewChange, initialRevie
       const body = {
         model: "claude-sonnet-4-5",
         max_tokens: 8000,
-        system: cachedSystem(buildReviewSystemPrompt(plan, selectedSources, inputs, liveSnippets)),
+        system: cachedSystem(buildReviewSystemPrompt(plan, selectedSources, inputs, liveSnippets, qc?.warnings)),
         messages: [{ role: "user", content: buildReviewUserPrompt() }],
         tools: cachedTools([REVIEW_TOOL]),
         tool_choice: { type: "tool", name: "submit_review" },
@@ -7948,6 +7961,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           either way. */}
       <ReviewPanel
         plan={layeredData}
+        qc={layeredQc}
         inputs={inputs}
         onPlanRevised={onPlanRevised}
         onReviewChange={(state) => { clearAutoReviewRunning(); onReviewChange(state); }}
@@ -10269,12 +10283,12 @@ const REVIEW_TOOL = {
       },
       structural_findings: {
         type: "array",
-        description: "Hits from the MUST-VERIFY CHECKLIST only: day continuity, night arithmetic, weekday claims, flight times, booking links, route plausibility. UNCAPPED — report every hit. Leave empty if the plan passes all six checks. Do NOT put editorial or taste observations here.",
+        description: "Hits from the MUST-VERIFY CHECKLIST only: day continuity, night arithmetic, weekday claims, flight times, booking links, route plausibility, marquee promises. UNCAPPED — report every hit. Leave empty if the plan passes all seven checks. Do NOT put editorial or taste observations here.",
         items: {
           type: "object",
           properties: {
             id: { type: "string", description: "Stable id: 's1', 's2', 's3', etc." },
-            check: { type: "string", enum: ["day_continuity", "night_arithmetic", "weekday_claims", "flight_times", "booking_links", "route_plausibility"], description: "Which checklist item this hit came from." },
+            check: { type: "string", enum: ["day_continuity", "night_arithmetic", "weekday_claims", "flight_times", "booking_links", "route_plausibility", "marquee_promises"], description: "Which checklist item this hit came from." },
             target: { type: "string", description: "What this finding is ABOUT, in the user's language. Format: 'Day N · context'. Examples: 'Day 7 · hotel', 'Day 1 · flight UA934'." },
             summary: { type: "string", description: "One sentence (≤22 words) stating the contradiction, naming both conflicting values. Example: 'Day 7 checks into the Amsterdam Marriott again after Day 6 already checked in.'" },
             action: { type: "string", description: "One sentence (≤22 words) stating the concrete change to make." },
@@ -10504,7 +10518,21 @@ export function renderUserContextBlock(inputs, maxChars = MAX_REVIEWER_PROMPT_CH
   return `\n${blocks.join("\n\n")}\n`;
 }
 
-function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
+// applyQualityLayer's marquee-coverage check (§2.6) already detects a "day
+// headline/flags/tonight promises a specific experience, no item schedules
+// it" gap deterministically — but it can only WARN (qc.warnings), never fix
+// it, because inserting the missing item requires actually regenerating the
+// day, which is outside what a post-processing pass can safely do. Before
+// this, that warning just sat in the QC panel; the reviewer never saw it and
+// had to independently re-notice the same gap by reading the whole plan
+// JSON cold, which an LLM does unreliably over a long document. Surfacing
+// the exact warning text turns "already detected, easy to miss" into "the
+// reviewer is told directly and must escalate it."
+function marqueeWarningsForReview(warnings) {
+  return (Array.isArray(warnings) ? warnings : []).filter((w) => /^Marquee sight/i.test(w));
+}
+
+function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = [], qcWarnings = []) {
   const lensesActive = Array.from(new Set(sources.map(s => s.lens)));
   const sourceList = sources.map(s => `• ${s.name} (${s.lens}) — ${s.blurb}`).join("\n");
   const lensRules = REVIEWER_LENSES
@@ -10540,6 +10568,11 @@ function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = []) {
     Array.isArray(plan?.days) ? plan.days.length : 0,
   );
   const dateTableBlock = dateTable ? `\n${dateTable}\n` : "";
+
+  const marqueeWarnings = marqueeWarningsForReview(qcWarnings);
+  const knownWarningsBlock = marqueeWarnings.length
+    ? `\nKNOWN QUALITY WARNINGS (already flagged by deterministic checks before this review — verify each is genuinely still unresolved in the plan below, and if so you MUST escalate it in structural_findings[] with check:"marquee_promises"):\n${marqueeWarnings.map((w) => `• ${w}`).join("\n")}\n`
+    : "";
 
   return `You are a panel of travel experts conducting a professional review of a finalized trip plan. Your job is to evaluate the plan AGAINST THE USER'S STATED BUDGET, STYLE, AND GUIDELINES — not against your sources' default tier. You will call the submit_review tool exactly once. Do NOT emit any prose — only the tool call.
 
@@ -10596,11 +10629,19 @@ structural, not editorial; report any hit as severity:"critical".
 5. BOOKING LINKS — does any booking_url contain a placeholder-looking ID?
 6. ROUTE PLAUSIBILITY — flag any flight from a small regional airport that
    carries no verification marker.
+7. MARQUEE PROMISES — a day's headline, tonight[], or flags[] sometimes names
+   a specific experience (a tour, a can't-miss reservation) that never got
+   scheduled as an actual item — the plan talks about it convincingly and
+   then never delivers it. Check every KNOWN QUALITY WARNING above first
+   (each MUST be escalated if still unresolved); then independently scan for
+   the same pattern anywhere else in the plan, since the deterministic check
+   only knows a small curated per-destination list and can miss one. Name
+   which day should have the item and what it should be.
 
 Report checklist hits in structural_findings[], NOT in findings[].
 structural_findings[] is uncapped — the 3-critical / 8-total caps apply only
 to editorial findings, so a structural problem never displaces a taste note.
-${dateTableBlock}
+${dateTableBlock}${knownWarningsBlock}
 PLAN TO REVIEW (JSON):
 ${planForPrompt(plan)}`;
 }

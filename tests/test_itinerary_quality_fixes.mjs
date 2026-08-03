@@ -211,6 +211,88 @@ console.log("\n2. Marquee-coverage haystack: scheduled (items) vs merely promise
 }
 
 // -----------------------------------------------------------------------------
+// 2b. destStr mirror — the destination-matching bug the tests above never
+// exercised (src/App.jsx applyQualityLayer, function signature
+// `applyQualityLayer(input, inputs)`). The whole MARQUEE_REQUIRED check
+// above is only ever reached at all if destStr resolves to something —
+// tests 2/2a above bypass that entirely by handing missingMarquee/
+// marqueeFindings a hardcoded `groups` array, which is exactly why this
+// bug went undetected: destStr was ALWAYS the empty string in production,
+// because applyQualityLayer's only real call site
+// (ItineraryView, `applyQualityLayer(rawData, inputs)`) passes
+// {basics, flights, hotel, ...} as `inputs` — destination/cities live at
+// inputs.basics.destination/inputs.basics.cities, never inputs.destination/
+// inputs.cities directly. Confirmed live via a captured network request
+// showing the marquee warning was never generated for any real build.
+// -----------------------------------------------------------------------------
+function destStr(input, inputs) {
+  const parts = [input?.destination, inputs?.basics?.destination];
+  const cityLists = [input?.cities, inputs?.basics?.cities].filter(Array.isArray);
+  cityLists.forEach(list => list.forEach(c => { if (c?.name) parts.push(c.name); }));
+  return parts.filter(Boolean).join(" ").toLowerCase();
+}
+
+console.log("\n2b. destStr resolves the real destination (the actual production bug)\n");
+{
+  // The real shape ItineraryView passes: inputs = {basics, flights, ...},
+  // destination/cities nested under inputs.basics — never inputs.destination.
+  const plan = { destination: "Sedona, AZ" };
+  const wizardInputs = { basics: { destination: "Sedona, AZ" } };
+  // destStr joins both sources without deduping (the plan's own destination
+  // AND the wizard's inputs.basics.destination), so it isn't necessarily an
+  // exact match — only consumed via .includes()/regex .test() downstream,
+  // never ===. Assert what's actually consumed.
+  assert("destStr resolves from inputs.basics.destination (the real wizard shape)",
+    destStr(plan, wizardInputs).includes("sedona, az"));
+}
+{
+  // The regression: the OLD code read inputs.destination (doesn't exist on
+  // the real {basics, flights, ...} shape) and inputs.cities (same problem)
+  // — both always undefined, so destStr was always "". Prove the plan's own
+  // top-level destination field is now used as a source too, since a plan
+  // always carries one even when wizardInputs is thin.
+  const plan = { destination: "Sedona, AZ" };
+  const thinWizardInputs = { basics: {} }; // destination not set on the form side
+  assert("destStr still resolves from the plan's own destination when wizard basics lack one",
+    destStr(plan, thinWizardInputs) === "sedona, az");
+}
+{
+  const wrongShapeInputs = { destination: "Sedona, AZ" }; // the OLD (wrong) shape this bug assumed
+  assert("a flat inputs.destination (never the real shape) contributes nothing new beyond the plan's own field",
+    destStr(null, wrongShapeInputs) === "", "if this fails, destStr regressed back to trusting the wrong shape");
+}
+{
+  const plan = {};
+  const wizardInputs = { basics: { cities: [{ name: "Sedona" }, { name: "Flagstaff" }] } };
+  assert("multi-city wizard inputs.basics.cities[] all contribute",
+    destStr(plan, wizardInputs).includes("sedona") && destStr(plan, wizardInputs).includes("flagstaff"));
+}
+console.log("\n2c. End-to-end: destStr now actually reaches the Sedona MARQUEE_REQUIRED group\n");
+{
+  const plan = { destination: "Sedona, AZ" };
+  const wizardInputs = { basics: { destination: "Sedona, AZ" } };
+  const resolvedDestStr = destStr(plan, wizardInputs);
+  const sedonaMatches = /\bsedona\b/i.test(resolvedDestStr);
+  assert("the Sedona MARQUEE_REQUIRED rule's match regex fires against the resolved destStr",
+    sedonaMatches, resolvedDestStr);
+  // With destStr now resolving, the earlier Pink Jeep scenario (test 2, the
+  // "promised but not scheduled" case) is reachable in production, not just
+  // in an isolated unit test that assumed the destination check already passed.
+  const days = [
+    {
+      headline: "Pink Jeep off-road tour — broken-arrow trail at midday",
+      items: [
+        { type: "Activity", text: "Bell Rock Pathway — easy loop", location: "Bell Rock Pathway Trailhead" },
+        { type: "Note", text: "Return to hotel" },
+      ],
+    },
+  ];
+  const findings = marqueeFindings(days, {}, SEDONA_GROUPS);
+  assert("Pink Jeep is flagged missing once destStr correctly resolves to Sedona",
+    findings.some(f => f.label === "pink jeep"), JSON.stringify(findings));
+}
+
+// -----------------------------------------------------------------------------
 // 3. tonightPriority / stripTonightPrefix mirror (src/App.jsx)
 // -----------------------------------------------------------------------------
 function tonightPriority(s) {
