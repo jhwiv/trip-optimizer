@@ -303,6 +303,52 @@ the previous explanation directly, do not re-apply it to a new incident just bec
 looks the same. Two different bugs can produce the same visible clipping through completely
 different mechanisms — verify each one on its own evidence.
 
+**UPDATE (2026-08-03, same day): the vw/dvw fix above was shipped and the user tested it on their
+real device. Verbatim report: "Failed. Quick pinch on screen fixes it but you failed."** The
+WebKit #170595 mechanism was real, sourced, and correctly implemented — but it was not the (or not
+the complete) cause of what the user is seeing. Do not describe the vw/dvw removal as "the fix" for
+this symptom going forward; it's a legitimate hardening change that shipped, not a confirmed
+resolution. This is itself a second instance of the lesson two entries up: a well-sourced diagnosis
+that matches the symptom on paper is still a hypothesis until the person who reported the bug says
+it's gone. Two "fixed with confidence" diagnoses for the same user-reported symptom have now
+independently turned out to be wrong or incomplete — this is a pattern, not a fluke. **The next
+attempt (16px minimum font-size on every form field, see below) must be presented to the user as
+another unconfirmed hypothesis, explicitly, until they test it — not as a fix.**
+
+### Third attempt at the same clipping symptom: iOS auto-zoom-on-focus for sub-16px form fields
+
+**What happened (2026-08-03, following the "Failed" report above):** re-audited every
+`<input>`/`<textarea>`/`<select>` in `src/App.jsx`. Found 11 distinct fields/components between
+12px and 14.5px: the shared `Inp` component (used by nearly every Details-form field — destination,
+home airport, hotel tier, vehicle, rental company, base area, travelers, interests, cuisine, etc.),
+`Autocomplete`'s input, `NarrativeBox`'s textarea (the very first thing a user types), the shared
+`Sel` dropdown, `TagInput`, the multi-city nights field, the share-URL display, the revision
+"which day" selector, the `/find` page's "Show" dropdown and "Guidelines" textarea, and the
+"confirm venue names" custom input. Notably `/find`'s "Location" input was **already** 16px — an
+existing precedent for this exact fix already living in this codebase.
+
+**Mechanism (well-documented, not guessed — CSS-Tricks "16px or Larger Text Prevents iOS Form
+Zoom," GitHub issue `huygn/til#90`, a GitLab MR titled "Fix iOS input zoom on mobile devices"):**
+iOS Safari/Chrome auto-zooms the entire page in when the user focuses any form field whose computed
+font-size is under 16px, to keep the text legible. In a normal multi-page site the next navigation
+resets zoom. This app is a single-page wizard with no full reload between "screens" — so a zoom
+triggered by, say, typing the destination on the Essentials step can persist across Details, the
+build-progress screen, and the itinerary view, exactly matching what the user has been
+screenshotting (content clipped at the right edge, self-corrects on pinch/scroll).
+
+**Fix:** every text-entry field's `fontSize` bumped to `"16px"` (checkbox/radio/file inputs don't
+trigger this and were left alone). Verified: computed `getComputedStyle(el).fontSize === "16px"`
+for every visible field via Playwright; lint baseline unchanged (0 errors, 14 warnings); full test
+suite 2799/2799 (one pre-existing unrelated failure, `test_save_pdf_share_first.mjs`); screenshot
+of the form-mode screen shows no visual regression. Shipped: commit `f234bb8`, merged to `master`.
+
+**This is mechanistically different from the vw/dvw fix** — deterministic and app-triggered (a
+focus event on a specific element) rather than timing-dependent (a stale value read once on first
+paint). That's why it's a plausible independent candidate rather than a retry of the same idea. **It
+has NOT been confirmed on the user's real device as of this writing.** Given two prior
+well-reasoned diagnoses for this same symptom did not resolve it, do not upgrade this from
+"shipped, locally verified, mechanistically plausible" to "fixed" until the user says so.
+
 ---
 
 ## KEY TECHNICAL PATTERNS (learned 2026-07-01 → 07-02)
