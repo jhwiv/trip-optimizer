@@ -37,6 +37,68 @@ verified against an external source or computed in code.
 This rule supersedes any instruction to "just generate" an itinerary. If a verification tool is
 unavailable at runtime, fail safe: treat the venue as UNVERIFIED, not as operational.
 
+### KNOWN FAILURE MODE — item.name does not exist. Check the real schema before writing a fixture.
+
+**2026-08-03, found auditing a reported Sedona itinerary review, after the user asked "how do we
+ensure better results going forward" following repeated critical-flaw reports on completed
+itineraries.** This is the actual root cause behind a class of "the model is bad" complaints that
+was not a model quality problem at all — it was five silently-broken safeguards, all caused by one
+field-name bug, invisible to CI because the tests were written against the same wrong assumption
+as the code.
+
+**The bug:** `DAY_ITEM_SCHEMA` (`src/App.jsx`) has NO `name` field on plan items. A restaurant's
+name lives at `item.restaurant.name`, a hotel's at `item.hotel.name`, and an Activity's ONLY at
+`item.text` (formatted `"Venue Name — description"`). Several call sites were written as if
+`item.name` existed — it is always `undefined` on a real plan — and every test file exercising
+those call sites used the identical wrong shape in its own fixtures, so nothing ever caught it.
+Broken by this one bug:
+
+1. `src/placesVerify.js` `collectPlanVenues`/`applyToActivity` — **every Activity in every
+   itinerary this app has ever generated (tours, hikes, museums, guided experiences — the Pink
+   Jeep Broken Arrow tour included) was silently exempt from the Google Places verification the
+   HARD RULE above mandates.** Only restaurants and hotels were actually checked.
+2. `extractPrimaryHotel`/`extractRestaurantNames`/`extractActivityNames` (`src/App.jsx`) — fed
+   `/api/review-retrieve`'s live-grounding params. Always returned `null`/`[]`, so the Expert
+   Review's Reddit/local-press search has always run generic destination-only queries, never
+   anything about the specific venues in the plan it was reviewing.
+3. `src/chunkPlan.js` `collectRestaurantNames` + `stitchPlan`'s cross-chunk dedupe — the "don't
+   reuse a restaurant from an earlier chunk" prompt hint, and the "warn if one slipped through
+   anyway" check, have both been inert for every large (chunked, multi-day) trip.
+4. The chunk-mode wrapper-pass summary builder (`src/App.jsx`) — produced `"Day N (City): —"` for
+   every day, so the pass writing the introduction/Plan B/snobs/tonight sections has always worked
+   from zero real venue context on any chunked trip.
+5. `src/webExport.js` (the "Web export" download) — a related but separate audit found the same
+   failure pattern: item name/address/phone/website/notes and day date/title/theme all read fields
+   that don't exist (real fields: `text`/`restaurant`/`hotel`/`contact`/`why`, `label`/`headline`),
+   and `data.introduction` (a real `{arc, differentiators}` object) was treated as a string,
+   stringifying to the literal text `"[object Object]"`. This file had **zero test coverage**
+   before the fix — the only one of the five with no tests to have masked the bug in the first
+   place, because there were no tests at all.
+
+**Why this matters more than any single bug fix:** the pattern here — hand-written test fixtures
+that drift from the real schema and then rubber-stamp broken code — is a systemic risk, not a
+one-off. It is exactly how a "hard rule" (Places verification for every venue) can be violated for
+the entire lifetime of a feature without a single test failing.
+
+**The standing rule going forward:** before writing ANY plan/day/item fixture in a test — or
+before reading a plan field in new code — check the actual field names against `DAY_ITEM_SCHEMA`,
+`DAY_SCHEMA`, `RESTAURANT_SCHEMA`, `HOTEL_ITEM_SCHEMA`, `FLIGHT_SCHEMA`, `CONTACT_SCHEMA` (all in
+`src/App.jsx`), not against what "seems like it should be there." A fixture shaped like
+`{ type: "Activity", name: "X" }` is invalid — items have no `name` field. The canonical shapes:
+- Item: `time`, `end_time`, `type`, `text`, `location`, `duration`, `why`, `contact`, `flight`,
+  `hotel`, `restaurant` (`required: ["time", "type", "text"]`) — **no `name`, no `address`, no
+  `phone`, no `notes`, no `description`, no `kind`, no `place`.**
+- Day: `label`, `city`, `headline`, `weather`, `pace_note`, `items` — **no `date`, no `title`, no
+  `theme`.**
+- A restaurant/hotel name is always one level down: `item.restaurant.name` / `item.hotel.name`.
+- An Activity's only display text is `item.text`, formatted `"Venue Name — description"`. Use
+  `activityName()` (exported from `src/placesVerify.js`) to extract just the venue-name portion
+  when the consumer is a search query (Places Text Search, Perplexity) rather than a display label.
+- `data.introduction` is `{ arc, differentiators }`, not a string; `differentiators` can be the
+  literal sentinel `"NONE_FLAGGED"` (see `src/introduction.js`).
+
+Full writeup: `docs/wiki/learnings/2026-08-03.md`.
+
 ## Implementation map
 
 | Concern | File |
