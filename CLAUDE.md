@@ -279,6 +279,30 @@ genuinely unclipped overflowing elements directly onto the failing screen, so th
 real numbers instead of the agent inferring pixel counts from photos. Delete it once root cause is
 confirmed — don't leave diagnostic scaffolding in shipped code.
 
+### A matching symptom is not proof of a matching cause — same clipping, different bug, one day later
+
+**What happened (2026-08-03), directly following the entry above:** the identical-looking symptom
+(right-edge clipping, self-corrects on any scroll/zoom/interaction) recurred the very next day.
+The temptation was to reach for the same conclusion ("stuck zoom, not a code bug") — but the user
+explicitly ruled that out ("There is no issue with my phone") and it was now recurring consistently
+across multiple fresh builds, not confined to one stuck tab. Told to research properly rather than
+pattern-match to yesterday's answer, actual web research (WebKit's own bug tracker, live Apple
+Developer Forums threads) turned up a real, citable, DIFFERENT root cause: WebKit — worse in
+WKWebView, the engine every third-party iOS browser (Chrome included) is required to use — can
+serve a stale `vw`/`dvw`/`vh`/`dvh` (and `window.innerWidth`/`innerHeight`) value on first paint,
+self-correcting only after the next reflow. `index.html` set `max-width: 100vw; max-width: 100dvw`
+on `html, body` and `#root` — exactly the mechanism described. Fixed by removing those lines
+(`width: 100%` was already present and doesn't share the bug, since it resolves against the live
+containing block rather than a cached viewport-unit snapshot, not a scroll/zoom workaround).
+Full writeup: `docs/wiki/learnings/2026-08-03.md`. Sources: bugs.webkit.org #170595,
+developer.apple.com/forums/thread/803987, /thread/735055, /thread/802660.
+
+The lesson isn't "always research first" (the swipe/fresh-tab tests above are still the right FIRST
+move, and they were right for the 2026-08-02 incident). The lesson is: once the user has ruled out
+the previous explanation directly, do not re-apply it to a new incident just because the symptom
+looks the same. Two different bugs can produce the same visible clipping through completely
+different mechanisms — verify each one on its own evidence.
+
 ---
 
 ## KEY TECHNICAL PATTERNS (learned 2026-07-01 → 07-02)

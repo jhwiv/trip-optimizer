@@ -8451,6 +8451,10 @@ function DateRangeInput({ startDate, endDate, onRangeChange }) {
   // (plus an 8px gutter). Runs before paint so there's no visible jump. When the
   // popover already fits (e.g. desktop with room), overflow <= 0 → shiftX stays 0
   // and the popover renders exactly where it does today.
+  // document.documentElement.clientWidth, not window.innerWidth: iOS WebKit
+  // (worse in WKWebView, which every third-party iOS browser is required to
+  // use) can report a stale innerWidth immediately after load/resize/rotation
+  // until the next reflow — clientWidth doesn't have the same bug.
   useLayoutEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: measure layout, then set the horizontal shift before paint
     if (!open) { setShiftX(0); return; }
@@ -8458,7 +8462,7 @@ function DateRangeInput({ startDate, endDate, onRangeChange }) {
     if (!el) return;
     const rect = el.getBoundingClientRect();
     const GUTTER = 8;
-    const overflowRight = rect.right - (window.innerWidth - GUTTER);
+    const overflowRight = rect.right - (document.documentElement.clientWidth - GUTTER);
     setShiftX(overflowRight > 0 ? -overflowRight : 0);
   }, [open, startDate, endDate]);
 

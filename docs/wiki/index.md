@@ -30,4 +30,5 @@ Luxury-tier travel-planning web app. One bundle, two surfaces:
 - `learnings/2026-06-27.md` — full work log for the day PRs #64–#69 shipped
 - `learnings/2026-06-30.md` — work log for the day PRs #96–#102 shipped; #6 parked; flight-numbers investigation opened
 - `learnings/2026-07-03.md` — work log: shareable URL, activity count hardening, PDF whitespace, iOS offset fix
+- `learnings/2026-08-03.md` — build-hero redesign, `contain: paint` removal (fixed-position containing-block bug), and the sourced WebKit/WKWebView stale-viewport-unit fix (`100vw`/`100dvw` removed from `html`/`body`/`#root`)
 - `concepts/activity-count.md` — complete root-cause analysis and fix history for the "too many activities" recurrence

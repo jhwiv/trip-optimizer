@@ -110,14 +110,21 @@
          position: relative on root is required for clip to work on iOS as a
          containing block. */
       html, body {
+        /* width: 100% (NOT max-width: 100vw/100dvw) is deliberate. vw/dvw are
+           resolved against the browser's cached viewport-unit snapshot, which
+           WebKit can serve stale on initial paint — self-correcting only after
+           a reflow (scroll, resize, orientation change, a zoom gesture). This
+           is an officially filed WebKit bug (bugs.webkit.org #170595) and is
+           WORSE in WKWebView — the engine every third-party iOS browser,
+           Chrome included, is required to use — than in Safari's own renderer.
+           Found 2026-08-03: build-screen content (Reset button, Plan My Trip
+           button, body text) was clipped at the right edge on fresh page
+           loads on iOS Chrome, and self-corrected the instant the user
+           scrolled or pinch-zoomed — the signature of this exact bug, not a
+           device setting. width: 100% does not go through the vw/dvw
+           computation path; it resolves against the live containing block on
+           every layout pass, so it can't go stale the same way. */
         width: 100%;
-        /* 100dvw excludes iOS Safari chrome (URL bar / bottom bar) reliably;
-           100vw is a fallback for older browsers. overflow-x: clip is stricter
-           than hidden — it never creates a scroll container, so no descendant
-           can trigger a horizontal scroll even under text zoom or when the
-           browser toolbar animates. */
-        max-width: 100vw;
-        max-width: 100dvw;
         overflow-x: clip;
         overscroll-behavior-x: none;
       }
@@ -131,9 +138,9 @@
         word-wrap: break-word;
       }
       #root {
+        /* No max-width: 100vw/100dvw here either — see the html/body rule
+           above for why (stale WebKit/WKWebView viewport-unit snapshot). */
         width: 100%;
-        max-width: 100vw;
-        max-width: 100dvw;
         /* overflow-x: clip alone clips anything a child paints past the right
            edge and cannot force horizontal scroll — no `contain: paint` needed
            for that. contain: paint used to sit here too, but it has a load-
