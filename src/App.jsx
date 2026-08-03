@@ -4047,7 +4047,9 @@ function WebExportSection({ data, inputs }) {
             value={shareUrl}
             style={{
               flex: "1 1 200px", minWidth: 0,
-              fontSize: "12px", fontFamily: "monospace",
+              // fontSize 16px — readOnly doesn't exempt it from iOS's
+              // auto-zoom-on-focus, and onClick below explicitly focuses it.
+              fontSize: "16px", fontFamily: "monospace",
               padding: "8px 12px", borderRadius: "var(--border-radius-sm)",
               border: "1px solid var(--color-border-subtle)",
               background: "var(--color-surface-offset)",
@@ -6877,7 +6879,8 @@ function ChangeRequestCard({ plan, inputs, onPlanRevised, variant = "toplevel" }
           <select
             value={dayIdx}
             onChange={(e) => setDayIdx(parseInt(e.target.value, 10))}
-            style={{ width: "100%", padding: "7px 9px", fontSize: "12.5px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-sm, 4px)", background: "var(--color-background-primary)", color: "var(--color-text-primary)", fontFamily: "inherit" }}
+            // fontSize 16px — see the Inp component's comment on iOS auto-zoom.
+            style={{ width: "100%", padding: "7px 9px", fontSize: "16px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-sm, 4px)", background: "var(--color-background-primary)", color: "var(--color-text-primary)", fontFamily: "inherit" }}
           >
             {plan.days.map((d, i) => {
               const labelTxt = (d?.label && String(d.label).trim()) || (d?.date && String(d.date).trim()) || `Day ${i + 1}`;
@@ -8060,7 +8063,12 @@ function Field({ label, children, hint }) {
 }
 
 function Inp({ value, onChange, placeholder, type = "text" }) {
-  return <input type={type} value={value} onChange={onChange} placeholder={placeholder} style={{ fontSize: "14px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", lineHeight: "1.4" }} />;
+  // fontSize is 16px, not the ~14px this text otherwise reads at, because iOS
+  // Safari/Chrome auto-zooms the whole page in on focus for any input under
+  // 16px — and since this is a single-page app with no reload between
+  // "screens", that zoom persists across every later view until the user
+  // manually pinches back out. See CLAUDE.md's 2026-08-03 entry.
+  return <input type={type} value={value} onChange={onChange} placeholder={placeholder} style={{ fontSize: "16px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", lineHeight: "1.4" }} />;
 }
 
 // Free-form "tell me about the trip" narrative box with built-in dictation.
@@ -8265,7 +8273,10 @@ function NarrativeBox({ value, onChange, placeholder, hint, size = "large", minH
           placeholder={placeholder}
           rows={isCompact ? 3 : 8}
           style={{
-            fontSize: isCompact ? "13px" : "14px",
+            // 16px regardless of compact mode — anything smaller triggers
+            // iOS auto-zoom-on-focus, which persists across every later
+            // screen in this SPA. See the Inp component's comment.
+            fontSize: "16px",
             padding: isCompact ? `9px ${rightPadding} 9px 11px` : `12px ${rightPadding} 12px 12px`,
             border: isCompact ? "0.5px solid var(--color-border-secondary)" : "0.5px solid var(--color-border-primary)",
             borderRadius: isCompact ? "var(--border-radius-sm, 4px)" : "8px",
@@ -8745,7 +8756,9 @@ function Autocomplete({ value, onChange, placeholder, getSuggestions, renderItem
         onKeyDown={onKeyDown}
         placeholder={placeholder}
         autoComplete="off"
-        style={{ fontSize: "14px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", lineHeight: "1.4" }}
+        // 16px, not ~14px — prevents iOS auto-zoom-on-focus; see the Inp
+        // component's comment for why this matters more than it looks like it should.
+        style={{ fontSize: "16px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", lineHeight: "1.4" }}
       />
       {showPanel && (
         <div className="city-suggestions" role="listbox">
@@ -9499,7 +9512,8 @@ function Sel({ value, onChange, opts, multi = false, placeholder = "No preferenc
   if (!multi) {
     const safeVal = value || "";
     return (
-      <select value={safeVal} onChange={onChange} style={{ fontSize: "13px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: safeVal ? "var(--color-text-primary)" : "var(--color-text-secondary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", appearance: "none", cursor: "pointer" }}>
+      // fontSize 16px — see the Inp component's comment on iOS auto-zoom.
+      <select value={safeVal} onChange={onChange} style={{ fontSize: "16px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: safeVal ? "var(--color-text-primary)" : "var(--color-text-secondary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", appearance: "none", cursor: "pointer" }}>
         <option value="">{placeholder}</option>
         {opts.map(o => <option key={o} value={o}>{o}</option>)}
       </select>
@@ -9624,7 +9638,8 @@ function TagInput({ placeholder, tags, setTags, suggestions = [] }) {
             onKeyDown={onKeyDown}
             placeholder={placeholder}
             autoComplete="off"
-            style={{ width: "100%", fontSize: "13px", padding: "8px 0", border: "none", borderBottom: `0.5px solid var(--color-border-primary)`, background: "transparent", color: "var(--color-text-primary)", outline: "none", fontFamily: "inherit" }}
+            // fontSize 16px — see the Inp component's comment on iOS auto-zoom.
+            style={{ width: "100%", fontSize: "16px", padding: "8px 0", border: "none", borderBottom: `0.5px solid var(--color-border-primary)`, background: "transparent", color: "var(--color-text-primary)", outline: "none", fontFamily: "inherit" }}
           />
           {open && filtered.length > 0 && (
             <div className="city-suggestions" role="listbox">
@@ -11563,10 +11578,11 @@ function FindView({ embedded = false } = {}) {
           </Field>
 
           <Field label="Show">
+            {/* fontSize 16px — see the Inp component's comment on iOS auto-zoom. */}
             <select
               value={category}
               onChange={(e) => setCategory(e.target.value)}
-              style={{ fontSize: "14px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box" }}
+              style={{ fontSize: "16px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box" }}
             >
               <option value="both">Restaurants &amp; activities</option>
               <option value="restaurants">Restaurants only</option>
@@ -11580,7 +11596,7 @@ function FindView({ embedded = false } = {}) {
               onChange={(e) => setGuidelines(e.target.value.slice(0, FIND_GUIDELINES_MAX))}
               placeholder="Dinner spots good for a celebration, walking distance from the plaza. Morning activities, no strenuous hikes. We're vegetarian."
               rows={3}
-              style={{ fontSize: "14px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", resize: "vertical", minHeight: "70px", lineHeight: 1.5 }}
+              style={{ fontSize: "16px", padding: "10px 12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", fontFamily: "inherit", background: "var(--color-background-primary)", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", resize: "vertical", minHeight: "70px", lineHeight: 1.5 }}
             />
           </Field>
 
@@ -16238,7 +16254,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                         </div>
                         {isMultiCity && (
                           <div style={{ flex: "0 0 64px" }}>
-                            <input type="number" min="1" max="14" value={c.nights} onChange={e => updateCity(i, { nights: e.target.value })} placeholder="nights" aria-label={`Nights in ${c.name || `city ${i + 1}`}`} style={{ fontSize: "14px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", textAlign: "center" }} />
+                            <input type="number" min="1" max="14" value={c.nights} onChange={e => updateCity(i, { nights: e.target.value })} placeholder="nights" aria-label={`Nights in ${c.name || `city ${i + 1}`}`} style={{ fontSize: "16px", padding: "9px 0", border: "none", borderBottom: "0.5px solid var(--color-border-primary)", background: "transparent", color: "var(--color-text-primary)", width: "100%", boxSizing: "border-box", outline: "none", fontFamily: "inherit", textAlign: "center" }} />
                           </div>
                         )}
                         {isMultiCity && cities.length > 1 && (
@@ -16568,7 +16584,8 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                               placeholder="Type the correct name"
                               onChange={(e) => setRes({ choice: "custom", value: e.target.value })}
                               onFocus={() => setRes({ choice: "custom" })}
-                              style={{ flex: 1, fontSize: "13px", padding: "6px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "var(--color-background-primary)", fontFamily: "inherit", color: "var(--color-text-primary)", outline: "none" }}
+                              // fontSize 16px — see the Inp component's comment on iOS auto-zoom.
+                              style={{ flex: 1, fontSize: "16px", padding: "6px 8px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "var(--color-background-primary)", fontFamily: "inherit", color: "var(--color-text-primary)", outline: "none" }}
                             />
                           </label>
                         </div>
