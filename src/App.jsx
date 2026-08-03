@@ -12913,6 +12913,27 @@ export default function TripOptimizer() {
   };
   const _ri = recovered?.inputs;
   const [basics, setB] = useState(normalizeBasics(_ri?.basics || BLANK.basics));
+  // Reflect progress in the tab title while the build hero is up. The build
+  // can run 15+ minutes, and the honest answer to "what if I switch tabs /
+  // lock my phone" is: the tab itself keeps signaling progress rather than
+  // going silent — cheaper and less intrusive than a push notification, and
+  // needs no permission prompt. Restores whatever the title was before the
+  // hero turned on.
+  const originalTitleRef = useRef(typeof document !== "undefined" ? document.title : "");
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const originalTitle = originalTitleRef.current;
+    if (!showBuildHero) {
+      document.title = originalTitle;
+      return;
+    }
+    const pct = Math.round((reviewPhaseRunning ? reviewPhaseProgress : progress) * 100);
+    const dest = basics?.destination ? ` · ${basics.destination}` : "";
+    document.title = (loading || reviewPhaseRunning)
+      ? `(${pct}%) Building${dest} — RouteSmith`
+      : `Ready${dest} — RouteSmith`;
+    return () => { document.title = originalTitle; };
+  }, [showBuildHero, loading, reviewPhaseRunning, progress, reviewPhaseProgress, basics?.destination]);
   const [flights, setF] = useState(_ri?.flights || BLANK.flights);
   const [hotel, setH] = useState(_ri?.hotel || BLANK.hotel);
   const [transport, setT] = useState(_ri?.transport || BLANK.transport);
