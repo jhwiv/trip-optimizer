@@ -2804,65 +2804,89 @@ function applyQualityLayer(input, inputs) {
     ? input.days.map(d => ({ ...d, items: Array.isArray(d.items) ? d.items.map(it => ({ ...it, restaurant: it.restaurant ? { ...it.restaurant } : it.restaurant, flight: it.flight ? { ...it.flight } : it.flight })) : d.items }))
     : input.days;
 
-  // 1. Restaurant dedupe. Two distinct situations look identical from
-  //    item.restaurant.name alone:
-  //    (a) a legitimate return visit to the same restaurant on a LATER day
-  //        — annotate, don't remove, the traveler really is going back; and
-  //    (b) the model emitting the same restaurant twice for the SAME meal
-  //        slot on the SAME day — a generation duplication bug, not a second
-  //        meal (2026-08-03 Sedona build: Elote Cafe appeared as "Dinner" at
-  //        both 6:30 PM and 7:30 PM on Day 3, the second a truncated copy of
-  //        the first, missing hours/closures/backup). Nobody eats two
-  //        dinners at the same place an hour apart, so (b) is dropped
-  //        rather than kept-and-labeled — silently keeping both, even
-  //        annotated, still shows the same restaurant twice in the PDF.
+  // 1. Same-venue dedupe — restaurants AND activities. Two distinct
+  //    situations look identical from the venue name alone:
+  //    (a) a legitimate return visit to the same venue on a LATER day —
+  //        annotate, don't remove, the traveler really is going back; and
+  //    (b) the model emitting the same venue twice for the SAME sub-slot on
+  //        the SAME day — a generation duplication bug, not a second visit.
+  //    Confirmed as a systemic pattern, not restaurant-specific: the
+  //    2026-08-03 Sedona build repeated Elote Cafe as "Dinner" at both
+  //    6:30 PM and 7:30 PM on Day 3; a later build from the same tool
+  //    repeated "Sunset at Airport Mesa overlook" as two back-to-back
+  //    Activity items, both at 5:30 PM on Day 1. (b) is dropped rather than
+  //    kept-and-labeled — silently keeping both, even annotated, still
+  //    shows the same venue twice in the PDF.
+  //
+  //    "Sub-slot" is what makes two same-day appearances of the same venue
+  //    legitimate rather than a duplicate: for a restaurant it's the meal
+  //    type (lunch AND dinner at the same place is a real, if unusual,
+  //    itinerary choice); for an activity it's the scheduled time (the same
+  //    overlook at sunrise AND sunset is a real choice — the same overlook
+  //    twice at the identical time is not).
   if (Array.isArray(days)) {
-    const seen = new Map(); // normalized name → { dayIndex, mealType }
+    // key = `${kind}|${normalizedName}` so a restaurant and an activity that
+    // happen to share a name never collide.
+    const seen = new Map(); // key → { dayIndex, subType }
     days.forEach((day, dayIdx) => {
       if (!Array.isArray(day.items)) return;
-      const seenTypesToday = new Map(); // normalized name → Set of item.type seen today
+      const seenTodayByKey = new Map(); // key → Set of sub-slot seen today
       const dupFlags = [];
       day.items = day.items.filter(item => {
-        const r = item.restaurant;
-        const isMeal = /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/i.test(item.type || "");
-        if (!r || !r.name || !isMeal) return true;
-        const key = r.name.trim().toLowerCase();
-        const typeKey = (item.type || "").toLowerCase();
-        const todayTypes = seenTypesToday.get(key);
-        if (todayTypes?.has(typeKey)) {
-          fixes.push(`Day ${dayIdx + 1}: removed duplicate ${r.name} entry (${item.type}) — same restaurant listed twice for the same meal`);
+        const type = item.type || "";
+        const isMeal = /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/i.test(type);
+        let kind, name, subType;
+        if (isMeal && item.restaurant?.name) {
+          kind = "restaurant";
+          name = item.restaurant.name;
+          subType = type.toLowerCase();
+        } else if (type === "Activity") {
+          const cleanName = activityName(item.text);
+          if (!cleanName) return true;
+          kind = "activity";
+          name = cleanName;
+          subType = item.time || "unspecified";
+        } else {
+          return true;
+        }
+        const dedupeKey = `${kind}|${name.trim().toLowerCase()}`;
+        const todaySubTypes = seenTodayByKey.get(dedupeKey);
+        if (todaySubTypes?.has(subType)) {
+          const slotLabel = kind === "restaurant" ? "the same meal" : "the same time slot";
+          fixes.push(`Day ${dayIdx + 1}: removed duplicate ${name} entry (${type}) — same ${kind} listed twice for ${slotLabel}`);
           dupFlags.push({
             code: "DUPLICATE_VENUE_SAME_DAY",
             severity: "warn",
             dayIdx,
             day: dayIdx + 1,
-            target: r.name,
-            message: `${r.name} was listed twice as ${item.type} on Day ${dayIdx + 1}; the duplicate was removed.`,
+            target: name,
+            message: `${name} was listed twice as ${type} on Day ${dayIdx + 1}; the duplicate was removed.`,
           });
           return false;
         }
-        if (todayTypes) todayTypes.add(typeKey);
-        else seenTypesToday.set(key, new Set([typeKey]));
+        if (todaySubTypes) todaySubTypes.add(subType);
+        else seenTodayByKey.set(dedupeKey, new Set([subType]));
 
-        const prior = seen.get(key);
-        // prior.dayIndex === dayIdx means this is a same-day, different-meal-
-        // type repeat (e.g. lunch AND dinner at the same place) — already
-        // let through by the same-day/same-type check above. That's a
-        // legitimate itinerary choice, not a return visit "from" today to
-        // itself, so it gets no annotation at all. Only a prior sighting on
-        // a genuinely EARLIER day is a cross-day return visit worth noting.
+        const prior = seen.get(dedupeKey);
+        // prior.dayIndex === dayIdx means this is a same-day, different-
+        // sub-slot repeat (e.g. lunch AND dinner at the same restaurant, or
+        // sunrise AND sunset at the same overlook) — already let through by
+        // the same-day/same-sub-slot check above. That's a legitimate
+        // itinerary choice, not a return visit "from" today to itself, so
+        // it gets no annotation at all. Only a prior sighting on a
+        // genuinely EARLIER day is a cross-day return visit worth noting.
         if (prior && prior.dayIndex !== dayIdx) {
-          const mealLabel = (item.type || "meal").toLowerCase();
-          const note = `Return visit — first appeared Day ${prior.dayIndex + 1} (${prior.mealType.toLowerCase()}).`;
-          if (r.why && !/^return visit/i.test(r.why)) {
-            r.why = `${note} ${r.why}`;
-          } else if (!r.why) {
-            r.why = note;
+          const note = `Return visit — first appeared Day ${prior.dayIndex + 1}.`;
+          const target = kind === "restaurant" ? item.restaurant : item;
+          if (target.why && !/^return visit/i.test(target.why)) {
+            target.why = `${note} ${target.why}`;
+          } else if (!target.why) {
+            target.why = note;
           }
-          r._isReturnVisit = true;
-          fixes.push(`Annotated repeat: ${r.name} (Day ${dayIdx + 1} ${mealLabel}) — first on Day ${prior.dayIndex + 1}`);
+          target._isReturnVisit = true;
+          fixes.push(`Annotated repeat: ${name} (Day ${dayIdx + 1}) — first on Day ${prior.dayIndex + 1}`);
         } else if (!prior) {
-          seen.set(key, { dayIndex: dayIdx, mealType: item.type || "meal" });
+          seen.set(dedupeKey, { dayIndex: dayIdx, subType });
         }
         return true;
       });
@@ -3387,6 +3411,70 @@ function applyQualityLayer(input, inputs) {
     }
   }
 
+  // 2.7 Stray booking reference — tonight[]/flags[] sometimes tell the user
+  // to "Book <Restaurant> for Day N" or list "<Restaurant> (Day N)" among
+  // upcoming reservations, but that restaurant never actually appears
+  // anywhere in the day-by-day itinerary: a leftover/cross-contaminated
+  // reference from a different draft, or a restaurant the model meant to
+  // schedule and then dropped. Real observed case (2026-08-03 Sedona
+  // build): "This week: Book remaining restaurants — Mariposa (Day 1), Reds
+  // (Day 3)..." — "Mariposa" never appears as a restaurant anywhere in
+  // days[]; Day 1 had no dinner at all (see the missing-dinner check above).
+  //
+  // Bounded, pattern-based extraction (not free-form NLP): only looks
+  // inside sentences that already contain "book"/"reserve" (the verb that
+  // makes a name-near-"(Day N)" mention meaningfully about a reservation,
+  // not some unrelated day reference), and only the two citation shapes
+  // actually observed. Matching against real restaurant names is substring-
+  // based in both directions ("Reds" ⊂ "Reds Restaurant") since the
+  // citation is often a shortened form of the full name. A false positive
+  // here is low-stakes — it's a warn, escalated to the Expert Review for
+  // its own judgment, never a block.
+  if (Array.isArray(days)) {
+    const allRestaurantNames = [];
+    days.forEach(d => (d.items || []).forEach(it => {
+      if (it?.restaurant?.name) allRestaurantNames.push(it.restaurant.name.trim().toLowerCase());
+      if (it?.restaurant?.backup?.name) allRestaurantNames.push(it.restaurant.backup.name.trim().toLowerCase());
+    }));
+    // A "word" after the first must start with a letter/digit, or be a bare
+    // "&" (common in compound restaurant names like "Dahl & Di Luca") — but
+    // NOT a bare hyphen. Without that exclusion, a plain " - " list
+    // separator ("Book remaining restaurants - Mariposa (Day 1)...") gets
+    // swallowed into the capture as if it were part of the name, since a
+    // lone "-" otherwise satisfies the character class same as a real word
+    // would. Real model output almost always uses an em-dash for this,
+    // which isn't in the class and never had this problem — found only by
+    // testing a plain-hyphen variant live, which the em-dash-only fixture
+    // this check was designed against never exercised.
+    const NAME_WORD = "(?:&|[A-Za-z0-9][A-Za-z0-9&’'.-]*)";
+    const NAME_PATTERN = `[A-Z][A-Za-z0-9&’'.-]*(?:\\s+${NAME_WORD}){0,4}`;
+    const forDayRe = new RegExp(`\\b(?:Book|Reserve)\\s+(${NAME_PATTERN})\\s+for\\s+Day\\s*\\d+`, "gi");
+    const parenDayRe = new RegExp(`(${NAME_PATTERN})\\s*\\(Day\\s*\\d+\\)`, "g");
+    const seenReminders = new Set();
+    const reminderSources = [
+      ...(Array.isArray(input.tonight) ? input.tonight : []),
+      ...(Array.isArray(input.flags) ? input.flags : []),
+    ];
+    reminderSources.forEach(text => {
+      if (typeof text !== "string" || !/\b(book|reserve)\b/i.test(text)) return;
+      const names = [];
+      let m;
+      forDayRe.lastIndex = 0;
+      while ((m = forDayRe.exec(text))) names.push(m[1].trim());
+      parenDayRe.lastIndex = 0;
+      while ((m = parenDayRe.exec(text))) names.push(m[1].trim());
+      names.forEach(name => {
+        const key = name.toLowerCase();
+        if (seenReminders.has(key)) return;
+        seenReminders.add(key);
+        const found = allRestaurantNames.some(rn => rn.includes(key) || key.includes(rn));
+        if (!found) {
+          warnings.push(`"${name}" is named in Tonight/Flags as a restaurant to book, but no restaurant by that name appears anywhere in the itinerary — confirm this booking was actually scheduled.`);
+        }
+      });
+    });
+  }
+
   // 3. Validators — surface as warnings, never block render.
   // Truncation / partial-plan flags propagated from the parse layer get top
   // billing so the user knows the itinerary they're looking at is incomplete.
@@ -3522,6 +3610,30 @@ function applyQualityLayer(input, inputs) {
         day.flags = Array.isArray(day.flags) ? day.flags.slice() : [];
         day.flags.push("Thin day \u2014 no signature activity, meal, or flight. Consider regenerating for a fuller day.");
         warnings.push(`Day ${dayIdx + 1} is thin — only notes/transport/hotel with no anchor experience`);
+      }
+    });
+  }
+
+  // Missing-dinner check. Unlike Breakfast/Lunch (opt-in only — see
+  // src/mealPolicy.js), Dinner has no opt-out mechanism anywhere in this
+  // pipeline: it's expected every day by default. A day with no Dinner/
+  // Dining item usually means the model stopped partway through the
+  // evening rather than a deliberate choice — real observed case (2026-08-03
+  // Sedona build): Day 1's sunset activity ended at 7 PM and the day just
+  // stopped there, no dinner anywhere that evening, while every other day
+  // of the same trip had one. Skipped for the LAST day of the trip, where a
+  // same-day departure flight legitimately often precludes dinner. Warn-
+  // tier only — a genuinely dinner-free trip (all meals at a villa, etc.)
+  // is a real possibility the reviewer can judge; this just makes sure the
+  // gap is visible rather than silently missing.
+  if (Array.isArray(days) && days.length > 0) {
+    const DINNER_TYPES = /^(Dinner|Dining)$/i;
+    days.forEach((day, dayIdx) => {
+      if (dayIdx === days.length - 1) return; // last day — departure, dinner often n/a
+      const items = Array.isArray(day?.items) ? day.items : [];
+      const hasDinner = items.some(it => DINNER_TYPES.test(String(it?.type || "")));
+      if (!hasDinner) {
+        warnings.push(`Day ${dayIdx + 1} has no dinner scheduled — every other day normally has one; confirm this is intentional`);
       }
     });
   }

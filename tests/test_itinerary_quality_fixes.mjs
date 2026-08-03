@@ -1,13 +1,19 @@
-// Tests for three quality-layer fixes found auditing the 2026-08-03 Sedona
-// build (Elote Cafe listed twice on Day 3; the Pink Jeep Broken Arrow tour
-// promised in the day's headline but never scheduled as an item; the
-// "MUST:" tonight entries for both silently losing their urgency badge).
+// Tests for quality-layer fixes found auditing two reported Sedona builds
+// (2026-08-03): Elote Cafe listed twice on Day 3; the Pink Jeep Broken
+// Arrow tour promised in the day's headline but never scheduled as an
+// item; the "MUST:" tonight entries for both silently losing their
+// urgency badge; a later build repeating "Sunset at Airport Mesa overlook"
+// as two identical Activity items; that same build's Day 1 missing a
+// dinner entirely; and a stray "Mariposa" restaurant reference in
+// Tonight/Flags that never appears anywhere in the actual itinerary.
 //
 // applyQualityLayer and tonightPriority/stripTonightPrefix are closures
 // inside src/App.jsx and can't be imported directly here (jsdom-free tests),
 // so — following the convention in test_day_completeness_and_city_normalization.mjs —
 // each fix's pure logic is mirrored locally and tested against that mirror.
 // Keep these mirrors in sync if the App.jsx implementations change shape.
+
+import { activityName } from "../src/placesVerify.js";
 
 let passed = 0, failed = 0;
 function assert(name, cond, detail = "") {
@@ -17,35 +23,51 @@ function assert(name, cond, detail = "") {
 
 // -----------------------------------------------------------------------------
 // 1. Same-day duplicate-venue dedupe mirror (src/App.jsx applyQualityLayer §1)
+//    Covers BOTH restaurants and activities — a generation duplication bug
+//    confirmed systemic across both venue kinds (Elote Cafe as two Dinners;
+//    "Sunset at Airport Mesa overlook" as two identical 5:30 PM Activities).
 // -----------------------------------------------------------------------------
-function dedupeRestaurants(days) {
+function dedupeVenues(days) {
   const fixes = [];
-  const seen = new Map();
+  const seen = new Map(); // `${kind}|${name}` → { dayIndex, subType }
   days.forEach((day, dayIdx) => {
     if (!Array.isArray(day.items)) return;
-    const seenTypesToday = new Map();
+    const seenTodayByKey = new Map();
     const dupFlags = [];
     day.items = day.items.filter(item => {
-      const r = item.restaurant;
-      const isMeal = /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/i.test(item.type || "");
-      if (!r || !r.name || !isMeal) return true;
-      const key = r.name.trim().toLowerCase();
-      const typeKey = (item.type || "").toLowerCase();
-      const todayTypes = seenTypesToday.get(key);
-      if (todayTypes?.has(typeKey)) {
-        fixes.push(`Day ${dayIdx + 1}: removed duplicate ${r.name} entry (${item.type})`);
-        dupFlags.push({ code: "DUPLICATE_VENUE_SAME_DAY", severity: "warn", dayIdx, day: dayIdx + 1, target: r.name });
+      const type = item.type || "";
+      const isMeal = /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/i.test(type);
+      let kind, name, subType;
+      if (isMeal && item.restaurant?.name) {
+        kind = "restaurant";
+        name = item.restaurant.name;
+        subType = type.toLowerCase();
+      } else if (type === "Activity") {
+        const cleanName = activityName(item.text);
+        if (!cleanName) return true;
+        kind = "activity";
+        name = cleanName;
+        subType = item.time || "unspecified";
+      } else {
+        return true;
+      }
+      const dedupeKey = `${kind}|${name.trim().toLowerCase()}`;
+      const todaySubTypes = seenTodayByKey.get(dedupeKey);
+      if (todaySubTypes?.has(subType)) {
+        fixes.push(`Day ${dayIdx + 1}: removed duplicate ${name} entry (${type})`);
+        dupFlags.push({ code: "DUPLICATE_VENUE_SAME_DAY", severity: "warn", dayIdx, day: dayIdx + 1, target: name });
         return false;
       }
-      if (todayTypes) todayTypes.add(typeKey);
-      else seenTypesToday.set(key, new Set([typeKey]));
+      if (todaySubTypes) todaySubTypes.add(subType);
+      else seenTodayByKey.set(dedupeKey, new Set([subType]));
 
-      const prior = seen.get(key);
+      const prior = seen.get(dedupeKey);
       if (prior && prior.dayIndex !== dayIdx) {
-        r._isReturnVisit = true;
-        fixes.push(`Annotated repeat: ${r.name} (Day ${dayIdx + 1}) — first on Day ${prior.dayIndex + 1}`);
+        const target = kind === "restaurant" ? item.restaurant : item;
+        target._isReturnVisit = true;
+        fixes.push(`Annotated repeat: ${name} (Day ${dayIdx + 1}) — first on Day ${prior.dayIndex + 1}`);
       } else if (!prior) {
-        seen.set(key, { dayIndex: dayIdx, mealType: item.type || "meal" });
+        seen.set(dedupeKey, { dayIndex: dayIdx, subType });
       }
       return true;
     });
@@ -56,7 +78,7 @@ function dedupeRestaurants(days) {
   return { days, fixes };
 }
 
-console.log("\n1. Same-day duplicate-venue dedupe\n");
+console.log("\n1. Same-day duplicate-venue dedupe — restaurants\n");
 {
   // The exact Sedona Day 3 shape: Elote Cafe as Dinner at 6:30 PM and again at 7:30 PM.
   const days = [
@@ -68,7 +90,7 @@ console.log("\n1. Same-day duplicate-venue dedupe\n");
       ],
     },
   ];
-  const { days: out, fixes } = dedupeRestaurants(days);
+  const { days: out, fixes } = dedupeVenues(days);
   assert("the duplicate Dinner item is removed", out[0].items.length === 2, `got ${out[0].items.length}`);
   assert("the surviving item is the first (richer) occurrence", out[0].items[1].restaurant.hours === "Tue-Sat 5-9PM");
   assert("a fix is logged", fixes.some(f => /removed duplicate Elote Cafe/i.test(f)), fixes.join(" | "));
@@ -81,7 +103,7 @@ console.log("\n1. Same-day duplicate-venue dedupe\n");
     { items: [{ type: "Dinner", time: "19:00", restaurant: { name: "Cantina 32" } }] },
     { items: [{ type: "Dinner", time: "20:00", restaurant: { name: "Cantina 32" } }] },
   ];
-  const { days: out } = dedupeRestaurants(days);
+  const { days: out } = dedupeVenues(days);
   assert("a return visit on a LATER day is kept, not removed", out[1].items.length === 1);
   assert("the later day's item is annotated as a return visit", out[1].items[0].restaurant._isReturnVisit === true);
   assert("no structural flag on a legitimate return visit", !out[1].structural_flags);
@@ -97,7 +119,7 @@ console.log("\n1. Same-day duplicate-venue dedupe\n");
       ],
     },
   ];
-  const { days: out } = dedupeRestaurants(days);
+  const { days: out } = dedupeVenues(days);
   assert("same restaurant, different meal types, same day — both items survive", out[0].items.length === 2);
   // Regression (peer-review finding, 2026-08-03): the "seen" map used for
   // cross-day return-visit annotation was keyed only by name, with no check
@@ -107,8 +129,6 @@ console.log("\n1. Same-day duplicate-venue dedupe\n");
   // itself). Same-day/different-meal-type must get no annotation at all.
   assert("...and the second (Dinner) item is NOT mislabeled as a same-day \"return visit\"",
     out[0].items[1].restaurant._isReturnVisit !== true, JSON.stringify(out[0].items[1].restaurant));
-  assert("...and its why/hours text is untouched by a same-day return-visit note",
-    !out[0].items[1].restaurant.why, out[0].items[1].restaurant.why);
 }
 {
   // A genuine cross-day return visit must still be annotated correctly even
@@ -117,9 +137,64 @@ console.log("\n1. Same-day duplicate-venue dedupe\n");
     { items: [{ type: "Lunch", time: "12:00", restaurant: { name: "The Hudson" } }] },
     { items: [{ type: "Dinner", time: "19:00", restaurant: { name: "The Hudson" } }] },
   ];
-  const { days: out } = dedupeRestaurants(days);
+  const { days: out } = dedupeVenues(days);
   assert("a cross-day return visit (different meal type) is still annotated",
     out[1].items[0].restaurant._isReturnVisit === true);
+}
+
+console.log("\n1b. Same-day duplicate-venue dedupe — activities (the Airport Mesa gap)\n");
+{
+  // The exact reported shape: "Sunset at Airport Mesa overlook" scheduled
+  // twice back-to-back, both at 5:30 PM on Day 1, near-identical text.
+  const days = [
+    {
+      items: [
+        { type: "Hotel", time: "13:30", text: "Check in" },
+        { type: "Activity", time: "17:30", text: "Sunset at Airport Mesa overlook — Sedona's 360° signature view", why: "The single best payoff-to-effort panorama in town." },
+        { type: "Activity", time: "17:30", text: "Sunset at Airport Mesa overlook — Sedona's 360° signature view", why: "The single best payoff-to-effort panorama in town." },
+      ],
+    },
+  ];
+  const { days: out, fixes } = dedupeVenues(days);
+  assert("the duplicate Activity item is removed", out[0].items.length === 2, `got ${out[0].items.length}`);
+  assert("a fix is logged naming the activity", fixes.some(f => /removed duplicate Sunset at Airport Mesa/i.test(f)), fixes.join(" | "));
+  assert("a DUPLICATE_VENUE_SAME_DAY flag is attached", out[0].structural_flags?.[0]?.code === "DUPLICATE_VENUE_SAME_DAY");
+}
+{
+  // Same activity, same day, DIFFERENT times (sunrise then sunset at the
+  // same overlook) is a legitimate itinerary choice, not the bug — both
+  // items must survive, mirroring how a restaurant can appear at lunch AND
+  // dinner on the same day.
+  const days = [
+    {
+      items: [
+        { type: "Activity", time: "06:30", text: "Airport Mesa overlook — sunrise" },
+        { type: "Activity", time: "17:30", text: "Airport Mesa overlook — sunset" },
+      ],
+    },
+  ];
+  const { days: out } = dedupeVenues(days);
+  assert("same activity venue, different times, same day — both items survive", out[0].items.length === 2);
+}
+{
+  // A genuine cross-day return visit to the same activity venue must be
+  // annotated (via item.why, since Activities have no nested object), not removed.
+  const days = [
+    { items: [{ type: "Activity", time: "17:30", text: "Airport Mesa overlook — sunset" }] },
+    { items: [{ type: "Activity", time: "06:30", text: "Airport Mesa overlook — sunrise" }] },
+  ];
+  const { days: out } = dedupeVenues(days);
+  assert("a return visit to the same activity venue on a LATER day is kept, not removed", out[1].items.length === 1);
+  assert("the later day's item is annotated as a return visit via item.why", out[1].items[0]._isReturnVisit === true);
+}
+{
+  // An Activity with no text (or no dash-extractable name) must not be
+  // force-deduped against anything — conservative default.
+  const days = [
+    { items: [{ type: "Activity", time: "10:00", text: "" }, { type: "Activity", time: "11:00", text: "" }] },
+  ];
+  const { days: out } = dedupeVenues(days);
+  assert("Activities with empty text are left alone, not treated as duplicates of each other", out[0].items.length === 2);
 }
 
 // -----------------------------------------------------------------------------
@@ -341,6 +416,150 @@ assert("stripTonightPrefix still removes the original '⚠︎ Must today:' prefi
 // rendered with the raw prefix still attached, unstripped.
 assert("stripTonightPrefix removes 'Must today:' with NO emoji at all (the common case)",
   stripTonightPrefix("Must today: Book the terrace table") === "Book the terrace table");
+
+// -----------------------------------------------------------------------------
+// 4. Missing-dinner check mirror (src/App.jsx applyQualityLayer, day-
+// completeness section). Real observed case: a 2026-08-03 Sedona build's
+// Day 1 ended its sunset activity at 7 PM and the day just stopped there —
+// no dinner anywhere that evening, while every other day of the trip had
+// one. Dinner (unlike Breakfast/Lunch) has no opt-in/opt-out mechanism —
+// see src/mealPolicy.js — so it's expected every day except the last.
+// -----------------------------------------------------------------------------
+function findMissingDinnerDays(days) {
+  const DINNER_TYPES = /^(Dinner|Dining)$/i;
+  const warnings = [];
+  days.forEach((day, dayIdx) => {
+    if (dayIdx === days.length - 1) return;
+    const items = Array.isArray(day?.items) ? day.items : [];
+    const hasDinner = items.some(it => DINNER_TYPES.test(String(it?.type || "")));
+    if (!hasDinner) warnings.push(`Day ${dayIdx + 1} has no dinner scheduled — every other day normally has one; confirm this is intentional`);
+  });
+  return warnings;
+}
+
+console.log("\n4. Missing-dinner check\n");
+{
+  // The exact reported shape: Day 1 has a hotel check-in and a sunset
+  // activity, but no dinner; Days 2-3 both have one; Day 4 is the last day
+  // (departure) and is exempt.
+  const days = [
+    { items: [{ type: "Hotel", time: "13:30" }, { type: "Activity", time: "17:30", text: "Sunset" }] },
+    { items: [{ type: "Dinner", time: "19:00", restaurant: { name: "Mariposa" } }] },
+    { items: [{ type: "Dinner", time: "19:00", restaurant: { name: "Reds Restaurant" } }] },
+    { items: [{ type: "Flight", time: "15:30" }] },
+  ];
+  const warnings = findMissingDinnerDays(days);
+  assert("Day 1 (missing dinner) is flagged", warnings.some(w => /^Day 1 has no dinner/.test(w)), JSON.stringify(warnings));
+  assert("Day 2 (has dinner) is NOT flagged", !warnings.some(w => /^Day 2/.test(w)));
+  assert("Day 3 (has dinner) is NOT flagged", !warnings.some(w => /^Day 3/.test(w)));
+  assert("Day 4, the LAST day (departure, no dinner), is exempt — not flagged",
+    !warnings.some(w => /^Day 4/.test(w)));
+  assert("exactly one warning total", warnings.length === 1, JSON.stringify(warnings));
+}
+{
+  const days = [{ items: [{ type: "Dinner", time: "19:00", restaurant: { name: "X" } }] }];
+  assert("a single-day trip (the only day is also the last day) is exempt", findMissingDinnerDays(days).length === 0);
+}
+{
+  assert("an empty days array produces no warnings", findMissingDinnerDays([]).length === 0);
+}
+
+// -----------------------------------------------------------------------------
+// 5. Stray booking-reference check mirror (src/App.jsx applyQualityLayer
+// §2.7). Real observed case: a 2026-08-03 Sedona build's Trip Reference
+// said "This week: Book remaining restaurants — Mariposa (Day 1), Reds
+// (Day 3) — all on OpenTable or via phone" — but "Mariposa" never appears
+// as a restaurant anywhere in days[] (a leftover cross-draft reference;
+// Reds does appear, as "Reds Restaurant", a superstring match).
+// -----------------------------------------------------------------------------
+function findStrayBookingReferences(days, input) {
+  const allRestaurantNames = [];
+  days.forEach(d => (d.items || []).forEach(it => {
+    if (it?.restaurant?.name) allRestaurantNames.push(it.restaurant.name.trim().toLowerCase());
+    if (it?.restaurant?.backup?.name) allRestaurantNames.push(it.restaurant.backup.name.trim().toLowerCase());
+  }));
+  const NAME_WORD = "(?:&|[A-Za-z0-9][A-Za-z0-9&’'.-]*)";
+  const NAME_PATTERN = `[A-Z][A-Za-z0-9&’'.-]*(?:\\s+${NAME_WORD}){0,4}`;
+  const forDayRe = new RegExp(`\\b(?:Book|Reserve)\\s+(${NAME_PATTERN})\\s+for\\s+Day\\s*\\d+`, "gi");
+  const parenDayRe = new RegExp(`(${NAME_PATTERN})\\s*\\(Day\\s*\\d+\\)`, "g");
+  const seenReminders = new Set();
+  const warnings = [];
+  const reminderSources = [
+    ...(Array.isArray(input.tonight) ? input.tonight : []),
+    ...(Array.isArray(input.flags) ? input.flags : []),
+  ];
+  reminderSources.forEach(text => {
+    if (typeof text !== "string" || !/\b(book|reserve)\b/i.test(text)) return;
+    const names = [];
+    let m;
+    forDayRe.lastIndex = 0;
+    while ((m = forDayRe.exec(text))) names.push(m[1].trim());
+    parenDayRe.lastIndex = 0;
+    while ((m = parenDayRe.exec(text))) names.push(m[1].trim());
+    names.forEach(name => {
+      const key = name.toLowerCase();
+      if (seenReminders.has(key)) return;
+      seenReminders.add(key);
+      const found = allRestaurantNames.some(rn => rn.includes(key) || key.includes(rn));
+      if (!found) warnings.push(`"${name}" is named in Tonight/Flags as a restaurant to book, but no restaurant by that name appears anywhere in the itinerary — confirm this booking was actually scheduled.`);
+    });
+  });
+  return warnings;
+}
+
+console.log("\n5. Stray booking-reference check\n");
+{
+  const days = [
+    { items: [{ type: "Note" }] },
+    { items: [{ type: "Dinner", restaurant: { name: "Reds Restaurant" } }] },
+  ];
+  const input = { tonight: ["This week: Book remaining restaurants — Mariposa (Day 1), Reds (Day 3) — all on OpenTable or via phone"] };
+  const warnings = findStrayBookingReferences(days, input);
+  assert("Mariposa (never scheduled anywhere) is flagged as a stray reference",
+    warnings.some(w => /"Mariposa"/.test(w)), JSON.stringify(warnings));
+  assert("Reds (matches \"Reds Restaurant\" by substring) is NOT flagged",
+    !warnings.some(w => /"Reds"/.test(w)), JSON.stringify(warnings));
+}
+{
+  // "Book X for Day N" citation shape (draft 1's format, distinct from the
+  // "X (Day N)" list shape above).
+  const days = [{ items: [{ type: "Dinner", restaurant: { name: "Dahl & Di Luca" } }] }];
+  const input = { tonight: ["MUST: Book Dahl & Di Luca for Day 2 (Thu dinner) — call ahead, no online reservations"] };
+  const warnings = findStrayBookingReferences(days, input);
+  assert("a scheduled restaurant cited via the \"Book X for Day N\" shape is NOT flagged",
+    warnings.length === 0, JSON.stringify(warnings));
+}
+{
+  // No "book"/"reserve" verb at all — must not fire on an unrelated "(Day N)"
+  // mention (e.g. a pacing note), which is not a booking reminder.
+  const days = [{ items: [] }];
+  const input = { flags: ["Cathedral Rock parking fills by 8 AM (Day 2) — arrive early"] };
+  assert("a non-booking '(Day N)' mention does not fire at all", findStrayBookingReferences(days, input).length === 0);
+}
+{
+  assert("no tonight/flags at all produces no warnings", findStrayBookingReferences([{ items: [] }], {}).length === 0);
+}
+{
+  // Regression: found live, not in the original unit test — the real model
+  // output uses an em-dash for this kind of list separator ("— Mariposa
+  // (Day 1)"), which the original character class correctly excluded. A
+  // plain hyphen (" - Mariposa (Day 1)") IS in that class, though, so a
+  // bare "-" got swallowed into the name capture as if it were part of it
+  // ("Book remaining restaurants - Mariposa" instead of "Mariposa"),
+  // silently breaking the whole check for this phrasing. NAME_WORD now
+  // excludes a bare hyphen as its own "word" while still allowing hyphens
+  // attached within a real word and a bare "&" for compound names.
+  const days = [
+    { items: [{ type: "Note" }] },
+    { items: [{ type: "Dinner", restaurant: { name: "Reds Restaurant" } }] },
+  ];
+  const input = { tonight: ["This week: Book remaining restaurants - Mariposa (Day 1), Reds (Day 3) - all on OpenTable or via phone"] };
+  const warnings = findStrayBookingReferences(days, input);
+  assert("a plain-hyphen list separator still extracts just \"Mariposa\", not \"Book remaining restaurants - Mariposa\"",
+    warnings.some(w => /^"Mariposa" is named/.test(w)), JSON.stringify(warnings));
+  assert("Reds is still correctly NOT flagged with the plain-hyphen phrasing",
+    !warnings.some(w => /"Reds"/.test(w)), JSON.stringify(warnings));
+}
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

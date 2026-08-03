@@ -211,7 +211,7 @@ They ride on `day.structural_flags[]` and reach the pre-export gate through
 | `BOOKING_URL_DEAD` | warn | `/api/verify-url` found the link dead. The URL is stripped from the plan; the flag records what was removed | no |
 | `FLIGHT_UNVERIFIED` | warn | The flight resolver could not confirm the route or times against a live schedule. Fail safe — annotate, never remove | no |
 | `MEAL_POLICY_STRIP` | info | An item was removed by meal-policy enforcement (`applyQualityLayer` §1c). Carries `item_name` + `reason` so a misfiring negation is traceable to the specific meal it deleted | no |
-| `DUPLICATE_VENUE_SAME_DAY` | warn | The same restaurant was emitted twice for the same meal type on the same day (`applyQualityLayer` §1) — a generation duplication bug, not a second meal. The duplicate item is auto-removed (kept: the FIRST occurrence by array position — not a content-completeness comparison; the one real example had the fuller copy first, but that is not guaranteed); the flag is for visibility | no |
+| `DUPLICATE_VENUE_SAME_DAY` | warn | The same restaurant (same meal type) OR the same activity (same time slot) was emitted twice on the same day (`applyQualityLayer` §1) — a generation duplication bug, confirmed systemic across both venue kinds (Elote Cafe as two Dinners; "Sunset at Airport Mesa overlook" as two identical 5:30 PM Activities), not a second visit. The duplicate item is auto-removed (kept: the FIRST occurrence by array position — not a content-completeness comparison; the one real restaurant example had the fuller copy first, but that is not guaranteed); the flag is for visibility | no |
 
 A venue with any `severity:"block"` flag must NOT reach the PDF
 exporter. The pre-export gate is the last line of defense; it is not
