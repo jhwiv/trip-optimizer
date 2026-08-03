@@ -208,7 +208,7 @@ console.log("\n[6] card #4 never shows a build-running state — that's a differ
   );
 }
 
-console.log("\n[6b] BuildProgressScreen is a real full-screen takeover, not a modal");
+console.log("\n[6b] BuildProgressScreen survives the step 2 → 3 transition (build AND review)");
 {
   const bpsStart = SRC.indexOf("function BuildProgressScreen(");
   assert("BuildProgressScreen is declared at module scope", bpsStart > -1);
@@ -216,25 +216,46 @@ console.log("\n[6b] BuildProgressScreen is a real full-screen takeover, not a mo
   const BPS = bpsStart > -1 && bpsEnd > bpsStart ? SRC.slice(bpsStart, bpsEnd) : "";
   assert("BuildProgressScreen body was isolated", BPS.length > 0);
   assert(
-    "it is NOT position:fixed — a real screen, not an overlay",
-    !BPS.includes('position: "fixed"'),
-    "the whole point is escaping the fixed-positioning containing-block bug that broke the modal version"
+    "it IS position:fixed — has to cover both step 2 and step 3 as the page underneath changes",
+    BPS.includes('position: "fixed"'),
+    "safe now that #root no longer has contain:paint; this is exactly the containing-block-independent behavior that fix restored"
   );
   assert("it renders BuildPhaseBars", BPS.includes("<BuildPhaseBars"));
   assert("it renders Cancel while loading", /\{loading && <BuildCancelButton/.test(BPS));
+  assert("it accepts a result prop to know when the review is truly done", /result, onCancel, onDone,/.test(BPS));
   assert(
-    "showBuildProgress requires the pre-build screen AND an active build/review",
-    /const showBuildProgress = showPreBuild && \(loading \|\| reviewPhaseRunning\);/.test(SRC)
+    "it renders a completion CTA instead of auto-navigating",
+    /Take me to my final itinerary/.test(BPS) && BPS.includes("onClick={onDone}"),
+    "the user must be the one who leaves this screen, not an auto-navigate"
   );
   assert(
-    "step 2 renders BuildProgressScreen when showBuildProgress, the details/pre-build content otherwise",
-    /\{step === 2 && showBuildProgress && \(\s*<BuildProgressScreen/.test(SRC)
-    && /\{step === 2 && !showBuildProgress && \(/.test(SRC)
+    "showBuildHero exists as its own flag, decoupled from step/outputsStep",
+    /const \[showBuildHero, setShowBuildHero\] = useState\(false\);/.test(SRC),
+    "applyBuiltPlan flips step to 3 the instant the initial build finishes, well before review is done — " +
+    "gating on step/outputsStep would drop the hero mid-review"
+  );
+  assert(
+    "showBuildHero turns on on the rising edge of loading",
+    /const rising = loading && !prevBuildHeroLoadingRef\.current;[\s\S]{0,80}if \(rising\) setShowBuildHero\(true\);/.test(SRC)
+  );
+  assert(
+    "showBuildProgress derives from showBuildHero, not showPreBuild",
+    /const showBuildProgress = !findOnly && showBuildHero;/.test(SRC)
+  );
+  assert(
+    "BuildProgressScreen renders as a step-independent sibling, not nested inside step === 2",
+    /\{showBuildProgress && \(\s*<BuildProgressScreen/.test(SRC)
+    && !/\{step === 2 && showBuildProgress/.test(SRC),
+    "it must still be visible after step flips to 3 for the review phase"
   );
   assert(
     "the outer 'Your trip' recap card is suppressed during showBuildProgress",
     /\{step !== 3 && !showBuildProgress && \(/.test(SRC),
     "BuildProgressScreen renders its own copy — a second one below it would be a visible duplicate"
+  );
+  assert(
+    "Cancel resets showBuildHero so a cancelled build doesn't leave the hero stranded",
+    /setShowBuildHero\(false\);/.test(SRC)
   );
 }
 

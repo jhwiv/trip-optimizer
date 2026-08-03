@@ -12222,19 +12222,38 @@ function BuildCancelButton({ onCancel }) {
   );
 }
 
+// Default backdrop for BuildProgressScreen — shows instantly, before any
+// photo fetch resolves, and stays as the fallback if the fetch fails or the
+// destination is too obscure for a match. Same navy→teal palette as the
+// compass logomark, so this reads as the same brand as everything else.
+const BUILD_HERO_GRADIENT = "linear-gradient(150deg, #0d1826 0%, #152238 38%, #1f4a4a 72%, #2f6f68 100%)";
+
+// Frosted-glass treatment for text sitting directly on the photo — same
+// rgba+blur language AppIntroOverlay uses for its "Add to Home Screen" card,
+// reused here so the two hero moments in the app read as one visual system.
+const BUILD_HERO_GLASS = {
+  background: "rgba(0,0,0,0.38)",
+  backdropFilter: "blur(14px)",
+  WebkitBackdropFilter: "blur(14px)",
+  border: "0.5px solid rgba(255,255,255,0.16)",
+  borderRadius: "var(--border-radius-lg)",
+  padding: "1.25rem 1.5rem",
+};
+
 // Full-screen takeover for an active build, entered straight from the
 // pre-build screen's "Plan my trip" tap. Not a modal over the four phase
 // cards — a distinct screen with nothing else on it, matching what the
 // build actually is: the one thing happening right now, worth its own
-// undivided attention rather than a strip at the bottom of a page you're
-// meant to ignore. Unmounts the moment step flips to 3 (ItineraryView),
-// which the existing applyBuiltPlan flow already drives — this component
-// doesn't own that transition, only the waiting room before it.
+// undivided attention for however long it takes (up to ~16 minutes for a
+// large multi-city trip). Deliberately survives the step 2 → 3 transition
+// (see showBuildHero in TripOptimizer) so build AND review both play out
+// here; the user leaves only by tapping the completion CTA, never by an
+// auto-navigate they didn't ask for.
 function BuildProgressScreen({
   basics, flights, restaurants, activities, vp,
   loading, buildProgress, buildProgressLabel, loadingMsg, buildElapsedSec,
   reviewRunning, reviewProgress, reviewProgressLabel, reviewElapsedSec,
-  onCancel,
+  result, onCancel, onDone,
 }) {
   const destination = basics?.destination || basics?.cities?.[0]?.name || "";
   const tripLine = [
@@ -12246,55 +12265,140 @@ function BuildProgressScreen({
     flights?.homeAirport ? `from ${extractAirportCode(flights.homeAirport) || flights.homeAirport}` : null,
   ].filter(Boolean).join("  ·  ");
 
+  // Real photo of the destination, same fetchCoverPhoto() the finished
+  // itinerary's own hero image uses — so this screen and the reveal that
+  // follows it feel like one continuous moment, not two different apps.
+  // Rendered underneath the gradient always (not conditionally), so opacity
+  // can transition from 0 → 1 when it lands instead of popping in.
+  const [photoUrl, setPhotoUrl] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset-before-fetch: clears stale photo while new destination loads
+    setPhotoUrl(null);
+    if (destination) fetchCoverPhoto(destination).then(url => { if (!cancelled) setPhotoUrl(url); });
+    return () => { cancelled = true; };
+  }, [destination]);
+
+  // The backend already emits granular status text as the build runs
+  // ("Selecting hotels and neighborhoods…", "Picking restaurants…", etc.) —
+  // it used to overwrite itself on one line. Accumulating each new, distinct
+  // line into a running checklist is the actual "watching it happen"
+  // payoff: real information already being computed, not a decorative
+  // animation. Component unmounts between builds (showBuildHero drops to
+  // false on cancel/done), so useState([]) starts clean every time — no
+  // explicit reset needed.
+  const [milestones, setMilestones] = useState([]);
+  const lastBuildMsgRef = useRef("");
+  const currentBuildMsg = buildProgressLabel || loadingMsg || "";
+  useEffect(() => {
+    if (currentBuildMsg && currentBuildMsg !== lastBuildMsgRef.current) {
+      lastBuildMsgRef.current = currentBuildMsg;
+      setMilestones(prev => [...prev, currentBuildMsg]);
+    }
+  }, [currentBuildMsg]);
+  const lastReviewMsgRef = useRef("");
+  useEffect(() => {
+    if (reviewProgressLabel && reviewProgressLabel !== lastReviewMsgRef.current) {
+      lastReviewMsgRef.current = reviewProgressLabel;
+      setMilestones(prev => [...prev, reviewProgressLabel]);
+    }
+  }, [reviewProgressLabel]);
+
+  const isDone = !loading && !reviewRunning && !!result;
+
   return (
-    <div style={{ minHeight: "70vh", display: "flex", flexDirection: "column", justifyContent: "center", padding: vp.isMobile ? "1.5rem 0" : "2.5rem 0" }}>
-      <p style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, color: ACCENT_DARK, margin: "0 0 6px", textAlign: "center" }}>
-        Building your trip
-      </p>
-      <p style={{ fontSize: vp.isMobile ? "26px" : "32px", fontWeight: 400, fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 2rem", lineHeight: 1.2, textAlign: "center", color: "var(--color-text-primary)" }}>
-        {destination || "Your trip"}
-      </p>
+    <div style={{ position: "fixed", inset: 0, zIndex: 9997, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
+      <div style={{ position: "relative", minHeight: "100%" }}>
+        <div style={{ position: "absolute", inset: 0, background: BUILD_HERO_GRADIENT }} />
+        <div style={{ position: "absolute", inset: 0, backgroundImage: photoUrl ? `url(${photoUrl})` : "none", backgroundSize: "cover", backgroundPosition: "center", opacity: photoUrl ? 1 : 0, transition: "opacity 1s ease" }} />
+        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to top, rgba(0,0,0,0.82) 0%, rgba(0,0,0,0.5) 45%, rgba(0,0,0,0.32) 100%)" }} />
 
-      <div style={{ ...cardStyle, maxWidth: "460px", width: "100%", margin: "0 auto" }}>
-        <BuildPhaseBars
-          loading={loading}
-          buildProgress={buildProgress}
-          buildProgressLabel={buildProgressLabel}
-          loadingMsg={loadingMsg}
-          buildElapsedSec={buildElapsedSec}
-          reviewRunning={reviewRunning}
-          reviewProgress={reviewProgress}
-          reviewProgressLabel={reviewProgressLabel}
-          reviewElapsedSec={reviewElapsedSec}
-        />
-        {loading && <BuildCancelButton onCancel={onCancel} />}
-      </div>
+        <div style={{ position: "relative", zIndex: 1, minHeight: "100%", display: "flex", flexDirection: "column", justifyContent: "center", padding: vp.isMobile ? "3.5rem 1.25rem 2.5rem" : "4rem 2rem" }}>
+          <p style={{ fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, color: "rgba(255,255,255,0.65)", margin: "0 0 8px", textAlign: "center" }}>
+            {isDone ? "Ready" : "Building your trip"}
+          </p>
+          <p style={{ fontSize: vp.isMobile ? "28px" : "34px", fontWeight: 400, fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 2rem", lineHeight: 1.2, textAlign: "center", color: "#fff" }}>
+            {destination || "Your trip"}
+          </p>
 
-      <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "1.25rem 0 0", textAlign: "center", fontStyle: "italic", lineHeight: 1.5 }}>
-        Stays building if you switch tabs — come back any time.
-      </p>
-
-      {/* Same trip recap the pre-build cards showed, so leaving the phase
-          cards behind doesn't mean losing context on what's building. */}
-      {(destination || tripLine) && (
-        <div style={{ ...cardStyle, maxWidth: "460px", width: "100%", margin: "2rem auto 0" }}>
-          <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 5px" }}>Your trip</p>
-          <p style={{ fontSize: "18px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)" }}>{destination || "Destination not set"}</p>
-          {tripLine && (
-            <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: "1.6" }}>{tripLine}</p>
+          {isDone ? (
+            <div style={{ ...cardStyle, maxWidth: "460px", width: "100%", margin: "0 auto", textAlign: "center" }}>
+              <div style={{ width: "48px", height: "48px", borderRadius: "50%", background: "var(--color-success)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "22px", margin: "0 auto 14px" }}>✓</div>
+              <p style={{ fontSize: "16px", fontWeight: 600, margin: "0 0 6px", color: "var(--color-text-primary)" }}>Your itinerary is ready</p>
+              <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 18px" }}>
+                {destination ? `${destination} is all planned out.` : "All planned out."}
+              </p>
+              <button onClick={onDone} style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "14px 20px", fontSize: "11px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: ACCENT, color: ON_ACCENT }}>
+                Take me to my final itinerary →
+              </button>
+            </div>
+          ) : (
+            <div style={{ ...cardStyle, maxWidth: "460px", width: "100%", margin: "0 auto" }}>
+              <BuildPhaseBars
+                loading={loading}
+                buildProgress={buildProgress}
+                buildProgressLabel={buildProgressLabel}
+                loadingMsg={loadingMsg}
+                buildElapsedSec={buildElapsedSec}
+                reviewRunning={reviewRunning}
+                reviewProgress={reviewProgress}
+                reviewProgressLabel={reviewProgressLabel}
+                reviewElapsedSec={reviewElapsedSec}
+              />
+              {loading && <BuildCancelButton onCancel={onCancel} />}
+            </div>
           )}
-          {(restaurants?.length > 0 || activities?.length > 0) && (
-            <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: "10px", marginTop: "12px" }}>
-              <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: "500", marginBottom: "5px" }}>Added</p>
-              {[...restaurants, ...activities].map(t => (
-                <p key={t} style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "3px", display: "flex", gap: "6px" }}>
-                  <span style={{ color: ACCENT }}>—</span>{t}
-                </p>
-              ))}
+
+          {/* The running checklist — real status lines, not decoration. */}
+          {milestones.length > 0 && (
+            <div style={{ ...BUILD_HERO_GLASS, maxWidth: "460px", width: "100%", margin: "1.25rem auto 0" }}>
+              <p style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, color: "rgba(255,255,255,0.55)", margin: "0 0 10px" }}>
+                What&rsquo;s happening
+              </p>
+              {milestones.map((text, i) => {
+                const isLast = i === milestones.length - 1;
+                const stillActive = isLast && !isDone;
+                return (
+                  <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "9px", padding: "4px 0", opacity: stillActive ? 1 : 0.6 }}>
+                    <span style={{ flexShrink: 0, width: "16px", height: "16px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "9px", background: stillActive ? "rgba(255,255,255,0.18)" : "var(--color-success)", color: "#fff", marginTop: "1px" }}>
+                      {stillActive ? "…" : "✓"}
+                    </span>
+                    <span style={{ fontSize: "13px", lineHeight: 1.45, color: "#fff" }}>{text}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {!isDone && (
+            <p style={{ fontSize: "11px", color: "rgba(255,255,255,0.55)", margin: "1.25rem 0 0", textAlign: "center", fontStyle: "italic", lineHeight: 1.5 }}>
+              Stays building if you switch tabs — come back any time.
+            </p>
+          )}
+
+          {/* Same trip recap the pre-build cards showed, so leaving them
+              behind doesn't mean losing context on what's building. */}
+          {(destination || tripLine) && (
+            <div style={{ ...BUILD_HERO_GLASS, maxWidth: "460px", width: "100%", margin: "1.25rem auto 0" }}>
+              <p style={{ fontSize: "11px", color: "rgba(255,255,255,0.65)", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 5px" }}>Your trip</p>
+              <p style={{ fontSize: "18px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "#fff" }}>{destination || "Destination not set"}</p>
+              {tripLine && (
+                <p style={{ fontSize: "12px", color: "rgba(255,255,255,0.75)", margin: 0, lineHeight: "1.6" }}>{tripLine}</p>
+              )}
+              {(restaurants?.length > 0 || activities?.length > 0) && (
+                <div style={{ borderTop: "0.5px solid rgba(255,255,255,0.2)", paddingTop: "10px", marginTop: "12px" }}>
+                  <p style={{ fontSize: "11px", color: "rgba(255,255,255,0.65)", letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: "500", marginBottom: "5px" }}>Added</p>
+                  {[...restaurants, ...activities].map(t => (
+                    <p key={t} style={{ fontSize: "12px", color: "rgba(255,255,255,0.75)", marginBottom: "3px", display: "flex", gap: "6px" }}>
+                      <span style={{ color: "rgba(255,255,255,0.5)" }}>—</span>{t}
+                    </p>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -12757,6 +12861,33 @@ export default function TripOptimizer() {
   // produce a new reference on every plan change).
   const [error, setError] = useState("");
   const abortRef = useRef(null);
+
+  // Full-screen build hero — see BuildProgressScreen. Deliberately decoupled
+  // from `step`: applyBuiltPlan flips step to 3 (mounting ItineraryView,
+  // which auto-runs the review) the instant the INITIAL build finishes, well
+  // before the review is done. The hero has to survive that transition so the
+  // user stays on one continuous "building" screen through both phases and
+  // only reaches the itinerary by tapping "Take me to my final itinerary" —
+  // not by an auto-navigate they didn't ask for. It turns on on the rising
+  // edge of `loading` (covers every entry point: fresh build, chunked build,
+  // resume-on-reopen — whichever set it) and comes down only on an explicit
+  // user action (the CTA, or Cancel) or a failed build (see the effect below).
+  const [showBuildHero, setShowBuildHero] = useState(false);
+  const prevBuildHeroLoadingRef = useRef(false);
+  useEffect(() => {
+    const rising = loading && !prevBuildHeroLoadingRef.current;
+    prevBuildHeroLoadingRef.current = loading;
+    if (rising) setShowBuildHero(true);
+  }, [loading]);
+  // If the build ends in a visible error, drop the hero automatically —
+  // otherwise the user is stuck staring at a "building" screen for a build
+  // that already stopped, with no CTA because there's no result to show.
+  useEffect(() => {
+    if (showBuildHero && !loading && !reviewPhaseRunning && error) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: drop the hero the moment a build fails, not a UI derivation
+      setShowBuildHero(false);
+    }
+  }, [showBuildHero, loading, reviewPhaseRunning, error]);
   // Points at the streaming-progress panel (rendered in step 2 while
   // loading/extracting). Used to scroll the panel into view on build start so
   // the user sees that something is happening even when it's below the fold.
@@ -14258,6 +14389,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
     setLoading(false);
     setLoadingMsg("");
+    setShowBuildHero(false);
   };
 
   // Internal: drive the UI state machine for a running job. Used for both
@@ -15710,11 +15842,16 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   const showPreBuild = !findOnly && step === 2 && outputsStep;
 
   // A dedicated full-screen takeover for the build itself — not a modal over
-  // the pre-build cards, a distinct screen with nothing else on it. Replaces
-  // BuildAndReviewOverlay for this one entry point; that overlay remains the
-  // fallback for any other path that reaches loading/reviewRunning without
-  // having come through the pre-build phase flow (see its render site).
-  const showBuildProgress = showPreBuild && (loading || reviewPhaseRunning);
+  // the pre-build cards, a distinct screen with nothing else on it. Driven by
+  // showBuildHero (see its declaration) rather than step/outputsStep: it has
+  // to stay up across the step 2 → 3 transition that happens the instant the
+  // initial build finishes (well before the review phase completes), so the
+  // user stays on one continuous screen through both phases instead of being
+  // dropped onto the itinerary mid-review. Replaces BuildAndReviewOverlay for
+  // this entry point; that overlay remains the fallback for any other path
+  // that reaches loading/reviewRunning without a fresh build in flight (e.g.
+  // manually re-running review on an already-built, previously-saved trip).
+  const showBuildProgress = !findOnly && showBuildHero;
 
   // Preview-only mirror of the sources the server will auto-add. The server
   // is the one that actually resolves them (see functions/api/review-retrieve.js);
@@ -16168,27 +16305,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           </div>
         )}
 
-        {step === 2 && showBuildProgress && (
-          <BuildProgressScreen
-            basics={basics}
-            flights={flights}
-            restaurants={restaurants}
-            activities={activities}
-            vp={vp}
-            loading={loading}
-            buildProgress={progress}
-            buildProgressLabel={progressLabel}
-            loadingMsg={loadingMsg}
-            buildElapsedSec={elapsedSec}
-            reviewRunning={reviewPhaseRunning}
-            reviewProgress={reviewPhaseProgress}
-            reviewProgressLabel={reviewPhaseLabel}
-            reviewElapsedSec={reviewPhaseElapsed}
-            onCancel={handleCancel}
-          />
-        )}
-
-        {step === 2 && !showBuildProgress && (
+        {step === 2 && (
           <div>
             {!showPreBuild && (
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", gap: "10px" }}>
@@ -16575,13 +16692,44 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       </div>
       )}
 
+      {/* Full-screen build hero — position:fixed, covers everything (the
+          pre-build cards on step 2, then the itinerary that mounts
+          underneath on step 3 the instant the initial build finishes).
+          Deliberately rendered here, outside every step conditional, so it
+          survives the step 2 → 3 transition instead of unmounting mid-review.
+          Safe as position:fixed now that #root no longer has contain:paint
+          (see the 2026-08-02 CLAUDE.md entry) — before that fix this would
+          have rendered hundreds of px below the fold, same as the bottom
+          sheet did. */}
+      {showBuildProgress && (
+        <BuildProgressScreen
+          basics={basics}
+          flights={flights}
+          restaurants={restaurants}
+          activities={activities}
+          vp={vp}
+          loading={loading}
+          buildProgress={progress}
+          buildProgressLabel={progressLabel}
+          loadingMsg={loadingMsg}
+          buildElapsedSec={elapsedSec}
+          reviewRunning={reviewPhaseRunning}
+          reviewProgress={reviewPhaseProgress}
+          reviewProgressLabel={reviewPhaseLabel}
+          reviewElapsedSec={reviewPhaseElapsed}
+          result={result}
+          onCancel={handleCancel}
+          onDone={() => setShowBuildHero(false)}
+        />
+      )}
+
       {/* BuildAndReviewOverlay is suppressed while showBuildProgress owns the
-          screen (the pre-build phase flow hands off to a full-screen
-          takeover the moment a build starts, see showBuildProgress above) —
+          screen (a fresh build is in flight — see showBuildHero above) —
           rendering both would be two progress surfaces stacked on each
           other. It remains the fallback for every other path that can reach
-          loading/reviewRunning without having come through the pre-build
-          screen, most importantly the post-build review phase on step 3. */}
+          loading/reviewRunning without a fresh build in flight, most
+          importantly a manual re-run of review on an already-built,
+          previously-saved trip. */}
       {!showBuildProgress && (
         <BuildAndReviewOverlay
           loading={loading}
