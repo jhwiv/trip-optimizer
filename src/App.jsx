@@ -2311,16 +2311,35 @@ function Section({ title, children }) {
   );
 }
 
+// The prompt instructs '⚠︎ Must today:' but the model doesn't always follow
+// the exact phrasing — the 2026-08-03 Sedona build emitted bare "MUST:"
+// entries ("MUST: Reserve Pink Jeep Broken Arrow Tour for Day 3…"), which the
+// old regex (anchored to "must today") didn't match. That silently dropped
+// the entry to the default rank-1 styling with no urgency badge at all —
+// exactly the entries that most need one. Match bare "MUST" too.
 function tonightPriority(s) {
   const t = (s || "").trim();
-  if (/^⚠/.test(t) || /^must today/i.test(t)) return { rank: 0, label: "Must today", color: "var(--color-warning)", bg: "var(--color-warning-tint)" };
+  // Bare "MUST:" requires the colon (unlike "must today", which the original
+  // regex already accepted with or without one) so an ordinary sentence that
+  // happens to start with the word "must" — "Must-see the sunset…" — doesn't
+  // false-positive into the urgency badge.
+  if (/^⚠/.test(t) || /^must\s+today\b/i.test(t) || /^must\s*:/i.test(t)) return { rank: 0, label: "Must today", color: "var(--color-warning)", bg: "var(--color-warning-tint)" };
   if (/^this week/i.test(t) || /^·\s*this week/i.test(t)) return { rank: 1, label: "This week", color: ACCENT_DARK, bg: ACCENT_LIGHT };
   if (/^anytime/i.test(t)) return { rank: 2, label: "Anytime", color: "var(--color-text-secondary)", bg: "var(--color-background-secondary)" };
   return { rank: 1, label: null, color: ACCENT_DARK, bg: ACCENT_LIGHT };
 }
 function stripTonightPrefix(s) {
+  // ⚠︎ is two code points — U+26A0 WARNING SIGN + U+FE0E (text-presentation
+  // variation selector). "⚠︎?" only makes the SELECTOR optional; the base
+  // glyph stayed mandatory, so any tonight entry without that exact emoji
+  // (i.e. most model output, which follows the "Must today:"/"MUST:" wording
+  // but rarely reproduces the literal unicode glyph) never had its prefix
+  // stripped at all — it rendered "Must today: Book the terrace table"
+  // verbatim instead of "Book the terrace table". Wrapping the glyph+selector
+  // pair in its own optional group fixes that for both prefix shapes.
   return (s || "")
-    .replace(/^⚠︎?\s*Must today\s*[:—–-]?\s*/i, "")
+    .replace(/^(?:⚠︎?\s*)?Must\s+today\s*[:—–-]?\s*/i, "")
+    .replace(/^(?:⚠︎?\s*)?Must\s*:\s*/i, "")
     .replace(/^·?\s*This week\s*[:—–-]?\s*/i, "")
     .replace(/^Anytime\s*[:—–-]?\s*/i, "")
     .trim();
@@ -2785,15 +2804,46 @@ function applyQualityLayer(input, inputs) {
     ? input.days.map(d => ({ ...d, items: Array.isArray(d.items) ? d.items.map(it => ({ ...it, restaurant: it.restaurant ? { ...it.restaurant } : it.restaurant, flight: it.flight ? { ...it.flight } : it.flight })) : d.items }))
     : input.days;
 
-  // 1. Restaurant dedupe → annotate the 2nd+ visit so the user understands the repeat is intentional.
+  // 1. Restaurant dedupe. Two distinct situations look identical from
+  //    item.restaurant.name alone:
+  //    (a) a legitimate return visit to the same restaurant on a LATER day
+  //        — annotate, don't remove, the traveler really is going back; and
+  //    (b) the model emitting the same restaurant twice for the SAME meal
+  //        slot on the SAME day — a generation duplication bug, not a second
+  //        meal (2026-08-03 Sedona build: Elote Cafe appeared as "Dinner" at
+  //        both 6:30 PM and 7:30 PM on Day 3, the second a truncated copy of
+  //        the first, missing hours/closures/backup). Nobody eats two
+  //        dinners at the same place an hour apart, so (b) is dropped
+  //        rather than kept-and-labeled — silently keeping both, even
+  //        annotated, still shows the same restaurant twice in the PDF.
   if (Array.isArray(days)) {
     const seen = new Map(); // normalized name → { dayIndex, mealType }
     days.forEach((day, dayIdx) => {
-      (day.items || []).forEach(item => {
+      if (!Array.isArray(day.items)) return;
+      const seenTypesToday = new Map(); // normalized name → Set of item.type seen today
+      const dupFlags = [];
+      day.items = day.items.filter(item => {
         const r = item.restaurant;
         const isMeal = /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/i.test(item.type || "");
-        if (!r || !r.name || !isMeal) return;
+        if (!r || !r.name || !isMeal) return true;
         const key = r.name.trim().toLowerCase();
+        const typeKey = (item.type || "").toLowerCase();
+        const todayTypes = seenTypesToday.get(key);
+        if (todayTypes?.has(typeKey)) {
+          fixes.push(`Day ${dayIdx + 1}: removed duplicate ${r.name} entry (${item.type}) — same restaurant listed twice for the same meal`);
+          dupFlags.push({
+            code: "DUPLICATE_VENUE_SAME_DAY",
+            severity: "warn",
+            dayIdx,
+            day: dayIdx + 1,
+            target: r.name,
+            message: `${r.name} was listed twice as ${item.type} on Day ${dayIdx + 1}; the duplicate was removed.`,
+          });
+          return false;
+        }
+        if (todayTypes) todayTypes.add(typeKey);
+        else seenTypesToday.set(key, new Set([typeKey]));
+
         const prior = seen.get(key);
         if (prior) {
           const mealLabel = (item.type || "meal").toLowerCase();
@@ -2808,7 +2858,12 @@ function applyQualityLayer(input, inputs) {
         } else {
           seen.set(key, { dayIndex: dayIdx, mealType: item.type || "meal" });
         }
+        return true;
       });
+      if (dupFlags.length > 0) {
+        const priorFlags = Array.isArray(day.structural_flags) ? day.structural_flags : [];
+        day.structural_flags = [...priorFlags, ...dupFlags];
+      }
     });
   }
 
@@ -3188,6 +3243,12 @@ function applyQualityLayer(input, inputs) {
     ]},
     { match: /\bsedona\b/i, groups: [
       ["cathedral rock", "bell rock", "chapel of the holy cross"],
+      // Distinct from the hike/vista group above — a guided backcountry
+      // tour, not a substitute for one. The 2026-08-03 build's day headline
+      // promised "Pink Jeep off-road tour — broken-arrow trail at midday"
+      // but never actually scheduled it as an item, and the hike group
+      // above was already satisfied by Bell Rock, so nothing caught it.
+      ["pink jeep", "broken arrow", "jeep tour"],
     ]},
     { match: /\bbozeman\b/i, groups: [
       ["museum of the rockies", "hyalite", "bridger", "big sky"],
@@ -3248,18 +3309,45 @@ function applyQualityLayer(input, inputs) {
     return parts.filter(Boolean).join(" ").toLowerCase();
   })();
   if (destStr && Array.isArray(days)) {
-    // Flatten every text surface the model might have put a marquee mention into:
-    // day headlines, item names, item notes, snobs guide, etc.
-    const haystack = (() => {
+    // Two separate haystacks, on purpose. itemHaystack is only text that
+    // means the sight is actually ON the itinerary — a real item with a
+    // time slot the traveler can show up to. proseHaystack is everything
+    // else the model might say ABOUT the trip (day headline, weather blurb,
+    // flags[], snobs[]) without that talk turning into a scheduled item.
+    //
+    // A single merged haystack can never catch "promised but not scheduled":
+    // the 2026-08-03 Sedona build's Day 3 headline read "Pink Jeep off-road
+    // tour — broken-arrow trail at midday" and flags[] said "Pink Jeep
+    // Broken Arrow tour books out 5–7 days ahead — reserve this week", yet
+    // no item that day was the tour — Bell Rock (an Activity) ran 7:30–9:00
+    // AM and the next item was "Return to hotel" at 10:00 AM. Any haystack
+    // that includes headline/flags text finds "pink jeep" regardless, so it
+    // can never tell a real booking from a broken promise about one.
+    //
+    // DAY_ITEM_SCHEMA also has no "name" or "notes" field (items carry the
+    // headline in "text" and an optional insider note in "why") — the prior
+    // version of itemHaystack read those nonexistent fields and was blind to
+    // almost every item's real content, so even a genuinely scheduled sight
+    // whose name lived only in item.text (the normal place) could silently
+    // fail this check too.
+    const itemHaystack = (() => {
+      const parts = [];
+      days.forEach(d => {
+        (d.items || []).forEach(it => {
+          if (it.text) parts.push(String(it.text));
+          if (it.why) parts.push(String(it.why));
+          if (it.location) parts.push(String(it.location));
+          if (it.restaurant?.name) parts.push(String(it.restaurant.name));
+          if (it.hotel?.name) parts.push(String(it.hotel.name));
+        });
+      });
+      return parts.join(" ").toLowerCase();
+    })();
+    const proseHaystack = (() => {
       const parts = [];
       days.forEach(d => {
         if (d.headline) parts.push(String(d.headline));
         if (d.weather) parts.push(String(d.weather));
-        (d.items || []).forEach(it => {
-          if (it.name) parts.push(String(it.name));
-          if (it.notes) parts.push(String(it.notes));
-          if (it.location) parts.push(String(it.location));
-        });
       });
       if (Array.isArray(input.snobs)) parts.push(input.snobs.join(" "));
       if (Array.isArray(input.flags)) parts.push(input.flags.join(" "));
@@ -3267,13 +3355,15 @@ function applyQualityLayer(input, inputs) {
     })();
     for (const rule of MARQUEE_REQUIRED) {
       if (!rule.match.test(destStr)) continue;
-      const missing = [];
       for (const group of rule.groups) {
-        const hit = group.some(kw => haystack.includes(kw.toLowerCase()));
-        if (!hit) missing.push(group[0]);
-      }
-      if (missing.length) {
-        warnings.push(`Marquee sight not scheduled: ${missing.join(", ")} — this is iconic to the destination and should appear on the itinerary. Tap Expert Review to add it.`);
+        const kws = group.map(kw => kw.toLowerCase());
+        if (kws.some(kw => itemHaystack.includes(kw))) continue; // actually scheduled
+        const label = group[0];
+        if (kws.some(kw => proseHaystack.includes(kw))) {
+          warnings.push(`Marquee sight promised but not scheduled: ${label} — the plan talks about it (headline or flags) but no day actually has an item for it. Tap Expert Review to add it.`);
+        } else {
+          warnings.push(`Marquee sight not scheduled: ${label} — this is iconic to the destination and should appear on the itinerary. Tap Expert Review to add it.`);
+        }
       }
     }
   }
