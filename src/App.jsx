@@ -2845,7 +2845,13 @@ function applyQualityLayer(input, inputs) {
         else seenTypesToday.set(key, new Set([typeKey]));
 
         const prior = seen.get(key);
-        if (prior) {
+        // prior.dayIndex === dayIdx means this is a same-day, different-meal-
+        // type repeat (e.g. lunch AND dinner at the same place) — already
+        // let through by the same-day/same-type check above. That's a
+        // legitimate itinerary choice, not a return visit "from" today to
+        // itself, so it gets no annotation at all. Only a prior sighting on
+        // a genuinely EARLIER day is a cross-day return visit worth noting.
+        if (prior && prior.dayIndex !== dayIdx) {
           const mealLabel = (item.type || "meal").toLowerCase();
           const note = `Return visit — first appeared Day ${prior.dayIndex + 1} (${prior.mealType.toLowerCase()}).`;
           if (r.why && !/^return visit/i.test(r.why)) {
@@ -2855,7 +2861,7 @@ function applyQualityLayer(input, inputs) {
           }
           r._isReturnVisit = true;
           fixes.push(`Annotated repeat: ${r.name} (Day ${dayIdx + 1} ${mealLabel}) — first on Day ${prior.dayIndex + 1}`);
-        } else {
+        } else if (!prior) {
           seen.set(key, { dayIndex: dayIdx, mealType: item.type || "meal" });
         }
         return true;

@@ -42,12 +42,17 @@ export { findVenuesOutsideRadius, computeLegRadii } from "./locationCheck.js";
 // "Bell Rock Pathway — easy 1-mile interpretive loop (marquee sight, morning
 // light)"). Passing the WHOLE sentence to Google Places Text Search risks
 // false NOT_FOUND blocks on an otherwise-real venue, since the descriptive
-// clause can outweigh the actual name in the query. Same " — " convention
+// clause can outweigh the actual name in the query. Same convention
 // providerName() in localProviders.js already relies on for the same reason.
+// Matches an em-dash or en-dash with optional surrounding whitespace (not a
+// literal " — " substring) so a model deviation like "Bell Rock—easy hike"
+// or "Bell Rock – easy hike" still splits correctly instead of falling
+// through to the full sentence.
+const NAME_DASH_RE = /\s*[—–]\s*/;
 export function activityName(text) {
   const t = typeof text === "string" ? text : "";
-  const dash = t.indexOf(" — ");
-  return (dash > 0 ? t.slice(0, dash) : t).trim();
+  const m = t.match(NAME_DASH_RE);
+  return (m && m.index > 0 ? t.slice(0, m.index) : t).trim();
 }
 
 // Normalize a name for case-insensitive lookup. Mirrors the server-side
@@ -420,7 +425,7 @@ export function findBlockingIssues(plan) {
       const item = items[itemIdx];
       if (!item || typeof item !== "object") continue;
       if (item.type === "Activity") {
-        addBlockingFlags(item.flags, { dayIdx, itemIdx, kind: "activity", name: item.text || "(unnamed activity)" }, issues);
+        addBlockingFlags(item.flags, { dayIdx, itemIdx, kind: "activity", name: activityName(item.text) || "(unnamed activity)" }, issues);
         continue;
       }
       if (item.hotel && typeof item.hotel === "object") {

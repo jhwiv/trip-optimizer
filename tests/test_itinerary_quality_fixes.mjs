@@ -41,10 +41,10 @@ function dedupeRestaurants(days) {
       else seenTypesToday.set(key, new Set([typeKey]));
 
       const prior = seen.get(key);
-      if (prior) {
+      if (prior && prior.dayIndex !== dayIdx) {
         r._isReturnVisit = true;
         fixes.push(`Annotated repeat: ${r.name} (Day ${dayIdx + 1}) — first on Day ${prior.dayIndex + 1}`);
-      } else {
+      } else if (!prior) {
         seen.set(key, { dayIndex: dayIdx, mealType: item.type || "meal" });
       }
       return true;
@@ -99,6 +99,27 @@ console.log("\n1. Same-day duplicate-venue dedupe\n");
   ];
   const { days: out } = dedupeRestaurants(days);
   assert("same restaurant, different meal types, same day — both items survive", out[0].items.length === 2);
+  // Regression (peer-review finding, 2026-08-03): the "seen" map used for
+  // cross-day return-visit annotation was keyed only by name, with no check
+  // that the prior sighting was on an EARLIER day — so the Dinner item here
+  // got mislabeled "Return visit — first appeared Day 1 (lunch)" referring
+  // to the SAME day, which is nonsensical (it isn't a return visit from
+  // itself). Same-day/different-meal-type must get no annotation at all.
+  assert("...and the second (Dinner) item is NOT mislabeled as a same-day \"return visit\"",
+    out[0].items[1].restaurant._isReturnVisit !== true, JSON.stringify(out[0].items[1].restaurant));
+  assert("...and its why/hours text is untouched by a same-day return-visit note",
+    !out[0].items[1].restaurant.why, out[0].items[1].restaurant.why);
+}
+{
+  // A genuine cross-day return visit must still be annotated correctly even
+  // when the first sighting was a DIFFERENT meal type than the second.
+  const days = [
+    { items: [{ type: "Lunch", time: "12:00", restaurant: { name: "The Hudson" } }] },
+    { items: [{ type: "Dinner", time: "19:00", restaurant: { name: "The Hudson" } }] },
+  ];
+  const { days: out } = dedupeRestaurants(days);
+  assert("a cross-day return visit (different meal type) is still annotated",
+    out[1].items[0].restaurant._isReturnVisit === true);
 }
 
 // -----------------------------------------------------------------------------

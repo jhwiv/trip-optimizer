@@ -1,6 +1,6 @@
 // Tests for src/placesVerify.js — pure helpers, no fetch, no React.
 
-import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues } from "../src/placesVerify.js";
+import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, activityName } from "../src/placesVerify.js";
 
 let passed = 0;
 let failed = 0;
@@ -812,6 +812,42 @@ console.log("\n[hotels — an unverifiable lookup strips specifics]");
   const next = mergePlacesVerifications(plan, [{ name: "Some Other Hotel", kind: "hotel", found: true, flags: [] }]);
   assert("a hotel with no matching verification is left alone",
     next.days[0].items[0].hotel.address === "Alfama");
+}
+
+console.log("\n[activityName — dash-variant tolerance (peer-review finding, 2026-08-03)]");
+{
+  // The original implementation matched only the literal substring " — "
+  // (space, em-dash, space). Hardened to a regex tolerant of an en-dash and
+  // missing surrounding spaces, so a model deviation from the exact
+  // instructed format still splits into a clean venue name instead of
+  // falling through to the whole descriptive sentence (which risks a false
+  // NOT_FOUND from Google Places Text Search).
+  assert("em-dash with spaces (the documented convention) still works",
+    activityName("Bell Rock Pathway — easy 1-mile loop") === "Bell Rock Pathway");
+  assert("en-dash with spaces splits correctly",
+    activityName("Bell Rock Pathway – easy 1-mile loop") === "Bell Rock Pathway");
+  assert("em-dash with NO surrounding spaces still splits correctly",
+    activityName("Bell Rock Pathway—easy 1-mile loop") === "Bell Rock Pathway");
+  assert("en-dash with NO surrounding spaces still splits correctly",
+    activityName("Bell Rock Pathway–easy 1-mile loop") === "Bell Rock Pathway");
+  assert("no dash at all — the whole trimmed string is the name",
+    activityName("Meow Wolf") === "Meow Wolf");
+  assert("a plain hyphen (not em/en-dash) is NOT treated as the venue/description separator",
+    activityName("Well-Known Overlook - great views") === "Well-Known Overlook - great views");
+}
+
+console.log("\n[findBlockingIssues — activity display name uses the clean venue name (peer-review finding)]");
+{
+  // Consistency: collectPlanVenues/applyToActivity both key on
+  // activityName(item.text) (the clean name); findBlockingIssues used to
+  // show the FULL descriptive sentence in its display name instead.
+  const plan = {
+    destination: "X",
+    days: [{ items: [{ type: "Activity", text: "Pink Jeep Broken Arrow tour — books out 5-7 days ahead", flags: [{ code: "NOT_FOUND", severity: "block" }] }] }],
+  };
+  const issues = findBlockingIssues(plan);
+  assert("the reported name is the clean venue name, not the full sentence",
+    issues[0]?.name === "Pink Jeep Broken Arrow tour", JSON.stringify(issues[0]));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
