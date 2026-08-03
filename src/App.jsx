@@ -10518,18 +10518,27 @@ export function renderUserContextBlock(inputs, maxChars = MAX_REVIEWER_PROMPT_CH
   return `\n${blocks.join("\n\n")}\n`;
 }
 
-// applyQualityLayer's marquee-coverage check (§2.6) already detects a "day
-// headline/flags/tonight promises a specific experience, no item schedules
-// it" gap deterministically — but it can only WARN (qc.warnings), never fix
-// it, because inserting the missing item requires actually regenerating the
-// day, which is outside what a post-processing pass can safely do. Before
-// this, that warning just sat in the QC panel; the reviewer never saw it and
-// had to independently re-notice the same gap by reading the whole plan
-// JSON cold, which an LLM does unreliably over a long document. Surfacing
-// the exact warning text turns "already detected, easy to miss" into "the
-// reviewer is told directly and must escalate it."
-function marqueeWarningsForReview(warnings) {
-  return (Array.isArray(warnings) ? warnings : []).filter((w) => /^Marquee sight/i.test(w));
+// applyQualityLayer already detects a wide range of unresolved itinerary-
+// content problems deterministically — a permanently-closed restaurant kept
+// in the plan for visibility with no backup, a day with no anchor
+// experience, a missing headline/weather line, a marquee experience
+// promised in prose but never scheduled, a thin Plan B — but most of these
+// can only WARN (qc.warnings), never auto-fix, because the actual fix
+// (swap the venue, add the missing item, flesh out the day) requires
+// judgment or a real re-plan, which a post-processing pass can't safely do.
+// Before this, every one of these warnings just sat in the QC panel; the
+// reviewer never saw any of them and had to independently re-notice the
+// same gaps by reading the whole plan JSON cold, which an LLM does
+// unreliably over a long document — exactly the pattern behind "an
+// independent human review catches things the Expert Review doesn't."
+// Excludes warnings about the BUILD PROCESS itself (token-budget
+// truncation), which describe a generation problem no reviewer finding can
+// fix, not an itinerary-content issue.
+const NON_CONTENT_WARNING_RE = /^Plan (hit the model's token budget|was cut off before finishing)/i;
+function contentWarningsForReview(warnings) {
+  return (Array.isArray(warnings) ? warnings : []).filter(
+    (w) => typeof w === "string" && w && !NON_CONTENT_WARNING_RE.test(w),
+  );
 }
 
 function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = [], qcWarnings = []) {
@@ -10569,9 +10578,9 @@ function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = [], qcWar
   );
   const dateTableBlock = dateTable ? `\n${dateTable}\n` : "";
 
-  const marqueeWarnings = marqueeWarningsForReview(qcWarnings);
-  const knownWarningsBlock = marqueeWarnings.length
-    ? `\nKNOWN QUALITY WARNINGS (already flagged by deterministic checks before this review — verify each is genuinely still unresolved in the plan below, and if so you MUST escalate it in structural_findings[] with check:"marquee_promises"):\n${marqueeWarnings.map((w) => `• ${w}`).join("\n")}\n`
+  const contentWarnings = contentWarningsForReview(qcWarnings);
+  const knownWarningsBlock = contentWarnings.length
+    ? `\nKNOWN QUALITY WARNINGS (already flagged by deterministic checks before this review — verify each is genuinely still unresolved in the plan below. A warning matching one of the seven MUST-VERIFY CHECKLIST areas — especially MARQUEE PROMISES — MUST be escalated in structural_findings[] with the matching check id if still unresolved. Anything else worth a note belongs in ordinary findings[]):\n${contentWarnings.map((w) => `• ${w}`).join("\n")}\n`
     : "";
 
   return `You are a panel of travel experts conducting a professional review of a finalized trip plan. Your job is to evaluate the plan AGAINST THE USER'S STATED BUDGET, STYLE, AND GUIDELINES — not against your sources' default tier. You will call the submit_review tool exactly once. Do NOT emit any prose — only the tool call.
