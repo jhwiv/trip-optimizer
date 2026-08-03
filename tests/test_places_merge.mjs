@@ -13,6 +13,15 @@ function assert(name, cond, detail) {
 // a bare hotel item. That hotel item carries no .hotel object, so the
 // venue collector still skips it — only Hotel items with a named .hotel
 // property are verifiable.
+//
+// Activity items have no "name" field — DAY_ITEM_SCHEMA only has "text"
+// ("Venue Name — description"), which is also all collectPlanVenues and
+// applyToActivity read (see src/placesVerify.js's activityName() helper).
+// These fixtures used to carry a separate name: "..." field alongside text,
+// which does not exist on a real plan — confirmed 2026-08-03 after finding
+// collectPlanVenues/applyToActivity both read item.name (always undefined
+// on real data) and silently never verified a single Activity. This file's
+// own wrong-shaped fixtures are why that bug shipped invisibly.
 function makePlan() {
   return {
     destination: "Santa Fe, NM",
@@ -24,8 +33,7 @@ function makePlan() {
           { type: "Hotel", text: "Check in", time: "15:00" },
           {
             type: "Activity",
-            name: "Loretto Chapel",
-            text: "Visit the Miraculous Staircase",
+            text: "Loretto Chapel — Visit the Miraculous Staircase",
             time: "16:00",
             contact: { address: "OLD ADDR" },
           },
@@ -46,8 +54,7 @@ function makePlan() {
         items: [
           {
             type: "Activity",
-            name: "Meow Wolf",
-            text: "House of Eternal Return",
+            text: "Meow Wolf — House of Eternal Return",
             time: "13:00",
           },
           {
@@ -91,7 +98,7 @@ console.log("\n[collectPlanVenues — dedup]");
       { items: [
         { type: "Dinner", restaurant: { name: "Same" } },
         { type: "Dinner", restaurant: { name: "same" } }, // case variant
-        { type: "Activity", name: "Same" }, // same name, different kind — kept
+        { type: "Activity", text: "Same" }, // same name, different kind — kept
       ] },
       { items: [
         { type: "Dinner", restaurant: { name: "  Same  " } }, // whitespace variant
@@ -153,7 +160,7 @@ console.log("\n[collectPlanVenues — multi-city falls back to cities[0]]");
   const plan = {
     destination: "",
     cities: [{ name: "Taos, NM" }, { name: "Santa Fe, NM" }],
-    days: [{ items: [{ type: "Activity", name: "Pueblo" }] }],
+    days: [{ items: [{ type: "Activity", text: "Pueblo" }] }],
   };
   const venues = collectPlanVenues(plan);
   assert("city = Taos, NM", venues[0]?.city === "Taos, NM");
@@ -212,7 +219,7 @@ console.log("\n[mergePlacesVerifications — block drops items]");
   // ClosedSpot's lunch item should be gone
   const day2items = next.days[1].items;
   assert("ClosedSpot dinner dropped from day 2", day2items.length === 1, `day 2 has ${day2items.length} items`);
-  assert("Meow Wolf preserved", day2items[0].name === "Meow Wolf");
+  assert("Meow Wolf preserved", day2items[0].text === "Meow Wolf — House of Eternal Return");
 
   // Day 1 should keep all 3 items
   assert("day 1 unchanged length", next.days[0].items.length === 3);
@@ -227,7 +234,7 @@ console.log("\n[mergePlacesVerifications — block drops items]");
   assert("Backup preserved", dinnerItem.restaurant.backup.name === "The Compound");
 
   // Loretto Chapel address overwritten
-  const loretto = next.days[0].items.find((it) => it.type === "Activity" && it.name === "Loretto Chapel");
+  const loretto = next.days[0].items.find((it) => it.type === "Activity" && it.text?.startsWith("Loretto Chapel"));
   assert("Loretto address overwritten", loretto.contact.address === "207 Old Santa Fe Trail");
   assert("Loretto _verified", loretto._verified === true);
 
@@ -266,7 +273,7 @@ console.log("\n[mergePlacesVerifications — UNVERIFIED keeps item + flags]");
     destination: "City",
     days: [{
       items: [
-        { type: "Activity", name: "Unknown Activity" },
+        { type: "Activity", text: "Unknown Activity" },
         { type: "Dinner", restaurant: { name: "Unverified Spot" } },
       ],
     }],
@@ -296,7 +303,7 @@ console.log("\n[mergePlacesVerifications — name match is case-insensitive]");
 {
   const plan = {
     destination: "X",
-    days: [{ items: [{ type: "Activity", name: "  MEOW WOLF  " }] }],
+    days: [{ items: [{ type: "Activity", text: "  MEOW WOLF  " }] }],
   };
   const verifications = [
     { name: "meow wolf", kind: "activity", found: true, business_status: "OPERATIONAL", address: "Real St", flags: [] },
@@ -313,7 +320,7 @@ console.log("\n[verify-or-strip — UNVERIFIED venue gets hard specifics strippe
       items: [
         {
           type: "Activity",
-          name: "Unverified Activity",
+          text: "Unverified Activity",
           contact: {
             address: "123 Fake Street",  // numbered — strip
             phone: "555-0100",            // strip
@@ -324,7 +331,7 @@ console.log("\n[verify-or-strip — UNVERIFIED venue gets hard specifics strippe
         },
         {
           type: "Activity",
-          name: "Neighborhood Only",
+          text: "Neighborhood Only",
           contact: { address: "Downtown" }, // no digit — keep
         },
       ],
@@ -369,7 +376,7 @@ console.log("\n[mergePlacesVerifications — dropBlocked:false keeps blocked ite
 {
   const plan = {
     destination: "X",
-    days: [{ items: [{ type: "Activity", name: "Closed Activity" }] }],
+    days: [{ items: [{ type: "Activity", text: "Closed Activity" }] }],
   };
   const verifications = [
     { name: "Closed Activity", kind: "activity", found: true, business_status: "CLOSED_PERMANENTLY", flags: [{ code: "CLOSED_PERMANENTLY", severity: "block" }] },
@@ -391,8 +398,8 @@ console.log("\n[findBlockingIssues — blocked activity is detected]");
     destination: "X",
     days: [{
       items: [
-        { type: "Activity", name: "Bad", flags: [{ code: "NOT_FOUND", severity: "block" }] },
-        { type: "Activity", name: "Good", flags: [] },
+        { type: "Activity", text: "Bad", flags: [{ code: "NOT_FOUND", severity: "block" }] },
+        { type: "Activity", text: "Good", flags: [] },
       ],
     }],
   };
@@ -429,7 +436,7 @@ console.log("\n[findBlockingIssues — warn flags do NOT block]");
 {
   const plan = {
     destination: "X",
-    days: [{ items: [{ type: "Activity", name: "Warn", flags: [{ code: "UNVERIFIED", severity: "warn" }] }] }],
+    days: [{ items: [{ type: "Activity", text: "Warn", flags: [{ code: "UNVERIFIED", severity: "warn" }] }] }],
   };
   assert("warn does not surface", findBlockingIssues(plan).length === 0);
 }
@@ -526,7 +533,7 @@ console.log("\n[hours check — Activity items get the check too]");
   const plan = {
     startDate: "2027-08-25",
     destination: "Santa Fe, NM",
-    days: [{ items: [{ type: "Activity", name: "Loretto Chapel", time: "18:00" }] }],
+    days: [{ items: [{ type: "Activity", text: "Loretto Chapel", time: "18:00" }] }],
   };
   const verifications = [{
     name: "Loretto Chapel", kind: "activity", found: true, business_status: "OPERATIONAL",

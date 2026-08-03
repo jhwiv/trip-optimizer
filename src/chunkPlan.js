@@ -140,8 +140,15 @@ export function isGenericMealName(name) {
 
 /**
  * Extract NAMED restaurant item names from a plan's days[] for cross-chunk
- * dedupe. Looks at item.name / item.text on Dining/Restaurant items and
- * skips generic placeholders ("Breakfast at hotel", "Room service", etc.).
+ * dedupe. Both call sites (src/App.jsx) pass the real parsed chunk straight
+ * from parseToolJson() — a DAY_ITEM_SCHEMA plan, where a meal item's name
+ * lives at item.restaurant.name, never item.name/item.place (neither field
+ * exists on the schema). Confirmed 2026-08-03 auditing the same bug class as
+ * placesVerify.js's collectPlanVenues: this always returned [], so every
+ * later chunk of a large multi-day trip generated with zero memory of which
+ * restaurants earlier chunks already used — the exact class of bug (same
+ * restaurant recurring across a long trip) a user-reviewed itinerary flagged.
+ * Skips generic placeholders ("Breakfast at hotel", "Room service", etc.).
  * Defensive about shape.
  * @param {object} planLike  object with days[]
  * @returns {string[]}
@@ -152,13 +159,10 @@ export function collectRestaurantNames(planLike) {
   for (const d of days) {
     const items = d && Array.isArray(d.items) ? d.items : [];
     for (const it of items) {
-      const kind = String(it?.kind || it?.type || "").toLowerCase();
-      const isFood = /dining|restaurant|meal|lunch|dinner|breakfast/.test(kind);
-      const name = String(it?.name || it?.place || "").trim();
+      const kind = String(it?.type || "").toLowerCase();
+      const isFood = /dining|restaurant|meal|lunch|dinner|breakfast|brunch/.test(kind);
+      const name = String(it?.restaurant?.name || "").trim();
       if (isFood && name && !isGenericMealName(name)) out.push(name);
-      else if (!it?.kind && !it?.type && name && !isGenericMealName(name) && /\b(lunch|dinner|breakfast|reservation)\b/i.test(String(it?.text || ""))) {
-        out.push(name);
-      }
     }
   }
   return out;
@@ -213,13 +217,20 @@ export function stitchPlan({ dayChunks, wrapper, expectedDays }) {
   // Defensive cross-chunk restaurant dedupe (keep first occurrence). Only
   // NAMED venues are checked — generic placeholders like "Breakfast at hotel"
   // legitimately recur daily and must not be flagged.
+  //
+  // Same fix as collectRestaurantNames above: a meal item's name lives at
+  // item.restaurant.name on the real DAY_ITEM_SCHEMA, never item.name/
+  // item.place/item.kind. This read the wrong fields, so rawName was always
+  // empty and this warning has never fired on a real chunked build —
+  // confirmed 2026-08-03 auditing the same bug class as
+  // placesVerify.js's collectPlanVenues.
   const seen = new Set();
   for (const d of days) {
     const items = d && Array.isArray(d.items) ? d.items : [];
     for (const it of items) {
-      const kind = String(it?.kind || it?.type || "").toLowerCase();
-      if (!/dining|restaurant|meal|lunch|dinner|breakfast/.test(kind)) continue;
-      const rawName = String(it?.name || it?.place || "").trim();
+      const kind = String(it?.type || "").toLowerCase();
+      if (!/dining|restaurant|meal|lunch|dinner|breakfast|brunch/.test(kind)) continue;
+      const rawName = String(it?.restaurant?.name || "").trim();
       if (!rawName || isGenericMealName(rawName)) continue;
       const name = rawName.toLowerCase();
       if (seen.has(name)) {

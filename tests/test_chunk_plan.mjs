@@ -143,9 +143,11 @@ console.log("\n[8] stitchPlan — rejects an incomplete assembly (truncation gua
 
 console.log("\n[9] stitchPlan — dedupe warning on duplicate restaurant across chunks");
 {
+  // Real DAY_ITEM_SCHEMA shape: type + restaurant.name, not kind/name — a
+  // meal item never carries a top-level "name" or "kind" field.
   const dayChunks = [
-    { days: [{ label: "Day 1", items: [{ kind: "dining", name: "Osteria Alle Testiere" }] }] },
-    { days: [{ label: "Day 2", items: [{ kind: "dining", name: "Osteria Alle Testiere" }] }] },
+    { days: [{ label: "Day 1", items: [{ type: "Dinner", restaurant: { name: "Osteria Alle Testiere" } }] }] },
+    { days: [{ label: "Day 2", items: [{ type: "Dinner", restaurant: { name: "Osteria Alle Testiere" } }] }] },
   ];
   const { plan, warnings } = stitchPlan({ dayChunks, wrapper: {}, expectedDays: 2 });
   assert("duplicate flagged in warnings", warnings.some(w => /Duplicate restaurant/.test(w)), JSON.stringify(warnings));
@@ -154,7 +156,7 @@ console.log("\n[9] stitchPlan — dedupe warning on duplicate restaurant across 
 
 console.log("\n[10] collectRestaurantNames pulls dining items for cross-chunk context");
 {
-  const planLike = { days: [{ items: [{ kind: "dining", name: "Le Calandre" }, { kind: "activity", name: "Doge's Palace" }] }] };
+  const planLike = { days: [{ items: [{ type: "Dinner", restaurant: { name: "Le Calandre" } }, { type: "Activity", text: "Doge's Palace" }] }] };
   const names = collectRestaurantNames(planLike);
   assert("collects only the dining name", names.length === 1 && names[0] === "Le Calandre", JSON.stringify(names));
 }
@@ -174,24 +176,24 @@ console.log("\n[12] dedupe IGNORES generic placeholders (the 'Breakfast at hotel
   // The exact pattern seen in the live Croatia run: "Breakfast at hotel"
   // appearing on multiple days across chunks must NOT be flagged.
   const dayChunks = [
-    { days: [{ label: "Day 1", items: [{ kind: "dining", name: "Breakfast at hotel" }, { kind: "dining", name: "Pantarul" }] }] },
-    { days: [{ label: "Day 2", items: [{ kind: "dining", name: "Breakfast at hotel" }, { kind: "dining", name: "Restaurant 360" }] }] },
-    { days: [{ label: "Day 3", items: [{ kind: "dining", name: "Breakfast at hotel" }] }] },
+    { days: [{ label: "Day 1", items: [{ type: "Breakfast", restaurant: { name: "Breakfast at hotel" } }, { type: "Dinner", restaurant: { name: "Pantarul" } }] }] },
+    { days: [{ label: "Day 2", items: [{ type: "Breakfast", restaurant: { name: "Breakfast at hotel" } }, { type: "Dinner", restaurant: { name: "Restaurant 360" } }] }] },
+    { days: [{ label: "Day 3", items: [{ type: "Breakfast", restaurant: { name: "Breakfast at hotel" } }] }] },
   ];
   const { warnings } = stitchPlan({ dayChunks, wrapper: {}, expectedDays: 3 });
   assert("no generic-placeholder warnings", warnings.length === 0, JSON.stringify(warnings));
 
   // But a genuinely duplicated NAMED restaurant is still flagged.
   const dup = [
-    { days: [{ label: "Day 1", items: [{ kind: "dining", name: "Pantarul" }] }] },
-    { days: [{ label: "Day 2", items: [{ kind: "dining", name: "Pantarul" }] }] },
+    { days: [{ label: "Day 1", items: [{ type: "Dinner", restaurant: { name: "Pantarul" } }] }] },
+    { days: [{ label: "Day 2", items: [{ type: "Dinner", restaurant: { name: "Pantarul" } }] }] },
   ];
   const r2 = stitchPlan({ dayChunks: dup, wrapper: {}, expectedDays: 2 });
   assert("named duplicate still flagged", r2.warnings.some(w => /Pantarul/.test(w)), JSON.stringify(r2.warnings));
 
   // collectRestaurantNames also skips generics (so they're never passed as
   // 'already used' to later chunks).
-  const names = collectRestaurantNames({ days: [{ items: [{ kind: "dining", name: "Breakfast at hotel" }, { kind: "dining", name: "Pantarul" }] }] });
+  const names = collectRestaurantNames({ days: [{ items: [{ type: "Breakfast", restaurant: { name: "Breakfast at hotel" } }, { type: "Dinner", restaurant: { name: "Pantarul" } }] }] });
   assert("collectRestaurantNames skips generic", names.length === 1 && names[0] === "Pantarul", JSON.stringify(names));
 }
 

@@ -37,6 +37,19 @@ export { findVenuesOutsideRadius, computeLegRadii } from "./locationCheck.js";
 // 'restaurant' | 'activity' | 'hotel'. We stick to that vocabulary
 // here too so client + server speak the same language.
 
+// Activity items have no dedicated "name" field — DAY_ITEM_SCHEMA carries
+// the headline in "text", formatted "Venue Name — description" (e.g.
+// "Bell Rock Pathway — easy 1-mile interpretive loop (marquee sight, morning
+// light)"). Passing the WHOLE sentence to Google Places Text Search risks
+// false NOT_FOUND blocks on an otherwise-real venue, since the descriptive
+// clause can outweigh the actual name in the query. Same " — " convention
+// providerName() in localProviders.js already relies on for the same reason.
+export function activityName(text) {
+  const t = typeof text === "string" ? text : "";
+  const dash = t.indexOf(" — ");
+  return (dash > 0 ? t.slice(0, dash) : t).trim();
+}
+
 // Normalize a name for case-insensitive lookup. Mirrors the server-side
 // rule in places-verify.js cacheKeyFor() but is a plain function — no
 // crypto, no async — because we only need it for in-memory map keys.
@@ -110,8 +123,14 @@ export function collectPlanVenues(plan) {
           push(item.restaurant.backup.name, "restaurant");
         }
       }
+      // DAY_ITEM_SCHEMA (src/App.jsx) has no "name" field on items — the
+      // headline lives in "text". This used to read item.name, which is
+      // always undefined for a real Activity item, so push() silently
+      // dropped every activity before it ever reached Places verification.
+      // Confirmed 2026-08-03 auditing a reported "missing marquee item" bug:
+      // no Activity has ever actually been checked for existence/closure.
       if (item.type === "Activity") {
-        push(item.name, "activity");
+        push(activityName(item.text), "activity");
       }
       if (item.type === "Hotel" && item.hotel && typeof item.hotel === "object") {
         push(item.hotel.name, "hotel", hotelCityFor(dayCity, cityHint), item.hotel.address);
@@ -247,10 +266,13 @@ export function mergePlacesVerifications(plan, verifications, options = {}) {
   };
 
   // Apply Places data to an Activity item. Returns the updated item or
-  // null if blocked.
+  // null if blocked. Same field-name fix as collectPlanVenues above: items
+  // have no "name" field, only "text" — this used to look up a key keyed
+  // on item.name (always undefined), so even if a verification result
+  // existed it could never be matched back onto the item.
   const applyToActivity = (item, dayContext) => {
-    if (!item || typeof item.name !== "string") return item;
-    const v = byKey.get(`activity|${normName(item.name)}`);
+    if (!item || typeof item.text !== "string") return item;
+    const v = byKey.get(`activity|${normName(activityName(item.text))}`);
     if (!v) return item;
     const isBlocked = Array.isArray(v.flags) && v.flags.some((f) => f.severity === "block");
     if (isBlocked && dropBlocked) {
@@ -398,7 +420,7 @@ export function findBlockingIssues(plan) {
       const item = items[itemIdx];
       if (!item || typeof item !== "object") continue;
       if (item.type === "Activity") {
-        addBlockingFlags(item.flags, { dayIdx, itemIdx, kind: "activity", name: item.name || item.text || "(unnamed activity)" }, issues);
+        addBlockingFlags(item.flags, { dayIdx, itemIdx, kind: "activity", name: item.text || "(unnamed activity)" }, issues);
         continue;
       }
       if (item.hotel && typeof item.hotel === "object") {

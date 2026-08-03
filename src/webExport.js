@@ -33,14 +33,6 @@ function formatTime(t) {
   return `${h}:${min} ${ampm}`;
 }
 
-function dateLabel(dateStr) {
-  if (!dateStr) return "";
-  try {
-    const d = new Date(dateStr + "T12:00:00");
-    return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-  } catch { return dateStr; }
-}
-
 function slugify(s) {
   return (s || "trip").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
@@ -67,14 +59,41 @@ function badgeHtml(type) {
   return `<span class="badge" style="background:${c.bg};color:${c.color}">${esc(type)}</span>`;
 }
 
+// DAY_ITEM_SCHEMA (src/App.jsx) has no top-level name/address/phone/website/
+// notes/description fields — this used to read all of them directly off
+// `item` and always rendered blank for real plans (Hotel items partially
+// survived only via the item.hotel?.* fallbacks already in place). The real
+// data lives one level down, in a shape that depends on item.type:
+//   Hotel                        → item.hotel.{name,address,phone,website,confirmation_note}
+//   Breakfast/Brunch/Lunch/
+//   Dinner/Dining                → item.restaurant.{name,why} + .contact.{address,phone,website}
+//   Activity/Transport/Note      → item.text (the headline) + item.why + item.contact.{address,phone,website}
+//   Flight                       → no separate "name" — see flightDetail below
+function itemVenue(item) {
+  const type = item.type || "Note";
+  if (type === "Hotel" && item.hotel) {
+    const h = item.hotel;
+    return { name: h.name || "", address: h.address || "", phone: h.phone || "", website: h.website || "", notes: h.confirmation_note || "" };
+  }
+  if (/^(Breakfast|Brunch|Lunch|Dinner|Dining)$/i.test(type) && item.restaurant) {
+    const r = item.restaurant;
+    const c = (r.contact && typeof r.contact === "object") ? r.contact : {};
+    return { name: r.name || "", address: c.address || "", phone: c.phone || r.reservation?.phone || "", website: c.website || "", notes: r.why || "" };
+  }
+  const c = (item.contact && typeof item.contact === "object") ? item.contact : {};
+  return {
+    name: item.text || (item.flight ? `${item.flight.carrier || ""} ${item.flight.flight_number || ""}`.trim() : ""),
+    address: c.address || "",
+    phone: c.phone || "",
+    website: c.website || "",
+    notes: item.why || "",
+  };
+}
+
 function itemHtml(item) {
   const type = item.type || "Note";
   const time = formatTime(item.time);
-  const name = item.name || (item.flight ? `${item.flight.carrier || ""} ${item.flight.flight_number || ""}`.trim() : "") || (item.hotel ? item.hotel.name : "");
-  const address = item.address || item.hotel?.address || "";
-  const phone = item.phone || item.hotel?.phone || "";
-  const website = item.website || item.hotel?.website || "";
-  const notes = item.notes || item.description || "";
+  const { name, address, phone, website, notes } = itemVenue(item);
   const flightDetail = item.flight
     ? `${esc(item.flight.from_airport || "")}→${esc(item.flight.to_airport || "")}${item.flight.depart_time ? " · Departs " + formatTime(item.flight.depart_time) : ""}${item.flight.arrive_time ? " · Arrives " + formatTime(item.flight.arrive_time) : ""}`
     : "";
@@ -94,15 +113,28 @@ function itemHtml(item) {
     </article>`;
 }
 
+// DAY_SCHEMA has no "date"/"title"/"theme" fields. The computed weekday
+// stamp lives inside "label" ("Day N · Wed Aug 25 · Arrive Santa Fe" — see
+// dateFacts.js) and the day's signature moment is "headline". This used to
+// read day.date/day.title/day.theme, none of which exist, so the date badge
+// and day subtitle were always blank for every real plan.
+function dayDateStamp(day) {
+  const label = typeof day?.label === "string" ? day.label : "";
+  const parts = label.split("·").map(s => s.trim()).filter(Boolean);
+  // parts[0] is "Day N" (redundant with the number this renderer already
+  // shows); parts[1], when present, is the computed date stamp itself.
+  return parts[1] || "";
+}
+
 function dayHtml(day, index) {
   const items = Array.isArray(day.items) ? day.items : [];
-  const label = dateLabel(day.date);
-  const title = day.title || day.theme || "";
+  const dateStamp = dayDateStamp(day);
+  const title = day.headline || "";
   return `
   <section class="day-section" id="day-${index}" data-day="${index}" ${index > 0 ? 'hidden' : ''}>
     <div class="day-header">
       <span class="day-number">Day ${index + 1}</span>
-      ${label ? `<span class="day-date">${esc(label)}</span>` : ""}
+      ${dateStamp ? `<span class="day-date">${esc(dateStamp)}</span>` : ""}
       ${title ? `<p class="day-title">${esc(title)}</p>` : ""}
     </div>
     <div class="items-list">
@@ -137,12 +169,27 @@ function overviewHtml(data) {
   </section>`;
 }
 
+// data.introduction is an object — { arc, differentiators } — not a string
+// (see IntroductionAutoGenerator in src/App.jsx and renderIntroduction in
+// src/pdf/itineraryPdf.js, the PDF's equivalent section). esc(intro) on the
+// object used to stringify to the literal text "[object Object]" instead of
+// rendering blank like the other bugs in this file — arguably worse, since
+// it's visibly broken rather than silently missing. differentiators can also
+// be the literal sentinel "NONE_FLAGGED", meaning the model found no
+// genuinely distinctive elements — mirror the PDF's honest fallback copy
+// rather than either showing the sentinel or hiding the section.
 function introHtml(data) {
   const intro = data.introduction;
-  if (!intro) return "";
+  const arc = (intro && typeof intro.arc === "string") ? intro.arc.trim() : "";
+  const diffRaw = (intro && typeof intro.differentiators === "string") ? intro.differentiators.trim() : "";
+  if (!arc && !diffRaw) return "";
+  const paragraph = (text) => `<p>${esc(text).replace(/\n\n+/g, "</p><p>").replace(/\n/g, "<br>")}</p>`;
+  const diffHtml = diffRaw === "NONE_FLAGGED"
+    ? `<p class="intro-note">The planner flagged this itinerary as a strong but standard route — no off-the-beaten-path differentiators worth singling out.</p>`
+    : diffRaw ? paragraph(diffRaw) : "";
   return `
   <section class="intro-section">
-    <div class="intro-text">${esc(intro).replace(/\n\n+/g, "</p><p>").replace(/\n/g, "<br>")}</div>
+    <div class="intro-text">${arc ? paragraph(arc) : ""}${diffHtml}</div>
   </section>`;
 }
 
@@ -151,7 +198,7 @@ function dayNavHtml(days) {
   return `
   <nav class="day-nav" aria-label="Day navigation">
     ${days.map((d, i) => {
-      const label = dateLabel(d.date);
+      const label = dayDateStamp(d);
       return `<button class="day-nav-btn${i === 0 ? " active" : ""}" data-target="${i}" aria-selected="${i === 0}">${esc(label || `Day ${i + 1}`)}</button>`;
     }).join("")}
   </nav>`;
@@ -236,6 +283,12 @@ const CSS = `
     max-width: 600px;
   }
   .intro-text p { margin-bottom: 1em; }
+  .intro-note {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    font-style: italic;
+    color: #5b6577;
+  }
 
   /* ---- Overview ---- */
   .overview-section { padding: 40px 0; border-bottom: 1px solid #dcd8cf; }
@@ -530,31 +583,37 @@ export function buildWebApp(data, inputs) {
     `  <p>Generated ${esc(generatedOn)} &nbsp;·&nbsp; <a href="https://routesmith.app">RouteSmith</a></p>`,
     `</footer>`,
 
-    // Embedded data for developer handoff
+    // Embedded data for developer handoff. Passes the plan's real day/item
+    // fields through mostly as-is (label/headline/text/restaurant/hotel/
+    // flight/contact/why) rather than re-flattening into invented fields —
+    // the previous version's date/title/name/address/phone/website/notes
+    // keys don't exist on the actual plan shape (DAY_SCHEMA has label/
+    // headline, DAY_ITEM_SCHEMA has text/restaurant/hotel/flight/contact/
+    // why), so every one of them always serialized as null. Passing the
+    // real structure through is both correct and more useful to a developer
+    // than a lossy re-shape of a schema this file was never actually reading.
     `<script id="trip-data" type="application/json">`,
     JSON.stringify({
       destination: data.destination,
       meta: data.meta,
       cities: data.cities,
+      introduction: data.introduction || null,
       days: days.map(d => ({
-        date: d.date,
-        title: d.title || d.theme || null,
+        label: d.label || null,
         city: d.city || null,
+        headline: d.headline || null,
+        weather: d.weather || null,
         items: (d.items || []).map(it => ({
           type: it.type,
           time: it.time || null,
-          name: it.name || null,
-          address: it.address || null,
-          phone: it.phone || null,
-          website: it.website || null,
-          notes: it.notes || it.description || null,
+          end_time: it.end_time || null,
+          text: it.text || null,
+          location: it.location || null,
+          why: it.why || null,
+          contact: it.contact || null,
           flight: it.flight || null,
-          hotel: it.hotel ? {
-            name: it.hotel.name,
-            address: it.hotel.address || null,
-            phone: it.hotel.phone || null,
-            website: it.hotel.website || null,
-          } : null,
+          hotel: it.hotel || null,
+          restaurant: it.restaurant || null,
         })),
       })),
       logistics: data.logistics || [],

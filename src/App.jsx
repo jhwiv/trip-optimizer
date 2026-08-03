@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, Fragment, createContext, useContext } from "react";
 import { useViewport } from "./useViewport.js";
-import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii } from "./placesVerify.js";
+import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii, activityName } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { arrivalOrderExportError } from "./arrivalOrderCheck.js";
 import { findContinuityIssues, findStructuralBlockingIssues } from "./dayContinuityCheck.js";
@@ -10319,12 +10319,33 @@ const REVISION_TOOL_FULL = TRIP_PLAN_TOOL;
 // Extract the primary hotel name from a plan. The first Hotel-type item we
 // find wins — multi-city plans will use whichever leg comes first, which is
 // fine for retrieval scoping.
+//
+// These three extractors all previously read item.name, a field that does
+// not exist on DAY_ITEM_SCHEMA (confirmed 2026-08-03 auditing a reported
+// itinerary-quality bug — see placesVerify.js's collectPlanVenues for the
+// same fix and full writeup). Every call always returned null/[], so
+// /api/review-retrieve's hotel_name/restaurants/activities params were
+// always empty and the Expert Review's live Reddit/local-press grounding
+// never actually searched for anything specific to the plan it was
+// reviewing — it degraded to generic destination-only queries every time.
+// Best short display name for ANY item type — restaurant/hotel names live
+// one level down; Activity items have only "text". Used by the chunk-mode
+// wrapper-pass summary below, which needs a single name regardless of type
+// (unlike the three type-filtered extractors above, which each want just
+// their own kind and are left as their own functions).
+function itemDisplayName(item) {
+  if (item?.restaurant?.name) return String(item.restaurant.name).trim();
+  if (item?.hotel?.name) return String(item.hotel.name).trim();
+  if (item?.type === "Activity") return activityName(item?.text);
+  return "";
+}
+
 function extractPrimaryHotel(plan) {
   if (!plan?.days) return null;
   for (const day of plan.days) {
     if (!Array.isArray(day?.items)) continue;
     for (const item of day.items) {
-      if (item?.type === "Hotel" && item.name) return String(item.name);
+      if (item?.type === "Hotel" && item.hotel?.name) return String(item.hotel.name);
     }
   }
   return null;
@@ -10335,12 +10356,12 @@ function extractRestaurantNames(plan, limit = 6) {
   if (!plan?.days) return [];
   const out = [];
   const seen = new Set();
-  const restaurantTypes = new Set(["Restaurant", "Breakfast", "Lunch", "Dinner", "Brunch"]);
+  const restaurantTypes = new Set(["Breakfast", "Brunch", "Lunch", "Dinner", "Dining"]);
   for (const day of plan.days) {
     if (!Array.isArray(day?.items)) continue;
     for (const item of day.items) {
       if (!restaurantTypes.has(item?.type)) continue;
-      const name = String(item?.name || "").trim();
+      const name = String(item?.restaurant?.name || "").trim();
       if (!name || seen.has(name)) continue;
       seen.add(name);
       out.push(name);
@@ -10350,7 +10371,11 @@ function extractRestaurantNames(plan, limit = 6) {
   return out;
 }
 
-// Top N unique activity names across the plan.
+// Top N unique activity names across the plan. Items have no "name" field —
+// only "text" ("Venue Name — description") — so this reuses the same
+// " — " split placesVerify.js's collectPlanVenues uses for Places Text
+// Search, for the same reason: a full descriptive sentence makes for a
+// worse Perplexity search query than the clean venue name.
 function extractActivityNames(plan, limit = 4) {
   if (!plan?.days) return [];
   const out = [];
@@ -10359,7 +10384,7 @@ function extractActivityNames(plan, limit = 4) {
     if (!Array.isArray(day?.items)) continue;
     for (const item of day.items) {
       if (item?.type !== "Activity") continue;
-      const name = String(item?.name || "").trim();
+      const name = activityName(item?.text);
       if (!name || seen.has(name)) continue;
       seen.add(name);
       out.push(name);
@@ -15188,8 +15213,15 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       }
       const summaryLines = assembledDays.map((d, idx) => {
         const items = Array.isArray(d?.items) ? d.items : [];
+        // itemDisplayName fixes the same field-name bug as
+        // collectRestaurantNames/stitchPlan in chunkPlan.js (item.name/
+        // item.place don't exist on DAY_ITEM_SCHEMA) — this used to always
+        // produce "" per item, so every summary line read "Day N (City): —"
+        // with zero actual venue context, meaning the wrapper pass
+        // (introduction/Plan B/snobs/tonight) has always written from a
+        // blank per-day summary on any chunked (large) trip.
         const keyNames = items
-          .map((it) => String(it?.name || it?.place || "").trim())
+          .map(itemDisplayName)
           .filter(Boolean)
           .slice(0, 2)
           .join(", ");
