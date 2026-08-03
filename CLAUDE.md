@@ -99,6 +99,34 @@ before reading a plan field in new code — check the actual field names against
 
 Full writeup: `docs/wiki/learnings/2026-08-03.md`.
 
+### KNOWN FAILURE MODE #2 — `applyQualityLayer(input, inputs)`'s two params. A one-letter mixup silenced the entire marquee-coverage check.
+
+**2026-08-03, found asking "can the Expert Review be tweaked to catch these issues" and then
+verifying the answer live instead of just shipping a prompt tweak.** `applyQualityLayer` takes
+**two** parameters named one letter apart: `input` (singular — the raw built plan) and `inputs`
+(plural — the wizard's form state, shaped `{ basics, flights, hotel, transport, dining,
+restaurants, activities, interests, guidelines, narrative, outputs }`). The marquee-coverage
+check's destination-matching code read `inputs?.destination` / `inputs?.cities` — fields that
+exist on **neither** shape. The plan's own destination is `input.destination` (singular); the
+wizard's is nested at `inputs.basics.destination` (plural, one level down). Because of this,
+`destStr` was **always the empty string**, so `if (destStr && Array.isArray(days))` never ran —
+**the entire `MARQUEE_REQUIRED` table (~20 curated destinations, Sedona's Pink Jeep group
+included) had never fired once in production**, independent of the item-vs-prose haystack bug
+fixed the same day. Every unit test for this code handed the check a pre-resolved `groups` array
+and never exercised `destStr` itself, so nothing caught it — the tests, like the code, quietly
+assumed the destination-matching step already worked.
+
+Fixed to read both `input?.destination`/`input?.cities` and
+`inputs?.basics?.destination`/`inputs?.basics?.cities`. Confirmed live (not just unit-tested):
+captured the actual `/api/build` request for a mocked Sedona review and verified the marquee
+warning now generates and reaches the reviewer.
+
+**The pattern to watch for, beyond this one bug:** a function with two similarly-named parameters
+(`input`/`inputs`, `plan`/`plans`, `item`/`items`) is a standing invitation for exactly this kind
+of silent one-letter mixup. When reading or writing code in `applyQualityLayer` (or anywhere with
+this shape), check which parameter you actually mean — `input` is the plan, `inputs` is the
+wizard's form state — don't assume the shorter/plural-adjacent name is interchangeable.
+
 ## Implementation map
 
 | Concern | File |
