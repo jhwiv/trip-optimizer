@@ -134,12 +134,18 @@
         width: 100%;
         max-width: 100vw;
         max-width: 100dvw;
-        /* overflow-x: clip + contain: paint means anything a child paints past
-           the right edge (absolute positioning, transforms, oversized inline
-           images, iOS Safari page-zoom widening the column) is clipped to the
-           root's paint box and cannot force horizontal scroll. */
+        /* overflow-x: clip alone clips anything a child paints past the right
+           edge and cannot force horizontal scroll — no `contain: paint` needed
+           for that. contain: paint used to sit here too, but it has a load-
+           bearing side effect: it makes #root a *containing block* for every
+           position:fixed descendant, so `bottom: 0` / `inset: 0` on a fixed
+           modal resolves against #root's full (often page-length) box instead
+           of the viewport. That silently broke every fixed-position overlay
+           in the app (bottom sheets rendering hundreds of px below the fold,
+           centered modals rendering off-screen) — found 2026-08-02 chasing a
+           build-progress modal that only appeared after scrolling down.
+           Removed; overflow-x: clip still does the actual clipping job. */
         overflow-x: clip;
-        contain: paint;
         position: relative;
       }
       /* Prevent any long word/URL from blowing out a container and shifting layout */
