@@ -12222,11 +12222,90 @@ function BuildCancelButton({ onCancel }) {
   );
 }
 
-// Bottom-sheet build progress. Suppressed while the pre-build screen is up —
-// that screen renders the same bars inline, in card #4, so the sheet would be
-// a second copy on top of them. This covers every other context, most
-// importantly the post-build review phase on step 3, by which point the
-// pre-build screen has unmounted and the sheet is the only progress surface.
+// Full-screen takeover for an active build, entered straight from the
+// pre-build screen's "Plan my trip" tap. Not a modal over the four phase
+// cards — a distinct screen with nothing else on it, matching what the
+// build actually is: the one thing happening right now, worth its own
+// undivided attention rather than a strip at the bottom of a page you're
+// meant to ignore. Unmounts the moment step flips to 3 (ItineraryView),
+// which the existing applyBuiltPlan flow already drives — this component
+// doesn't own that transition, only the waiting room before it.
+function BuildProgressScreen({
+  basics, flights, restaurants, activities, vp,
+  loading, buildProgress, buildProgressLabel, loadingMsg, buildElapsedSec,
+  reviewRunning, reviewProgress, reviewProgressLabel, reviewElapsedSec,
+  onCancel,
+}) {
+  const destination = basics?.destination || basics?.cities?.[0]?.name || "";
+  const tripLine = [
+    basics?.baseArea,
+    (basics?.startDate && basics?.endDate)
+      ? `${formatDateForDisplay(basics.startDate)} – ${formatDateForDisplay(basics.endDate)}`
+      : formatDateForDisplay(basics?.startDate),
+    basics?.nights ? `${basics.nights} nights` : null,
+    flights?.homeAirport ? `from ${extractAirportCode(flights.homeAirport) || flights.homeAirport}` : null,
+  ].filter(Boolean).join("  ·  ");
+
+  return (
+    <div style={{ minHeight: "70vh", display: "flex", flexDirection: "column", justifyContent: "center", padding: vp.isMobile ? "1.5rem 0" : "2.5rem 0" }}>
+      <p style={{ fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 700, color: ACCENT_DARK, margin: "0 0 6px", textAlign: "center" }}>
+        Building your trip
+      </p>
+      <p style={{ fontSize: vp.isMobile ? "26px" : "32px", fontWeight: 400, fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 2rem", lineHeight: 1.2, textAlign: "center", color: "var(--color-text-primary)" }}>
+        {destination || "Your trip"}
+      </p>
+
+      <div style={{ ...cardStyle, maxWidth: "460px", width: "100%", margin: "0 auto" }}>
+        <BuildPhaseBars
+          loading={loading}
+          buildProgress={buildProgress}
+          buildProgressLabel={buildProgressLabel}
+          loadingMsg={loadingMsg}
+          buildElapsedSec={buildElapsedSec}
+          reviewRunning={reviewRunning}
+          reviewProgress={reviewProgress}
+          reviewProgressLabel={reviewProgressLabel}
+          reviewElapsedSec={reviewElapsedSec}
+        />
+        {loading && <BuildCancelButton onCancel={onCancel} />}
+      </div>
+
+      <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "1.25rem 0 0", textAlign: "center", fontStyle: "italic", lineHeight: 1.5 }}>
+        Stays building if you switch tabs — come back any time.
+      </p>
+
+      {/* Same trip recap the pre-build cards showed, so leaving the phase
+          cards behind doesn't mean losing context on what's building. */}
+      {(destination || tripLine) && (
+        <div style={{ ...cardStyle, maxWidth: "460px", width: "100%", margin: "2rem auto 0" }}>
+          <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 5px" }}>Your trip</p>
+          <p style={{ fontSize: "18px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)" }}>{destination || "Destination not set"}</p>
+          {tripLine && (
+            <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: "1.6" }}>{tripLine}</p>
+          )}
+          {(restaurants?.length > 0 || activities?.length > 0) && (
+            <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: "10px", marginTop: "12px" }}>
+              <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: "500", marginBottom: "5px" }}>Added</p>
+              {[...restaurants, ...activities].map(t => (
+                <p key={t} style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "3px", display: "flex", gap: "6px" }}>
+                  <span style={{ color: ACCENT }}>—</span>{t}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Bottom-sheet build progress. This used to also cover the pre-build phase
+// flow (suppressed there in favor of an inline copy of the bars), but that
+// flow now hands off to BuildProgressScreen — a full-screen takeover — the
+// moment a build starts, so this modal never mounts for that entry point at
+// all. It remains the fallback for every other path that can reach
+// loading/reviewRunning without having come through the pre-build screen,
+// most importantly the post-build review phase on step 3.
 function BuildAndReviewOverlay({
   loading,
   buildProgress,
@@ -12392,9 +12471,8 @@ function PreBuildScreen({
   basics, narrative, guidelines, mealPolicyText,
   dynamicSources, outputs, outputDefs, togOut, activeCount,
   reviewerSourceIds, setReviewerSourceIds,
-  extractingFromGuidelines, loading, onBack, onBuild,
+  extractingFromGuidelines, onBack, onBuild,
   cardStyleR, vp, progressPanelRef,
-  reviewRunning,
 }) {
   // Phase 1 opens only while extraction is actually running. Arriving with it
   // already finished (the usual case — the narrative path resolves extraction
@@ -12415,7 +12493,6 @@ function PreBuildScreen({
 
   const promptText = preBuildText(narrative) || preBuildText(guidelines);
   const understood = extractionSummary(basics);
-  const buildRunning = loading || reviewRunning;
   const dynamicCount = dynamicSources.length;
 
   return (
@@ -12538,52 +12615,42 @@ function PreBuildScreen({
       </PhaseCard>
 
       {/* ── PHASE 4 ─────────────────────────────────────────────────────────
-          The trigger lives here; the progress display does not. Tapping
-          Plan my trip hands off to BuildAndReviewOverlay — a fixed modal
-          that covers the whole screen — instead of swapping in progress
-          bars inline, so starting a build no longer yanks the page into a
-          scroll-jump to reveal a panel buried below three phase cards. This
-          card just reflects that a build is running (dimmed, disabled CTA);
-          the overlay owns the bars, the elapsed time, and Cancel. */}
+          The trigger lives here; the progress display doesn't. Tapping Plan
+          my trip flips showBuildProgress (in TripOptimizer) and this whole
+          screen unmounts in favor of BuildProgressScreen, a full-screen
+          takeover — so there's no "build running" state to render here at
+          all beyond the narrative-extraction case, which happens BEFORE a
+          build starts and isn't gated by showBuildProgress. */}
       <div ref={progressPanelRef}>
         <PhaseCard
           title="Plan my trip"
-          status={buildRunning ? "in-progress" : "pending"}
+          status="pending"
           expanded
           cardStyleR={cardStyleR}
         >
-          {buildRunning ? (
-            <button disabled aria-busy="true"
-              style={{ width: "100%", border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "not-allowed", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", opacity: 0.7 }}>
-              {reviewRunning ? "Reviewing your plan…" : "Building your trip…"}
-            </button>
-          ) : (
-            <>
-              {/* flexWrap + minWidth:0 keeps the button row safe under iOS
-                  page zoom and narrow visual viewports — the Plan CTA can
-                  wrap under Back rather than overflow the card. */}
-              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-                <button onClick={onBack} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", minWidth: 0, flexShrink: 0 }}>← Back</button>
-                {extractingFromGuidelines ? (
-                  // Extraction is fast (~2s) and not cancellable. A disabled
-                  // "reading…" state says the build is in motion; phase 1
-                  // above carries the actual indeterminate bar.
-                  <button disabled aria-busy="true"
-                    style={{ flex: "1 1 180px", minWidth: 0, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "not-allowed", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", opacity: 0.7 }}>
-                    Reading your narrative…
-                  </button>
-                ) : (
-                  <button onClick={onBuild}
-                    style={{ flex: "1 1 180px", minWidth: 0, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
-                    Plan my trip
-                  </button>
-                )}
-              </div>
-              <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "10px 0 0", textAlign: "center", lineHeight: 1.5, fontStyle: "italic" }}>
-                Every venue verified open · Plans draw on Michelin, Condé Nast Traveler, NYT 36 Hours, Eater, and more
-              </p>
-            </>
-          )}
+          {/* flexWrap + minWidth:0 keeps the button row safe under iOS
+              page zoom and narrow visual viewports — the Plan CTA can
+              wrap under Back rather than overflow the card. */}
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+            <button onClick={onBack} style={{ background: "transparent", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "10px 16px", fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", minWidth: 0, flexShrink: 0 }}>← Back</button>
+            {extractingFromGuidelines ? (
+              // Extraction is fast (~2s) and not cancellable. A disabled
+              // "reading…" state says the build is in motion; phase 1
+              // above carries the actual indeterminate bar.
+              <button disabled aria-busy="true"
+                style={{ flex: "1 1 180px", minWidth: 0, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "not-allowed", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)", opacity: 0.7 }}>
+                Reading your narrative…
+              </button>
+            ) : (
+              <button onClick={onBuild}
+                style={{ flex: "1 1 180px", minWidth: 0, border: "none", borderRadius: "var(--border-radius-md)", padding: "13px 20px", fontSize: "11px", fontWeight: "500", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", background: "var(--color-text-primary)", color: "var(--color-background-primary)" }}>
+                Plan my trip
+              </button>
+            )}
+          </div>
+          <p style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", margin: "10px 0 0", textAlign: "center", lineHeight: 1.5, fontStyle: "italic" }}>
+            Every venue verified open · Plans draw on Michelin, Condé Nast Traveler, NYT 36 Hours, Eater, and more
+          </p>
         </PhaseCard>
       </div>
     </div>
@@ -15642,6 +15709,13 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   // review-and-launch surface owns the viewport.
   const showPreBuild = !findOnly && step === 2 && outputsStep;
 
+  // A dedicated full-screen takeover for the build itself — not a modal over
+  // the pre-build cards, a distinct screen with nothing else on it. Replaces
+  // BuildAndReviewOverlay for this one entry point; that overlay remains the
+  // fallback for any other path that reaches loading/reviewRunning without
+  // having come through the pre-build phase flow (see its render site).
+  const showBuildProgress = showPreBuild && (loading || reviewPhaseRunning);
+
   // Preview-only mirror of the sources the server will auto-add. The server
   // is the one that actually resolves them (see functions/api/review-retrieve.js);
   // this call exists so the screen can name them, and both sides read the
@@ -16094,7 +16168,27 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           </div>
         )}
 
-        {step === 2 && (
+        {step === 2 && showBuildProgress && (
+          <BuildProgressScreen
+            basics={basics}
+            flights={flights}
+            restaurants={restaurants}
+            activities={activities}
+            vp={vp}
+            loading={loading}
+            buildProgress={progress}
+            buildProgressLabel={progressLabel}
+            loadingMsg={loadingMsg}
+            buildElapsedSec={elapsedSec}
+            reviewRunning={reviewPhaseRunning}
+            reviewProgress={reviewPhaseProgress}
+            reviewProgressLabel={reviewPhaseLabel}
+            reviewElapsedSec={reviewPhaseElapsed}
+            onCancel={handleCancel}
+          />
+        )}
+
+        {step === 2 && !showBuildProgress && (
           <div>
             {!showPreBuild && (
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", gap: "10px" }}>
@@ -16255,13 +16349,11 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               reviewerSourceIds={reviewerSourceIds}
               setReviewerSourceIds={setReviewerSourceIds}
               extractingFromGuidelines={extractingFromGuidelines}
-              loading={loading}
               onBack={() => { setOutputsStep(false); try { window.scrollTo({ top: 0, left: 0, behavior: "smooth" }); } catch { window.scrollTo(0, 0); } }}
               onBuild={handleBuild}
               cardStyleR={cardStyleR}
               vp={vp}
               progressPanelRef={progressPanelRef}
-              reviewRunning={reviewPhaseRunning}
               narrative={narrative}
               guidelines={guidelines}
             />
@@ -16437,7 +16529,11 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           />
         )}
 
-        {step !== 3 && (
+        {/* Suppressed during showBuildProgress: BuildProgressScreen renders
+            its own copy of this same recap card, and it's the only thing on
+            screen at that point — a second copy below it would be a
+            visible duplicate, not a progressive reveal. */}
+        {step !== 3 && !showBuildProgress && (
           <>
             <hr style={{ border: "none", borderTop: "0.5px solid var(--color-border-tertiary)", margin: "1.75rem 0" }} />
             <div style={{ border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem 1.5rem", background: "var(--color-background-primary)" }}>
@@ -16479,27 +16575,28 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       </div>
       )}
 
-      {/* BuildAndReviewOverlay is now the single progress surface for every
-          path that reaches loading/reviewRunning, including the pre-build
-          phase flow — it used to be suppressed there in favor of an inline
-          copy of the same bars in PreBuildScreen's card #4, which meant
-          starting a build scrolled the page down to reveal them. The modal
-          is fixed + backdropped, so it doesn't need the page to scroll to
-          it; PreBuildScreen's card #4 just shows a disabled "Building…"
-          state underneath now. */}
-      <BuildAndReviewOverlay
-        loading={loading}
-        buildProgress={progress}
-        buildProgressLabel={progressLabel}
-        loadingMsg={loadingMsg}
-        buildElapsedSec={elapsedSec}
-        onCancelBuild={handleCancel}
-        reviewRunning={reviewPhaseRunning}
-        reviewProgress={reviewPhaseProgress}
-        reviewProgressLabel={reviewPhaseLabel}
-        reviewElapsedSec={reviewPhaseElapsed}
-        destination={basics?.destination || ""}
-      />
+      {/* BuildAndReviewOverlay is suppressed while showBuildProgress owns the
+          screen (the pre-build phase flow hands off to a full-screen
+          takeover the moment a build starts, see showBuildProgress above) —
+          rendering both would be two progress surfaces stacked on each
+          other. It remains the fallback for every other path that can reach
+          loading/reviewRunning without having come through the pre-build
+          screen, most importantly the post-build review phase on step 3. */}
+      {!showBuildProgress && (
+        <BuildAndReviewOverlay
+          loading={loading}
+          buildProgress={progress}
+          buildProgressLabel={progressLabel}
+          loadingMsg={loadingMsg}
+          buildElapsedSec={elapsedSec}
+          onCancelBuild={handleCancel}
+          reviewRunning={reviewPhaseRunning}
+          reviewProgress={reviewPhaseProgress}
+          reviewProgressLabel={reviewPhaseLabel}
+          reviewElapsedSec={reviewPhaseElapsed}
+          destination={basics?.destination || ""}
+        />
+      )}
     </div>
   );
 }

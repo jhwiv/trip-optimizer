@@ -21,11 +21,16 @@
 //      Reading your prompt → Expert review sources → Output sections → Plan my trip.
 //   5. Card #1 auto-collapses on the true→false edge of extractingFromGuidelines
 //      (edge, not level — otherwise Edit is undone every render).
-//   6. Card #4 renders BuildPhaseBars inline when a build is running, and the
-//      Plan-my-trip button when it isn't — same slot, same anchor.
-//   7. Progress is rendered in exactly ONE place while outputsStep is true:
-//      the fixed BuildAndReviewOverlay is suppressed. Two competing progress
-//      surfaces would drift.
+//   6. Card #4 only ever renders idle (Back + Plan-my-trip, or the disabled
+//      "reading narrative" state) — it never shows a build-running state,
+//      because tapping Plan my trip swaps the whole screen for
+//      BuildProgressScreen (a real full-screen takeover, not a modal:
+//      no position:fixed, so it can't hit the containing-block bug that
+//      broke the bottom-sheet version).
+//   7. BuildAndReviewOverlay (the fixed bottom-sheet modal) is gated on
+//      !showBuildProgress, not !outputsStep — it remains the fallback for
+//      any OTHER path that reaches loading/reviewRunning without coming
+//      through the pre-build screen (e.g. the post-build review phase).
 //   8. Auto-added city sources are labelled from the shared registry and are
 //      NOT toggleable — the server resolves them, so a toggle would be a
 //      control that controls nothing.
@@ -171,7 +176,7 @@ console.log("\n[5] phase 1 auto-collapses on the true→false edge of extraction
   );
 }
 
-console.log("\n[6] card #4 defers progress to the fixed overlay");
+console.log("\n[6] card #4 never shows a build-running state — that's a different screen now");
 {
   const phase4Start = COMP.indexOf('title="Plan my trip"');
   const phase4End = COMP.length;
@@ -180,20 +185,21 @@ console.log("\n[6] card #4 defers progress to the fixed overlay");
   assert(
     "phase 4 does NOT render BuildPhaseBars inline",
     !phase4.includes("<BuildPhaseBars"),
-    "progress bars live only in BuildAndReviewOverlay now — an inline copy would drift"
+    "progress bars live only in BuildProgressScreen now — an inline copy would drift"
   );
   assert(
-    "phase 4 shows a disabled status button while a build is running",
-    /buildRunning \? \(\s*<button disabled aria-busy="true"/.test(phase4)
+    "PreBuildScreen no longer accepts loading/reviewRunning props",
+    !/function PreBuildScreen\(\{[\s\S]{0,400}\bloading\b/.test(SRC),
+    "it only ever renders while idle now — showBuildProgress swaps the whole screen out from under it"
   );
   assert(
-    "phase 4 renders the Plan-my-trip button when idle",
+    "phase 4 renders the Plan-my-trip button unconditionally",
     />\s*Plan my trip\s*</.test(phase4)
   );
   assert(
     "phase 4 does NOT render its own Cancel button",
     !phase4.includes("BuildCancelButton"),
-    "Cancel lives only in BuildAndReviewOverlay now"
+    "Cancel lives only in BuildProgressScreen now"
   );
   assert(
     "phase 4 is anchored by progressPanelRef",
@@ -202,20 +208,50 @@ console.log("\n[6] card #4 defers progress to the fixed overlay");
   );
 }
 
-console.log("\n[7] the fixed overlay is the single progress surface, and doesn't yank scroll");
+console.log("\n[6b] BuildProgressScreen is a real full-screen takeover, not a modal");
+{
+  const bpsStart = SRC.indexOf("function BuildProgressScreen(");
+  assert("BuildProgressScreen is declared at module scope", bpsStart > -1);
+  const bpsEnd = SRC.indexOf("\nfunction BuildAndReviewOverlay(");
+  const BPS = bpsStart > -1 && bpsEnd > bpsStart ? SRC.slice(bpsStart, bpsEnd) : "";
+  assert("BuildProgressScreen body was isolated", BPS.length > 0);
+  assert(
+    "it is NOT position:fixed — a real screen, not an overlay",
+    !BPS.includes('position: "fixed"'),
+    "the whole point is escaping the fixed-positioning containing-block bug that broke the modal version"
+  );
+  assert("it renders BuildPhaseBars", BPS.includes("<BuildPhaseBars"));
+  assert("it renders Cancel while loading", /\{loading && <BuildCancelButton/.test(BPS));
+  assert(
+    "showBuildProgress requires the pre-build screen AND an active build/review",
+    /const showBuildProgress = showPreBuild && \(loading \|\| reviewPhaseRunning\);/.test(SRC)
+  );
+  assert(
+    "step 2 renders BuildProgressScreen when showBuildProgress, the details/pre-build content otherwise",
+    /\{step === 2 && showBuildProgress && \(\s*<BuildProgressScreen/.test(SRC)
+    && /\{step === 2 && !showBuildProgress && \(/.test(SRC)
+  );
+  assert(
+    "the outer 'Your trip' recap card is suppressed during showBuildProgress",
+    /\{step !== 3 && !showBuildProgress && \(/.test(SRC),
+    "BuildProgressScreen renders its own copy — a second one below it would be a visible duplicate"
+  );
+}
+
+console.log("\n[7] BuildAndReviewOverlay is the fallback, not suppressed generically");
 {
   // BuildAndReviewOverlay used to be suppressed while the pre-build phase
   // flow was up, in favor of an inline copy of the same bars in card #4 —
-  // which meant starting a build scrolled the page down to reveal them.
-  // The overlay is fixed + backdropped now, so it no longer needs the guard,
-  // and the build-start auto-scroll skips outputsStep entirely.
+  // which meant starting a build scrolled the page down to reveal them. It's
+  // guarded on showBuildProgress now (the full-screen takeover), not
+  // outputsStep — it still fires for any OTHER path that reaches
+  // loading/reviewRunning without coming through the pre-build screen.
   assert(
-    "BuildAndReviewOverlay is no longer gated on outputsStep",
-    !/\{!outputsStep && \([\s\S]{0,200}<BuildAndReviewOverlay/.test(SRC),
-    "it must render for every loading/reviewRunning path, including the phase flow"
+    "BuildAndReviewOverlay is gated on !showBuildProgress, not !outputsStep",
+    /\{!showBuildProgress && \([\s\S]{0,200}<BuildAndReviewOverlay/.test(SRC)
   );
   assert(
-    "BuildAndReviewOverlay renders unconditionally",
+    "BuildAndReviewOverlay is reachable",
     /<BuildAndReviewOverlay\s/.test(SRC)
   );
   assert(
