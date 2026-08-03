@@ -12260,6 +12260,22 @@ const BUILD_HERO_GLASS = {
   padding: "1.25rem 1.5rem",
 };
 
+// CSS custom-property overrides for the progress/done card, which reuses
+// BuildPhaseBars/BuildCancelButton (shared with the light-card bottom-sheet
+// overlay elsewhere). Those components read var(--color-text-*) /
+// var(--color-border-*) theme tokens that resolve to a solid white card in
+// light mode — wrong here, where the card sits translucent over a dark photo
+// regardless of the app's light/dark theme. Scoping these overrides onto the
+// card div (rather than editing the shared components) makes the same
+// tokens resolve to the hero's white-on-dark palette for this subtree only.
+const HERO_CARD_VARS = {
+  "--color-text-primary": "#fff",
+  "--color-text-secondary": "rgba(255,255,255,0.72)",
+  "--color-text-tertiary": "rgba(255,255,255,0.45)",
+  "--color-border-secondary": "rgba(255,255,255,0.28)",
+  "--color-border-tertiary": "rgba(255,255,255,0.16)",
+};
+
 // Full-screen takeover for an active build, entered straight from the
 // pre-build screen's "Plan my trip" tap. Not a modal over the four phase
 // cards — a distinct screen with nothing else on it, matching what the
@@ -12342,7 +12358,7 @@ function BuildProgressScreen({
           </p>
 
           {isDone ? (
-            <div style={{ ...cardStyle, maxWidth: "460px", width: "100%", margin: "0 auto", textAlign: "center" }}>
+            <div style={{ ...BUILD_HERO_GLASS, ...HERO_CARD_VARS, maxWidth: "460px", width: "100%", margin: "0 auto", textAlign: "center" }}>
               <div style={{ width: "48px", height: "48px", borderRadius: "50%", background: "var(--color-success)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "22px", margin: "0 auto 14px" }}>✓</div>
               <p style={{ fontSize: "16px", fontWeight: 600, margin: "0 0 6px", color: "var(--color-text-primary)" }}>Your itinerary is ready</p>
               <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 18px" }}>
@@ -12353,7 +12369,7 @@ function BuildProgressScreen({
               </button>
             </div>
           ) : (
-            <div style={{ ...cardStyle, maxWidth: "460px", width: "100%", margin: "0 auto" }}>
+            <div style={{ ...BUILD_HERO_GLASS, ...HERO_CARD_VARS, maxWidth: "460px", width: "100%", margin: "0 auto" }}>
               <BuildPhaseBars
                 loading={loading}
                 buildProgress={buildProgress}
