@@ -4365,6 +4365,7 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPh
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [errorIsActionable, setErrorIsActionable] = useState(false);
   // When the PDF lib chunk is missing from the current deploy, we surface a
   // refresh prompt instead of auto-reloading (which would lose unsaved work).
   const [stale, setStale] = useState(false);
@@ -4382,7 +4383,12 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPh
 
   const handleClick = async () => {
     if (busy || disabledForIntro) return;
-    setBusy(true); setError(""); setStatus("Starting…");
+    setBusy(true); setError(""); setErrorIsActionable(false); setStatus("Starting…");
+    // Local mirror of errorIsActionable for the synchronous `finally` below —
+    // the setErrorIsActionable(true) call in the catch block only schedules a
+    // re-render; reading the state variable itself in `finally` (same tick)
+    // would still see the value from before this click, not what catch just set.
+    let actionable = false;
     try {
       // The PDF's Local-providers section needs the data, but fetching is now
       // gated on tab-open — so force a load here (no-op if already loaded) and
@@ -4404,6 +4410,20 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPh
         clearShellCaches().catch(() => {});
         setStale(true);
         setError("");
+      } else if (err && (err.code === "VERIFICATION_BLOCK" || err.code === "ARRIVAL_ORDER")) {
+        // These two codes are the pre-export gate deliberately refusing to
+        // ship a plan with a known problem (see saveItineraryAsPDF /
+        // arrivalOrderExportError) — their message is hand-written to be
+        // safe and actionable ("Cannot export: ... Re-run the build or
+        // remove the affected items before exporting"), not a raw exception.
+        // Collapsing it to "Could not save PDF. Try again." (as every other
+        // error still does below) told the user nothing about what was
+        // actually wrong or how to fix it — confirmed 2026-08-04 from a real
+        // production screenshot showing only the generic copy with no way to
+        // tell which of the many possible gate reasons had fired.
+        setError(err.message);
+        setErrorIsActionable(true);
+        actionable = true;
       } else {
         // Surface the real error in dev so the swallowed cause is visible
         // without digging through the console; production keeps the calm copy.
@@ -4416,7 +4436,10 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPh
     } finally {
       setBusy(false);
       setStatus("");
-      if (!stale) setTimeout(() => setError(""), 5000);
+      // Gate errors stay on screen until the user dismisses them (or tries
+      // again) — they're longer and describe something to go fix, not a
+      // transient failure worth auto-clearing after a few seconds.
+      if (!stale && !actionable) setTimeout(() => setError(""), 5000);
     }
   };
 
@@ -4447,7 +4470,17 @@ function PrintButton({ data, inputs, providers, plan, introIsGenerating, coverPh
       >
         <span aria-hidden="true">⤓</span> {busy ? (status || "Working…") : (disabledForIntro ? gate.label : "Save as PDF")}
       </button>
-      {error && (
+      {error && errorIsActionable && (
+        <div role="alert" style={{ display: "flex", alignItems: "flex-start", gap: "6px", maxWidth: "320px", fontSize: "11px", lineHeight: 1.5, color: "var(--color-text-danger)" }}>
+          <span style={{ flex: 1 }}>{error}</span>
+          <button
+            onClick={() => { setError(""); setErrorIsActionable(false); }}
+            aria-label="Dismiss"
+            style={{ background: "transparent", border: "none", padding: 0, cursor: "pointer", color: "var(--color-text-danger)", fontSize: "13px", lineHeight: 1, fontFamily: "inherit" }}
+          >×</button>
+        </div>
+      )}
+      {error && !errorIsActionable && (
         <span style={{ fontSize: "11px", color: "var(--color-warning)" }}>{error}</span>
       )}
       {stale && (
