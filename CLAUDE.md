@@ -207,6 +207,43 @@ unconfirmed action is most likely to run into "I wanted to do something else." D
 not detect-and-act, for anything that (a) costs real money/tokens to redo and (b) changes what
 screen is on top.
 
+### KNOWN FAILURE MODE #5 — the `input`/`inputs` mixup from #2 recurred twice more in the SAME function, silently disabling the restaurant-closure safety gate.
+
+**2026-08-04, found doing a deliberate pattern-based sweep** ("is it worth doing a top to bottom
+scan for errors" → targeted grep for the exact bug shapes already found that day, rather than an
+unfocused read) **for other instances of the exact `input`/`inputs` mixup already fixed once in
+`applyQualityLayer` (KNOWN FAILURE MODE #2).** Two more instances, in the same function, both
+undiscovered until this sweep:
+
+1. `buildCityHaystack(inputs)` (§2.4, the "closure gate") was called with the wizard's plural
+   form-state (`inputs` — no top-level `destination`/`cities`; those live at
+   `inputs.basics.destination`/`inputs.basics.cities`) instead of `input` (the built plan,
+   singular, always populated). `cityHaystack` was therefore always `""`, so
+   `if (Array.isArray(days) && cityHaystack)` was always false — **the entire closure gate, "the
+   actual fix for the Husk Greenville incident" (stripping/flagging restaurants on the
+   `CLOSED_RESTAURANTS` denylist), had never fired once in production**, for the identical reason
+   the marquee check never fired.
+2. `verifyCityHint` (§2.5, the Google Maps search-URL backfill for cards missing `verify_url`)
+   read `inputs?.destination`/`inputs?.cities` the same wrong way — always `""`, so that fallback
+   link was never city-scoped.
+
+**Fix:** both now read `input?.destination`/`input?.cities` first, falling back to
+`inputs?.basics?.destination`/`inputs?.basics?.cities` — the identical double-checked shape used
+by the KNOWN FAILURE MODE #2 fix. Confirmed live: seeded a real plan with "Frog Club" (an actual
+`CLOSED_RESTAURANTS` entry, NYC, closed 2024-12, no backup) as a Day 1 dinner and opened it —
+the Quality Check banner now shows *"Frog Club (Day 1 dinner) is reported permanently closed...
+it must NOT be booked... (https://www.theinfatuation.com/new-york/features/nyc-restaurant-closings)"*,
+which would never have appeared before this fix. Added a regression suite mirroring the same
+`destStr` test pattern used for KNOWN FAILURE MODE #2, in `tests/test_itinerary_quality_fixes.mjs`
+§2d.
+
+**The pattern to watch for, beyond the two now-fixed instances:** finding the SAME bug shape twice
+more, in the SAME function, on a DIFFERENT day than the first fix, is itself the lesson —
+`applyQualityLayer(input, inputs)`'s two similarly-named parameters are a standing hazard for
+every line added to that function, not just the ones already caught. Any future edit inside
+`applyQualityLayer` that reads a bare `inputs.<field>` (not `inputs.basics.<field>`) should be
+treated as suspect by default and checked against which parameter is actually meant.
+
 ## Implementation map
 
 | Concern | File |

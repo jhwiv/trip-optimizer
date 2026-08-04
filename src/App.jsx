@@ -2718,15 +2718,24 @@ function normalizeRestaurantName(s) {
   return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
-// Build a haystack of city tokens from the trip inputs so we can scope
-// closure matches to the right destination (avoid stripping Husk Charleston
-// when the user is going to Charleston).
-function buildCityHaystack(inputs) {
+// Build a haystack of city tokens from the built plan + wizard inputs so we
+// can scope closure matches to the right destination (avoid stripping Husk
+// Charleston when the user is going to Charleston).
+//
+// Checks both `input` (the plan, singular — always populated for a real
+// built plan) and `inputs.basics` (the wizard's form state, plural, nested)
+// — the same double-checked shape the marquee-coverage destStr fix uses.
+// Found 2026-08-04 auditing for the identical mixup: this was called as
+// buildCityHaystack(inputs) with the WRONG (plural, no top-level destination/
+// cities) parameter, so it always returned "" and silently disabled the
+// entire closure gate below — "the actual fix for the Husk Greenville
+// incident" — for the same reason the marquee check was silently disabled.
+function buildCityHaystack(input, inputs) {
   const parts = [];
-  if (inputs?.destination) parts.push(String(inputs.destination));
-  if (Array.isArray(inputs?.cities)) {
-    inputs.cities.forEach(c => { if (c?.name) parts.push(String(c.name)); });
-  }
+  if (input?.destination) parts.push(String(input.destination));
+  if (inputs?.basics?.destination) parts.push(String(inputs.basics.destination));
+  const cityLists = [input?.cities, inputs?.basics?.cities].filter(Array.isArray);
+  cityLists.forEach(list => list.forEach(c => { if (c?.name) parts.push(String(c.name)); }));
   return parts.join(" ").toLowerCase();
 }
 
@@ -3141,7 +3150,7 @@ function applyQualityLayer(input, inputs) {
   // verify_status="permanently_closed" so the renderer can hide the menu and
   // surface a hard red banner instead of the soft amber chip. Every removal
   // also emits a QC fix so the user sees the substitution was deliberate.
-  const cityHaystack = buildCityHaystack(inputs);
+  const cityHaystack = buildCityHaystack(input, inputs);
   if (Array.isArray(days) && cityHaystack) {
     days.forEach((day, dayIdx) => {
       (day.items || []).forEach(item => {
@@ -3200,11 +3209,15 @@ function applyQualityLayer(input, inputs) {
   // The Google Maps search URL is universal, never 404s, and lets the
   // traveler confirm hours/status with one tap — far better than no link.
   const verifyCityHint = (() => {
+    // Same input/inputs mixup as buildCityHaystack above: this used to read
+    // inputs.destination/inputs.cities (always undefined — the wizard's
+    // form state nests them under inputs.basics), so this hint was always
+    // "", and the Google Maps backfill link below was never city-scoped.
     const parts = [];
-    if (inputs?.destination) parts.push(String(inputs.destination));
-    if (Array.isArray(inputs?.cities)) {
-      inputs.cities.forEach(c => { if (c?.name) parts.push(String(c.name)); });
-    }
+    if (input?.destination) parts.push(String(input.destination));
+    if (inputs?.basics?.destination) parts.push(String(inputs.basics.destination));
+    const cityLists = [input?.cities, inputs?.basics?.cities].filter(Array.isArray);
+    cityLists.forEach(list => list.forEach(c => { if (c?.name) parts.push(String(c.name)); }));
     // Take the first non-empty token-ish chunk to keep the URL short and
     // unambiguous (the destination string itself is usually "Greenville, SC").
     return parts[0] || "";

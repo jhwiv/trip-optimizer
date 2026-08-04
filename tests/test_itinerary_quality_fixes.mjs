@@ -368,6 +368,60 @@ console.log("\n2c. End-to-end: destStr now actually reaches the Sedona MARQUEE_R
 }
 
 // -----------------------------------------------------------------------------
+// 2d. buildCityHaystack / verifyCityHint mirror (src/App.jsx applyQualityLayer
+// §2.4 closure gate + §2.5 Maps-URL backfill) — the identical input/inputs
+// mixup as destStr above, found 2026-08-04 auditing for exactly this bug
+// class after fixing it once already. buildCityHaystack(inputs) was called
+// with the wizard's plural form state (no top-level destination/cities —
+// those live at inputs.basics.*), so it always returned "" and the
+// `if (Array.isArray(days) && cityHaystack)` guard around the ENTIRE closure
+// gate ("the actual fix for the Husk Greenville incident" — stripping
+// restaurants on the CLOSED_RESTAURANTS denylist) was always false. Same
+// mixup, same silent-disable pattern, different feature.
+// -----------------------------------------------------------------------------
+function buildCityHaystack(input, inputs) {
+  const parts = [];
+  if (input?.destination) parts.push(String(input.destination));
+  if (inputs?.basics?.destination) parts.push(String(inputs.basics.destination));
+  const cityLists = [input?.cities, inputs?.basics?.cities].filter(Array.isArray);
+  cityLists.forEach(list => list.forEach(c => { if (c?.name) parts.push(String(c.name)); }));
+  return parts.join(" ").toLowerCase();
+}
+
+console.log("\n2d. buildCityHaystack resolves the real destination (closure gate no longer silently disabled)\n");
+{
+  const plan = { destination: "Greenville, SC" };
+  const wizardInputs = { basics: { destination: "Greenville, SC" } };
+  assert("buildCityHaystack resolves from the real wizard shape (inputs.basics.destination)",
+    buildCityHaystack(plan, wizardInputs).includes("greenville, sc"));
+}
+{
+  // Regression: the OLD code read inputs.destination/inputs.cities directly
+  // (never exist on the real {basics, flights, ...} shape) — always "".
+  // Prove the plan's own destination alone is enough even with thin wizard inputs.
+  const plan = { destination: "Greenville, SC" };
+  const thinWizardInputs = { basics: {} };
+  assert("buildCityHaystack still resolves from the plan's own destination when wizard basics lack one",
+    buildCityHaystack(plan, thinWizardInputs) === "greenville, sc");
+}
+{
+  const wrongShapeInputs = { destination: "Greenville, SC" }; // the OLD (wrong) shape this bug assumed
+  assert("a flat inputs.destination (never the real shape) contributes nothing new beyond the plan's own field",
+    buildCityHaystack(null, wrongShapeInputs) === "",
+    "if this fails, buildCityHaystack regressed back to trusting the wrong shape");
+}
+{
+  // End-to-end: the closure gate's own guard (`if (cityHaystack)`) must now
+  // actually be reachable with the real call-site shape, not just in a unit
+  // test that hands the check a hardcoded non-empty haystack.
+  const plan = { destination: "Greenville, SC" };
+  const wizardInputs = { basics: { destination: "Greenville, SC" } };
+  const cityHaystack = buildCityHaystack(plan, wizardInputs);
+  assert("the closure-gate guard `if (cityHaystack)` is truthy with the real production call shape",
+    !!cityHaystack, JSON.stringify(cityHaystack));
+}
+
+// -----------------------------------------------------------------------------
 // 3. tonightPriority / stripTonightPrefix mirror (src/App.jsx)
 // -----------------------------------------------------------------------------
 function tonightPriority(s) {
