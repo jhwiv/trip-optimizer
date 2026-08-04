@@ -14,6 +14,7 @@
 // through the existing pre-export gate vocabulary.
 
 const TRANSPORT_TYPES = /^(Flight|Transport)$/i;
+const ARROW_RE = /→|->|—>|–>/;
 const CHECKOUT_RE = /check[\s-]?out|depart(?:ure)? from (?:the )?hotel/i;
 const CHECKIN_RE = /check[\s-]?in|arrive at (?:the )?hotel/i;
 const RENTAL_DROPOFF_RE = /(?:drop[\s-]?off|return|turn in)[^.]{0,40}\b(?:car|rental|vehicle)\b|\b(?:car|rental|vehicle)\b[^.]{0,40}(?:drop[\s-]?off|return)/i;
@@ -38,7 +39,21 @@ function canonicalCities(plan) {
     names.push(n);
   };
   if (Array.isArray(plan?.cities)) plan.cities.forEach((c) => push(c?.name));
-  if (Array.isArray(plan?.days)) plan.days.forEach((d) => push(d?.city));
+  // A transit day's own city field is often an arrow-formatted label
+  // ("Normandy → Nuremberg", per DAY_SCHEMA's documented convention) rather
+  // than a real single-city name. Left in, its raw text can literally
+  // contain a real city name as a substring ("Normandy → Nuremberg"
+  // contains "Nuremberg") and — being longer — sorts ahead of the real
+  // canonical entry, so resolveCity matches the transit label instead of
+  // the actual city. Real observed case (2026-08-04, 14-night 5-city
+  // build): this caused a Flight's destination to resolve to "Normandy →
+  // Nuremberg" instead of "Nuremberg, Germany", leaving DAY_CITY_DISCONTINUITY
+  // comparing two strings that could never match.
+  if (Array.isArray(plan?.days)) {
+    plan.days.forEach((d) => {
+      if (typeof d?.city === "string" && !ARROW_RE.test(d.city)) push(d.city);
+    });
+  }
   return names.sort((a, b) => b.length - a.length);
 }
 
@@ -75,6 +90,22 @@ function parseRoute(text) {
   return { from: "", to: s };
 }
 
+// Route text after the arrow often carries a trailing qualifier clause after
+// a comma — "Fly Paris CDG → Nuremberg, nonstop", "Amsterdam, via Brussels"
+// — which breaks resolveCity's substring match against a canonical name like
+// "Nuremberg, Germany": the qualifier sits exactly where a country/region
+// would need to for the match to land. Real observed case (2026-08-04, a
+// 14-night 5-city build): this specific text left Day 8's Flight
+// destination unresolved, so leg.transitions stayed empty, which in turn
+// left DAY_CITY_DISCONTINUITY comparing an unresolved transit-day city
+// label against Day 9's plain city name and blocking a correct itinerary's
+// PDF export. Tried as a fallback candidate alongside the untouched string.
+function beforeComma(s) {
+  const t = typeof s === "string" ? s.trim() : "";
+  const idx = t.indexOf(",");
+  return idx > 0 ? t.slice(0, idx).trim() : "";
+}
+
 // Where does this item say the traveller ends up? Flights are always
 // inter-city so they get the airport codes as extra candidates; Transport
 // items only count when their text actually names a canonical city.
@@ -85,13 +116,13 @@ function itemDestination(item, canonical) {
   if (/^Flight$/i.test(type)) {
     const fl = item.flight || {};
     return {
-      to: firstResolvable([route.to, fl.to_airport, item.location], canonical),
-      from: firstResolvable([route.from, fl.from_airport], canonical),
+      to: firstResolvable([route.to, beforeComma(route.to), fl.to_airport, item.location], canonical),
+      from: firstResolvable([route.from, beforeComma(route.from), fl.from_airport], canonical),
     };
   }
   return {
-    to: firstResolvable([route.to, item.location], canonical),
-    from: firstResolvable([route.from], canonical),
+    to: firstResolvable([route.to, beforeComma(route.to), item.location], canonical),
+    from: firstResolvable([route.from, beforeComma(route.from)], canonical),
   };
 }
 
@@ -149,19 +180,40 @@ export function findContinuityIssues(plan) {
   const add = (code, severity, leg, target, message) =>
     issues.push({ code, severity, dayIdx: leg.dayIdx, day: leg.day, target, message });
 
+  // Each day's resolved ENDING city — the last transition's destination if
+  // the day travelled anywhere, else the day's own city label. Computed once
+  // and shared by every check below that needs "where did this day actually
+  // leave the traveller" rather than the day's raw city field, which for a
+  // transit day is often an arrow-formatted label ("Normandy → Nuremberg",
+  // per DAY_SCHEMA's own convention) that will never string-equal the next
+  // day's plain destination name ("Nuremberg, Germany") even when the two
+  // days are perfectly continuous.
+  const dayEnd = legs.map((leg) => {
+    const last = leg.transitions.length > 0 ? leg.transitions[leg.transitions.length - 1].to : "";
+    return last || leg.city || "";
+  });
+
   // 1. DAY_CITY_DISCONTINUITY — the traveller changed city without travelling.
+  //    Compares the PREVIOUS day's resolved ending city (dayEnd), not its
+  //    raw city label — a transit day's "X → Y" label never equals the next
+  //    day's plain "Y" city name as strings, even when Y is exactly where it
+  //    ended. Real observed case (2026-08-04, a 14-night 5-city build): Day
+  //    8's city was "Normandy → Nuremberg" and Day 9's was "Nuremberg,
+  //    Germany" — a correct, continuous itinerary that this comparison
+  //    blocked from PDF export before dayEnd was introduced here.
   for (let i = 1; i < legs.length; i++) {
     const prev = legs[i - 1];
     const leg = legs[i];
-    if (!prev.city || !leg.city) continue;
-    if (norm(prev.city) === norm(leg.city)) continue;
+    const prevEnd = dayEnd[i - 1];
+    if (!prevEnd || !leg.city) continue;
+    if (norm(prevEnd) === norm(leg.city)) continue;
     if (leg.hasTransport) continue;
     add(
       "DAY_CITY_DISCONTINUITY",
       "block",
       leg,
       leg.city,
-      `Day ${leg.day} is set in ${leg.city} but Day ${prev.day} ended in ${prev.city}, and Day ${leg.day} has no flight or transport item that gets the traveller there.`,
+      `Day ${leg.day} is set in ${leg.city} but Day ${prev.day} ended in ${prevEnd}, and Day ${leg.day} has no flight or transport item that gets the traveller there.`,
     );
   }
 
@@ -223,10 +275,6 @@ export function findContinuityIssues(plan) {
   //        touch are all allowed, so departure mornings don't trip it.
   const runs = []; // ordered city runs, derived from each day's END city
   const runIdxOf = new Map(); // normalized city → last run index
-  const dayEnd = legs.map((leg) => {
-    const last = leg.transitions.length > 0 ? leg.transitions[leg.transitions.length - 1].to : "";
-    return last || leg.city || "";
-  });
   const dayRun = legs.map((leg, i) => {
     const end = dayEnd[i];
     if (!end) return runs.length - 1;

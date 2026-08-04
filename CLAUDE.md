@@ -127,6 +127,47 @@ of silent one-letter mixup. When reading or writing code in `applyQualityLayer` 
 this shape), check which parameter you actually mean — `input` is the plan, `inputs` is the
 wizard's form state — don't assume the shorter/plural-adjacent name is interchangeable.
 
+### KNOWN FAILURE MODE #3 — a transit day's own city label got treated as a resolvable city name, false-blocking PDF export on a correct itinerary.
+
+**2026-08-04, found from a user report ("Big two week build. PDF failed, save failed. Shareable
+link failed") on a real 14-night, 5-city London → Cambridge → Normandy → Nuremberg → Porto build.**
+`src/dayContinuityCheck.js`'s `DAY_CITY_DISCONTINUITY` check blocked PDF export on Day 9 of a
+perfectly continuous, correct itinerary. Two bugs in the same file compounded:
+
+1. `canonicalCities()` — the list of city names free text is resolved against — pushed **every**
+   `days[].city` value verbatim, including a transit day's own arrow-formatted label (e.g.
+   `"Normandy → Nuremberg"`, the documented `DAY_SCHEMA` convention for a travel day). `norm()`
+   only trims/lowercases; it does not strip arrows or spaces. So the raw string `"normandy →
+   nuremberg"` literally *contains* `"nuremberg"` as a substring, and — canonical names being
+   tried longest-first — the 21-character transit label sorted ahead of and beat the real
+   19-character `"Nuremberg, Germany"` entry for any text that resolved to just `"Nuremberg"`.
+2. Day 8's Flight item text (`"Fly Paris CDG → Nuremberg, nonstop"`) carried a trailing
+   comma-qualifier that on its own defeated the destination match entirely (`"Nuremberg,
+   nonstop"` is neither a substring of nor a superstring of `"Nuremberg, Germany"`) — so bug (1)
+   only became visible once this was fixed and `"Nuremberg"` (comma-stripped) became a resolvable
+   candidate, at which point it resolved to the wrong thing (the transit label) rather than
+   failing to resolve at all.
+
+Net effect: the Flight's resolved destination for Day 8 was never the real city, so the day's
+computed "ending city" never matched Day 9's plain city name, and a correct itinerary was blocked
+from PDF export with `Cannot export: 1 blocking issue ... DAY_CITY_DISCONTINUITY`.
+
+**Fix (three changes, all required together, in `src/dayContinuityCheck.js`):** added a
+`beforeComma()` fallback candidate so qualifier clauses don't defeat resolution; excluded any
+`days[].city` containing an arrow from `canonicalCities()`'s resolution list, since a transit-day
+label is never a legitimate "city name" to match against; and changed `DAY_CITY_DISCONTINUITY` to
+compare each day's properly-resolved *ending* city (already computed correctly elsewhere in the
+same file for the `CITY_BACKTRACK` check) rather than the raw, arrow-formatted `city` string.
+Confirmed live: a real browser `download` event for the PDF, captured via Playwright against the
+actual dev server with the user's real plan JSON (extracted from their own successful "Export as
+web app" output), before vs. after the fix. Full writeup: `docs/wiki/learnings/2026-08-04.md`.
+
+**The pattern to watch for:** any "resolve free text against a list of known city names" helper
+must build that list from *destination* fields only — never from a field (like a transit day's own
+`city`) that can itself be a multi-city, arrow-joined label. A longer string that happens to
+contain a shorter valid name as a substring will silently outrank the real entry in any
+longest-first substring-match scheme.
+
 ## Implementation map
 
 | Concern | File |

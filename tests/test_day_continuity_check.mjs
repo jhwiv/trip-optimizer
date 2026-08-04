@@ -132,6 +132,53 @@ console.log("\n=== DAY_CITY_DISCONTINUITY ===");
     !findContinuityIssues(missingCity).some(i => i.code === "DAY_CITY_DISCONTINUITY"));
 }
 
+console.log("\n=== DAY_CITY_DISCONTINUITY — arrow-format transit day (2026-08-04 regression) ===");
+{
+  // Real observed case: a 14-night 5-city build. Day 8 is a transit day whose
+  // own `city` field is the arrow-formatted "Normandy → Nuremberg" (per
+  // DAY_SCHEMA's documented convention), and its Flight item's text carries a
+  // trailing comma-qualifier ("Fly Paris CDG → Nuremberg, nonstop"). Day 9's
+  // city is the plain "Nuremberg, Germany". Two compounding bugs blocked this
+  // correct, continuous itinerary:
+  //   1. the comma qualifier defeated resolveCity's substring match against
+  //      "Nuremberg, Germany" ("Nuremberg, nonstop" is neither a substring of
+  //      nor a superstring of "Nuremberg, Germany");
+  //   2. canonicalCities() added every day's raw city field to the resolution
+  //      list, including transit labels like "Normandy → Nuremberg" — whose
+  //      raw text literally contains "Nuremberg" as a substring — so once (1)
+  //      was fixed, the destination match landed on the transit label instead
+  //      of the real city.
+  const transitDay = {
+    cities: [{ name: "Normandy" }, { name: "Nuremberg, Germany" }],
+    days: [
+      { day: 1, city: "Normandy", items: [{ type: "Activity", text: "Utah Beach" }] },
+      {
+        day: 2,
+        city: "Normandy → Nuremberg",
+        items: [
+          { type: "Hotel", text: "Check out of Le Clos Fleuri", hotel: { name: "Le Clos Fleuri" } },
+          { type: "Transport", text: "Drive to Paris CDG" },
+          { type: "Flight", text: "Fly Paris CDG → Nuremberg, nonstop", flight: { to_airport: "NUE", from_airport: "CDG" } },
+        ],
+      },
+      { day: 3, city: "Nuremberg, Germany", items: [{ type: "Activity", text: "Nuremberg Castle" }] },
+    ],
+  };
+  const issues = findContinuityIssues(transitDay);
+  assert("no DAY_CITY_DISCONTINUITY on a correctly-continuous arrow-format transit day",
+    !issues.some(i => i.code === "DAY_CITY_DISCONTINUITY"), JSON.stringify(issues));
+
+  const legs = buildDayLegs(transitDay);
+  assert("the Flight's destination resolves to the real city, not the transit label",
+    legs[1].transitions.some(t => t.to === "Nuremberg, Germany"), JSON.stringify(legs[1].transitions));
+
+  const stillTeleports = structuredClone(transitDay);
+  stillTeleports.days[2].city = "Porto, Portugal";
+  assert("a genuine discontinuity after a transit day is still flagged",
+    findContinuityIssues(stillTeleports).some(i => i.code === "DAY_CITY_DISCONTINUITY"),
+    JSON.stringify(findContinuityIssues(stillTeleports)));
+}
+
 console.log("\n=== DUPLICATE_CHECKIN window ===");
 {
   const base = (gap) => ({
