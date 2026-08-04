@@ -3810,6 +3810,22 @@ function defaultTripName(inputs, result) {
   return monthDay ? `${dest} · ${monthDay}` : dest;
 }
 
+// Human-readable "what's building" label for the build-progress screen and
+// the persisted interrupted-build banner. A multi-city trip built via the
+// structured form often never populates a single basics.destination string
+// (basics.cities[] is the source of truth there) — falling back to just
+// cities[0].name silently dropped every city after the first, so a 5-city
+// trip's build screen showed only the first city. Join all city names
+// instead, in the same "A → B → C" shape the built plan's own destination
+// string uses, so the label stays visually consistent once one exists.
+function basicsDestinationLabel(basics) {
+  if (basics?.destination) return basics.destination;
+  if (Array.isArray(basics?.cities) && basics.cities.length > 0) {
+    return basics.cities.map((c) => c?.name).filter(Boolean).join(" → ");
+  }
+  return "";
+}
+
 // SaveTripButton — prompts for a name, persists trip, calls onSaved with the saved entry.
 function SaveTripButton({ inputs, result, onSaved }) {
   // "idle" | "saved" | "error" — writeSavedTrips can fail (quota exceeded,
@@ -3870,7 +3886,7 @@ function SavedTripsPanel({ trips, onOpen, onDelete }) {
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: "0" }}>
         {trips.map((t, i) => {
-          const dest = t.result?.destination || t.inputs?.basics?.destination || "—";
+          const dest = t.result?.destination || basicsDestinationLabel(t.inputs?.basics) || "—";
           const start = t.inputs?.basics?.startDate;
           const nights = t.inputs?.basics?.nights;
           const meta = [
@@ -12618,7 +12634,7 @@ function BuildProgressScreen({
   reviewRunning, reviewProgress, reviewProgressLabel, reviewElapsedSec,
   result, onCancel, onDone,
 }) {
-  const destination = basics?.destination || basics?.cities?.[0]?.name || "";
+  const destination = basicsDestinationLabel(basics);
   const tripLine = [
     basics?.baseArea,
     (basics?.startDate && basics?.endDate)
@@ -15341,7 +15357,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // effect bails when `jobId` is absent, so this {chunked:true} shape never
     // triggers (or breaks) it; the chunked branch in the resume effect routes
     // here. See CHUNKED_RESUME_IMPL_NOTES.md.
-    const destination = basics.destination || (basics.cities?.[0]?.name) || "your trip";
+    const destination = basicsDestinationLabel(basics) || "your trip";
     const chunkMeta = chunks.map((c) => ({
       startDay: c.startDay,
       endDay: c.endDay,
@@ -15988,7 +16004,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             nightsNum,
             expectedTokens,
             citiesCount,
-            destination: basics.destination || (basics.cities?.[0]?.name) || "your trip",
+            destination: basicsDestinationLabel(basics) || "your trip",
           }));
         } catch {}
       },
@@ -17079,7 +17095,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             <hr style={{ border: "none", borderTop: "0.5px solid var(--color-border-tertiary)", margin: "1.75rem 0" }} />
             <div style={{ border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-lg)", padding: "1.25rem 1.5rem", background: "var(--color-background-primary)" }}>
               <p style={{ fontSize: "11px", color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: "500", margin: "0 0 5px" }}>Your trip</p>
-              <p style={{ fontSize: "20px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)" }}>{basics.destination || "Destination not set"}</p>
+              <p style={{ fontSize: "20px", fontWeight: "400", fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 4px", color: "var(--color-text-primary)" }}>{basicsDestinationLabel(basics) || "Destination not set"}</p>
               <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: "1.6" }}>
                 {[basics.baseArea, (basics.startDate && basics.endDate) ? `${formatDateForDisplay(basics.startDate)} – ${formatDateForDisplay(basics.endDate)}` : formatDateForDisplay(basics.startDate), basics.nights ? `${basics.nights} nights` : null, flights.homeAirport ? `from ${extractAirportCode(flights.homeAirport) || flights.homeAirport}` : null].filter(Boolean).join("  ·  ") || "Complete the form above"}
               </p>
@@ -17166,7 +17182,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           reviewProgress={reviewPhaseProgress}
           reviewProgressLabel={reviewPhaseLabel}
           reviewElapsedSec={reviewPhaseElapsed}
-          destination={basics?.destination || ""}
+          destination={basicsDestinationLabel(basics)}
         />
       )}
     </div>
