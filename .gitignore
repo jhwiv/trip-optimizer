@@ -1,5 +1,8 @@
 node_modules
 dist
+# Output of scripts/publish-trip-site.mjs — generated per-trip site folders,
+# not something to commit into this repo.
+dist-sites/
 .env
 .env.local
 .wrangler
