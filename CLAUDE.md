@@ -168,6 +168,45 @@ must build that list from *destination* fields only — never from a field (like
 contain a shorter valid name as a substring will silently outrank the real entry in any
 longest-first substring-match scheme.
 
+### KNOWN FAILURE MODE #4 — automatic build-resume-on-mount could hijack the app into a silent rebuild, with no way to reach a saved trip.
+
+**2026-08-04, found from a user report:** "When I open the app after a build it starts building
+again. Same happens when I try to open a saved itinerary. It doesn't open at the itinerary it
+starts building again." A mount-time effect in `src/App.jsx` read `ACTIVE_JOB_KEY` (the
+localStorage marker written whenever a build starts, deliberately left in place on a client-side
+timeout/abort so a page reload could recover the finished plan from KV) and, if present and not
+older than 30 minutes, **automatically and silently** resumed it — jumping straight to the build
+overlay before the user could reach the home screen, the saved-trips panel, or anything else.
+
+Live-reproduced with Playwright: seeding a stale-but-fresh (5-minutes-old) chunked
+`ACTIVE_JOB_KEY` entry plus a saved trip, then loading the app, went straight to a "Resuming
+build for…" overlay with the "Open" button never rendered at all. Worse than a stuck spinner: for
+a chunked build whose per-chunk job IDs had since expired (`classifyChunkResume` → `"rerun"`),
+"resume" meant replaying the stored request bodies — **a real, brand-new `POST /api/build` per
+chunk, actual token-consuming regeneration**, confirmed by watching the network calls the mount
+effect made. This is consistent with the same report's "it took three attempts to get it to
+build, it kept timing out" — each client-side timeout leaves the key in place by design, and the
+very next reload silently re-spent the attempt rather than asking first.
+
+**Fix:** the mount effect (`src/App.jsx`) now only *detects* an interrupted build and stores it in
+new `pendingResume` state — it no longer calls `resumeChunkedBuild` / `runBuildForJob` itself. A
+new `ResumeBuildBanner` (step 1, above `SavedTripsPanel`) surfaces it explicitly: "Resume build" /
+"Discard". Only clicking "Resume build" runs the exact logic that used to run automatically
+(`handleResumeInterruptedBuild`); "Discard" just clears `ACTIVE_JOB_KEY`
+(`handleDiscardInterruptedBuild`). Opening a saved trip, or doing anything else on step 1, is no
+longer blocked or overwritten by a pending resume — confirmed live via Playwright: with the same
+stale key seeded, the saved-trips "Open" button is visible and clicking it renders the saved
+itinerary normally, with the interrupted-build banner staying available (not auto-triggered)
+alongside it.
+
+**The pattern to watch for:** a mount effect that calls `setState` to change *which screen the
+user is looking at* (here: `setStep(2)` + `setLoading(true)`) is making a decision on the user's
+behalf before they've had a chance to make their own — for a resilience feature specifically
+meant to survive the user closing the tab and coming back, that's exactly the moment an
+unconfirmed action is most likely to run into "I wanted to do something else." Detect-and-offer,
+not detect-and-act, for anything that (a) costs real money/tokens to redo and (b) changes what
+screen is on top.
+
 ## Implementation map
 
 | Concern | File |

@@ -3928,6 +3928,35 @@ function StaleChipsBanner({ suggestion, onClear, onDismiss }) {
   );
 }
 
+// Shown on step 1 when a previous build was interrupted (client timeout,
+// closed tab, etc.) and left an entry in ACTIVE_JOB_KEY. Resume is an
+// explicit click, never automatic — see the mount effect / handlers above
+// for why (2026-08-04: automatic resume could hijack the screen straight
+// into a rebuild, before the user could even reach the saved-trips panel).
+function ResumeBuildBanner({ pending, onResume, onDiscard }) {
+  if (!pending) return null;
+  const { saved, ageMinutes } = pending;
+  const destination = saved?.destination || "your trip";
+  const ageLabel = !ageMinutes ? "under a minute ago" : `${ageMinutes} min ago`;
+  return (
+    <div role="status" style={{ marginBottom: "1.25rem", border: "0.5px solid var(--color-warning)", background: "var(--color-warning-tint)", borderRadius: "var(--border-radius-md)", padding: "12px 14px" }}>
+      <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+        <span aria-hidden="true" style={{ fontSize: "14px", color: "var(--color-warning)", marginTop: "1px" }}>⚠︎</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontSize: "11px", color: "var(--color-text-primary)", letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700, margin: "0 0 4px" }}>Interrupted build</p>
+          <p style={{ fontSize: "13px", color: "var(--color-text-primary)", margin: "0 0 8px", lineHeight: 1.5 }}>
+            A build for {destination} didn't finish (started {ageLabel}). Resume it, or discard it and use the app normally.
+          </p>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button onClick={onResume} style={{ background: "var(--color-warning)", color: "var(--color-background-primary)", border: "none", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Resume build</button>
+            <button onClick={onDiscard} style={{ background: "transparent", color: "var(--color-text-primary)", border: "0.5px solid var(--color-warning)", borderRadius: "var(--border-radius-md)", padding: "7px 12px", fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Discard</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Build a clean filename from trip basics: "trip-YYYY-MM-DD-destination-Nn.pdf".
 function pdfFilename(data) {
   const dest = (data?.destination || (Array.isArray(data?.cities) && data.cities[0]?.name) || "trip").toString();
@@ -13313,6 +13342,14 @@ export default function TripOptimizer() {
   // closure that's about to be replaced.
   const [extractingFromGuidelines, setExtractingFromGuidelines] = useState(false);
   const [pendingBuildFromGuidelines, setPendingBuildFromGuidelines] = useState(false);
+  // An interrupted build (client timeout, closed tab, etc.) found in
+  // localStorage on mount. Resuming used to happen automatically and
+  // silently — which meant reopening the app, or clicking Open on a SAVED
+  // trip, could get hijacked straight into a rebuild (and for a chunked
+  // build whose job IDs had expired, an actual brand-new /api/build POST —
+  // real token-consuming regeneration) before the user could do anything
+  // else. Now it's surfaced as an explicit choice; see ResumeBuildBanner.
+  const [pendingResume, setPendingResume] = useState(null);
   // Input mode toggle: "narrative" = single text box (default), "form" = structured fields.
   // Persisted to localStorage so returning users land in their preferred mode.
   const INPUT_MODE_KEY = "rs:inputMode:v1";
@@ -16029,12 +16066,25 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingBuildFromGuidelines, basics?.destination]);
 
-  // Resume an in-flight build if the user reopens the page during one. We
-  // store the jobId + a few stats in localStorage when a build starts; if we
-  // find a fresh one here on mount, re-attach to its server-side stream. The
-  // build kept running on Cloudflare while the page was gone (waitUntil) —
-  // we just rejoin the polling loop and pick up wherever the server is now.
-  // Stale jobs (>30 min) are discarded so we don't poll into 404s forever.
+  // Detect an in-flight build the user reopens the page during, WITHOUT
+  // acting on it. We store the jobId + a few stats in localStorage when a
+  // build starts; the resume itself only runs when the user explicitly
+  // clicks "Resume build" on the ResumeBuildBanner (rendered on step 1 —
+  // see handleResumeInterruptedBuild / handleDiscardInterruptedBuild below).
+  //
+  // This used to resume automatically and silently on every mount. That
+  // meant simply reopening the app, or clicking Open on a completely
+  // unrelated SAVED trip, could get hijacked into a rebuild before the user
+  // could do anything else — and for a chunked build whose per-chunk job IDs
+  // had since expired (classifyChunkResume → "rerun"), that hijack was a
+  // REAL brand-new /api/build POST per chunk: actual token-consuming
+  // regeneration, not a passive reconnect. Confirmed live 2026-08-04 against
+  // a stale interrupted-chunked-build key: page load went straight to a
+  // "Resuming build for…" overlay and posted a fresh /api/build request,
+  // with the saved-trips panel (and its Open button) never reachable.
+  //
+  // Stale jobs (>30 min) are still discarded outright here — no point
+  // offering to resume something that's certainly expired.
   const resumedRef = useRef(false);
   useEffect(() => {
     if (resumedRef.current) return;
@@ -16044,28 +16094,34 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     if (!raw) return;
     let saved;
     try { saved = JSON.parse(raw); } catch { return; }
-    // Chunked builds persist a {chunked:true} payload with NO top-level jobId.
-    // Route those to the sequential chunk-resume path. The single-call branch
-    // below (which requires saved.jobId) stays reachable and unchanged.
     if (saved?.chunked) {
-      // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
       const chunkedAge = Date.now() - (saved.startedAt || 0);
       if (chunkedAge > 30 * 60 * 1000 || !Array.isArray(saved.chunks) || !saved.chunks.length) {
         try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
         return;
       }
-      // Defer to a microtask so the resume's synchronous setState calls (step,
-      // loading) run outside the effect body — mirrors how the single-call
-      // branch only flips state inside its async probe `.then`. resumeChunkedBuild
-      // sets step 2 + the resuming message itself.
-      Promise.resolve().then(() => resumeChunkedBuild(saved));
+      // Deferred to a microtask so the setState runs outside the effect body.
+      Promise.resolve().then(() => setPendingResume({ kind: "chunked", saved, ageMinutes: Math.max(0, Math.round(chunkedAge / 60000)) }));
       return;
     }
     if (!saved?.jobId) return;
-    // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
     const age = Date.now() - (saved.startedAt || 0);
     if (age > 30 * 60 * 1000) {
       try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+      return;
+    }
+    Promise.resolve().then(() => setPendingResume({ kind: "single", saved, ageMinutes: Math.max(0, Math.round(age / 60000)) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // User clicked "Resume build" on the ResumeBuildBanner. Runs the exact
+  // logic the mount effect used to run automatically.
+  const handleResumeInterruptedBuild = () => {
+    if (!pendingResume) return;
+    const { kind, saved } = pendingResume;
+    setPendingResume(null);
+    if (kind === "chunked") {
+      Promise.resolve().then(() => resumeChunkedBuild(saved));
       return;
     }
     // Probe the job first so we don't show a spinner for an expired/missing one.
@@ -16113,8 +16169,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         });
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  };
+
+  const handleDiscardInterruptedBuild = () => {
+    try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+    setPendingResume(null);
+  };
 
   const outputDefs = [
     ["itinerary","Day-by-day itinerary","Full sequenced schedule with timing"],
@@ -16465,6 +16525,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
         {step === 1 && (
           <div>
+            <ResumeBuildBanner pending={pendingResume} onResume={handleResumeInterruptedBuild} onDiscard={handleDiscardInterruptedBuild} />
             <SavedTripsPanel trips={savedTrips} onOpen={handleOpenSavedTrip} onDelete={handleDeleteSavedTrip} />
             <StaleChipsBanner suggestion={staleSuggestion} onClear={clearStaleChips} onDismiss={dismissStale} />
             {/* ── Input mode toggle ── */}
