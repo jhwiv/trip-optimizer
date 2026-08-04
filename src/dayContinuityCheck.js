@@ -153,13 +153,42 @@ export function buildDayLegs(plan) {
       transitions: [],
       hasTransport: false,
     };
+    // Tracks whether an EARLIER Transport/Flight item the same day had an
+    // unresolved destination — the signature of "went somewhere not on the
+    // canonical city list" (a day-trip outbound leg to a non-canonical side
+    // destination, e.g. Bletchley Park). A LATER same-day item that resolves
+    // back to this day's own base city with no resolved origin is then
+    // recognized as that outbound leg's return half, not a genuine new
+    // arrival — see isDaytripReturn below.
+    let sawUnresolvedTransportEarlierToday = false;
     items.forEach((item, itemIdx) => {
       if (!item || typeof item !== "object") return;
-      if (TRANSPORT_TYPES.test(String(item.type || ""))) leg.hasTransport = true;
+      const isTransportType = TRANSPORT_TYPES.test(String(item.type || ""));
+      if (isTransportType) leg.hasTransport = true;
       const dest = itemDestination(item, canonical);
-      if (dest && dest.to) {
+      // Real observed case (2026-08-04): "Private car London to Bletchley
+      // Park" (outbound, unresolved — Bletchley Park isn't a canonical
+      // city) followed later the same day by "Return drive Bletchley Park
+      // to London" (resolves to "London", today's own base city, origin
+      // unresolved). Recording the return half alone looked exactly like a
+      // brand-new arrival into London, which ORPHANED_TRANSITION then
+      // flagged against Day 1's real arrival, even though the traveller
+      // never left their London base — a same-day round trip, not a move.
+      //
+      // Deliberately keyed off "an earlier same-day unresolved-destination
+      // transport leg exists", NOT off "the previous day was already this
+      // city" — the latter looks identical for a genuine repeat-arrival bug
+      // this module exists to catch (Day 6 AND Day 7 both labeled
+      // "Amsterdam", but Day 7 is a real second arrival — a rental-car
+      // drop-off in Normandy and a flight FROM Caen prove the traveller
+      // wasn't continuing an Amsterdam stay at all). A single flight with
+      // no matching earlier-that-day outbound leg is not a round trip.
+      const isDaytripReturn =
+        dest?.to && !dest.from && sawUnresolvedTransportEarlierToday && norm(dest.to) === norm(leg.city);
+      if (dest && dest.to && !isDaytripReturn) {
         leg.transitions.push({ ...dest, itemIdx, label: String(item.text || "").trim() });
       }
+      if (isTransportType && (!dest || !dest.to)) sawUnresolvedTransportEarlierToday = true;
       const hotel = hotelEvent(item);
       if (hotel?.kind === "in" && !leg.hotelIn) leg.hotelIn = { ...hotel, itemIdx, time: item.time || "" };
       if (hotel?.kind === "out" && !leg.hotelOut) leg.hotelOut = { ...hotel, itemIdx, time: item.time || "" };
@@ -208,6 +237,19 @@ export function findContinuityIssues(plan) {
     if (!prevEnd || !leg.city) continue;
     if (norm(prevEnd) === norm(leg.city)) continue;
     if (leg.hasTransport) continue;
+    // A travel day that both moved (hasTransport) AND ended by checking
+    // into a new hotel (hotelIn) is strong evidence the traveller genuinely
+    // arrived somewhere new, even when route text can't be resolved to a
+    // canonical city name — dayEnd's substring matching only works when
+    // the itinerary text repeats the city/region name verbatim, which real
+    // routing text often doesn't (a multi-stop ferry-and-drive day into a
+    // region like "Normandy" is described via its actual towns — Caen,
+    // Ouistreham, Bayeux — none of which contain the substring "normandy").
+    // Real observed case (2026-08-04): a Portsmouth-to-Normandy travel day
+    // (ferry + drives + late hotel check-in at Villa Lara, Bayeux) left
+    // dayEnd stuck on an intra-Portsmouth transition (the last leg text
+    // that DID resolve), false-blocking a correct, continuous itinerary.
+    if (prev.hasTransport && prev.hotelIn) continue;
     add(
       "DAY_CITY_DISCONTINUITY",
       "block",

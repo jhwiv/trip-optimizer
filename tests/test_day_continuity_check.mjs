@@ -179,6 +179,91 @@ console.log("\n=== DAY_CITY_DISCONTINUITY — arrow-format transit day (2026-08-
     JSON.stringify(findContinuityIssues(stillTeleports)));
 }
 
+console.log("\n=== ORPHANED_TRANSITION — same-day round trip is not a re-arrival (2026-08-04 regression) ===");
+{
+  // Real observed case: a 15-day London/Paris/Normandy/Porto build. Day 4 is
+  // a Bletchley Park day trip: outbound leg to a non-canonical destination
+  // (so it registers no transition), then a return leg whose text ("Return
+  // drive Bletchley Park to London") resolves to London -- the same city
+  // the day (and the whole prior three days) is already based in. That
+  // looked exactly like a brand-new arrival into London, which
+  // ORPHANED_TRANSITION flagged against Day 1's real arrival, even though
+  // the traveller never left London at all.
+  const dayTrip = {
+    cities: [{ name: "London" }],
+    days: [
+      { day: 1, city: "London", items: [
+        { type: "Flight", text: "Fly Newark (EWR) → London Heathrow (LHR)" },
+      ] },
+      { day: 2, city: "London", items: [{ type: "Activity", text: "Imperial War Museum" }] },
+      { day: 3, city: "London", items: [
+        { type: "Transport", text: "Private car London to Bletchley Park" },
+        { type: "Activity", text: "Bletchley Park — codebreaking HQ" },
+        { type: "Transport", text: "Return drive Bletchley Park to London" },
+      ] },
+    ],
+  };
+  const issues = findContinuityIssues(dayTrip);
+  assert("a same-day round trip to a non-canonical destination is not flagged as ORPHANED_TRANSITION",
+    !issues.some(i => i.code === "ORPHANED_TRANSITION"), JSON.stringify(issues));
+
+  const legs = buildDayLegs(dayTrip);
+  assert("the round trip's return leg is not recorded as a transition at all",
+    legs[2].transitions.length === 0, JSON.stringify(legs[2].transitions));
+
+  // The Day 6/7 Amsterdam-collision fixture below (a REAL second arrival,
+  // not a round trip) must still be caught -- the distinguishing signal is
+  // "an earlier unresolved-destination transport leg the SAME day", not
+  // "the previous day was already this city", which looks identical for a
+  // genuine repeat-arrival bug and must not be used to suppress it.
+  const issuesCollision = findContinuityIssues(collision);
+  assert("a genuine second arrival (no matching same-day outbound leg) is still flagged",
+    issuesCollision.some(i => i.code === "ORPHANED_TRANSITION"), JSON.stringify(issuesCollision));
+}
+
+console.log("\n=== DAY_CITY_DISCONTINUITY — travel day with unresolvable region-vs-town names (2026-08-04 regression) ===");
+{
+  // Real observed case: a Portsmouth-to-Normandy travel day (overnight
+  // ferry + drives + a late hotel check-in) where every place name in the
+  // route text is a real town within the region (Caen, Ouistreham, Bayeux)
+  // -- none of which contain "normandy" as a substring, so dayEnd's
+  // text-matching can never resolve the day's true ending city. The day DID
+  // have real transport AND ended by checking into a new hotel -- strong
+  // evidence of genuine travel even though the destination text can't be
+  // resolved to the region's canonical name.
+  const regionTravelDay = {
+    cities: [{ name: "Portsmouth" }, { name: "Normandy" }],
+    days: [
+      { day: 1, city: "Portsmouth", items: [
+        { type: "Transport", text: "Ferry Portsmouth to Caen (Ouistreham) — overnight" },
+        { type: "Transport", text: "Arrive Ouistreham; drive to Bayeux — 30 min" },
+        { type: "Hotel", text: "Late check-in Villa Lara Hotel & Spa", hotel: { name: "Villa Lara Hotel & Spa" } },
+      ] },
+      { day: 2, city: "Normandy", items: [{ type: "Activity", text: "Bayeux Tapestry Museum" }] },
+    ],
+  };
+  const issues = findContinuityIssues(regionTravelDay);
+  assert("no DAY_CITY_DISCONTINUITY when the previous day had real transport AND a hotel check-in",
+    !issues.some(i => i.code === "DAY_CITY_DISCONTINUITY"), JSON.stringify(issues));
+
+  const noHotelCheckin = structuredClone(regionTravelDay);
+  noHotelCheckin.days[0].items.pop(); // drop the hotel check-in
+  assert("WITHOUT a hotel check-in, the same unresolvable travel day is still flagged (exemption isn't a blanket pass)",
+    findContinuityIssues(noHotelCheckin).some(i => i.code === "DAY_CITY_DISCONTINUITY"),
+    JSON.stringify(findContinuityIssues(noHotelCheckin)));
+
+  const noTransport = {
+    cities: [{ name: "Portsmouth" }, { name: "Normandy" }],
+    days: [
+      { day: 1, city: "Portsmouth", items: [{ type: "Activity", text: "Portsmouth Historic Dockyard" }] },
+      { day: 2, city: "Normandy", items: [{ type: "Activity", text: "Bayeux Tapestry Museum" }] },
+    ],
+  };
+  assert("a genuine discontinuity with NO transport at all on the previous day is still flagged",
+    findContinuityIssues(noTransport).some(i => i.code === "DAY_CITY_DISCONTINUITY"),
+    JSON.stringify(findContinuityIssues(noTransport)));
+}
+
 console.log("\n=== DUPLICATE_CHECKIN window ===");
 {
   const base = (gap) => ({

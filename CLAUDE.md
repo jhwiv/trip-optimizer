@@ -244,6 +244,62 @@ every line added to that function, not just the ones already caught. Any future 
 `applyQualityLayer` that reads a bare `inputs.<field>` (not `inputs.basics.<field>`) should be
 treated as suspect by default and checked against which parameter is actually meant.
 
+### KNOWN FAILURE MODE #6 — two more `dayContinuityCheck.js` false positives on a rebuild of the SAME trip the Nuremberg fix (KNOWN FAILURE MODE #3) was written for.
+
+**2026-08-04, found from a user screenshot showing the PDF-error-visibility fix (shipped earlier
+the same day) working exactly as designed** — instead of the old generic "Could not save PDF,"
+the screen now showed the real gate reason: "Cannot export: 2 blocking issues — Day 4: London
+(ORPHANED_TRANSITION); Day 6: Normandy (DAY_CITY_DISCONTINUITY)" — on a *different* rebuild of the
+London-area/Normandy/Porto trip (this one: London → Paris → Normandy → Porto, with a deliberate
+return to Normandy after Paris). Two new, unrelated false positives in the same file, found by
+extracting the real plan JSON (same technique as KNOWN FAILURE MODE #3: the user's own "Export as
+web app" download) and tracing `buildDayLegs`/`findContinuityIssues` directly.
+
+1. **ORPHANED_TRANSITION on a same-day round trip.** Day 4 was a Bletchley Park day trip from an
+   ongoing London stay: an outbound `Transport` item ("Private car London to Bletchley Park") whose
+   destination never resolves (Bletchley Park isn't a canonical city), followed by a return leg
+   ("Return drive Bletchley Park to London") whose destination resolves to "London" — the SAME city
+   the day (and the three days before it) was already based in. Recording that return leg as a
+   transition looked exactly like a brand-new arrival into London, which `ORPHANED_TRANSITION`
+   flagged against Day 1's real arrival — even though the traveller never left London at all.
+
+2. **DAY_CITY_DISCONTINUITY on a region-vs-town name mismatch.** Day 5 was a Portsmouth-to-Normandy
+   travel day: overnight ferry (Portsmouth → Caen/Ouistreham), a drive to Bayeux, and a late hotel
+   check-in — real, substantial travel. But every place name in the route text (Caen, Ouistreham,
+   Bayeux) is a real town *within* the Normandy region, and none of them contain the substring
+   "normandy" — so `dayEnd`'s text-matching could never resolve the day's true ending city, and fell
+   back to an intra-Portsmouth transition, false-blocking the correctly continuous Day 6.
+
+**Fix (in `src/dayContinuityCheck.js`):**
+- `buildDayLegs` now tracks, per day, whether an EARLIER `Transport`/`Flight` item that same day had
+  an unresolved destination. A LATER item that resolves back to the day's own city with no resolved
+  origin is recognized as that earlier leg's return half and is not recorded as a transition at all.
+  Deliberately keyed off "an earlier same-day unresolved leg exists," not "the previous day was
+  already this city" — the latter is indistinguishable from a genuine repeat-arrival bug (the
+  original Day 6/7 Amsterdam-collision fixture this module was built to catch has BOTH days labeled
+  "Amsterdam," and is a real bug) and regressed that detection when tried first.
+- `DAY_CITY_DISCONTINUITY` now also exempts the case where the previous day had both real transport
+  (`hasTransport`) AND ended by checking into a new hotel (`hotelIn`) — strong evidence of a genuine
+  travel day even when route text can't be resolved to a canonical city name. A day with the same
+  city mismatch but NO transport at all is still flagged; this is not a blanket pass.
+
+Confirmed live: a real browser `download` event for the PDF (`trip-2026-08-04-london-paris-normandy-porto.pdf`)
+with no blocking-issue banner, for the exact plan JSON from the user's screenshot. Existing
+regression suite: 0 broken (the Amsterdam-collision fixture still fires ORPHANED_TRANSITION
+correctly). 6 new regression tests added in `tests/test_day_continuity_check.mjs`, including
+explicit negative controls proving both exemptions still catch the real bug they must not silence.
+
+**The pattern to watch for:** a substring/text-matching heuristic that infers structural facts
+("did the traveller move cities") from freeform itinerary prose will keep finding new ways to be
+wrong, because real-world place names don't reliably contain the administrative region name they
+belong to, and real bugs can look textually identical to legitimate itinerary shapes (same city
+label two days running is both "still on a day trip" and "duplicate booking bug," depending on
+what's IN the items, not what the day is LABELED). Every fix in this file so far has needed a
+signal more specific than the day's own `city` field — the arrow-exclusion, the comma-strip
+fallback, the same-day-earlier-leg check, and the hotel-check-in exemption are each a different
+answer to "what's actually reliable here," not a single general rule. Expect this file to need
+another one of these eventually, and reach for the real plan JSON before guessing at the next fix.
+
 ## Implementation map
 
 | Concern | File |
