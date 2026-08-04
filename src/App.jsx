@@ -3789,8 +3789,16 @@ function loadSavedTrips() {
     return Array.isArray(arr) ? arr : [];
   } catch { return []; }
 }
+// Returns true if the write actually succeeded, false otherwise (quota
+// exceeded, storage disabled, etc.) — callers that show a "Saved"
+// confirmation to the user must check this rather than assuming success.
 function writeSavedTrips(arr) {
-  try { localStorage.setItem(SAVED_TRIPS_KEY, JSON.stringify(arr.slice(0, MAX_SAVED))); } catch {}
+  try {
+    localStorage.setItem(SAVED_TRIPS_KEY, JSON.stringify(arr.slice(0, MAX_SAVED)));
+    return true;
+  } catch {
+    return false;
+  }
 }
 function makeTripId() {
   return "trip_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
@@ -3804,25 +3812,31 @@ function defaultTripName(inputs, result) {
 
 // SaveTripButton — prompts for a name, persists trip, calls onSaved with the saved entry.
 function SaveTripButton({ inputs, result, onSaved }) {
-  const [justSaved, setJustSaved] = useState(false);
+  // "idle" | "saved" | "error" — writeSavedTrips can fail (quota exceeded,
+  // storage disabled/private mode) and previously this button showed
+  // "Saved" unconditionally regardless of whether the write actually
+  // succeeded, silently discarding the trip with no indication to the user.
+  const [status, setStatus] = useState("idle");
   const handleClick = () => {
     const fallback = defaultTripName(inputs, result);
     const name = (typeof window !== "undefined" && window.prompt) ? (window.prompt("Name this trip", fallback) || fallback) : fallback;
     const entry = { id: makeTripId(), name: name.trim() || fallback, savedAt: new Date().toISOString(), inputs, result };
     const existing = loadSavedTrips();
-    writeSavedTrips([entry, ...existing]);
-    setJustSaved(true);
-    setTimeout(() => setJustSaved(false), 2200);
-    if (typeof onSaved === "function") onSaved(entry);
+    const ok = writeSavedTrips([entry, ...existing]);
+    setStatus(ok ? "saved" : "error");
+    setTimeout(() => setStatus("idle"), 2200);
+    if (ok && typeof onSaved === "function") onSaved(entry);
   };
+  const failed = status === "error";
+  const justSaved = status === "saved";
   return (
     <button
       onClick={handleClick}
       className="no-print"
       style={{
-        background: justSaved ? ACCENT : "var(--color-background-primary)",
-        color: justSaved ? "var(--color-text-primary)" : "var(--color-text-primary)",
-        border: `0.5px solid ${justSaved ? ACCENT : "var(--color-border-secondary)"}`,
+        background: failed ? "var(--color-danger-tint)" : justSaved ? ACCENT : "var(--color-background-primary)",
+        color: failed ? "var(--color-text-danger)" : "var(--color-text-primary)",
+        border: `0.5px solid ${failed ? "var(--color-text-danger)" : justSaved ? ACCENT : "var(--color-border-secondary)"}`,
         borderRadius: "var(--border-radius-md)",
         padding: "10px 16px",
         fontSize: "11px",
@@ -3836,9 +3850,10 @@ function SaveTripButton({ inputs, result, onSaved }) {
         gap: "8px",
         transition: "background 200ms ease",
       }}
-      aria-label="Save this trip"
+      aria-label={failed ? "Save failed — your browser's storage may be full or unavailable" : "Save this trip"}
+      title={failed ? "Save failed — your browser's storage may be full or unavailable" : undefined}
     >
-      <span aria-hidden="true">{justSaved ? "✓" : "☆"}</span> {justSaved ? "Saved" : "Save trip"}
+      <span aria-hidden="true">{failed ? "⚠︎" : justSaved ? "✓" : "☆"}</span> {failed ? "Save failed" : justSaved ? "Saved" : "Save trip"}
     </button>
   );
 }
