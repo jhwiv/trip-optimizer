@@ -615,5 +615,79 @@ console.log("\n5. Stray booking-reference check\n");
     !warnings.some(w => /"Reds"/.test(w)), JSON.stringify(warnings));
 }
 
+// -----------------------------------------------------------------------------
+// KNOWN_NONSTOPS carrier-correction — flight_number clearing (2026-08-07
+// regression, src/App.jsx applyQualityLayer §2c). Mirrors the minimal shape
+// of that step: given a route in KNOWN_NONSTOPS and a carrier that doesn't
+// fly it nonstop, rewrite the carrier AND clear any carrier-specific flight
+// number the model wrote for the old (wrong) carrier. Real observed case:
+// "LO 15" (a LOT flight number) survived the earlier universal strip
+// untouched (it had passed that step's own, unrelated verification), then
+// this step correctly rewrote the carrier to United/BA/Virgin Atlantic (LOT
+// doesn't fly EWR-LHR nonstop) but left "LO 15" attached — a LOT-numbered
+// flight labeled "Book directly with United."
+// -----------------------------------------------------------------------------
+const KNOWN_NONSTOPS_MIRROR = {
+  "EWR-LHR": ["United", "British Airways", "Virgin Atlantic"],
+};
+function routeKeyMirror(a, b) {
+  if (!a || !b) return null;
+  const x = String(a).toUpperCase().trim();
+  const y = String(b).toUpperCase().trim();
+  if (x === y) return null;
+  return [x, y].sort().join("-");
+}
+function carrierMatchesKnownMirror(carrier, knownList) {
+  if (!carrier || !Array.isArray(knownList)) return false;
+  const c = carrier.toLowerCase();
+  return knownList.some(k => c.includes(k.toLowerCase()) || k.toLowerCase().includes(c));
+}
+function correctKnownNonstopCarrier(f) {
+  if (f.nonstop === false) return f;
+  const key = routeKeyMirror(f.from_airport, f.to_airport);
+  const known = key && KNOWN_NONSTOPS_MIRROR[key];
+  if (!known || carrierMatchesKnownMirror(f.carrier, known)) return f;
+  const allCorrect = known.slice(0, 3);
+  f._originalCarrier = f.carrier;
+  f.carrier = allCorrect.length > 1 ? allCorrect.join(" or ") : allCorrect[0];
+  f._carrierOverride = true;
+  if (f.flight_number) {
+    f._originalFlightNumber = f.flight_number;
+    f.flight_number = null;
+  }
+  delete f._scheduleVerified;
+  f._flightUnverified = true;
+  return f;
+}
+{
+  const flight = {
+    from_airport: "EWR", to_airport: "LHR", nonstop: true,
+    carrier: "LOT", flight_number: "LO 15", _scheduleVerified: true,
+  };
+  const corrected = correctKnownNonstopCarrier(flight);
+  assert("carrier is rewritten to the known nonstop operators",
+    corrected.carrier === "United or British Airways or Virgin Atlantic", corrected.carrier);
+  assert("the LOT-specific flight number is cleared, not left attached to the new carrier",
+    corrected.flight_number === null, String(corrected.flight_number));
+  assert("the original flight number is preserved for audit",
+    corrected._originalFlightNumber === "LO 15", String(corrected._originalFlightNumber));
+  assert("_scheduleVerified is removed — the old number's verification no longer applies",
+    corrected._scheduleVerified === undefined);
+  assert("_flightUnverified is set so downstream UI doesn't present a verified-looking number",
+    corrected._flightUnverified === true);
+}
+{
+  // A carrier that DOES fly the route nonstop must be left completely alone,
+  // flight number included — this step only touches genuine mismatches.
+  const flight = {
+    from_airport: "EWR", to_airport: "LHR", nonstop: true,
+    carrier: "United", flight_number: "UA 12", _scheduleVerified: true,
+  };
+  const result = correctKnownNonstopCarrier(flight);
+  assert("a correct carrier is not rewritten", result.carrier === "United");
+  assert("a correct carrier's flight number is untouched", result.flight_number === "UA 12");
+  assert("a correct carrier's _scheduleVerified is untouched", result._scheduleVerified === true);
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

@@ -350,6 +350,59 @@ its own — CLAUDE.md's `dayContinuityCheck.js` section documents multiple indep
 same field being unreliable for different purposes; night math needed its own, night-specific
 signal (hotel check-in/check-out) rather than reusing the city label a fourth time.
 
+### KNOWN FAILURE MODE #8 — `applyQualityLayer`'s KNOWN_NONSTOPS carrier-correction rewrote the carrier but left the OLD carrier's flight number attached.
+
+**2026-08-07, found from the same independent review that reported KNOWN FAILURE MODE #7**, in the
+same rebuilt London→Paris→Normandy→Porto trip: "LO 15 (a LOT flight number) is labeled 'Book
+directly with United' — same bug pattern as the Bayeux/Nuremberg itinerary... the Trip Reference
+section describes this same flight as '10h 30m EWR→LHR via WAW,' while the flight card itself says
+'nonstop, 7h 15m.'" The reviewer correctly identified this as a recurrence, not a new bug shape.
+
+**Root cause:** `applyQualityLayer` §2c (`src/App.jsx`) is a "bonus layer" that runs after the
+universal flight-number strip (§2b, `src/flightNumberStrip.js`) and cross-checks each Flight
+item's claimed carrier against a curated `KNOWN_NONSTOPS` table of real nonstop operators for
+routes the app has data for (`KNOWN_NONSTOPS["EWR-LHR"] = ["United", "British Airways", "Virgin
+Atlantic"]`). When the model claims a carrier that doesn't actually fly the route nonstop — here,
+LOT on EWR-LHR — §2c correctly rewrites `flight.carrier` to the real operators and appends a
+"Carrier corrected" flag. §2c's own top comment claimed `flight_number` was "already null" by the
+time it runs, on the assumption that §2b's strip always clears it first. That assumption is false:
+§2b only strips a flight number when ITS OWN, unrelated verification fails (e.g. no live-schedule
+confirmation) — a number that happens to pass §2b's check (as "LO 15" did) survives untouched into
+§2c, which never re-checks it against the carrier IT just rewrote. Result: a LOT-numbered flight
+number ("LO 15") stayed attached to a plan that now says "Book directly with United" — a flight
+number is carrier-specific (the prefix IS the carrier code), so this is not just cosmetically
+wrong, it's a fabricated, unbookable identifier.
+
+**Fix (`src/App.jsx`, `applyQualityLayer` §2c):** when §2c rewrites the carrier, it now also clears
+`flight.flight_number` (preserving the original in `_originalFlightNumber` for audit), deletes any
+`_scheduleVerified` flag left over from the old carrier's number, and sets `_flightUnverified =
+true` — mirroring the exact repair pattern `src/carrierCodeCheck.js`'s `findCarrierCodeMismatches`
+already uses for its own, separate carrier/number-conflict check (Case B: `fl.flight_number = null;
+delete fl._scheduleVerified; fl._flightUnverified = true;`). Confirmed live via Playwright against
+the real dev server: a mocked EWR→LHR "nonstop" flight with `carrier: "LOT"`, `flight_number: "LO
+15"` renders with no "LO 15" anywhere on the page, "Book directly with United" as the confirmation
+note, and the "Carrier corrected: LOT does not operate a nonstop EWR→LHR..." flag visible — none of
+which was true before the fix. 7 new regression assertions in `tests/test_itinerary_quality_fixes.mjs`
+(mirroring the closure per that file's established convention, since `applyQualityLayer` can't be
+imported directly).
+
+**Still open, NOT part of this fix:** the reviewer's second observation — the Trip Reference /
+AT-A-GLANCE section describing this same flight as "10h 30m EWR→LHR via WAW" (stale prose from
+before the carrier correction) while the corrected flight card says "nonstop, 7h 15m" — is a
+DIFFERENT bug. §2c's fix only touches the structured `item.flight` object; free-text summary
+fields elsewhere in the plan (AT-A-GLANCE, MUST-flags) are model-generated prose that isn't
+automatically kept in sync with a post-generation structured correction. This needs its own
+investigation into where those free-text fields are generated and how (or whether) to reconcile
+them against `_carrierOverride`-flagged flights — not yet started.
+
+**The pattern to watch for:** a correction step's own inline comment asserting an invariant ("X is
+already null by the time this runs") is not proof the invariant holds for every code path that
+reaches this step — verify against the OTHER step's actual exit conditions, not its intended
+purpose. This is the fourth time in this file a plausible-sounding assumption about upstream state
+silently broke a safeguard (see KNOWN FAILURE MODE #2 and #5's `input`/`inputs` mixups, and #7's
+single-format regex) — each was found by tracing a real user-reported symptom back through actual
+code rather than trusting a comment.
+
 ## Implementation map
 
 | Concern | File |

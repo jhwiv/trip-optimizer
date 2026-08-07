@@ -3065,12 +3065,31 @@ function applyQualityLayer(input, inputs) {
         f._originalConfirmationNote = f.confirmation_note;
         f.carrier = allCorrect.length > 1 ? allCorrect.join(" or ") : allCorrect[0];
         f._carrierOverride = true;
+        // A flight number is carrier-specific (the prefix IS the carrier
+        // code) — once the carrier is rewritten, any number the model wrote
+        // belongs to the OLD (wrong) carrier and is no longer meaningful for
+        // the new one. This step's own comment above assumed flight_number
+        // was already null by the time it runs (step 2b strips unverified
+        // numbers first) — that assumption doesn't hold for a number that
+        // passed 2b's OWN, unrelated verification (e.g. _scheduleVerified),
+        // which has nothing to do with whether the CARRIER actually flies
+        // this route nonstop. Real observed case (2026-08-07): "LO 15" (a
+        // LOT flight number) survived 2b untouched, then 2c correctly
+        // rewrote the carrier to United/BA/Virgin Atlantic (LOT doesn't fly
+        // EWR-LHR nonstop) but left "LO 15" attached to it — a LOT-numbered
+        // flight now labeled "Book directly with United."
+        if (f.flight_number) {
+          f._originalFlightNumber = f.flight_number;
+          f.flight_number = null;
+        }
+        delete f._scheduleVerified;
+        f._flightUnverified = true;
         const VERIFY_SENT = "Verify flight number, times and equipment at booking — schedules change.";
         f.confirmation_note = `Book directly with ${allCorrect[0]}. ${VERIFY_SENT}`;
         item.flags = Array.isArray(item.flags) ? item.flags.slice() : [];
         const operators = allCorrect.length > 1 ? `${allCorrect.join(" / ")} are the` : `${allCorrect[0]} is the`;
         item.flags.push(`Carrier corrected: ${claimedCarrier} does not operate a nonstop ${f.from_airport}→${f.to_airport}. ${operators} actual nonstop operator${allCorrect.length > 1 ? "s" : ""}.`);
-        fixes.push(`Day ${dayIdx + 1} flight: corrected carrier (${claimedCarrier} → ${f.carrier}) for ${f.from_airport}→${f.to_airport}`);
+        fixes.push(`Day ${dayIdx + 1} flight: corrected carrier (${claimedCarrier} → ${f.carrier}) for ${f.from_airport}→${f.to_airport}, removed the now-invalid flight number`);
       });
     });
   }
