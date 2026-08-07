@@ -751,5 +751,86 @@ function stripStaleCarrierProse(arr, correctedFlights) {
   assert("with no corrected flights, nothing is stripped", stripped.length === 1);
 }
 
+// -----------------------------------------------------------------------------
+// Hotel loyalty-affiliation fabrication check (2026-08-07 regression, §2e).
+// Major hotel loyalty programs have no cross-company points-reciprocity
+// agreements with each other, so a claim naming two DIFFERENT chains
+// together with "affiliate"/"partner"/"reciprocal" is a chain-agnostic tell
+// for fabrication. Mirrors src/App.jsx applyQualityLayer §2e.
+// -----------------------------------------------------------------------------
+const LOYALTY_CHAIN_PATTERNS_MIRROR = {
+  marriott: /\bmarriott\b|\bbonvoy\b/i,
+  hilton: /\bhilton\b/i,
+  hyatt: /\bhyatt\b/i,
+  ihg: /\bihg\b|\bintercontinental\b/i,
+  accor: /\baccor\b|\ball\s*-\s*accor live limitless/i,
+  wyndham: /\bwyndham\b/i,
+  choice: /\bchoice hotels\b|\bchoice privileges\b/i,
+  bestwestern: /\bbest western\b/i,
+};
+const LOYALTY_RECIPROCITY_RE_MIRROR = /\b(affiliate[d]?|partner(?:ship)?|reciprocal)\b/i;
+function checkHotelLoyaltyClaim(item) {
+  if (item.type !== "Hotel" || !item.hotel) return null;
+  const h = item.hotel;
+  const haystack = `${item.text || ""} ${h.confirmation_note || ""}`;
+  if (!LOYALTY_RECIPROCITY_RE_MIRROR.test(haystack)) return null;
+  const chains = Object.keys(LOYALTY_CHAIN_PATTERNS_MIRROR).filter(key => LOYALTY_CHAIN_PATTERNS_MIRROR[key].test(haystack));
+  return chains.length >= 2 ? chains : null;
+}
+{
+  // Real observed case: Novotel Bayeux claimed as a "Marriott Bonvoy
+  // affiliate via Accor partnership."
+  const item = {
+    type: "Hotel",
+    text: "Check in to Novotel Bayeux (Marriott Bonvoy affiliate via Accor partnership)",
+    hotel: { name: "Novotel Bayeux", confirmation_note: "Novotel (Accor) is a Marriott Bonvoy partner via the ALL - Accor Live Limitless reciprocal program." },
+  };
+  const chains = checkHotelLoyaltyClaim(item);
+  assert("Novotel Bayeux's cross-chain Marriott/Accor claim is caught",
+    chains && chains.includes("marriott") && chains.includes("accor"), JSON.stringify(chains));
+}
+{
+  // A single-chain claim — even a wrong one — is NOT a cross-chain
+  // reciprocity claim, so this check correctly does not fire on it. This is
+  // the documented ceiling: an independent hotel (The Yeatman, Villa Lara)
+  // falsely claimed as a Marriott sub-brand, with no SECOND chain named,
+  // can't be distinguished from a real soft-branded affiliation by this
+  // chain-agnostic structural check alone.
+  const item = {
+    type: "Hotel",
+    text: "Check in — The Yeatman Hotel (Relais & Chateaux, Marriott Tribute)",
+    hotel: { name: "The Yeatman Hotel", confirmation_note: "Bonvoy Tribute Portfolio property." },
+  };
+  assert("a single-chain claim (no second chain named) is not flagged — documented ceiling",
+    checkHotelLoyaltyClaim(item) === null);
+}
+{
+  // A legitimate same-chain mention must not false-positive — e.g. a
+  // Ritz-Carlton hotel correctly noting Marriott Bonvoy elite benefits.
+  const item = {
+    type: "Hotel",
+    text: "Check in to The Ritz-Carlton, London",
+    hotel: { name: "The Ritz-Carlton, London", confirmation_note: "Marriott Bonvoy elite members receive complimentary breakfast and a suite upgrade when available." },
+  };
+  assert("a same-chain Marriott/Ritz-Carlton/Bonvoy mention is not flagged",
+    checkHotelLoyaltyClaim(item) === null);
+}
+{
+  // No reciprocity language at all, even with two chains named in passing
+  // (e.g. comparing two different hotels across a trip) — must not fire.
+  const item = {
+    type: "Hotel",
+    text: "Check in to the Hilton",
+    hotel: { name: "Hilton Paris", confirmation_note: "Closer to the Louvre than the Hyatt we considered for Day 2." },
+  };
+  assert("two chains named with no affiliate/partner/reciprocal language does not fire",
+    checkHotelLoyaltyClaim(item) === null);
+}
+{
+  // Non-Hotel items are ignored entirely.
+  const item = { type: "Activity", text: "Marriott Bonvoy is an Accor partner via a reciprocal program." };
+  assert("a non-Hotel item type is never checked", checkHotelLoyaltyClaim(item) === null);
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

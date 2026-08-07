@@ -415,6 +415,68 @@ silently broke a safeguard (see KNOWN FAILURE MODE #2 and #5's `input`/`inputs` 
 single-format regex) — each was found by tracing a real user-reported symptom back through actual
 code rather than trusting a comment.
 
+### KNOWN FAILURE MODE #9 — a new hotel-loyalty fabrication check pushed `item.flags`, but `HotelCard` never accepted or rendered a `flags` prop at all.
+
+**2026-08-07, found from the same independent review's third finding**, on the same rebuilt
+London→Paris→Normandy→Porto trip: "Novotel Bayeux — labeled 'Marriott Bonvoy affiliate via Accor
+partnership' with a note about 'ALL - Accor Live Limitless reciprocal program.' Accor and Marriott
+are competing hotel groups; there's no such points-reciprocity program that I'm aware of. This
+looks fabricated." (The same review also flagged The Yeatman and Villa Lara as falsely claimed
+Marriott Tribute Portfolio properties — see the fix's own documented ceiling below.)
+
+**Root cause of the detection gap:** no code anywhere checked a hotel's loyalty-program prose
+against reality — `applyQualityLayer` had a carrier check for flights (KNOWN_NONSTOPS) and a
+closure check for restaurants (CLOSED_RESTAURANTS) but nothing analogous for hotels.
+
+**Root cause of a SECOND bug found while fixing the first, live:** the new check (§2e) correctly
+detects a cross-chain reciprocity claim and pushes a message onto `item.flags` — the exact
+mechanism §2c's carrier-correction flag already uses successfully on `FlightCard`. But
+`HotelCard` (`src/App.jsx`) never declared a `flags` prop, never rendered one, and none of its
+three call sites ever passed `item.flags` through — so the new flag was computed correctly and
+then silently vanished before reaching the screen. Live Playwright verification (not just the
+unit-test mirror, which passed and would have shipped this exact gap unnoticed) caught it
+immediately: "Novotel Bayeux hotel card rendered: true" / "'Likely-fabricated loyalty claim' flag
+visible: false — FAIL." This is precisely the category CLAUDE.md's Verification Discipline section
+exists to catch — a test that imports and calls a function is not evidence the UI displays its
+result, and this session would have shipped a real detection with zero visible effect without the
+live check.
+
+**Fix (`src/App.jsx`):** two independent, both-required changes.
+1. `applyQualityLayer` §2e: for every Hotel item, if `item.text` + `hotel.confirmation_note`
+   together name a reciprocity/affiliate/partner relationship AND mention 2+ distinct major hotel
+   chains (`marriott`/`bonvoy`, `hilton`, `hyatt`, `ihg`/`intercontinental`, `accor`, `wyndham`,
+   `choice`, `best western`) — chain-agnostic by design, since no two of these programs have any
+   real cross-company reciprocity agreement, regardless of which two are named — push a
+   `"Likely-fabricated loyalty claim..."` flag onto `item.flags`. WARN-only, never mutates or
+   blocks the hotel (an itinerary with no bed, or a surgically-edited confirmation_note, hides the
+   problem worse than a visible flag does).
+2. `HotelCard` gained a `flags` prop (mirroring `FlightCard`'s existing flags-rendering block
+   verbatim) and all three call sites (`ItineraryDayCard`, the single-day view, and the
+   swap/compare view) now pass `flags={item.flags}` / `flags={entry.item.flags}` through.
+
+Confirmed live via Playwright, both directions: the Novotel Bayeux scenario (verbatim text from
+the PDF) now shows the fabrication flag on the hotel card; a control scenario (a real
+Ritz-Carlton hotel correctly noting Marriott Bonvoy elite benefits — same-chain, not cross-chain)
+shows no flag, confirming the check doesn't false-positive on legitimate single-chain loyalty
+mentions. 5 new regression assertions in `tests/test_itinerary_quality_fixes.mjs`.
+
+**Explicitly NOT caught by this check, and not attempted in this pass:** a DIRECT (non-reciprocal)
+false claim that an independently-named boutique hotel IS a specific chain's own sub-brand — the
+same review's "The Yeatman" and "Villa Lara," both mislabeled "Marriott Tribute Portfolio" with no
+SECOND chain named alongside it, so there's no cross-chain pairing for the chain-agnostic check to
+catch. An independent hotel's name carries no brand keyword to check against; reliably catching
+this shape would need either a curated per-hotel denylist (the same fragility class CLAUDE.md's
+`CLOSED_RESTAURANTS` section already documents as a real tradeoff) or some other signal not yet
+identified. Documented as a known ceiling rather than guessed at.
+
+**The pattern to watch for:** a UI element gaining a new prop in ONE render path and not the
+others — or, as here, never being wired to accept the prop at all — is invisible to a unit test
+that only exercises the pure logic function, and only visible to a live render. This is now the
+second time this session a fix that mirrored an existing, working pattern (`carrierCodeCheck.js`'s
+repair shape for KNOWN FAILURE MODE #8; here, `FlightCard`'s flags rendering) still needed its own
+independent live verification rather than being trusted by analogy — the existing pattern working
+elsewhere is not proof the new call site is actually wired up to use it.
+
 ## Implementation map
 
 | Concern | File |

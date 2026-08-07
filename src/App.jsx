@@ -1525,7 +1525,7 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
   );
 }
 
-function HotelCard({ type, time, end_time, hotel: h, text }) {
+function HotelCard({ type, time, end_time, hotel: h, text, flags }) {
   // #21 URL verification (same context restaurants/activities use) so the hotel
   // website link swaps to a Google search fallback if the model's URL is dead.
   const { status: urlStatus, destination } = useURLVerify();
@@ -1574,6 +1574,13 @@ function HotelCard({ type, time, end_time, hotel: h, text }) {
           {showWebsite && (
             <a href={websiteHref} target="_blank" rel="noopener noreferrer" title={websiteDead ? "Original site link could not be verified — search for the official site" : undefined} style={{ fontSize: "11px", padding: "6px 11px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-block" }}>{websiteDead ? "Find site ↗" : "Website ↗"}</a>
           )}
+        </div>
+      )}
+      {Array.isArray(flags) && flags.length > 0 && (
+        <div style={{ marginTop: "8px", paddingTop: "6px", borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
+          {flags.map((fl, i) => (
+            <p key={i} style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "2px 0", lineHeight: 1.4 }}>· {fl}</p>
+          ))}
         </div>
       )}
     </div>
@@ -1632,7 +1639,7 @@ function DayBlock({ day, dayIndex, onOpenMenu, legCity, onSwapItem }) {
         }
         // Structured hotel → rich card.
         if (item.type === "Hotel" && item.hotel) {
-          return <HotelCard key={i} type={item.type} time={item.time} end_time={item.end_time} hotel={item.hotel} text={item.text} />;
+          return <HotelCard key={i} type={item.type} time={item.time} end_time={item.end_time} hotel={item.hotel} text={item.text} flags={item.flags} />;
         }
         // Activity items: rich card whenever there's contact info or a why blurb.
         if (item.type === "Activity" && (item.contact || item.why)) {
@@ -3157,6 +3164,61 @@ function applyQualityLayer(input, inputs) {
         });
       });
     }
+  }
+
+  // 2e. HOTEL LOYALTY-AFFILIATION FABRICATION CHECK. Major hotel loyalty
+  // programs (Marriott Bonvoy, Hilton Honors, World of Hyatt, IHG One
+  // Rewards, Accor Live Limitless, etc.) are fiercely competitive, mutually
+  // exclusive ecosystems — none of them has a cross-company points-transfer
+  // or "affiliate"/reciprocal-recognition agreement with any other. A claim
+  // of the shape "[Chain A] is a [Chain B] affiliate/partner via a
+  // reciprocal program" naming two DIFFERENT chains is therefore fabricated
+  // regardless of which two chains are named — this is a chain-agnostic
+  // structural tell, not a curated per-hotel denylist. Real observed case
+  // (2026-08-07, independent PDF review of a Normandy hotel): "Check in to
+  // Novotel Bayeux (Marriott Bonvoy affiliate via Accor partnership)" plus a
+  // confirmation_note claiming an "ALL - Accor Live Limitless reciprocal
+  // program" with Bonvoy — Accor and Marriott are competitors; no such
+  // program exists. Intentionally WARN-only and non-mutating: hotels are
+  // never blocked or edited here (an itinerary with no bed, or a
+  // surgically-edited confirmation_note, hides the problem worse than a
+  // visible flag does — see the Hotels section of CLAUDE.md's flag
+  // taxonomy). NOT caught by this check, and not attempted here: a DIRECT
+  // (non-reciprocal) false claim that an independently-named boutique hotel
+  // IS a specific chain's sub-brand (the same review's "The Yeatman" /
+  // "Villa Lara" both mislabeled "Marriott Tribute Portfolio" with no
+  // second chain named) — an independent hotel's name carries no brand
+  // signal to check against, so distinguishing that case from a genuine
+  // soft-branded/Design Hotels-style affiliation would need a curated
+  // per-hotel denylist, the same fragility class CLAUDE.md's
+  // CLOSED_RESTAURANTS section already flags as a known tradeoff — left as
+  // a documented gap rather than guessed at.
+  const LOYALTY_CHAIN_PATTERNS = {
+    marriott: /\bmarriott\b|\bbonvoy\b/i,
+    hilton: /\bhilton\b/i,
+    hyatt: /\bhyatt\b/i,
+    ihg: /\bihg\b|\bintercontinental\b/i,
+    accor: /\baccor\b|\ball\s*-\s*accor live limitless/i,
+    wyndham: /\bwyndham\b/i,
+    choice: /\bchoice hotels\b|\bchoice privileges\b/i,
+    bestwestern: /\bbest western\b/i,
+  };
+  const LOYALTY_RECIPROCITY_RE = /\b(affiliate[d]?|partner(?:ship)?|reciprocal)\b/i;
+  if (Array.isArray(days)) {
+    days.forEach((day, dayIdx) => {
+      (day.items || []).forEach(item => {
+        if (item.type !== "Hotel" || !item.hotel) return;
+        const h = item.hotel;
+        const haystack = `${item.text || ""} ${h.confirmation_note || ""}`;
+        if (!LOYALTY_RECIPROCITY_RE.test(haystack)) return;
+        const chains = Object.keys(LOYALTY_CHAIN_PATTERNS).filter(key => LOYALTY_CHAIN_PATTERNS[key].test(haystack));
+        if (chains.length < 2) return; // needs 2+ distinct named chains to be a cross-chain claim
+        item.flags = Array.isArray(item.flags) ? item.flags.slice() : [];
+        const chainList = chains.join(" / ");
+        item.flags.push(`Likely-fabricated loyalty claim: no major hotel loyalty program has a cross-company points-reciprocity or affiliate agreement with another (${chainList} named together here) — verify this hotel's actual chain affiliation directly with the property before booking.`);
+        warnings.push(`Day ${dayIdx + 1} hotel${h.name ? ` (${h.name})` : ""}: claims a cross-chain loyalty affiliation (${chainList}) that does not exist in the hotel industry — verify before booking`);
+      });
+    });
   }
 
   // 2.4 CLOSURE GATE — strip restaurants on the CLOSED_RESTAURANTS denylist
@@ -5007,7 +5069,7 @@ function LodgingView({ data }) {
       {hotels.map(({ item, day, dayIndex }, i) => (
         <div key={i} style={{ marginBottom: "10px" }}>
           <p style={{ fontSize: "10px", color: "var(--color-text-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 4px", fontWeight: 600 }}>From {dayShort(day, dayIndex)}</p>
-          <HotelCard type={item.type} time={item.time} end_time={item.end_time} hotel={item.hotel} text={item.text} />
+          <HotelCard type={item.type} time={item.time} end_time={item.end_time} hotel={item.hotel} text={item.text} flags={item.flags} />
         </div>
       ))}
     </div>
@@ -5389,7 +5451,7 @@ function CategoryView({ data, onOpenMenu }) {
                 <FlightCard type={entry.item.type} time={entry.item.time} end_time={entry.item.end_time} flight={entry.item.flight} text={entry.item.text} flags={entry.item.flags} dayLabel={entry.dayLabel} onFlightConfirmed={(fl) => { const toT = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : undefined; Object.assign(entry.item.flight, { flight_number: fl.flightNumber, depart_time: toT(fl.scheduledOut), arrive_time: toT(fl.scheduledIn), ...(fl.aircraft ? { aircraft: fl.aircraft } : {}) }); const hdr = normalizeClock(entry.item.flight.depart_time); if (hdr) entry.item.time = hdr; }} />
               )}
               {group.category === "lodging" && (
-                <HotelCard type={entry.item.type} time={entry.item.time} end_time={entry.item.end_time} hotel={entry.item.hotel} text={entry.item.text} />
+                <HotelCard type={entry.item.type} time={entry.item.time} end_time={entry.item.end_time} hotel={entry.item.hotel} text={entry.item.text} flags={entry.item.flags} />
               )}
               {group.category === "transport" && (
                 <div style={{ border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
