@@ -689,5 +689,67 @@ function correctKnownNonstopCarrier(f) {
   assert("a correct carrier's _scheduleVerified is untouched", result._scheduleVerified === true);
 }
 
+// -----------------------------------------------------------------------------
+// Stale free-text carrier prose cleanup (2026-08-07 regression, §2c2, same
+// KNOWN FAILURE MODE #8 build as the flight_number-clearing fix above).
+// After §2c rewrites a flight's carrier, top-level tonight/flags/logistics
+// entries that still name the OLD carrier for THAT route are now
+// contradicting the corrected card and must be stripped.
+// -----------------------------------------------------------------------------
+function stripStaleCarrierProse(arr, correctedFlights) {
+  if (!Array.isArray(arr)) return arr;
+  return arr.filter(entry => {
+    if (typeof entry !== "string") return true;
+    const lower = entry.toLowerCase();
+    const stale = correctedFlights.some(f => {
+      const oldCarrier = String(f._originalCarrier || "").toLowerCase().trim();
+      if (!oldCarrier || !lower.includes(oldCarrier)) return false;
+      const from = String(f.from_airport || "").toLowerCase();
+      const to = String(f.to_airport || "").toLowerCase();
+      return (from && lower.includes(from)) || (to && lower.includes(to)) || /\bvia\b/.test(lower);
+    });
+    return !stale;
+  });
+}
+{
+  const correctedFlights = [{ _originalCarrier: "LOT", from_airport: "EWR", to_airport: "LHR" }];
+  const tonight = [
+    "MUST: Confirm LOT is your preferred carrier despite the Warsaw connection (10h 30m EWR -> LHR via WAW vs. 6h 50m nonstop on British Airways).",
+    "This week: Reserve Wiltons for Day 3 dinner (Mon Oct 12, 7:30 PM).",
+  ];
+  const logistics = ["LOT via WAW · Polaris upgrade path available", "Hertz rental London–Normandy · return CDG"];
+  const flags = ["LOT via Warsaw: long connection (typically 2–3h layover WAW). If you value nonstop, switch to BA.", "Portsmouth ferry: book 3-4 weeks ahead."];
+  const strippedTonight = stripStaleCarrierProse(tonight, correctedFlights);
+  const strippedLogistics = stripStaleCarrierProse(logistics, correctedFlights);
+  const strippedFlags = stripStaleCarrierProse(flags, correctedFlights);
+  assert("the stale LOT/Warsaw MUST entry is removed from tonight",
+    strippedTonight.length === 1 && !strippedTonight.some(e => /LOT/.test(e)), JSON.stringify(strippedTonight));
+  assert("the unrelated Wiltons reservation entry survives in tonight",
+    strippedTonight.some(e => /Wiltons/.test(e)));
+  assert("the stale LOT logistics chip is removed",
+    strippedLogistics.length === 1 && !strippedLogistics.some(e => /LOT/.test(e)), JSON.stringify(strippedLogistics));
+  assert("the unrelated Hertz logistics chip survives",
+    strippedLogistics.some(e => /Hertz/.test(e)));
+  assert("the stale LOT flags entry is removed",
+    strippedFlags.length === 1 && !strippedFlags.some(e => /LOT/.test(e)), JSON.stringify(strippedFlags));
+  assert("the unrelated Portsmouth ferry flag survives",
+    strippedFlags.some(e => /Portsmouth/.test(e)));
+}
+{
+  // A mention of the old carrier with NO route signal (no airport code, no
+  // "via") is left alone — not specific enough to know it's about the
+  // corrected flight rather than, say, a generic loyalty-program aside.
+  const correctedFlights = [{ _originalCarrier: "LOT", from_airport: "EWR", to_airport: "LHR" }];
+  const tonight = ["Note: LOT has a solid business class if you ever fly them again."];
+  const stripped = stripStaleCarrierProse(tonight, correctedFlights);
+  assert("a route-less mention of the old carrier is NOT stripped", stripped.length === 1);
+}
+{
+  // No corrected flights at all — every entry survives untouched.
+  const tonight = ["MUST: Confirm LOT preference (10h 30m EWR -> LHR via WAW)."];
+  const stripped = stripStaleCarrierProse(tonight, []);
+  assert("with no corrected flights, nothing is stripped", stripped.length === 1);
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

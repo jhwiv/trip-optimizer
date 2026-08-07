@@ -3688,6 +3688,58 @@ function applyQualityLayer(input, inputs) {
 
   let out = { ...input, days: cappedDays };
 
+  // 2c2. Stale free-text carrier prose cleanup. §2c above rewrites a Flight
+  // item's structured `flight` object when the model's claimed carrier
+  // doesn't actually fly a known route nonstop — but the model can ALSO
+  // write top-level advisory prose (tonight MUST entries, logistics chips,
+  // flags) describing that SAME flight under its ORIGINAL carrier/routing,
+  // and §2c never touches those free-text arrays. Real observed case
+  // (2026-08-07, the same LOT/EWR-LHR build KNOWN FAILURE MODE #8 was
+  // written for): after §2c corrected the flight card to "United, nonstop,
+  // 7h 15m," `tonight` still had "MUST: Confirm LOT is your preferred
+  // carrier despite the Warsaw connection (10h 30m EWR -> LHR via WAW...)"
+  // and `logistics` still had "LOT via WAW - Polaris upgrade path
+  // available" and `flags` still had "LOT via Warsaw: long connection..." -
+  // all three directly contradicting the corrected card. Strip any
+  // top-level string entry that names BOTH the flight's ORIGINAL carrier
+  // AND that flight's route (either airport code, or the word "via" — the
+  // standard way this app's prose describes a connection), for any flight
+  // §2c actually rewrote. Entries that don't mention the route are left
+  // alone — a generic "confirm your airline preference" note isn't
+  // route-specific enough to know it's about THIS corrected flight.
+  {
+    const correctedFlights = [];
+    (Array.isArray(out.days) ? out.days : []).forEach(day => {
+      (Array.isArray(day?.items) ? day.items : []).forEach(item => {
+        const f = item?.flight;
+        if (item?.type === "Flight" && f?._carrierOverride && f?._originalCarrier) {
+          correctedFlights.push(f);
+        }
+      });
+    });
+    if (correctedFlights.length) {
+      const stripStaleCarrierProse = (arr, fieldName) => {
+        if (!Array.isArray(arr)) return arr;
+        return arr.filter(entry => {
+          if (typeof entry !== "string") return true;
+          const lower = entry.toLowerCase();
+          const stale = correctedFlights.some(f => {
+            const oldCarrier = String(f._originalCarrier || "").toLowerCase().trim();
+            if (!oldCarrier || !lower.includes(oldCarrier)) return false;
+            const from = String(f.from_airport || "").toLowerCase();
+            const to = String(f.to_airport || "").toLowerCase();
+            return (from && lower.includes(from)) || (to && lower.includes(to)) || /\bvia\b/.test(lower);
+          });
+          if (stale) fixes.push(`Removed stale ${fieldName} entry referencing the pre-correction carrier: "${entry}"`);
+          return !stale;
+        });
+      };
+      out.tonight = stripStaleCarrierProse(out.tonight, "tonight");
+      out.flags = stripStaleCarrierProse(out.flags, "flags");
+      out.logistics = stripStaleCarrierProse(out.logistics, "logistics");
+    }
+  }
+
   // Weekday claims in model prose. Day-of-week is code's per CLAUDE.md, so a
   // wrong claim is corrected in place rather than merely annotated — the
   // 2026-07-28 build's "this is a Tuesday, confirm open" on a Monday is what

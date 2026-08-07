@@ -386,14 +386,26 @@ which was true before the fix. 7 new regression assertions in `tests/test_itiner
 (mirroring the closure per that file's established convention, since `applyQualityLayer` can't be
 imported directly).
 
-**Still open, NOT part of this fix:** the reviewer's second observation — the Trip Reference /
-AT-A-GLANCE section describing this same flight as "10h 30m EWR→LHR via WAW" (stale prose from
-before the carrier correction) while the corrected flight card says "nonstop, 7h 15m" — is a
-DIFFERENT bug. §2c's fix only touches the structured `item.flight` object; free-text summary
-fields elsewhere in the plan (AT-A-GLANCE, MUST-flags) are model-generated prose that isn't
-automatically kept in sync with a post-generation structured correction. This needs its own
-investigation into where those free-text fields are generated and how (or whether) to reconcile
-them against `_carrierOverride`-flagged flights — not yet started.
+**Follow-up, same day, same failure mode — free-text prose left stale by the same correction:** the
+reviewer's second observation on this build was the Trip Reference / AT-A-GLANCE section
+describing this same flight as "10h 30m EWR→LHR via WAW" (the model's OWN pre-correction routing,
+reproduced verbatim in `tonight` as a "MUST: Confirm LOT is your preferred carrier..." entry, in
+`logistics` as a "LOT via WAW · Polaris upgrade path available" chip, and in `flags` as "LOT via
+Warsaw: long connection...") while the corrected flight card says "nonstop, 7h 15m, Book directly
+with United." §2c's fix only touches the structured `item.flight` object; these three are
+top-level, model-generated string arrays that were never in sync with a post-generation structured
+correction. **Fixed as §2c2 in `applyQualityLayer`** (`src/App.jsx`, runs immediately after `out`
+is assembled from `cappedDays` so it sees the already-corrected flight objects): for every Flight
+item §2c actually rewrote (`_carrierOverride && _originalCarrier` both set), strip any `tonight[]`/
+`flags[]`/`logistics[]` string entry that names BOTH that flight's original (now-wrong) carrier AND
+its route — either airport code, or the literal word "via" (this app's standard way of describing
+a connection in prose). An entry naming the old carrier with no route signal at all (e.g. a generic
+loyalty-program aside) is deliberately left alone — not specific enough to know it's about the
+corrected flight rather than something else. Confirmed live via Playwright reproducing the exact
+reported scenario (LOT/EWR-LHR flight plus the three stale prose entries verbatim from the PDF):
+the stale MUST/chip/flag entries are gone, unrelated entries in the same arrays (a restaurant
+reservation, a car-rental chip, a ferry-booking flag) survive untouched. 8 new regression
+assertions in `tests/test_itinerary_quality_fixes.mjs`.
 
 **The pattern to watch for:** a correction step's own inline comment asserting an invariant ("X is
 already null by the time this runs") is not proof the invariant holds for every code path that
