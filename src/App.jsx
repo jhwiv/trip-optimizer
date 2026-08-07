@@ -10634,12 +10634,12 @@ const REVIEW_TOOL = {
       },
       structural_findings: {
         type: "array",
-        description: "Hits from the MUST-VERIFY CHECKLIST only: day continuity, night arithmetic, weekday claims, flight times, booking links, route plausibility, marquee promises. UNCAPPED — report every hit. Leave empty if the plan passes all seven checks. Do NOT put editorial or taste observations here.",
+        description: "Hits from the MUST-VERIFY CHECKLIST only: day continuity, night arithmetic, weekday claims, flight times, booking links, route plausibility, marquee promises, carrier consistency, loyalty claims. UNCAPPED — report every hit. Leave empty if the plan passes all nine checks. Do NOT put editorial or taste observations here.",
         items: {
           type: "object",
           properties: {
             id: { type: "string", description: "Stable id: 's1', 's2', 's3', etc." },
-            check: { type: "string", enum: ["day_continuity", "night_arithmetic", "weekday_claims", "flight_times", "booking_links", "route_plausibility", "marquee_promises"], description: "Which checklist item this hit came from." },
+            check: { type: "string", enum: ["day_continuity", "night_arithmetic", "weekday_claims", "flight_times", "booking_links", "route_plausibility", "marquee_promises", "carrier_consistency", "loyalty_claims"], description: "Which checklist item this hit came from." },
             target: { type: "string", description: "What this finding is ABOUT, in the user's language. Format: 'Day N · context'. Examples: 'Day 7 · hotel', 'Day 1 · flight UA934'." },
             summary: { type: "string", description: "One sentence (≤22 words) stating the contradiction, naming both conflicting values. Example: 'Day 7 checks into the Amsterdam Marriott again after Day 6 already checked in.'" },
             action: { type: "string", description: "One sentence (≤22 words) stating the concrete change to make." },
@@ -10931,7 +10931,7 @@ function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = [], qcWar
 
   const contentWarnings = contentWarningsForReview(qcWarnings);
   const knownWarningsBlock = contentWarnings.length
-    ? `\nKNOWN QUALITY WARNINGS (already flagged by deterministic checks before this review — verify each is genuinely still unresolved in the plan below. A warning matching one of the seven MUST-VERIFY CHECKLIST areas — especially MARQUEE PROMISES — MUST be escalated in structural_findings[] with the matching check id if still unresolved. Anything else worth a note belongs in ordinary findings[]):\n${contentWarnings.map((w) => `• ${w}`).join("\n")}\n`
+    ? `\nKNOWN QUALITY WARNINGS (already flagged by deterministic checks before this review — verify each is genuinely still unresolved in the plan below. A warning matching one of the nine MUST-VERIFY CHECKLIST areas — especially MARQUEE PROMISES and LOYALTY-CLAIM PLAUSIBILITY — MUST be escalated in structural_findings[] with the matching check id if still unresolved. Anything else worth a note belongs in ordinary findings[]):\n${contentWarnings.map((w) => `• ${w}`).join("\n")}\n`
     : "";
 
   return `You are a panel of travel experts conducting a professional review of a finalized trip plan. Your job is to evaluate the plan AGAINST THE USER'S STATED BUDGET, STYLE, AND GUIDELINES — not against your sources' default tier. You will call the submit_review tool exactly once. Do NOT emit any prose — only the tool call.
@@ -10981,8 +10981,16 @@ MUST-VERIFY CHECKLIST — check each before writing findings. These are
 structural, not editorial; report any hit as severity:"critical".
 1. DAY CONTINUITY — does each day start in the city the previous day ended in?
    Any hotel checked into twice? Any A→B transition described on two days?
-2. NIGHT ARITHMETIC — count contiguous city runs in days[]. Does the total,
-   and each city's count, match meta and cities[].nights?
+2. NIGHT ARITHMETIC — meta and cities[].nights below have ALREADY been
+   reconciled against the day-by-day city sequence in code where derivable —
+   do NOT try to recount contiguous city runs yourself from scratch (an LLM
+   doing free-hand multi-step counting over a long days[] array is exactly
+   the failure mode this app's deterministic night-math corrector exists to
+   avoid). Instead, check for CONTRADICTIONS: does any OTHER prose — a
+   headline, a logistics chip, a tonight[]/flags[] entry — state a night
+   count or city breakdown that disagrees with meta or cities[].nights below?
+   That kind of drift is a real hit even when meta/cities[] themselves are
+   already correct.
 3. WEEKDAY CLAIMS — every weekday named in prose must match the COMPUTED
    DATE TABLE below. Never infer a weekday yourself.
 4. FLIGHT TIMES — does each flight item's header time equal its depart_time?
@@ -10997,6 +11005,23 @@ structural, not editorial; report any hit as severity:"critical".
    the same pattern anywhere else in the plan, since the deterministic check
    only knows a small curated per-destination list and can miss one. Name
    which day should have the item and what it should be.
+8. CARRIER / FLIGHT-NUMBER CONSISTENCY — a flight_number's airline prefix
+   (e.g. "UA" in "UA 1234") must match the item's claimed carrier. Also flag
+   any flight item whose surrounding prose (tonight[], flags[], logistics[])
+   still describes a DIFFERENT carrier, routing, or connection than the
+   flight card itself states — that's leftover text from before a
+   correction, not a live fact. Real example: a flight card correctly
+   showing "United, nonstop" while tonight[] still says "MUST: Confirm LOT
+   is your preferred carrier... via WAW."
+9. LOYALTY-CLAIM PLAUSIBILITY — major hotel loyalty programs (Marriott
+   Bonvoy, Hilton Honors, World of Hyatt, IHG One Rewards, Accor Live
+   Limitless, etc.) are competing, mutually exclusive ecosystems with NO
+   cross-company points-reciprocity or "affiliate" agreements between them.
+   Any claim that a hotel is affiliated with, or has a reciprocal/partner
+   relationship to, a DIFFERENT chain than its own is fabricated regardless
+   of which two chains are named. Real example: "Novotel Bayeux (Marriott
+   Bonvoy affiliate via Accor partnership)" — Accor and Marriott are
+   competitors; no such program exists.
 
 Report checklist hits in structural_findings[], NOT in findings[].
 structural_findings[] is uncapped — the 3-critical / 8-total caps apply only

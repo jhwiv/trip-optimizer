@@ -477,6 +477,80 @@ repair shape for KNOWN FAILURE MODE #8; here, `FlightCard`'s flags rendering) st
 independent live verification rather than being trusted by analogy — the existing pattern working
 elsewhere is not proof the new call site is actually wired up to use it.
 
+### KNOWN FAILURE MODE #10 — the built-in Expert Review's MUST-VERIFY CHECKLIST had no category for carrier/flight-number consistency or loyalty-claim plausibility, and asked the reviewer to hand-compute night arithmetic an LLM is known-unreliable at.
+
+**2026-08-07, asked directly:** "When I paste the itinerary into Claude, Claude immediately finds
+the problems. The app has a build that incorporates an expert review. The expert review does not
+surface these problems." Fair, and worth tracing to the actual system prompt rather than answering
+in the abstract — the app's Expert Review (`ReviewPanel` → `buildReviewSystemPrompt`, `src/App.jsx`)
+already has a "MUST-VERIFY CHECKLIST" of 7 structural categories that get escalated into an
+UNCAPPED `structural_findings[]` bucket specifically so they can't be crowded out by the 8-item cap
+on editorial findings. But the checklist had no entry at all for carrier/flight-number consistency
+or hotel-loyalty-claim plausibility — the reviewer was never once instructed to look for either, so
+of course a fresh, unprimed "does anything look wrong here" read (pasting into a plain Claude
+conversation) caught things the primed-but-incompletely-scoped built-in reviewer didn't. This is
+not a capability gap in the underlying model — it's a prompt-coverage gap.
+
+Night arithmetic (checklist item 2) WAS already covered, but the instruction told the reviewer to
+independently "count contiguous city runs in days[]" — i.e. redo multi-step arithmetic over a long
+nested array from scratch in one pass. That is precisely the failure mode `src/legNights.js`'s own
+header comment already names as the reason a deterministic corrector exists at all ("the model's
+arithmetic... they live here now so applyQualityLayer can overwrite the model's counts
+everywhere"). Asking the SAME class of model to re-derive that arithmetic reliably inside a review
+pass, rather than checking it against an already-computed ground truth, was asking it to repeat the
+mistake the rest of the codebase was built to route around. The existing precedent for doing this
+right was already in the same file: the COMPUTED DATE TABLE injected for weekday-claim checking
+("Without the computed table the reviewer can only check the model's weekday claims against the
+model's own day labels") — night arithmetic just hadn't gotten the same treatment.
+
+**Fix (`src/App.jsx`, `buildReviewSystemPrompt` + `REVIEW_TOOL`):**
+1. Added two new MUST-VERIFY CHECKLIST items (8 and 9): CARRIER / FLIGHT-NUMBER CONSISTENCY (a
+   flight_number's airline prefix must match its carrier; stale prose describing a pre-correction
+   carrier/routing is a hit) and LOYALTY-CLAIM PLAUSIBILITY (mirrors §2e's reasoning: any claim
+   that a hotel is affiliated with a DIFFERENT major chain than its own is fabricated, since no two
+   major hotel loyalty programs have real cross-company reciprocity). Both added to
+   `REVIEW_TOOL.structural_findings[].check`'s enum so the model can actually emit them.
+2. Rewrote the NIGHT ARITHMETIC instruction: told the reviewer that `meta`/`cities[].nights` are
+   already code-reconciled against the day-by-day sequence where derivable, so it should NOT
+   recompute from scratch — instead check for CONTRADICTIONS between that already-correct number
+   and other prose (a headline, a logistics chip, a tonight/flags entry) that might still disagree
+   with it. Shifts the reviewer's job from unreliable computation to reliable string-consistency
+   checking, the same shape as the date-table pattern already proven for weekday claims.
+3. Updated the escalation instruction in `knownWarningsBlock` ("seven" → "nine" MUST-VERIFY areas,
+   explicitly names LOYALTY-CLAIM PLAUSIBILITY alongside the existing MARQUEE PROMISES callout) so
+   a real triggered `applyQualityLayer` §2e warning gets escalated into the uncapped
+   `structural_findings[]` bucket instead of competing for one of the 8 capped ordinary-finding
+   slots.
+
+`normalizeStructuralFindings` (the panel-side consumer of `structural_findings[]`) reads `f.check`
+generically with no hardcoded enum, so both new categories render with zero additional UI changes
+— confirmed by inspection, not assumed.
+
+Confirmed live via Playwright: captured the ACTUAL constructed review system prompt (not the
+unit-test mirror) for a plan containing the same Novotel Bayeux loyalty-fabrication scenario from
+KNOWN FAILURE MODE #9. The live prompt contains both new checklist items verbatim, the rewritten
+night-arithmetic instruction ("do NOT try to recount... from scratch"), says "nine" not "seven",
+and — because the plan actually triggers §2e — the real "Novotel Bayeux... cross-chain loyalty
+affiliation" warning appears in KNOWN QUALITY WARNINGS with the correct LOYALTY-CLAIM PLAUSIBILITY
+escalation instruction attached. 3 new regression assertions in
+`tests/test_review_quality_escalation.mjs`.
+
+**What this fix does and does not claim:** it makes the reviewer's INSTRUCTIONS complete for these
+two bug classes — before this, it wasn't being asked to look, so a miss proved nothing about
+whether it could look. It does not, and cannot, guarantee the review model catches every future
+instance (an LLM review pass is probabilistic, same as the build itself) — that's why the
+deterministic checks (`§2c`/`§2c2`/`§2e` in `applyQualityLayer`) remain the primary defense and the
+review is the second, independent layer behind them, mirroring how MARQUEE PROMISES already works:
+deterministic-check-first, reviewer-escalation-second, never reviewer-only.
+
+**The pattern to watch for:** "the review didn't catch it" is not evidence the review MODEL is
+weak — check what the review was actually INSTRUCTED to look for first. Two of nine checklist
+categories didn't exist before this fix, and a third existed but asked for a kind of computation
+this codebase had already, elsewhere, proven the model unreliable at. A prompt-coverage gap and a
+model-capability gap look identical from the outside (both present as "the reviewer missed it")
+but need completely different fixes — broadening instructions and ground-truth injection versus
+switching models or lowering expectations. Diagnose which one it is before concluding either.
+
 ## Implementation map
 
 | Concern | File |

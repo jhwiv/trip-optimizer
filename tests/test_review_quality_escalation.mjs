@@ -43,7 +43,7 @@ function contentWarningsForReview(warnings) {
 function buildKnownWarningsBlock(qcWarnings) {
   const contentWarnings = contentWarningsForReview(qcWarnings);
   return contentWarnings.length
-    ? `\nKNOWN QUALITY WARNINGS (already flagged by deterministic checks before this review — verify each is genuinely still unresolved in the plan below. A warning matching one of the seven MUST-VERIFY CHECKLIST areas — especially MARQUEE PROMISES — MUST be escalated in structural_findings[] with the matching check id if still unresolved. Anything else worth a note belongs in ordinary findings[]):\n${contentWarnings.map((w) => `• ${w}`).join("\n")}\n`
+    ? `\nKNOWN QUALITY WARNINGS (already flagged by deterministic checks before this review — verify each is genuinely still unresolved in the plan below. A warning matching one of the nine MUST-VERIFY CHECKLIST areas — especially MARQUEE PROMISES and LOYALTY-CLAIM PLAUSIBILITY — MUST be escalated in structural_findings[] with the matching check id if still unresolved. Anything else worth a note belongs in ordinary findings[]):\n${contentWarnings.map((w) => `• ${w}`).join("\n")}\n`
     : "";
 }
 
@@ -94,6 +94,26 @@ console.log("\nKNOWN QUALITY WARNINGS block — only appears when there's someth
     withNonChecklistWarning.includes("permanently closed"));
   assert("...routed to ordinary findings[], not forced into structural_findings",
     withNonChecklistWarning.includes("findings[]"));
+}
+{
+  // 2026-08-07 regression: the checklist grew from seven areas to nine
+  // (carrier_consistency, loyalty_claims added — see CLAUDE.md "why the
+  // built-in Expert Review kept missing things a fresh Claude read caught
+  // instantly"). The escalation instruction text must reflect the new
+  // count and explicitly call out the new LOYALTY-CLAIM PLAUSIBILITY area,
+  // the same way it already calls out MARQUEE PROMISES, so a hotel-loyalty
+  // warning from applyQualityLayer §2e gets escalated into the uncapped
+  // structural_findings[] bucket instead of competing for one of the
+  // capped ordinary findings[] slots.
+  const withLoyaltyGap = buildKnownWarningsBlock([
+    "Day 1 hotel (Novotel Bayeux): claims a cross-chain loyalty affiliation (marriott / accor) that does not exist in the hotel industry — verify before booking",
+  ]);
+  assert("the block references nine checklist areas, not the stale seven",
+    withLoyaltyGap.includes("nine MUST-VERIFY CHECKLIST areas") && !withLoyaltyGap.includes("seven MUST-VERIFY"));
+  assert("the block explicitly calls out LOYALTY-CLAIM PLAUSIBILITY for escalation, same as MARQUEE PROMISES",
+    withLoyaltyGap.includes("LOYALTY-CLAIM PLAUSIBILITY") && withLoyaltyGap.includes("MARQUEE PROMISES"));
+  assert("the block names the actual hotel loyalty gap (Novotel Bayeux)",
+    withLoyaltyGap.includes("Novotel Bayeux"));
 }
 {
   const onlyProcessWarnings = buildKnownWarningsBlock([
