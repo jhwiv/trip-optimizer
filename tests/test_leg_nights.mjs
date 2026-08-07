@@ -155,5 +155,108 @@ console.log("\n=== fragmented Day 6/7 sequence does not throw ===");
   assert("no throw on the fragmented plan", threw === null, String(threw));
 }
 
+console.log("\n=== transit-day hotel reattribution (2026-08-07 regression) ===");
+{
+  // Real observed case: a 15-day London/Paris/Normandy/Porto build. Day 5 is
+  // labeled "Portsmouth" (where the day's activities happen) but its hotel
+  // check-in that evening is a Normandy property; Day 7 is labeled
+  // "Normandy" but checks into a Paris hotel that evening. Reading days[].city
+  // literally gave "3+3+2+6" (wrong on every count); the real breakdown,
+  // confirmed against the hotel check-in/check-out dates, is
+  // London 4 / Normandy 2+1 / Paris 3 / Porto 4 = 14.
+  const hotel = (name) => ({ hotel: { name } });
+  const trip = {
+    days: [
+      { day: 1, city: "London", items: [{ type: "Hotel", text: "Check in London Marriott", ...hotel("London Marriott") }] },
+      { day: 2, city: "London", items: [{ type: "Activity", text: "Churchill War Rooms" }] },
+      { day: 3, city: "London", items: [{ type: "Activity", text: "Imperial War Museum" }] },
+      { day: 4, city: "London", items: [{ type: "Activity", text: "Bletchley Park day trip" }] },
+      { day: 5, city: "Portsmouth", items: [
+        { type: "Hotel", text: "Check out London Marriott", ...hotel("London Marriott") },
+        { type: "Activity", text: "Portsmouth D-Day Museum" },
+        { type: "Hotel", text: "Late check-in Villa Lara Hotel & Spa", ...hotel("Villa Lara Hotel & Spa") },
+      ] },
+      { day: 6, city: "Normandy", items: [{ type: "Activity", text: "Bayeux Tapestry Museum" }] },
+      { day: 7, city: "Normandy", items: [
+        { type: "Hotel", text: "Check out Villa Lara Hotel & Spa", ...hotel("Villa Lara Hotel & Spa") },
+        { type: "Transport", text: "Drive Bayeux to Paris via A13" },
+        { type: "Hotel", text: "Check in Paris Marriott Champs Elysees", ...hotel("Paris Marriott Champs Elysees") },
+      ] },
+      { day: 8, city: "Paris", items: [{ type: "Activity", text: "Paris WWII sites" }] },
+      { day: 9, city: "Paris", items: [{ type: "Activity", text: "Paris recovery" }] },
+      { day: 10, city: "Normandy", items: [
+        { type: "Hotel", text: "Check out Paris Marriott Champs Elysees", ...hotel("Paris Marriott Champs Elysees") },
+        { type: "Activity", text: "Normandy American Cemetery" },
+        { type: "Hotel", text: "Check in Novotel Bayeux", ...hotel("Novotel Bayeux") },
+      ] },
+      { day: 11, city: "Porto, Portugal", items: [
+        { type: "Hotel", text: "Check out Novotel Bayeux", ...hotel("Novotel Bayeux") },
+        { type: "Flight", text: "Flight Paris CDG to Porto OPO" },
+        { type: "Hotel", text: "Check in The Yeatman Hotel", ...hotel("The Yeatman Hotel") },
+      ] },
+      { day: 12, city: "Porto, Portugal", items: [{ type: "Activity", text: "Douro Valley Wine Day" }] },
+      { day: 13, city: "Porto, Portugal", items: [{ type: "Activity", text: "Ribeira & Port Lodges" }] },
+      { day: 14, city: "Porto, Portugal", items: [{ type: "Activity", text: "Livraria Lello" }] },
+      { day: 15, city: "Porto, Portugal", items: [{ type: "Hotel", text: "Check out The Yeatman Hotel", ...hotel("The Yeatman Hotel") }] },
+    ],
+  };
+
+  const legs = deriveLegNights(trip);
+  assert("five legs (Normandy split into two runs)", legs.length === 5, JSON.stringify(legs));
+  assert("breakdown is 4+2+3+1+4", legs.map(l => l.nights).join("+") === "4+2+3+1+4", JSON.stringify(legs));
+  assert("Day 5's night is attributed to Normandy, not Portsmouth (the day.city label)",
+    legs[1].city === "Normandy", JSON.stringify(legs));
+  assert("Day 7's night is attributed to Paris, not Normandy (the day.city label)",
+    legs[2].city === "Paris", JSON.stringify(legs));
+  assert("nights sum to 14", legs.reduce((n, l) => n + l.nights, 0) === 14);
+
+  const totals = deriveCityNights(trip);
+  assert("London totals 4", totals.get("london") === 4, String(totals.get("london")));
+  assert("Normandy totals 3 (2+1 across both legs)", totals.get("normandy") === 3, String(totals.get("normandy")));
+  assert("Paris totals 3, not 2 (the day.city-only count)", totals.get("paris") === 3, String(totals.get("paris")));
+  assert("Porto totals 4", totals.get("porto, portugal") === 4, String(totals.get("porto, portugal")));
+
+  // Back-to-back single-night transit days (Day 10 -> Day 11, both
+  // check-out-and-check-in-same-day) must NOT collapse into each other —
+  // each has its own, different destination. This is the regression the
+  // "only borrow when the NEXT day is settled" guard exists for: naively
+  // borrowing forward through both handed Day 10's night to Porto,
+  // silently deleting the one-night Normandy return entirely.
+  const dayTenLeg = legs.find((l, i) => i === 3);
+  assert("Day 10's one-night Normandy return survives as its own leg (not merged into Porto)",
+    dayTenLeg && dayTenLeg.city === "Normandy" && dayTenLeg.nights === 1, JSON.stringify(legs));
+}
+
+console.log("\n=== rewriteMetaNights / stripMetaNightsBreakdown — bare 'a+b+c nights' format (2026-08-07 regression) ===");
+{
+  // Real observed meta shape: the breakdown appears as its own trailing
+  // clause with no parentheses ("... · Relaxed pace · 3+3+2+6 nights"),
+  // which the parenthetical-only regex never matched — the wrong model
+  // breakdown shipped untouched even though deriveLegNights could derive
+  // the correct one.
+  const plan = {
+    days: [
+      { day: 1, city: "Rome" }, { day: 2, city: "Rome" }, { day: 3, city: "Rome" },
+      { day: 4, city: "Florence" }, { day: 5, city: "Florence" },
+    ],
+  };
+  const meta = "Mon–Fri · 4 nights · 2 adults · Relaxed pace · 5+1 nights";
+  assert("bare breakdown is rewritten to the derived one",
+    rewriteMetaNights(meta, plan) === "Mon–Fri · 4 nights · 2 adults · Relaxed pace · 3+1 nights",
+    rewriteMetaNights(meta, plan));
+  assert("parenthetical form still works unchanged (no regression)",
+    rewriteMetaNights("4 nights (5+1)", plan) === "4 nights (3+1)", rewriteMetaNights("4 nights (5+1)", plan));
+
+  const underivable = { days: [{ day: 1, city: "Rome" }, { day: 2, city: "" }] };
+  assert("bare breakdown is stripped (not printed) when underivable",
+    stripMetaNightsBreakdown("4 nights · 5+1 nights") === "4 nights",
+    stripMetaNightsBreakdown("4 nights · 5+1 nights"));
+  void underivable; // documents the underivable case rewriteMetaNights/reconcileMetaNights already cover elsewhere
+
+  assert("parseMetaNightsBreakdown reads the bare format",
+    JSON.stringify(parseMetaNightsBreakdown("4 nights · 5+1 nights")) === "[5,1]",
+    JSON.stringify(parseMetaNightsBreakdown("4 nights · 5+1 nights")));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

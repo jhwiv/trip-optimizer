@@ -300,6 +300,56 @@ fallback, the same-day-earlier-leg check, and the hotel-check-in exemption are e
 answer to "what's actually reliable here," not a single general rule. Expect this file to need
 another one of these eventually, and reach for the real plan JSON before guessing at the next fix.
 
+### KNOWN FAILURE MODE #7 — the code-derived night math (`src/legNights.js`) trusted `day.city` on transit days, and its meta-line regex only matched one of two model-written formats.
+
+**2026-08-07, found from an independent PDF review of a rebuild of the London/Paris/Normandy/Porto
+trip.** The reviewer caught that the meta line's "3+3+2+6 nights" summary didn't match the printed
+per-city list ("London·4n, Paris·2n, Normandy·3n, Porto·4n" = 13, not even internally consistent),
+and neither matched the real day-by-day schedule (London 4 / Normandy 2+1 / Paris 3 / Porto 4 =
+14, since the trip returns to Normandy after Paris). Two independent bugs in `legNights.js`, the
+module written specifically to auto-correct this class of error (see KNOWN FAILURE MODE-adjacent
+history at the top of that file, RCA bug B):
+
+1. **`rewriteMetaNights`'s regex only matched the parenthetical format** — `"N nights (a+b+c)"`.
+   This build's meta line wrote the breakdown as a bare trailing clause instead: `"... · Relaxed
+   pace · 3+3+2+6 nights"`, no parentheses. The regex found nothing to replace, so
+   `reconcileMetaNights` silently no-opped and the wrong model-written text shipped untouched —
+   the correction mechanism existed and simply never fired for this format.
+2. **`deriveLegNights` derived nights purely from counting consecutive `day.city` labels**, with no
+   awareness of hotel check-in/check-out events. On a transit day, `day.city` often names the
+   ORIGIN city (where that day's activities happen), even though the night itself is spent at a
+   NEW hotel in the DESTINATION after an evening check-in. Day 7 was labeled "Normandy" but checks
+   into a Paris hotel that evening — so Normandy was credited a night it didn't have, and Paris
+   lost one it did.
+
+**Fix (both in `src/legNights.js`):**
+- `rewriteMetaNights`/`stripMetaNightsBreakdown`/`parseMetaNightsBreakdown` now recognize both the
+  parenthetical AND bare trailing-clause formats.
+- `deriveLegNights` now detects "transit days" (a day with both a checkout AND a check-in hotel
+  event) and reattributes that day's night to the FOLLOWING day's city label instead of its own —
+  but ONLY when the following day is itself settled (not also a transit day). This guard is not
+  optional: the trip's actual shape has two single-night transit days back-to-back (a one-night
+  return to Normandy immediately followed by flying onward to Porto) — naively borrowing forward
+  through both collapsed the one-night Normandy stay into Porto and silently deleted it. A transit
+  day followed by another transit day is left on its own label instead of guessed at.
+
+Confirmed live: an `applyQualityLayer` run against the real trip shape now shows "✓ Auto-fixed 2
+items: Recomputed meta night breakdown... '4+2+3+1+4 nights'; Recomputed Paris nights 2 → 3" in
+the Quality Check banner — exactly the reviewer's independently-computed correct answer. 14 new
+regression tests in `tests/test_leg_nights.mjs`; the existing Day 6/7 Amsterdam-collision fixture
+(this module's own original regression case) is unaffected, since neither of its collision days
+happens to trigger the new same-day-checkout-and-checkin condition.
+
+**The pattern to watch for:** an auto-correction mechanism that pattern-matches a specific
+model-written string format (here, a regex expecting parentheses) will silently do nothing the
+moment the model writes the same fact in a different, equally-plausible format — this is now the
+second time in this file's history that a real fix shipped for one shape of a bug while a
+different shape of the identical bug kept shipping unnoticed (see the original RCA bug B in this
+file's header comment for the first). And `days[].city` is not reliable as a night-counting key on
+its own — CLAUDE.md's `dayContinuityCheck.js` section documents multiple independent cases of the
+same field being unreliable for different purposes; night math needed its own, night-specific
+signal (hotel check-in/check-out) rather than reusing the city label a fourth time.
+
 ## Implementation map
 
 | Concern | File |
