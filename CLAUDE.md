@@ -664,6 +664,46 @@ one path (the structured form) that always fills `nights` in. When a shared fiel
 writer, audit every existing reader, not just the one the current fix is trying to satisfy — and
 prefer a NEW, narrowly-scoped field over widening a shared one, exactly the move made here.
 
+### KNOWN FAILURE MODE #13 — the client's hard-abort timer never accounted for active output sections, so it could quit before the app's OWN advertised time estimate.
+
+**2026-08-07, found from a live screenshot** immediately after KNOWN FAILURE MODE #12 shipped: the
+same 14-night England/France/Portugal build, this time failing with a DIFFERENT, less severe
+message — "Build timed out on your device. The server may still be finishing — refresh the page
+within a few minutes to recover the completed plan." — rather than the truncation error, confirming
+#12's fix held (no more collapsed token budget). This is the by-design recovery path for a
+genuinely slow build, but it shouldn't have fired: the pre-build screen itself had told the user
+"Estimated about 13–24 minutes for this trip" (`estimateBuildMinutes()`, which factors in nights,
+cities, AND active output sections — this build had 10 of 12 output sections active). The actual
+client-side hard-abort timer (`runBuildForJob`/`runChunkedBuild`/`resumeChunkedBuild`, `src/App.jsx`)
+was computed from nights + city count ALONE, with no `outputsCount` term at all — so for this exact
+shape it fired at ~16.5 minutes, well inside the 24-minute window the app had just promised.
+Reproduced exactly: `estimateBuildMinutes({nights:14, citiesCount:1, outputsCount:10}).hi` = 24 min,
+but the old `hardTimeoutMs` formula (`Math.max(600000, targetSec*1000*3)` for the 3-chunk case)
+computed to ~16.5 min — a real, direct mismatch between what the UI promised and what the client
+actually waited for, independent of whether the server build was slow for a good reason.
+
+**Fix (`src/App.jsx`):** threaded `outputsCount` (the same `Object.values(outputs).filter(Boolean).length`
+the display estimate already uses) through `handleBuild` → `runBuildForJob` / `runChunkedBuild` /
+`resumeChunkedBuild`, persisting it in the `ACTIVE_JOB_KEY` payload alongside the existing
+`nightsNum`/`citiesCount` so a resume reads the same value back. Each of the three hard-timeout
+computations now takes `Math.max(<existing formula>, estimateBuildMinutes({nights, citiesCount,
+outputsCount}).hi * 60 * 1000)` — the client can never abandon a build sooner than the window it
+told the user to expect. A small trip's timeout is unaffected (the existing formula was already
+more generous than the estimate); only large-output-count trips get the extra headroom.
+
+Confirmed live via Playwright: intercepted `window.setTimeout` before the app loaded and captured
+the actual delay registered for the hard-abort timer on the exact reported scenario (14 nights,
+single city, default 10/12 output sections) — 24.0 minutes, matching the advertised estimate
+exactly, up from the old ~16.5-minute cutoff. 5 new regression assertions in
+`tests/test_build_estimate.mjs`, including one that documents the old formula's shortfall
+numerically so this can't silently regress.
+
+**Note on scope:** this fixes the timeout being INCONSISTENT with the app's own promise — it does
+not make genuinely slow builds faster, and a build that's still running past 24 minutes (a real
+possibility for a large multi-output trip) will still hit this recovery path, correctly, since the
+server-side job continues via `waitUntil` regardless of the client's timer. That's by design, not
+a bug this fix addresses.
+
 ## Implementation map
 
 | Concern | File |

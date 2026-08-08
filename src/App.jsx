@@ -15117,7 +15117,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   // localStorage). Caller provides the expected nights so progress can be
   // computed without re-deriving from current form state (which may be empty
   // on a resume into a fresh tab).
-  const runBuildForJob = async ({ jobId, nightsNum, expectedTokens, startedAt, citiesCount = 1, streamResp = null, onJobIdReady = null, initialMsg = null }) => {
+  const runBuildForJob = async ({ jobId, nightsNum, expectedTokens, startedAt, citiesCount = 1, outputsCount = 0, streamResp = null, onJobIdReady = null, initialMsg = null }) => {
     setLoading(true);
     setError("");
     setProgress(0);
@@ -15170,7 +15170,16 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // running independently — we just stop polling if we hit the ceiling.
     const controller = new AbortController();
     abortRef.current = controller;
-    const hardTimeoutMs = Math.max(300000, targetSec * 1000 * 3); // 3× the target, floor 5 min
+    // KNOWN FAILURE MODE #13: the pre-build screen's own estimateBuildMinutes()
+    // promises the user "about X–Y minutes" factoring in nights, cities, AND
+    // active output sections — but this timeout used to be computed from
+    // nights/cities alone, with no outputsCount term at all. A trip with many
+    // output sections active (each adds real generation time) could see the
+    // client abandon the connection well BEFORE the upper bound it had just
+    // told the user to expect. Floor the timeout at whatever was promised so
+    // the app never quits sooner than its own estimate.
+    const promisedMs = estimateBuildMinutes({ nights: nightsNum, citiesCount, outputsCount }).hi * 60 * 1000;
+    const hardTimeoutMs = Math.max(300000, targetSec * 1000 * 3, promisedMs); // 3× the target, floor 5 min, never less than the advertised estimate
     const hardTimeout = setTimeout(() => controller.abort(new Error("Polled too long")), hardTimeoutMs);
     // Pass a poll ceiling that gives the model 2.5× the expected build time
     // before giving up — always at least 15 min so small trips keep generous
@@ -15628,7 +15637,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   // plan identical in shape to the single-call output and feed it through the
   // SAME downstream path (applyBuiltPlan). Chunks run sequentially so each can
   // be told the prior chunks' restaurants for cross-chunk dedupe.
-  const runChunkedBuild = async ({ nightsNum, citiesCount, chunks, staticRules, dynamicPreamble, userPromptForBuild }) => {
+  const runChunkedBuild = async ({ nightsNum, citiesCount, outputsCount = 0, chunks, staticRules, dynamicPreamble, userPromptForBuild }) => {
     setLoading(true);
     setError("");
     setProgress(0);
@@ -15649,7 +15658,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
     const controller = new AbortController();
     abortRef.current = controller;
-    const hardTimeoutMs = Math.max(600000, targetSec * 1000 * 3);
+    // KNOWN FAILURE MODE #13: see runBuildForJob's identical comment — the
+    // pre-build estimate factors in active output sections, this timeout
+    // didn't, so a trip with many outputs could get abandoned before the
+    // window the app itself promised. Floor at the advertised estimate.
+    const promisedMs = estimateBuildMinutes({ nights: nightsNum, citiesCount, outputsCount }).hi * 60 * 1000;
+    const hardTimeoutMs = Math.max(600000, targetSec * 1000 * 3, promisedMs);
     const hardTimeout = setTimeout(() => controller.abort(new Error("Polled too long")), hardTimeoutMs);
     // Per-chunk poll ceiling. Each chunk is small (<=6 days) so it finishes
     // well inside this, but we keep a generous floor so a momentary stall
@@ -15692,6 +15706,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         startedAt,
         nightsNum,
         citiesCount,
+        outputsCount,
         destination,
         expectedDays,
         chunks: chunkMeta,
@@ -15851,6 +15866,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
     const nightsNum = saved.nightsNum || 3;
     const citiesCount = saved.citiesCount || 1;
+    const outputsCount = saved.outputsCount || 0;
     const expectedDays = saved.expectedDays || nightsNum + 1;
     const savedChunks = Array.isArray(saved.chunks) ? saved.chunks : [];
     // eslint-disable-next-line react-hooks/purity -- inside async event handler, not render
@@ -15864,7 +15880,10 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
     const controller = new AbortController();
     abortRef.current = controller;
-    const hardTimeoutMs = Math.max(600000, targetSec * 1000 * 3);
+    // KNOWN FAILURE MODE #13: same fix as runChunkedBuild/runBuildForJob —
+    // floor at the estimate the pre-build screen originally promised.
+    const promisedMs = estimateBuildMinutes({ nights: nightsNum, citiesCount, outputsCount }).hi * 60 * 1000;
+    const hardTimeoutMs = Math.max(600000, targetSec * 1000 * 3, promisedMs);
     const hardTimeout = setTimeout(() => controller.abort(new Error("Polled too long")), hardTimeoutMs);
     const maxPollMsForTrip = Math.max(15 * 60 * 1000, Math.round(targetSec * 1000 * 2.5));
 
@@ -15892,6 +15911,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         startedAt: saved.startedAt || startedAt,
         nightsNum,
         citiesCount,
+        outputsCount,
         destination: saved.destination,
         expectedDays,
         chunks: chunkMeta,
@@ -16060,6 +16080,12 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // Multi-city plans add inter-city legs, more hotels, more restaurants —
     // budget extra tokens per additional city so progress doesn't peg at 95%.
     const expectedTokens = 1200 + (nightsNum + 1) * 1300 + Math.max(0, citiesCount - 1) * 1500;
+    // Same active-output-section count the pre-build screen's own
+    // estimateBuildMinutes() uses for its "about X–Y minutes" text (see
+    // KNOWN FAILURE MODE #13) — threaded through to the actual client
+    // patience budget below so the app can't promise a window it then
+    // abandons the connection before reaching.
+    const outputsCount = Object.values(outputs || {}).filter(Boolean).length;
 
     // Build the Anthropic request body once and ship it to the server. The
     // server stores it under a jobId, returns immediately, and runs the
@@ -16222,7 +16248,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // byte-for-byte unchanged.
     if (shouldChunk({ nights: nightsNum, citiesCount })) {
       const chunks = planDayChunks({ nights: nightsNum, cities: isMultiCity ? cities : null });
-      await runChunkedBuild({ nightsNum, citiesCount, chunks, staticRules, dynamicPreamble, userPromptForBuild });
+      await runChunkedBuild({ nightsNum, citiesCount, outputsCount, chunks, staticRules, dynamicPreamble, userPromptForBuild });
       return;
     }
 
@@ -16307,6 +16333,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
       expectedTokens,
       startedAt,
       citiesCount,
+      outputsCount,
       streamResp,
       onJobIdReady: (id) => {
         try {
@@ -16316,6 +16343,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             nightsNum,
             expectedTokens,
             citiesCount,
+            outputsCount,
             destination: basicsDestinationLabel(basics) || "your trip",
           }));
         } catch {}
@@ -16477,6 +16505,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
             expectedTokens: saved.expectedTokens || 6500,
             startedAt: Date.now(),
             citiesCount: saved.citiesCount || 1,
+            outputsCount: saved.outputsCount || 0,
             initialMsg: `Recovering completed plan for ${saved.destination || "your trip"}…`,
           });
           return;
@@ -16493,6 +16522,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           expectedTokens: saved.expectedTokens || 6500,
           startedAt: saved.startedAt || Date.now(),
           citiesCount: saved.citiesCount || 1,
+          outputsCount: saved.outputsCount || 0,
           initialMsg: `Resuming build for ${saved.destination || "your trip"}…`,
         });
       })
