@@ -232,33 +232,69 @@ console.log("\n[7] The revision prompts carry BOTH fields too");
 // every reopen where it hasn't yet persisted a "done" state — with "auto" as
 // the silent default apply mode, a user reopening the app mid-cycle
 // retriggered a fresh review AND a fresh, unconfirmed, real ~2min full-plan
-// revision apply, repeatedly. The useState initializer isn't independently
-// callable (it's inline in a component), so — following this file's own
-// established convention for JSX-embedded logic that can't be evaluated
-// standalone — this asserts against the source text directly.
+// revision apply, repeatedly.
+//
+// SAME-DAY FOLLOW-UP: the first version of this fix (default flips to
+// approve_each) didn't help a trip that already went through a review cycle
+// BEFORE the fix shipped — its persisted apply_mode_choice was already
+// "auto" from the OLD silent default, and reading that back as "the user's
+// explicit choice" kept the bug alive for every such trip. Reported live:
+// "We had this before. Why is it back." Fixed with a companion
+// apply_mode_explicit flag, set ONLY when the toggle is actually clicked —
+// old persisted data has no such field, so it's always falsy for a
+// pre-existing trip regardless of what apply_mode_choice says.
+//
+// The useState initializers aren't independently callable (inline in a
+// component), so — following this file's own established convention for
+// JSX-embedded logic that can't be evaluated standalone — this asserts
+// against the source text directly.
 // -----------------------------------------------------------------------------
 {
+  const explicitInitSrc = extract(
+    /const \[applyModeExplicit, setApplyModeExplicit\] = useState\([^)]*\);/,
+    "applyModeExplicit useState initializer",
+  );
+  assert("applyModeExplicit starts false unless the PRIOR session recorded it explicitly",
+    /!!initialReview\?\.apply_mode_explicit/.test(explicitInitSrc), explicitInitSrc);
+
   const initSrc = extract(
     /const \[applyModeChoice, setApplyModeChoice\] = useState\(\s*[\s\S]*?\);/,
     "applyModeChoice useState initializer",
   );
-  assert("defaults to approve_each, not auto, when there's no prior explicit choice",
-    /initialReview\?\.apply_mode_choice === "auto" \? "auto" : "approve_each"/.test(initSrc),
-    initSrc);
-  assert("the old silent 'auto unless explicitly approve_each' shape is gone",
-    !/initialReview\?\.apply_mode_choice === "approve_each" \? "approve_each" : "auto"/.test(initSrc),
+  assert("auto is only honored when BOTH apply_mode_explicit AND apply_mode_choice === auto",
+    /\(initialReview\?\.apply_mode_explicit && initialReview\?\.apply_mode_choice === "auto"\) \? "auto" : "approve_each"/.test(initSrc),
     initSrc);
 
-  // A restored saved trip that explicitly chose "auto" must still get it —
-  // this is a default-only fix, not a removal of the auto-apply feature.
-  const resolveApplyModeChoice = (savedChoice) =>
-    savedChoice === "auto" ? "auto" : "approve_each";
-  assert("a saved trip that explicitly chose auto keeps auto",
-    resolveApplyModeChoice("auto") === "auto");
-  assert("a saved trip that explicitly chose approve_each keeps it",
-    resolveApplyModeChoice("approve_each") === "approve_each");
-  assert("a fresh session with no prior choice at all now defaults to approve_each",
-    resolveApplyModeChoice(undefined) === "approve_each");
+  // A persisted "auto" with no explicit flag (every trip built before this
+  // fix, or any tampered/legacy data) must NOT be honored — this is the
+  // exact gap the "why is it back" report found.
+  const resolveApplyModeChoice = (explicit, savedChoice) =>
+    (explicit && savedChoice === "auto") ? "auto" : "approve_each";
+  assert("a saved trip that explicitly chose auto (flag set) keeps auto",
+    resolveApplyModeChoice(true, "auto") === "auto");
+  assert("a saved trip that explicitly chose approve_each (flag set) keeps it",
+    resolveApplyModeChoice(true, "approve_each") === "approve_each");
+  assert("a fresh session with no prior choice at all defaults to approve_each",
+    resolveApplyModeChoice(false, undefined) === "approve_each");
+  assert("(the actual bug) a PRE-EXISTING trip with apply_mode_choice=\"auto\" but NO explicit flag no longer gets auto",
+    resolveApplyModeChoice(false, "auto") === "approve_each");
+
+  // The toggle's onClick must set the explicit flag, not just the choice —
+  // otherwise a fresh in-session click wouldn't distinguish itself from old
+  // leaked-in data either.
+  const toggleSrc = extract(
+    /onClick=\{\(\) => \{ setApplyModeChoice\(opt\.id\); setApplyModeExplicit\(true\); \}\}/,
+    "apply-mode toggle onClick",
+  );
+  assert("the toggle's onClick sets applyModeExplicit(true) alongside the choice",
+    /setApplyModeExplicit\(true\)/.test(toggleSrc));
+
+  // Both onReviewChange payloads (fresh review, and after an apply) must
+  // persist the explicit flag alongside the choice, or a genuine opt-in
+  // wouldn't survive a reload either.
+  const persistCount = (src.match(/apply_mode_choice: applyModeChoice,\s*\n\s*apply_mode_explicit: applyModeExplicit,/g) || []).length;
+  assert("both onReviewChange call sites persist apply_mode_explicit alongside apply_mode_choice",
+    persistCount === 2, String(persistCount));
 
   // The auto-apply effect's own gate must still correctly require "auto" —
   // this fix works by changing what a user gets WITHOUT choosing, not by

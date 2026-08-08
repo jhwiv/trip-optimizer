@@ -841,6 +841,104 @@ could exist. Any future "detect an interrupted/resumable state and act" pattern 
 should be checked against this same rule explicitly, not assumed safe because it wasn't the one
 that got caught before.
 
+**SAME-DAY FOLLOW-UP (2026-08-08), reported directly: "We had this before. Why is it back."** The
+default flip above only helps a FUTURE session that hasn't run a review yet. It does nothing for a
+trip that already went through a review cycle before the fix shipped — its persisted
+`reviewState.apply_mode_choice` is `"auto"`, written by the OLD silent default, not by anyone
+actually touching the toggle. The fix above read that persisted value at face value
+(`initialReview.apply_mode_choice === "auto"` → keep `"auto"`), which is indistinguishable from a
+real explicit choice — so every trip that had already been opened even once before the #15 fix
+shipped kept reproducing the exact loop #15 was supposed to end, and the user saw the identical
+symptom recur on the very next session.
+
+**Fix (`src/App.jsx`, `ReviewPanel`):** added `applyModeExplicit` state, set to `true` ONLY inside
+the toggle's own `onClick` (`{ setApplyModeChoice(opt.id); setApplyModeExplicit(true); }`) — never
+implied by the choice value alone. Persisted alongside `apply_mode_choice` in both
+`onReviewChange` call sites. The initializer became:
+```js
+const [applyModeExplicit, setApplyModeExplicit] = useState(!!initialReview?.apply_mode_explicit);
+const [applyModeChoice, setApplyModeChoice] = useState(
+  (initialReview?.apply_mode_explicit && initialReview?.apply_mode_choice === "auto") ? "auto" : "approve_each",
+);
+```
+Old persisted data has no `apply_mode_explicit` field at all, so `!!initialReview?.apply_mode_explicit`
+is `false` for every trip that predates this fix regardless of what `apply_mode_choice` says —
+correctly falling back to `approve_each` until someone genuinely clicks "Auto-apply" going forward.
+A trip that DID explicitly choose `"auto"` (post-fix) keeps it, exactly as the #15 fix intended.
+
+Confirmed live via Playwright: seeded a `SESSION_KEY` snapshot reproducing the exact poisoned
+pre-fix shape (`apply_mode_choice: "auto"`, no `apply_mode_explicit` field, one unapplied
+`default_apply: true` critical finding) and loaded the app. No build/apply overlay appeared, no
+`/api/build` call fired automatically, and the finding rendered in its pending "1 change selected ·
+APPLY 1 CHANGE" state — waiting for the user to click, not auto-applying. 9 new regression
+assertions in `tests/test_review_panel.mjs`, including the exact poisoned-shape case by name: "(the
+actual bug) a PRE-EXISTING trip with apply_mode_choice='auto' but NO explicit flag no longer gets
+auto."
+
+**The pattern to watch for, on top of the one already named above:** a default-value fix that only
+changes what NEW state initializes to is incomplete if the same field can already be sitting in
+persisted storage from before the fix — old data doesn't know the new rule and will keep tripping
+the old bug through the same code path forever unless the fix explicitly distinguishes "this value
+was actually chosen" from "this value is just what an old default wrote." Changing a default and
+auditing existing persisted shapes for the same field are two separate steps; this incident shipped
+only the first one initially.
+
+### KNOWN FAILURE MODE #16 — both build-progress overlays gated their Cancel button on `loading` alone, so it silently vanished the instant the review/apply phase started — and even when visible, Cancel never had a way to reach the review's own in-flight request.
+
+**2026-08-08, reported directly, same message as the KNOWN FAILURE MODE #15 follow-up above:**
+"There's no cancel button." `BuildProgressScreen` (the full-screen build hero) and
+`BuildAndReviewOverlay` (the bottom-sheet fallback) are both governed by a combined
+`visible = loading || reviewRunning` — the whole point being that the overlay stays up through BOTH
+the initial build (`loading`) and the post-build Expert Review/apply phase (`reviewRunning`), so the
+user sees one continuous "working" screen instead of the overlay dropping and a second one
+appearing. But both components' own Cancel button was written as `{loading && <BuildCancelButton .../>}`
+— gated on `loading` ALONE. The instant the initial build finished and the review phase took over
+(`loading=false`, `reviewRunning=true` — precisely the state in the KNOWN FAILURE MODE #15 incident
+report, "② Expert review: 2% · Applying changes"), the button disappeared from a screen that was
+still very much running, with no way to stop it.
+
+**A second, independent bug, found while fixing the first:** even with the button visible during
+`loading`, the TripOptimizer-level `handleCancel` only ever aborted `abortRef` — the BUILD's own
+abort controller. `ReviewPanel` runs its review and apply fetches through a completely separate,
+component-scoped `abortRef` that the outer level had no reference to at all. So a Cancel tap during
+the review/apply phase (had the button been visible) would only have hidden the overlay — the
+underlying fetch, and any real token spend, would have kept running server-side regardless, exactly
+matching the report's "when I force close it doesn't stop."
+
+**Fix (`src/App.jsx`), three parts:**
+1. Both overlays' Cancel-button condition changed from `{loading && ...}` to
+   `{(loading || reviewRunning) && ...}` — matching the same `visible` condition that already governs
+   the overlay itself.
+2. A new `reviewCancelRef = useRef(null)` at the TripOptimizer level, threaded through
+   `ItineraryView` (`reviewCancelRef` prop) into `ReviewPanel` (`cancelRef` prop). `ReviewPanel`
+   populates it via `useEffect(() => { if (cancelRef) cancelRef.current = handleCancelReview; });`
+   (not a direct render-body assignment — that trips the `react-hooks/refs` "Cannot update ref
+   during render" lint rule) so the outer level can actually reach the review's own cancel logic,
+   which already aborts both the "running" review fetch and the "applying" revision fetch (they
+   share one `abortRef` inside `ReviewPanel`).
+3. `handleCancel` (TripOptimizer-level) now also calls `reviewCancelRef.current()` when present, in
+   addition to its existing `abortRef.current.abort()` — one Cancel tap now stops whichever phase is
+   actually running, build or review/apply.
+
+Confirmed live via Playwright against the real dev server: with a review genuinely in flight,
+clicking the overlay's Cancel button aborted the real underlying request
+(`Underlying review request was actually aborted: true`) and cleared the running/overlay state
+back to idle (`Overlay/running state cleared after Cancel: true`). Also fixed a stale assertion in
+`tests/test_prebuild_screen.mjs` that had been asserting the OLD, buggy `{loading && ...}` pattern
+as correct — it would have kept passing indefinitely against the very bug this fix removes. New
+regression coverage added for both overlay locations in the same file.
+
+**The pattern to watch for:** a shared `visible` condition covering two phases (build, review) is
+not proof every child element inside the overlay was updated to match — the container's visibility
+logic and a specific button's visibility logic inside it can drift independently, and here they had.
+Any UI element with its own conditional render inside a container gated on `A || B` should be
+checked against `A || B` too, not assumed to inherit it. Separately: an outer "Cancel" affordance
+that calls only ONE of several independent abort mechanisms in the codebase (here, the build's
+`abortRef` but not the review's) will look like it worked (the button existed, was clickable, closed
+the overlay) while the actual costly operation it was supposed to stop keeps running — "the button
+is visible and clickable" and "the button does what it claims" are different claims, and only a live
+network-level check (was the underlying request actually aborted?) distinguishes them.
+
 ## Implementation map
 
 | Concern | File |

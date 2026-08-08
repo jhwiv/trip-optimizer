@@ -6163,7 +6163,7 @@ export function pendingFindings(findings, appliedIds) {
   return list.filter(f => f && !applied.includes(f.id));
 }
 
-function ReviewPanel({ plan, qc, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false, externalSourceIds, onSourcesChange, onRunEnd, onProgressChange }) {
+function ReviewPanel({ plan, qc, inputs, onPlanRevised, onReviewChange, initialReview, autoRun = false, externalSourceIds, onSourcesChange, onRunEnd, onProgressChange, cancelRef }) {
   // --- review state ------------------------------------------------------
   // 'idle' — banner card with picker
   // 'running' — review in flight
@@ -6250,8 +6250,22 @@ function ReviewPanel({ plan, qc, inputs, onPlanRevised, onReviewChange, initialR
   // "approve_each" — the toggle itself is untouched and still lets a user
   // explicitly opt into auto-apply if they want it; it just can no longer
   // fire on someone who never chose it.
+  //
+  // SAME-DAY FOLLOW-UP: changing the default alone doesn't help a trip that
+  // already went through a review cycle BEFORE this fix shipped — its
+  // persisted reviewState.apply_mode_choice is "auto" from the OLD silent
+  // default, not from anyone actually touching the toggle, and reading that
+  // back as "the user's explicit choice" would keep the bug alive forever
+  // for every trip built before today. apply_mode_explicit (new) is set
+  // true ONLY when the toggle is actually clicked (see its onClick below),
+  // never implied by the choice value alone — old persisted data has no
+  // such field, so !!initialReview?.apply_mode_explicit is false for every
+  // pre-existing trip regardless of what apply_mode_choice says, correctly
+  // falling back to approve_each until someone genuinely opts in going
+  // forward.
+  const [applyModeExplicit, setApplyModeExplicit] = useState(!!initialReview?.apply_mode_explicit);
   const [applyModeChoice, setApplyModeChoice] = useState(
-    initialReview?.apply_mode_choice === "auto" ? "auto" : "approve_each",
+    (initialReview?.apply_mode_explicit && initialReview?.apply_mode_choice === "auto") ? "auto" : "approve_each",
   );
   // Once-per-review guard so auto-apply can't double-fire on re-render or a
   // brief status oscillation. Stores the review's generatedAt-or-verdict
@@ -6436,6 +6450,7 @@ function ReviewPanel({ plan, qc, inputs, onPlanRevised, onReviewChange, initialR
           applied_ids: [],
           generatedAt: new Date().toISOString(),
           apply_mode_choice: applyModeChoice,
+          apply_mode_explicit: applyModeExplicit,
         });
       }
     } catch (err) {
@@ -6490,6 +6505,15 @@ function ReviewPanel({ plan, qc, inputs, onPlanRevised, onReviewChange, initialR
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} }
     if (typeof onRunEnd === "function") onRunEnd();
   };
+  // Expose this to the parent so the outer build/review overlay's Cancel
+  // button can actually stop an in-flight review or apply call, not just
+  // hide itself — see the KNOWN FAILURE MODE #16 note where reviewCancelRef
+  // is declared in TripOptimizer. No dependency array — always re-run so
+  // cancelRef.current stays the LATEST closure (abortRef.current itself is
+  // always current, but onRunEnd is a prop that could change identity).
+  useEffect(() => {
+    if (cancelRef) cancelRef.current = handleCancelReview;
+  });
 
   const handleApply = async ({ findingsOverride, forceMode } = {}) => {
     // findingsOverride / forceMode let the "Re-plan to apply the rest" button
@@ -6645,6 +6669,7 @@ function ReviewPanel({ plan, qc, inputs, onPlanRevised, onReviewChange, initialR
           generatedAt: new Date().toISOString(),
           last_mode: applyMode,
           apply_mode_choice: applyModeChoice,
+          apply_mode_explicit: applyModeExplicit,
         });
       }
     } catch (err) {
@@ -6776,7 +6801,7 @@ function ReviewPanel({ plan, qc, inputs, onPlanRevised, onReviewChange, initialR
                     type="button"
                     role="radio"
                     aria-checked={active}
-                    onClick={() => setApplyModeChoice(opt.id)}
+                    onClick={() => { setApplyModeChoice(opt.id); setApplyModeExplicit(true); }}
                     title={opt.title}
                     style={{
                       fontSize: "10.5px",
@@ -7989,7 +8014,7 @@ function IntroductionAutoGenerator({ plan, inputs, onPlanRevised, onGeneratingCh
   return null;
 }
 
-function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId: _savedTripId, onPlanRevised, onReviewChange, initialReview, reviewerSourceIds, onReviewerSourcesChange, onReviewProgress }) {
+function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onSaved, savedTripId: _savedTripId, onPlanRevised, onReviewChange, initialReview, reviewerSourceIds, onReviewerSourcesChange, onReviewProgress, reviewCancelRef }) {
   // Whether IntroductionAutoGenerator's headless POST /api/introduction call
   // is in flight. Lifted here so PrintButton can disable Save as PDF until
   // the intro is either populated on the plan or the generator finishes/fails
@@ -8378,6 +8403,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
         onSourcesChange={onReviewerSourcesChange}
         onRunEnd={clearAutoReviewRunning}
         onProgressChange={onReviewProgress}
+        cancelRef={reviewCancelRef}
       />
 
       {!autoReviewRunning && !initialReview && (
@@ -13016,7 +13042,7 @@ function BuildProgressScreen({
                 reviewProgressLabel={reviewProgressLabel}
                 reviewElapsedSec={reviewElapsedSec}
               />
-              {loading && <BuildCancelButton onCancel={onCancel} />}
+              {(loading || reviewRunning) && <BuildCancelButton onCancel={onCancel} />}
             </div>
           )}
 
@@ -13122,7 +13148,7 @@ function BuildAndReviewOverlay({
           reviewProgressLabel={reviewProgressLabel}
           reviewElapsedSec={reviewElapsedSec}
         />
-        {loading && <BuildCancelButton onCancel={onCancelBuild} />}
+        {(loading || reviewRunning) && <BuildCancelButton onCancel={onCancelBuild} />}
       </div>
     </>
   );
@@ -13526,6 +13552,22 @@ export default function TripOptimizer() {
   const [reviewPhaseProgress, setReviewPhaseProgress] = useState(0);
   const [reviewPhaseLabel, setReviewPhaseLabel] = useState("");
   const [reviewPhaseElapsed, setReviewPhaseElapsed] = useState(0);
+  // KNOWN FAILURE MODE #16: the build-progress overlays (BuildProgressScreen,
+  // BuildAndReviewOverlay) both gate their Cancel button on `loading` alone,
+  // so once the initial build finishes and the review/apply phase starts
+  // (reviewPhaseRunning=true, loading=false), the button disappears even
+  // though both overlays are explicitly designed to stay visible through
+  // that phase too. Worse, the surrounding handleCancel only ever aborted
+  // the BUILD's own abortRef — ReviewPanel runs its review/apply fetches
+  // through its OWN component-scoped abortRef, which this level has no
+  // access to at all, so even a Cancel tap during the review phase (had the
+  // button been visible) would only have hidden the overlay without
+  // actually stopping the in-flight call. ReviewPanel populates this ref
+  // with its own handleCancelReview (which aborts ITS abortRef and covers
+  // both the "running" review fetch and the "applying" revision fetch,
+  // since handleApply reuses the same ref) so this level can actually
+  // reach it.
+  const reviewCancelRef = useRef(null);
   const [result, setResult] = useState(recovered?.result || null);
   // Ref always mirrors the latest result so handlePlanRevised can read
   // result._review without closing over result (which would make useCallback
@@ -15124,11 +15166,16 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
   const handleCancel = () => {
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} }
+    // Also stop an in-flight review/apply call, if one is running — see the
+    // KNOWN FAILURE MODE #16 note on reviewCancelRef's declaration. A no-op
+    // when nothing's running (ref is null) or the review already finished.
+    if (reviewCancelRef.current) { try { reviewCancelRef.current(); } catch {} }
     // Drop the stored active job so we don't auto-resume it on next mount.
     try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
     setLoading(false);
     setLoadingMsg("");
     setShowBuildHero(false);
+    setReviewPhaseRunning(false);
   };
 
   // Internal: drive the UI state machine for a running job. Used for both
@@ -17392,6 +17439,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
           <ItineraryView
             data={result}
             inputs={{ basics, flights, hotel, transport, dining, restaurants, activities, interests, guidelines, narrative, outputs }}
+            reviewCancelRef={reviewCancelRef}
             onBack={() => {
               // Navigate to step 1 without clearing the built itinerary or
               // form inputs. The user can come back to the plan via the

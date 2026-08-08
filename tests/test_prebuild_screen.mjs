@@ -221,7 +221,13 @@ console.log("\n[6b] BuildProgressScreen survives the step 2 → 3 transition (bu
     "safe now that #root no longer has contain:paint; this is exactly the containing-block-independent behavior that fix restored"
   );
   assert("it renders BuildPhaseBars", BPS.includes("<BuildPhaseBars"));
-  assert("it renders Cancel while loading", /\{loading && <BuildCancelButton/.test(BPS));
+  // 2026-08-08 regression (CLAUDE.md "KNOWN FAILURE MODE #16"): Cancel used
+  // to be gated on `loading` alone, so it disappeared the moment the
+  // initial build finished and the review/apply phase started — a user
+  // stuck in a review or an auto-fired revision had no way to stop it.
+  assert("it renders Cancel during loading OR the review/apply phase, not loading alone",
+    /\{\(loading \|\| reviewRunning\) && <BuildCancelButton/.test(BPS));
+  assert("the old loading-only gate is gone", !/\{loading && <BuildCancelButton/.test(BPS));
   assert("it accepts a result prop to know when the review is truly done", /result, onCancel, onDone,/.test(BPS));
   assert(
     "it renders a completion CTA instead of auto-navigating",
@@ -280,6 +286,20 @@ console.log("\n[7] BuildAndReviewOverlay is the fallback, not suppressed generic
     /if \(!rising \|\| outputsStep\) return;/.test(SRC),
     "the modal doesn't need the page scrolled to it"
   );
+
+  // 2026-08-08 regression (CLAUDE.md "KNOWN FAILURE MODE #16"): this overlay
+  // is explicitly documented ("most importantly the post-build review
+  // phase") as covering loading OR reviewRunning, but its own Cancel button
+  // was still gated on loading alone — the exact same bug as
+  // BuildProgressScreen's, in the fallback overlay this file's own [7]
+  // section is about.
+  const overlayStart = SRC.indexOf("function BuildAndReviewOverlay(");
+  const overlayEnd = SRC.indexOf("\n}\n", overlayStart);
+  const overlaySrc = SRC.slice(overlayStart, overlayEnd);
+  assert("BuildAndReviewOverlay renders Cancel during loading OR the review/apply phase",
+    /\{\(loading \|\| reviewRunning\) && <BuildCancelButton/.test(overlaySrc));
+  assert("BuildAndReviewOverlay's old loading-only Cancel gate is gone",
+    !/\{loading && <BuildCancelButton/.test(overlaySrc));
 }
 
 console.log("\n[8] auto-added city sources are labelled but not toggleable");
