@@ -6228,12 +6228,30 @@ function ReviewPanel({ plan, qc, inputs, onPlanRevised, onReviewChange, initialR
   //                   default_apply: true and fire one handleApply
   //                   automatically (the user still sees the apply
   //                   progress + applied changelog via the existing surface).
-  //   "approve_each": current behavior — user reviews findings, toggles
-  //                   which to include, hits Apply manually.
-  // Default: "auto" per the wiki spec. A restored saved trip carries its
-  // saved choice forward via initialReview.apply_mode_choice.
+  //   "approve_each": user reviews findings, toggles which to include, hits
+  //                   Apply manually.
+  //
+  // KNOWN FAILURE MODE #4 in CLAUDE.md already established the rule this
+  // default violated: "detect-and-offer, not detect-and-act, for anything
+  // that (a) costs real money/tokens to redo and (b) changes what screen is
+  // on top." A review re-runs from scratch on every reopen where it hasn't
+  // yet persisted a "done" state (autoReview = !initialReview, below) —
+  // reviewState only saves to SESSION_KEY once the review actually
+  // completes. With "auto" as the silent default, a user who reopens the
+  // app before a review+apply cycle finishes (confused by what looks like
+  // "the old build screen" running again) retriggers the ENTIRE thing from
+  // scratch: a fresh ~45s review, a fresh set of default_apply findings,
+  // and a fresh ~2min full-revision apply call — repeating indefinitely for
+  // as long as the itinerary has anything the reviewer flags critical,
+  // with no confirmation at any point and no way to tell it's happening
+  // until a real regeneration is already mid-flight. Real observed case
+  // (2026-08-08): exactly this loop, reported as "opened the app and it's
+  // running, when I force close it doesn't stop." Default changed to
+  // "approve_each" — the toggle itself is untouched and still lets a user
+  // explicitly opt into auto-apply if they want it; it just can no longer
+  // fire on someone who never chose it.
   const [applyModeChoice, setApplyModeChoice] = useState(
-    initialReview?.apply_mode_choice === "approve_each" ? "approve_each" : "auto",
+    initialReview?.apply_mode_choice === "auto" ? "auto" : "approve_each",
   );
   // Once-per-review guard so auto-apply can't double-fire on re-render or a
   // brief status oscillation. Stores the review's generatedAt-or-verdict
@@ -6739,8 +6757,9 @@ function ReviewPanel({ plan, qc, inputs, onPlanRevised, onReviewChange, initialR
           {/* #8 part 2b — Apply-mode toggle. Sets what happens when findings
               land: auto-apply the default-flagged ones in one pass (with the
               changelog still visible), or approve each finding manually.
-              Default auto per the wiki spec; saved trips carry the user's
-              prior choice via initialReview.apply_mode_choice. */}
+              Default "approve each" (see the KNOWN FAILURE MODE #4 note on
+              applyModeChoice's declaration above); saved trips carry the
+              user's prior explicit choice via initialReview.apply_mode_choice. */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px", padding: "8px 10px", marginBottom: "10px", background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)" }}>
             <p style={{ fontSize: "10.5px", color: "var(--color-text-secondary)", margin: 0, letterSpacing: "0.04em", textTransform: "uppercase", fontWeight: 600 }}>
               When findings land

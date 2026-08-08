@@ -226,5 +226,50 @@ console.log("\n[7] The revision prompts carry BOTH fields too");
   }
 }
 
+// -----------------------------------------------------------------------------
+// applyModeChoice default (2026-08-08 regression, CLAUDE.md "KNOWN FAILURE
+// MODE #15"). autoReview = !initialReview re-runs the review from scratch on
+// every reopen where it hasn't yet persisted a "done" state — with "auto" as
+// the silent default apply mode, a user reopening the app mid-cycle
+// retriggered a fresh review AND a fresh, unconfirmed, real ~2min full-plan
+// revision apply, repeatedly. The useState initializer isn't independently
+// callable (it's inline in a component), so — following this file's own
+// established convention for JSX-embedded logic that can't be evaluated
+// standalone — this asserts against the source text directly.
+// -----------------------------------------------------------------------------
+{
+  const initSrc = extract(
+    /const \[applyModeChoice, setApplyModeChoice\] = useState\(\s*[\s\S]*?\);/,
+    "applyModeChoice useState initializer",
+  );
+  assert("defaults to approve_each, not auto, when there's no prior explicit choice",
+    /initialReview\?\.apply_mode_choice === "auto" \? "auto" : "approve_each"/.test(initSrc),
+    initSrc);
+  assert("the old silent 'auto unless explicitly approve_each' shape is gone",
+    !/initialReview\?\.apply_mode_choice === "approve_each" \? "approve_each" : "auto"/.test(initSrc),
+    initSrc);
+
+  // A restored saved trip that explicitly chose "auto" must still get it —
+  // this is a default-only fix, not a removal of the auto-apply feature.
+  const resolveApplyModeChoice = (savedChoice) =>
+    savedChoice === "auto" ? "auto" : "approve_each";
+  assert("a saved trip that explicitly chose auto keeps auto",
+    resolveApplyModeChoice("auto") === "auto");
+  assert("a saved trip that explicitly chose approve_each keeps it",
+    resolveApplyModeChoice("approve_each") === "approve_each");
+  assert("a fresh session with no prior choice at all now defaults to approve_each",
+    resolveApplyModeChoice(undefined) === "approve_each");
+
+  // The auto-apply effect's own gate must still correctly require "auto" —
+  // this fix works by changing what a user gets WITHOUT choosing, not by
+  // touching the effect's trigger condition itself.
+  const autoApplySrc = extract(
+    /useEffect\(\(\) => \{\s*if \(applyModeChoice !== "auto"\) return;[\s\S]*?\}, \[applyModeChoice, status, review, appliedIds\.length\]\);/,
+    "auto-apply effect",
+  );
+  assert("the auto-apply effect still gates on applyModeChoice === \"auto\"",
+    /if \(applyModeChoice !== "auto"\) return;/.test(autoApplySrc));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

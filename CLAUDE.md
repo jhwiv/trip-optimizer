@@ -790,6 +790,57 @@ for the better. When a heuristic exemption is found to be too loose in one place
 might be swallowing before calling the fix done — the real plan JSON, not the fixture set alone,
 is what surfaced this one.
 
+### KNOWN FAILURE MODE #15 — Expert Review's "auto-apply" default silently re-fired a full, real regeneration on every reopen of an interrupted review cycle.
+
+**2026-08-08, reported directly:** "Opened the app and it's running. When I force close it doesn't
+stop. It's showing the old build screen too. Wtf?" — a live, active incident, not a one-off report.
+Traced to `applyModeChoice` (`src/App.jsx`), the toggle controlling what happens once the
+auto-running Expert Review lands findings: `"auto"` fires `handleApply` — a real, ~2-minute full
+revision call — automatically the moment any finding is flagged `default_apply: true`, with zero
+confirmation. `"auto"` was the SILENT DEFAULT for any session that hadn't explicitly chosen
+`"approve_each"`.
+
+**Why this became a repeating loop, not a one-time surprise:** `autoReview = !initialReview` means
+the Expert Review re-runs FROM SCRATCH on every app load where `reviewState` hasn't yet persisted a
+`"done"` result — and `reviewState` only gets written to `SESSION_KEY` once the review actually
+completes. A user who reopens the app WHILE a review+auto-apply cycle is still running (confused by
+what looks like "the old build screen" running again, as reported) never lets it reach that
+persisted "done" state — so the reopen doesn't resume anything, it starts a BRAND NEW review, which
+(on an itinerary with real critical findings — and this exact trip had several: KNOWN FAILURE MODE
+#14's hallucinated Paris day, a fabricated booking URL, a fabricated flight) finds critical issues
+again, and fires ANOTHER unconfirmed ~2-minute regeneration call. Force-closing doesn't stop this
+because the server-side call continues independently via `waitUntil`, and the NEXT reopen just
+starts the cycle over again — a real, repeated, unbounded token cost with no confirmation at any
+point and no visible way to tell it's happening until a regeneration is already mid-flight.
+
+**This is the exact rule KNOWN FAILURE MODE #4 already established for the build-resume case,
+violated here in a code path that fix never touched:** "detect-and-offer, not detect-and-act, for
+anything that (a) costs real money/tokens to redo and (b) changes what screen is on top." The
+apply-mode toggle itself was a legitimate, already-built feature (a user can explicitly pick
+"Auto-apply" if they want it) — the bug was purely that nobody who never touched the toggle got the
+safe default.
+
+**Fix (`src/App.jsx`):** `applyModeChoice`'s default flipped from `"auto"` to `"approve_each"`. A
+saved trip that explicitly chose `"auto"` (`initialReview.apply_mode_choice === "auto"`) still gets
+`"auto"` back — this only changes what a user who never chose gets. The auto-apply `useEffect`
+itself is untouched; it still correctly gates on `applyModeChoice === "auto"`, so a user who
+explicitly opts in still gets the one-pass auto-apply behavior exactly as before.
+
+Confirmed live via Playwright: a fresh build with a review returning a `default_apply: true`
+finding now shows exactly 2 `/api/build` calls (initial build, review) — no third revision/apply
+call fires unprompted — and the finding is visible on screen for the user to act on. 6 new
+regression assertions in `tests/test_review_panel.mjs`, asserted against the source text directly
+(the default lives in an inline `useState` initializer, not an independently-callable function, per
+this file's own established convention for JSX-embedded logic).
+
+**The pattern to watch for:** KNOWN FAILURE MODE #4's principle was written down as a lesson from
+ONE incident (build-resume) but the codebase had a SECOND, independent code path (review auto-
+apply) that violated the identical principle and was never audited against it — writing a design
+rule down after finding it once doesn't retroactively apply it everywhere the same shape of mistake
+could exist. Any future "detect an interrupted/resumable state and act" pattern in this codebase
+should be checked against this same rule explicitly, not assumed safe because it wasn't the one
+that got caught before.
+
 ## Implementation map
 
 | Concern | File |
