@@ -608,6 +608,62 @@ by-design "first stop only" instruction) rather than assuming the 2026-08-04 fix
 multi-city trip built via the structured form often never populates a single basics.destination
 string") already covered this case — it explicitly didn't, since here `destination` WAS populated.
 
+### KNOWN FAILURE MODE #12 — the KNOWN FAILURE MODE #11 fix itself broke large-trip builds the same day, by writing a display hint into a field that also drives token-budget math.
+
+**2026-08-07, found from a live screenshot minutes after KNOWN FAILURE MODE #11 shipped.** The
+user's build hero still showed only "England" (the bug from #11 persisting) AND, worse, a NEW
+failure: `No day-by-day plan returned (build 4d576a1 [truncated]). Got keys: destination, meta,
+cities, _truncated, _truncationCause. Tap Build again.` — a real 14-night, 4-country build was
+now failing to produce ANY day content. The `__BUILD_ID__` embedded in that error message (`vite.config.js`
+stamps it from `git rev-parse --short HEAD` specifically so a screenshot can be matched to a
+commit) was confirmed to be this session's own latest push — ruling out Cloudflare Pages deploy
+lag as the explanation and confirming this was a real, live regression in the just-shipped code.
+
+**Root cause:** #11's fix wrote the narrative-extracted multi-stop list (`exBasics.destinations`)
+straight into `basics.cities[]`, with each new city's `nights` left blank (extraction has no way
+to know the per-city split). `basics.cities[]` is not a display-only field — `isMultiCity =
+cities.length > 1` and `handleBuild`'s token-budget math both read it directly: once `isMultiCity`
+is true, night math switches from the correct `basics.nights` to SUMMING `cities[].nights` —
+and with every auto-populated city's `nights` blank, that sum is 0, collapsing `nightsNum` to 1
+for a real 14-night trip (`Math.max(1, 0)`). The model, still generating from the full narrative
+text (unaffected — it's always been the real source of truth for `/api/build`, independent of
+extraction), wrote toward the actual 14-night, 4-city trip while budgeted for a 1-night one,
+truncating almost immediately — before `days[]`, right after the first few top-level fields
+(`destination`, `meta`, `cities`) — which is exactly the key list in the error. Reproduced exactly
+in Node: `cities=[{nights:""},{nights:""},{nights:""}]` → `isMultiCity=true`,
+`totalNightsFromCities=0`, `nightsNum=1`.
+
+**Fix (`src/App.jsx`, `functions/api/extract-trip.js` untouched — the schema addition was fine,
+only the client-side merge was wrong):** the extracted multi-stop list now goes into a NEW,
+genuinely display-only field, `basics.multiStopHint` (a plain string array) — `basics.cities[]` is
+never written to beyond its pre-existing single-entry mirror (`cities[0].name` from
+`exBasics.destination`, exactly as it worked before #11). Nothing outside `basicsDestinationLabel`/
+`basicsDestinationList` reads `multiStopHint`, so it is structurally incapable of touching
+`isMultiCity` or the night-count math — `cities[]` getting 2+ real entries is, once again, ONLY
+ever the result of a user typing multiple cities into the structured multi-city form (the ORIGINAL
+2026-08-04 fix's case, with real user-entered per-city nights that sum correctly).
+
+Confirmed live via Playwright: captured the actual `/api/build` request bodies (not just what's on
+screen) for the exact reported shape (`destination: "England"`, `destinations: ["England",
+"France", "Portugal"]`, `basics.nights: "14"`) — 5 requests fired (3 day-chunks + wrapper + review,
+each correctly sized), proving chunking triggered on the real 14 rather than collapsing to a
+single tiny-budget call; no truncation error. Re-ran the display check on the same corrected code
+path to confirm the #11 fix still works through the new field. `tests/test_destination_label.mjs`
+rewritten with the corrected mirror plus a `computeNightsNum` helper that asserts the exact
+regression numerically (14 → 1 with the buggy shape, 14 → 14 with the fix, and the legitimate
+structured-form multi-city sum still works) — 22 assertions, up from 14.
+
+**The pattern to watch for:** a field that is read by MULTIPLE, UNRELATED consumers (here,
+`basics.cities[]`: the multi-city form UI, the build's night-count math, AND — briefly — a display
+label) is not safe to repurpose for a new consumer's convenience without checking every existing
+reader's assumptions about what populates it. The #11 fix satisfied the DISPLAY reader's need (a
+list of names) while silently violating the BUILD MATH reader's assumption (that any populated
+`cities[]` entry has a real, user-supplied `nights` value) — the two readers had never needed to
+agree on that before because nothing else had ever written multiple rows into `cities[]` except the
+one path (the structured form) that always fills `nights` in. When a shared field gets a new
+writer, audit every existing reader, not just the one the current fix is trying to satisfy — and
+prefer a NEW, narrowly-scoped field over widening a shared one, exactly the move made here.
+
 ## Implementation map
 
 | Concern | File |

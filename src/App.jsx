@@ -3970,10 +3970,24 @@ function defaultTripName(inputs, result) {
 // basics.destination FIRST, so that single leftover string always won even
 // once cities[] was later populated with every real stop — the build hero
 // showed just "London" (or a bare region word like "England") the whole
-// time, on a trip that visits four countries. Prefer a genuinely multi-city
-// cities[] (2+ named entries) over the single destination string; only fall
-// back to destination, then a lone cities[] entry, when there isn't one.
+// time, on a trip that visits four countries.
+//
+// basics.multiStopHint (added the same day, after a regression) is a
+// DISPLAY-ONLY string[] the narrative extraction populates with every
+// detected stop. It deliberately does NOT live in basics.cities[]: an
+// earlier version of this fix wrote the extracted stops straight into
+// cities[] with blank per-city nights (extraction doesn't know the split),
+// which silently flipped isMultiCity (cities.length > 1) to true elsewhere
+// in this file — and handleBuild sums cities[].nights instead of using
+// basics.nights once isMultiCity is true, so an all-blank sum collapsed a
+// real 14-night trip's token budget down to a 1-night one, truncating the
+// build almost immediately. multiStopHint can't cause that: nothing outside
+// this display path reads it. Precedence: multiStopHint (2+) > cities[]
+// (2+, the ORIGINAL 2026-08-04 structured-form fix, real per-city nights)
+// > destination > a lone cities[] entry.
 function basicsDestinationLabel(basics) {
+  const hint = Array.isArray(basics?.multiStopHint) ? basics.multiStopHint.filter(Boolean) : [];
+  if (hint.length > 1) return hint.join(" → ");
   const cityNames = Array.isArray(basics?.cities) ? basics.cities.map((c) => c?.name).filter(Boolean) : [];
   if (cityNames.length > 1) return cityNames.join(" → ");
   if (basics?.destination) return basics.destination;
@@ -3986,6 +4000,8 @@ function basicsDestinationLabel(basics) {
 // destination as its own visual element instead of one long line. Falls
 // back to a single-item array so callers can treat both shapes uniformly.
 function basicsDestinationList(basics) {
+  const hint = Array.isArray(basics?.multiStopHint) ? basics.multiStopHint.filter(Boolean) : [];
+  if (hint.length > 1) return hint;
   const cityNames = Array.isArray(basics?.cities) ? basics.cities.map((c) => c?.name).filter(Boolean) : [];
   if (cityNames.length > 1) return cityNames;
   if (basics?.destination) return [basics.destination];
@@ -13715,10 +13731,29 @@ export default function TripOptimizer() {
       // full narrative text flows to /api/build as source of truth
       // independent of this extraction step. exBasics.destinations (added
       // 2026-08-07) carries every distinct stop in visiting order when the
-      // model detects more than one; only use it when it genuinely lists
-      // 2+ stops so a real single-destination trip's existing behavior
-      // (and any cities the user already typed into the multi-city form)
-      // isn't disturbed.
+      // model detects more than one.
+      //
+      // REGRESSION, same day: the first version of this fix wrote these
+      // stops straight into basics.cities[] (with blank per-city nights,
+      // since extraction doesn't know the split). That silently flips
+      // isMultiCity (cities.length > 1) to true, which switches handleBuild
+      // off basics.nights and onto SUMMING cities[].nights for the token-
+      // budget/chunking math — and with every city's nights blank, that sum
+      // is 0, so nightsNum collapsed to 1 for a real 14-night trip. The
+      // model, still working from the full narrative (still source of
+      // truth), wrote toward the real trip size while budgeted for a
+      // 1-night one, truncating almost immediately — "No day-by-day plan
+      // returned... Got keys: destination, meta, cities" (cut off before
+      // any days content). Reproduced exactly: cities=[{nights:""}x3],
+      // isMultiCity=true, totalNightsFromCities=0, nightsNum=1.
+      //
+      // Fix: this hint is DISPLAY-ONLY now. It never touches basics.cities
+      // (the ONLY field isMultiCity/night-math ever reads), so it cannot
+      // affect chunking or token budgeting — only basicsDestinationLabel/
+      // basicsDestinationList read it, purely for the build-progress hero.
+      // The ORIGINAL 2026-08-04 fix (structured multi-city form → cities[]
+      // with real per-city nights the user typed) is completely untouched
+      // and still the only way cities[] gets multiple entries.
       const exDestinations = Array.isArray(exBasics.destinations)
         ? exBasics.destinations.map((d) => (typeof d === "string" ? d.trim() : "")).filter(Boolean)
         : [];
@@ -13733,13 +13768,13 @@ export default function TripOptimizer() {
         budget: exBasics.budget != null ? (Array.isArray(exBasics.budget) ? exBasics.budget : [exBasics.budget].filter(Boolean)) : prev.budget,
         style: (Array.isArray(exBasics.style) && exBasics.style.length) ? exBasics.style : prev.style,
         pace: exBasics.pace || prev.pace,
-        cities: exDestinations.length > 1
-          ? exDestinations.map((name, i) => ({ name, nights: prev.cities?.[i]?.nights || "", focus: prev.cities?.[i]?.focus || "" }))
-          // Mirror destination into cities[0].name so multi-city machinery
-          // and the city autocomplete stay consistent.
-          : (prev.cities && prev.cities.length)
-            ? prev.cities.map((c, i) => i === 0 ? { ...c, name: exBasics.destination || c.name } : c)
-            : [{ name: exBasics.destination || "", nights: inferredNights || "", focus: "" }],
+        // Mirror destination into cities[0].name so multi-city machinery
+        // and the city autocomplete stay consistent. Structural only —
+        // never adds rows, so isMultiCity/night-math are unaffected.
+        cities: (prev.cities && prev.cities.length)
+          ? prev.cities.map((c, i) => i === 0 ? { ...c, name: exBasics.destination || c.name } : c)
+          : [{ name: exBasics.destination || "", nights: inferredNights || "", focus: "" }],
+        multiStopHint: exDestinations.length > 1 ? exDestinations : undefined,
       }));
       setF((prev) => ({
         ...prev,
