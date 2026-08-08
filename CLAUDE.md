@@ -551,6 +551,63 @@ model-capability gap look identical from the outside (both present as "the revie
 but need completely different fixes — broadening instructions and ground-truth injection versus
 switching models or lowering expectations. Diagnose which one it is before concluding either.
 
+### KNOWN FAILURE MODE #11 — the build-in-progress hero collapsed a 4-country trip down to one leftover region word, because the narrative extraction schema only ever captured the FIRST stop.
+
+**2026-08-07, reported directly:** "the hero only shows the first country destination... I'm
+building this right now and all I see is the word England," on a real London → Paris → Normandy →
+Porto build. The 2026-08-04 fix (`basicsDestinationLabel`, see the Implementation map entry) had
+already solved a DIFFERENT path to the same symptom — a structured-form multi-city trip whose
+`basics.destination` was empty, falling back to `cities[0].name` only. This was a new, independent
+path: `functions/api/extract-trip.js`'s extraction schema explicitly instructs the model to put
+only the FIRST stop in `basics.destination` for a multi-city narrative ("For multi-city trips, the
+first stop") — by design, not a bug in itself, since `destination` also doubles as the one
+required field the build pipeline gates on. But `basicsDestinationLabel` checked
+`basics.destination` FIRST, so that single leftover string (sometimes a broad region word like
+"England" rather than even the first city) always won, even on builds where `basics.cities[]` was
+later populated with more than one real stop. The actual generated itinerary was never wrong — the
+full narrative text flows to `/api/build` as source of truth independent of extraction, which is
+why the attached PDF correctly showed all four countries — this was purely a display bug on the
+screen shown WHILE building, before the real plan exists to read city names from.
+
+**Fix, three parts, all in this session:**
+1. `functions/api/extract-trip.js`: added `basics.destinations` (array, all distinct stops in
+   visiting order, first entry matching `basics.destination`) to `EXTRACT_TOOL`'s schema, and
+   updated the system prompt's multi-city instruction to populate it. Additive — the existing
+   required `basics.destination` field and its 422 hard-gate are untouched.
+2. `src/App.jsx`'s "Build from this" narrative-extraction merge: when `exBasics.destinations`
+   lists 2+ stops, populate `basics.cities[]` with all of them (preserving any nights/focus the
+   user already typed for cities that survive a re-extraction); otherwise unchanged single-city
+   behavior.
+3. `basicsDestinationLabel` precedence fixed to prefer a genuinely multi-city `cities[]` (2+ named
+   entries) over the single `destination` string, falling back to `destination` only when there
+   isn't one — closing the gap for BOTH the 2026-08-04 path (empty destination) and this new one
+   (populated-but-incomplete destination). A new `basicsDestinationList` sibling returns the same
+   data as an array for the visual rendering below.
+
+**Also addressed the second half of the request** ("show all countries in a visually engaging
+manner," not just fixing the data bug): `BuildProgressScreen`'s headline now renders a multi-stop
+trip as a waypoint strip — each destination its own element, joined by a muted chevron, with a
+short staggered fade-in per stop — instead of one plain joined string, which would have looked
+cramped for a 4+ stop trip even after the data fix. Single-destination trips are pixel-identical to
+before (confirmed via before/after screenshots).
+
+Confirmed live via Playwright: a mocked extraction returning `destination: "England"` +
+`destinations: ["London","Paris","Normandy","Porto"]` now renders the full waypoint strip on the
+build hero, with no trace of the bare "England"-only headline; a single-destination control build
+(Paris) renders identically to the pre-fix screenshot. 14 new regression assertions in
+`tests/test_destination_label.mjs` (a new file — no prior dedicated test existed for
+`basicsDestinationLabel`, mirroring the established closures-can't-be-imported convention).
+
+**The pattern to watch for:** the 2026-08-04 fix and this one look like the same bug reported
+twice, but they're two different code paths converging on the same visible symptom (a display
+function checking the wrong field first) — exactly the "matching symptom is not proof of matching
+cause" lesson already documented earlier in this file for the iOS clipping reports. Fixing the
+precedence in `basicsDestinationLabel` closes BOTH paths at once, but only because the second
+investigation actually traced the new report to its own root (the extraction schema's own
+by-design "first stop only" instruction) rather than assuming the 2026-08-04 fix's comment ("A
+multi-city trip built via the structured form often never populates a single basics.destination
+string") already covered this case — it explicitly didn't, since here `destination` WAS populated.
+
 ## Implementation map
 
 | Concern | File |

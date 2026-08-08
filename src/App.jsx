@@ -3961,15 +3961,36 @@ function defaultTripName(inputs, result) {
 // structured form often never populates a single basics.destination string
 // (basics.cities[] is the source of truth there) — falling back to just
 // cities[0].name silently dropped every city after the first, so a 5-city
-// trip's build screen showed only the first city. Join all city names
-// instead, in the same "A → B → C" shape the built plan's own destination
-// string uses, so the label stays visually consistent once one exists.
+// trip's build screen showed only the first city.
+//
+// 2026-08-07: a SECOND, different path to the same symptom — a narrative-
+// extracted multi-country trip ("London, Paris, Normandy, Porto") populates
+// basics.destination with just the first stop by design (see
+// functions/api/extract-trip.js), and this function used to check
+// basics.destination FIRST, so that single leftover string always won even
+// once cities[] was later populated with every real stop — the build hero
+// showed just "London" (or a bare region word like "England") the whole
+// time, on a trip that visits four countries. Prefer a genuinely multi-city
+// cities[] (2+ named entries) over the single destination string; only fall
+// back to destination, then a lone cities[] entry, when there isn't one.
 function basicsDestinationLabel(basics) {
+  const cityNames = Array.isArray(basics?.cities) ? basics.cities.map((c) => c?.name).filter(Boolean) : [];
+  if (cityNames.length > 1) return cityNames.join(" → ");
   if (basics?.destination) return basics.destination;
-  if (Array.isArray(basics?.cities) && basics.cities.length > 0) {
-    return basics.cities.map((c) => c?.name).filter(Boolean).join(" → ");
-  }
+  if (cityNames.length === 1) return cityNames[0];
   return "";
+}
+
+// Same city list as basicsDestinationLabel, but as an array rather than a
+// pre-joined string — lets a caller (the build-progress hero) render each
+// destination as its own visual element instead of one long line. Falls
+// back to a single-item array so callers can treat both shapes uniformly.
+function basicsDestinationList(basics) {
+  const cityNames = Array.isArray(basics?.cities) ? basics.cities.map((c) => c?.name).filter(Boolean) : [];
+  if (cityNames.length > 1) return cityNames;
+  if (basics?.destination) return [basics.destination];
+  if (cityNames.length === 1) return cityNames;
+  return [];
 }
 
 // SaveTripButton — prompts for a name, persists trip, calls onSaved with the saved entry.
@@ -12839,6 +12860,11 @@ function BuildProgressScreen({
   result, onCancel, onDone,
 }) {
   const destination = basicsDestinationLabel(basics);
+  // Multi-country/multi-city trips render as a waypoint strip (each stop its
+  // own element, joined by a chevron, staggered fade-in) instead of one
+  // plain joined string — see basicsDestinationList's header comment for why
+  // a joined string alone used to collapse to just the first stop.
+  const destinationList = basicsDestinationList(basics);
   const tripLine = [
     basics?.baseArea,
     (basics?.startDate && basics?.endDate)
@@ -12900,9 +12926,36 @@ function BuildProgressScreen({
           <p style={{ fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 700, color: "rgba(255,255,255,0.65)", margin: "0 0 8px", textAlign: "center" }}>
             {isDone ? "Ready" : "Building your trip"}
           </p>
-          <p style={{ fontSize: vp.isMobile ? "28px" : "34px", fontWeight: 400, fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 2rem", lineHeight: 1.2, textAlign: "center", color: "#fff" }}>
-            {destination || "Your trip"}
-          </p>
+          {destinationList.length > 1 ? (
+            <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", alignItems: "baseline", gap: "0.35em", margin: "0 0 2rem", padding: vp.isMobile ? "0 0.5rem" : 0 }}>
+              <style>{"@keyframes hero-dest-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }"}</style>
+              {destinationList.map((name, i) => (
+                <span key={`${name}-${i}`} style={{ display: "inline-flex", alignItems: "baseline", gap: "0.35em" }}>
+                  {i > 0 && (
+                    <span aria-hidden="true" style={{ fontSize: vp.isMobile ? "16px" : "20px", color: "rgba(255,255,255,0.4)", fontFamily: "var(--font-serif)" }}>→</span>
+                  )}
+                  <span
+                    style={{
+                      fontSize: vp.isMobile ? "22px" : "28px",
+                      fontWeight: 400,
+                      fontFamily: "var(--font-serif)",
+                      fontStyle: "italic",
+                      lineHeight: 1.2,
+                      color: i === 0 ? "#fff" : "rgba(255,255,255,0.82)",
+                      opacity: 0,
+                      animation: `hero-dest-in 0.5s ease ${(i * 0.12).toFixed(2)}s forwards`,
+                    }}
+                  >
+                    {name}
+                  </span>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p style={{ fontSize: vp.isMobile ? "28px" : "34px", fontWeight: 400, fontFamily: "var(--font-serif)", fontStyle: "italic", margin: "0 0 2rem", lineHeight: 1.2, textAlign: "center", color: "#fff" }}>
+              {destination || "Your trip"}
+            </p>
+          )}
 
           {isDone ? (
             <div style={{ ...BUILD_HERO_GLASS, ...HERO_CARD_VARS, maxWidth: "460px", width: "100%", margin: "0 auto", textAlign: "center" }}>
@@ -13651,6 +13704,24 @@ export default function TripOptimizer() {
         } catch {}
       }
 
+      // Multi-stop narratives ("London, then Paris, then Normandy, then
+      // Porto") used to only ever populate basics.destination with the
+      // FIRST stop — by design, per the extraction schema's own comment
+      // ("For multi-city trips, the first stop"). That single string is
+      // also what the build-in-progress hero screen displays, so a real
+      // multi-country trip showed just "London" (or, worse, a single
+      // region word like "England") the whole time it was building, even
+      // though the actual generated plan always covered every city — the
+      // full narrative text flows to /api/build as source of truth
+      // independent of this extraction step. exBasics.destinations (added
+      // 2026-08-07) carries every distinct stop in visiting order when the
+      // model detects more than one; only use it when it genuinely lists
+      // 2+ stops so a real single-destination trip's existing behavior
+      // (and any cities the user already typed into the multi-city form)
+      // isn't disturbed.
+      const exDestinations = Array.isArray(exBasics.destinations)
+        ? exBasics.destinations.map((d) => (typeof d === "string" ? d.trim() : "")).filter(Boolean)
+        : [];
       setB((prev) => normalizeBasics({
         ...prev,
         destination: exBasics.destination || prev.destination,
@@ -13662,11 +13733,13 @@ export default function TripOptimizer() {
         budget: exBasics.budget != null ? (Array.isArray(exBasics.budget) ? exBasics.budget : [exBasics.budget].filter(Boolean)) : prev.budget,
         style: (Array.isArray(exBasics.style) && exBasics.style.length) ? exBasics.style : prev.style,
         pace: exBasics.pace || prev.pace,
-        // Mirror destination into cities[0].name so multi-city machinery
-        // and the city autocomplete stay consistent.
-        cities: (prev.cities && prev.cities.length)
-          ? prev.cities.map((c, i) => i === 0 ? { ...c, name: exBasics.destination || c.name } : c)
-          : [{ name: exBasics.destination || "", nights: inferredNights || "", focus: "" }],
+        cities: exDestinations.length > 1
+          ? exDestinations.map((name, i) => ({ name, nights: prev.cities?.[i]?.nights || "", focus: prev.cities?.[i]?.focus || "" }))
+          // Mirror destination into cities[0].name so multi-city machinery
+          // and the city autocomplete stay consistent.
+          : (prev.cities && prev.cities.length)
+            ? prev.cities.map((c, i) => i === 0 ? { ...c, name: exBasics.destination || c.name } : c)
+            : [{ name: exBasics.destination || "", nights: inferredNights || "", focus: "" }],
       }));
       setF((prev) => ({
         ...prev,

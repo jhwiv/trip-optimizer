@@ -37,6 +37,12 @@ const EXTRACT_TOOL = {
             description:
               "Primary city or region. For multi-city trips, the first stop. Examples: 'Paris', 'Rome', 'Aspen', 'Tuscany'. Leave blank if not stated.",
           },
+          destinations: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "ALL distinct cities/regions/countries the trip visits, IN VISITING ORDER, when the narrative describes more than one stop. The first entry must equal basics.destination. Examples: for 'London, then Paris, then Normandy, then Porto' → ['London', 'Paris', 'Normandy', 'Porto']. Leave as an empty array (or a single-item array matching basics.destination) for a genuinely single-destination trip — do not pad it with invented stops.",
+          },
           startDate: {
             type: "string",
             description:
@@ -207,7 +213,7 @@ EXTRACTION RULES — STRICT:
 • Nights: derive from startDate + endDate when both are present (end - start). Otherwise pull from explicit phrasing.
 • Budget: infer from named hotels using the hotel→tier mapping in the schema. Do not invent a budget if no hotel is named.
 • Style: only include items from the exact enum list. Don't invent new styles.
-• If the narrative names multiple hotels in different cities, treat it as multi-city: put the FIRST city in basics.destination and put all hotels in hotel.mustHave separated by ' / '.
+• If the narrative names multiple hotels in different cities, OR otherwise describes visiting more than one city/region/country, treat it as multi-city: put the FIRST stop in basics.destination, list EVERY distinct stop in basics.destinations in visiting order (first entry = basics.destination), and put all hotels in hotel.mustHave separated by ' / '.
 • UNCERTAIN NAMES — CRITICAL: If a hotel/restaurant/airline/activity name in the narrative looks misspelled, ambiguous between multiple real properties, or doesn't match a property you can clearly identify, you MUST: (1) keep the exact original text in the relevant field (mustHave / restaurants[] / activities[] / airline), AND (2) add an entry to name_checks with the original text, the reason, and up to 4 candidate real-world names. NEVER silently substitute a 'corrected' name. A wrong silent correction is worse than asking the traveler to confirm. Example: traveler writes 'Marriot Mountainside' → keep 'Marriot Mountainside' in hotel.mustHave, add name_checks entry: { kind:'hotel', original:'Marriot Mountainside', reason:'Multiple Marriott properties could match', candidates:['Marriott\'s MountainSide at Park City','Park City Marriott'] }.
 
 DO NOT emit any prose. Only call the tool.`;
