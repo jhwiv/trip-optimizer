@@ -426,6 +426,84 @@ console.log("\n=== findStructuralBlockingIssues (gate adapter) ===");
   assert("kind marks it as structural", issues[0].kind === "structure");
 }
 
+console.log("\n=== ORPHANED_TRANSITION — pickup-phrased location false-positives a day trip (2026-08-07 regression) ===");
+{
+  // Real observed case: a 15-day London/Normandy/Nuremberg/Porto build, Day
+  // 13's Douro Valley day trip. "Private driver pickup for Douro Valley —
+  // full-day tour" carried location:"Porto Marriott Hotel Palácio" (the
+  // hotel the driver picks up FROM, not a destination) — itemDestination
+  // used to treat item.location as a `to` candidate unconditionally, so
+  // this pickup item resolved to "Porto" as an ordinary, resolved arrival
+  // instead of the unresolved outbound leg the day-trip-return exemption
+  // depends on. Because it "resolved," sawUnresolvedTransportEarlierToday
+  // never got set, so the later "Return drive to Porto" leg wasn't
+  // recognized as that outbound leg's return half either — TWO bogus
+  // same-city "arrivals" got recorded on a day the traveller never left.
+  const douroDayTrip = {
+    cities: [{ name: "Porto" }],
+    days: [
+      { day: 1, city: "Porto", items: [
+        { type: "Flight", text: "Fly Nuremberg (NUE) to Porto (OPO) — connecting via Frankfurt" },
+        { type: "Hotel", text: "Check in Porto Marriott Hotel Palácio", hotel: { name: "Porto Marriott Hotel Palácio" } },
+      ] },
+      { day: 2, city: "Porto", items: [{ type: "Activity", text: "Ribeira waterfront walk" }] },
+      { day: 3, city: "Porto", items: [
+        { type: "Transport", text: "Private driver pickup for Douro Valley — full-day tour", location: "Porto Marriott Hotel Palácio" },
+        { type: "Activity", text: "Quinta do Vallado wine tasting" },
+        { type: "Transport", text: "Return drive to Porto — 90 min" },
+      ] },
+    ],
+  };
+  const issues = findContinuityIssues(douroDayTrip);
+  assert("the Douro Valley day trip is not flagged as ORPHANED_TRANSITION",
+    !issues.some(i => i.code === "ORPHANED_TRANSITION"), JSON.stringify(issues));
+
+  const legs = buildDayLegs(douroDayTrip);
+  assert("the pickup item (location = the day-trip's own hotel) is not recorded as a transition",
+    legs[2].transitions.length === 0, JSON.stringify(legs[2].transitions));
+}
+
+console.log("\n=== ORPHANED_TRANSITION — a hallucinated day's earlier unresolved leg must not exempt its own real arrival (2026-08-07 regression) ===");
+{
+  // Real observed case, same build: Day 11 opens "Return to hotel, collect
+  // luggage" at a Paris hotel that doesn't belong on this itinerary at all
+  // (Transport type, unresolved — Paris isn't one of this trip's cities),
+  // checks OUT of that phantom hotel, then flies to Porto — a SECOND,
+  // contradictory arrival the day after the real one (Day 10, Nuremberg to
+  // Porto). Porto is also Day 11's own city label, and an earlier
+  // unresolved Transport item existed that same day, so this satisfied
+  // every existing day-trip-return condition and got silently swallowed —
+  // hiding the exact duplicate-arrival bug this module exists to catch,
+  // instead of surfacing it. The fix: the exemption now also requires no
+  // hotel check-out yet that day, since a genuine day trip never checks out
+  // (the traveller is still based where they started) — a day that DOES
+  // check out is describing a real departure from somewhere, however
+  // unresolvable that somewhere is.
+  const phantomParisLeg = {
+    cities: [{ name: "Nuremberg" }, { name: "Porto" }],
+    days: [
+      { day: 1, city: "Nuremberg", items: [
+        { type: "Hotel", text: "Check out Sheraton Carlton Hotel Nuremberg", hotel: { name: "Sheraton Carlton Hotel Nuremberg" } },
+        { type: "Flight", text: "Fly Nuremberg (NUE) to Porto (OPO) — connecting via Frankfurt" },
+        { type: "Hotel", text: "Check in Porto Marriott Hotel Ribeira", hotel: { name: "Porto Marriott Hotel Ribeira" } },
+      ] },
+      { day: 2, city: "Porto", items: [
+        { type: "Transport", text: "Return to hotel, collect luggage", location: "Marriott Paris Champs Elysees" },
+        { type: "Hotel", text: "Check out Marriott Paris Champs Elysees", hotel: { name: "Marriott Paris Champs Elysees" } },
+        { type: "Flight", text: "Fly Paris CDG → Porto OPO · LOT via Warsaw · connecting" },
+        { type: "Hotel", text: "Check in Porto Marriott Hotel Palácio", hotel: { name: "Porto Marriott Hotel Palácio" } },
+      ] },
+    ],
+  };
+  const issues = findContinuityIssues(phantomParisLeg);
+  assert("the second, contradictory arrival IS flagged as ORPHANED_TRANSITION",
+    issues.some(i => i.code === "ORPHANED_TRANSITION" && i.day === 2), JSON.stringify(issues));
+
+  const legs = buildDayLegs(phantomParisLeg);
+  assert("the real flight into Porto is recorded as a transition, not exempted away",
+    legs[1].transitions.some(t => t.to === "Porto"), JSON.stringify(legs[1].transitions));
+}
+
 console.log("\n=== degenerate input ===");
 {
   assert("null plan → []", findContinuityIssues(null).length === 0);

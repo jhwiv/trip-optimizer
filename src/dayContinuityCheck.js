@@ -18,6 +18,18 @@ const ARROW_RE = /→|->|—>|–>/;
 const CHECKOUT_RE = /check[\s-]?out|depart(?:ure)? from (?:the )?hotel/i;
 const CHECKIN_RE = /check[\s-]?in|arrive at (?:the )?hotel/i;
 const RENTAL_DROPOFF_RE = /(?:drop[\s-]?off|return|turn in)[^.]{0,40}\b(?:car|rental|vehicle)\b|\b(?:car|rental|vehicle)\b[^.]{0,40}(?:drop[\s-]?off|return)/i;
+// A Transport item's text describing a PICKUP ("driver pickup for X",
+// "pickup at Y") names the item's location as WHERE THE JOURNEY STARTS, not
+// where it ends — the opposite of a drop-off/arrival item, where location
+// legitimately means the destination. Real observed case (2026-08-07, a
+// London/Normandy/Nuremberg/Porto build): "Private driver pickup for Douro
+// Valley — full-day tour" carried location:"Porto Marriott Hotel Palácio"
+// (the hotel the driver picks up FROM). itemDestination previously used
+// location as a `to` candidate unconditionally, so this pickup item
+// resolved to "Porto" as a destination — a same-city day-trip's OUTBOUND
+// leg looked like an ordinary, resolved arrival rather than the unresolved
+// leg the day-trip-return exemption below depends on detecting.
+const PICKUP_RE = /\bpick[\s-]?up\b/i;
 
 // Within how many days a repeated check-in at the same property is suspicious.
 // 2 covers the observed failure (consecutive days) plus a one-day gap, without
@@ -120,9 +132,10 @@ function itemDestination(item, canonical) {
       from: firstResolvable([route.from, beforeComma(route.from), fl.from_airport], canonical),
     };
   }
+  const isPickup = PICKUP_RE.test(String(item?.text || ""));
   return {
-    to: firstResolvable([route.to, beforeComma(route.to), item.location], canonical),
-    from: firstResolvable([route.from, beforeComma(route.from)], canonical),
+    to: firstResolvable([route.to, beforeComma(route.to), ...(isPickup ? [] : [item.location])], canonical),
+    from: firstResolvable([route.from, beforeComma(route.from), ...(isPickup ? [item.location] : [])], canonical),
   };
 }
 
@@ -183,8 +196,23 @@ export function buildDayLegs(plan) {
       // drop-off in Normandy and a flight FROM Caen prove the traveller
       // wasn't continuing an Amsterdam stay at all). A single flight with
       // no matching earlier-that-day outbound leg is not a round trip.
+      //
+      // ALSO requires no hotel check-out yet today (!leg.hotelOut). Real
+      // observed case (2026-08-07): a hallucinated day that opens "Return to
+      // hotel, collect luggage" at a Paris property that doesn't belong on
+      // this itinerary at all (Transport type, unresolved — Paris isn't a
+      // canonical city on this trip), checks OUT of that phantom hotel, then
+      // flies to Porto — the day's real, genuine arrival. Porto also happens
+      // to be the day's own city label, and an earlier unresolved Transport
+      // item existed, so this satisfied every condition above and got
+      // swallowed as if it were a Bletchley-Park-style same-day round trip.
+      // A real day trip never checks out of a hotel — the traveller is still
+      // based where they started. A day that DOES check out is describing an
+      // actual departure from somewhere, so its later "arrival" must not be
+      // exempted, however unresolvable or coincidentally-named that
+      // somewhere turns out to be.
       const isDaytripReturn =
-        dest?.to && !dest.from && sawUnresolvedTransportEarlierToday && norm(dest.to) === norm(leg.city);
+        dest?.to && !dest.from && sawUnresolvedTransportEarlierToday && !leg.hotelOut && norm(dest.to) === norm(leg.city);
       if (dest && dest.to && !isDaytripReturn) {
         leg.transitions.push({ ...dest, itemIdx, label: String(item.text || "").trim() });
       }

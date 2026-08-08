@@ -704,6 +704,92 @@ possibility for a large multi-output trip) will still hit this recovery path, co
 server-side job continues via `waitUntil` regardless of the client's timer. That's by design, not
 a bug this fix addresses.
 
+### KNOWN FAILURE MODE #14 — two more `dayContinuityCheck.js` false positives on the SAME real 15-day build, found via the user's own "Export as Web App" download; one masked a genuine duplicate-arrival bug instead of catching it.
+
+**2026-08-08, found from the user's own PDF-export gate screenshot** ("Cannot export: 4 blocking
+issues — ... Day 13: Porto (ORPHANED_TRANSITION); Day 15: Porto (ORPHANED_TRANSITION)"), on a real
+15-day London→Normandy→Nuremberg→Porto build. Rather than guess, asked for and received the
+"Export as Web App" HTML download (not gated by the same block), extracted the embedded plan JSON,
+and ran the actual `findContinuityIssues`/`buildDayLegs` functions against it directly — the same
+technique established in KNOWN FAILURE MODE #3 and #6.
+
+**Bug 1 — a pickup-phrased item's `location` field misread as a destination.** Day 13's Douro
+Valley day trip: `"Private driver pickup for Douro Valley — full-day tour"` carried
+`location:"Porto Marriott Hotel Palácio"` (the hotel the driver picks up FROM). `itemDestination`
+used `item.location` as a `to` (destination) candidate unconditionally for Transport items, so this
+pickup item resolved to "Porto" as an ordinary, ALREADY-resolved arrival — instead of the
+unresolved outbound leg the existing day-trip-return exemption (KNOWN FAILURE MODE #6) depends on
+detecting. Because it "resolved," `sawUnresolvedTransportEarlierToday` never got set, so the day's
+real return leg ("Return drive to Porto — 90 min") wasn't recognized as that outbound leg's return
+half either — TWO bogus same-city "arrivals" got recorded on a day the traveller never left, which
+then falsely flagged BOTH Day 13 itself and, via a corrupted `lastArrival` cursor, cascaded into a
+false positive on Day 15 too (citing Day 13's bogus "arrival" as the prior one).
+
+**Bug 2 — the SAME exemption this masked a real bug behind, once the pickup fix let it fire
+correctly.** Day 11 opens `"Return to hotel, collect luggage"` at a Paris hotel that does not
+belong on this itinerary at all — this trip never visits Paris; `cities[]` is only London,
+Normandy, Nuremberg, Porto. That Transport item is genuinely unresolved (Paris isn't canonical
+here), checks OUT of that phantom hotel, then flies to Porto — a SECOND, contradictory arrival the
+day after the real one (Day 10, Nuremberg→Porto, a different named hotel). Porto is also Day 11's
+own city label, and an earlier unresolved Transport item existed that same day, so — once Bug 1's
+fix let `sawUnresolvedTransportEarlierToday` correctly reflect the pickup item's true unresolved
+status — this satisfied every existing day-trip-return condition and got silently swallowed,
+**hiding the exact class of duplicate-arrival bug this module was originally built to catch,
+instead of surfacing it.** This was found while fixing Bug 1, not independently — Bug 1's fix
+initially only moved the false positive from Day 13's own transitions onto exposing that Day 11
+was ALSO being wrongly exempted.
+
+**Fix (`src/dayContinuityCheck.js`):**
+1. Added `PICKUP_RE` and split `itemDestination`'s Transport handling: when the item's text matches
+   a pickup phrase, `item.location` is now a `from` (origin) candidate instead of a `to`
+   (destination) candidate — a pickup happens AT that location, not arrives there.
+2. `isDaytripReturn` now also requires `!leg.hotelOut` (no hotel check-out recorded yet that day).
+   A genuine same-day round trip never checks out of a hotel — the traveller is still based where
+   they started. A day that DOES check out is describing a real departure from somewhere, however
+   unresolvable that somewhere turns out to be, so its later "arrival" must not be exempted away.
+
+Confirmed against the real plan JSON, both directions: Day 13 no longer appears in
+`findContinuityIssues`' output at all (zero transitions recorded, matching the Bletchley-Park-style
+exemption it should have gotten from the start); Day 11 now correctly fires `ORPHANED_TRANSITION`,
+pointing the export gate at the actual broken day instead of an innocent one. Confirmed live via
+Playwright against the real dev server, replaying the EXACT plan JSON through the real client
+pipeline (chunked-build mock, `applyQualityLayer`, the actual "Save as PDF" click handler): the
+on-screen gate message went from `4 blocking issues ... Day 13 ... Day 15` to
+`3 blocking issues ... Day 11 ... Day 15` — Day 13 is gone, Day 11's real bug is now visible. All
+73 pre-existing regression assertions in `tests/test_day_continuity_check.mjs` (including the Day
+6/7 Amsterdam-collision and Bletchley-Park fixtures this exemption logic was built around) still
+pass unmodified — this was checked BEFORE writing the fix, precisely because the two prior
+`isDaytripReturn`-adjacent fixes (#3, #6) already showed how fragile a heuristic keyed to "does an
+earlier same-day transport leg look unresolved" can be. 4 new regression assertions added,
+distilled from the real plan into minimal fixtures per this file's established convention.
+
+**Known residual, NOT fixed in this pass:** Day 15 still fires `ORPHANED_TRANSITION` (now citing
+Day 11 instead of Day 13). Day 15 is the trip's actual departure day — `"Taxi to Porto OPO airport
+— 25 min"` resolves to "Porto" via ordinary text matching (the airport code's own name contains the
+city), and the traveller is not "arriving" anywhere that day, they're leaving the country entirely.
+This is a distinct, third false-positive class this file has no signal for yet: a local transfer to
+one's OWN departure airport, described in text that happens to name the city, has no way to be
+distinguished from a genuine fresh arrival by the current logic. Deliberately not attempted here —
+the `isDaytripReturn`/`hotelOut` fixes above were already two interacting, carefully-verified
+changes in one pass; a third would have meaningfully raised the chance of a new regression without
+the same fixture-by-fixture verification budget. Documented as a known gap, not guessed at.
+
+**Unrelated to this fix, and not touched:** the same live-verified gate also showed a
+`BOOKING_URL_IMPLAUSIBLE` flag (Day 2, Simpson's-in-the-Strand) and would show a
+`FLIGHT_UNVERIFIED`/block flag in production (Day 8, Lufthansa CFR→NUE — the schedule API
+affirmatively found no service on this route, per `_unverifiedReason:"no-scheduled-route"` already
+baked into the plan's flight object). Both are independent validators working as designed, not
+continuity-check bugs — the itinerary genuinely has a fabricated booking link and likely a
+fabricated flight that need regenerating, on top of Day 11's hallucinated Paris content.
+
+**The pattern to watch for:** this is the second time in this file's history (after #6) that a
+targeted false-positive fix, while being verified against the SAME real build, turned out to be
+masking a second, more serious bug rather than being a clean standalone false positive — fixing the
+narrow symptom (Day 13) changed what the SAME exemption mechanism did to a DIFFERENT day (Day 11),
+for the better. When a heuristic exemption is found to be too loose in one place, check what else it
+might be swallowing before calling the fix done — the real plan JSON, not the fixture set alone,
+is what surfaced this one.
+
 ## Implementation map
 
 | Concern | File |
