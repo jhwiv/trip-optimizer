@@ -20,9 +20,29 @@ function esc(s) {
     .replace(/"/g, "&quot;");
 }
 
+// Flight items' depart_time/arrive_time can already be 12-hour strings with
+// an AM/PM suffix (e.g. "3:05 PM") rather than the 24-hour "HH:MM" that
+// item.time always uses -- the two fields come from different sources
+// (item.time is code-formatted; flight.depart_time/arrive_time can be
+// resolver- or model-written in either shape). Naively re-deriving AM/PM
+// from the leading hour, as this function used to, silently flips a real
+// "3:05 PM" into "3:05 AM": the old regex only read the hour and minute,
+// ignoring any AM/PM suffix already present, then recomputed ampm from
+// `h >= 12` -- 3 is never >= 12, so the recomputed value was always AM
+// regardless of what the input actually said. Real observed case
+// (2026-08-09): a web export showed "Departs 3:05 PM" in the header (from
+// item.time="15:05", genuinely 24-hour) but "Departs 3:05 AM . Arrives
+// 5:30 AM" in the flight detail line just below it (from
+// flight.depart_time="3:05 PM"/arrive_time="5:30 PM", already 12-hour).
 function formatTime(t) {
   if (!t || typeof t !== "string") return "";
-  const m = t.trim().match(/^(\d{1,2}):(\d{2})/);
+  const trimmed = t.trim();
+  const ampmMatch = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (ampmMatch) {
+    // eslint-disable-next-line no-irregular-whitespace -- U+202F narrow no-break space between minutes and AM/PM (typographic convention)
+    return `${parseInt(ampmMatch[1], 10)}:${ampmMatch[2]} ${ampmMatch[3].toUpperCase()}`;
+  }
+  const m = trimmed.match(/^(\d{1,2}):(\d{2})$/);
   if (!m) return esc(t);
   let h = parseInt(m[1], 10);
   const min = m[2];
@@ -68,7 +88,7 @@ function badgeHtml(type) {
 //   Breakfast/Brunch/Lunch/
 //   Dinner/Dining                → item.restaurant.{name,why} + .contact.{address,phone,website}
 //   Activity/Transport/Note      → item.text (the headline) + item.why + item.contact.{address,phone,website}
-//   Flight                       → no separate "name" — see flightDetail below
+//   Flight                       → item.flight.{carrier,flight_number,confirmation_note} — see flightDetail below
 function itemVenue(item) {
   const type = item.type || "Note";
   if (type === "Hotel" && item.hotel) {
@@ -80,9 +100,25 @@ function itemVenue(item) {
     const c = (r.contact && typeof r.contact === "object") ? r.contact : {};
     return { name: r.name || "", address: c.address || "", phone: c.phone || r.reservation?.phone || "", website: c.website || "", notes: r.why || "" };
   }
+  // Flight items get their own branch, checked BEFORE the generic item.text
+  // fallback below. applyQualityLayer's carrier-correction (KNOWN_NONSTOPS,
+  // src/App.jsx) rewrites item.flight.carrier/flight_number/confirmation_note
+  // when the model's claimed carrier doesn't actually fly the route nonstop —
+  // it never touches item.text, the model's own original prose. The generic
+  // fallback below reads item.text FIRST, so the export always showed the
+  // model's stale, uncorrected carrier claim ("LOT nonstop Newark → London
+  // Heathrow") even when the "At a glance" summary table (which reads
+  // flight.carrier directly, see overviewHtml below) correctly showed the
+  // corrected one ("United or British Airways or Virgin Atlantic") — the
+  // two disagreeing on the very same flight. Real observed case (2026-08-09).
+  if (type === "Flight" && item.flight) {
+    const fl = item.flight;
+    const name = [fl.carrier, fl.flight_number].filter(Boolean).join(" ").trim() || item.text || "";
+    return { name, address: "", phone: "", website: "", notes: fl.confirmation_note || item.why || "" };
+  }
   const c = (item.contact && typeof item.contact === "object") ? item.contact : {};
   return {
-    name: item.text || (item.flight ? `${item.flight.carrier || ""} ${item.flight.flight_number || ""}`.trim() : ""),
+    name: item.text || "",
     address: c.address || "",
     phone: c.phone || "",
     website: c.website || "",

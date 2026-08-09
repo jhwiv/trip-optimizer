@@ -147,5 +147,118 @@ console.log("\nDeveloper-handoff JSON embed carries the real schema fields\n");
     embedded?.introduction?.arc === PLAN.introduction.arc);
 }
 
+console.log("\nFlight items — corrected carrier surfaces, not the model's stale raw text (2026-08-09 regression)\n");
+{
+  // applyQualityLayer's KNOWN_NONSTOPS carrier-correction (src/App.jsx)
+  // rewrites item.flight.carrier/flight_number/confirmation_note when the
+  // model's claimed carrier doesn't actually fly the route nonstop, but
+  // never touches item.text — the model's own original prose. Real
+  // observed case: the "At a glance" table (reads flight.carrier directly)
+  // correctly said "United or British Airways or Virgin Atlantic" while the
+  // Day 1 flight card (itemVenue's old fallback read item.text first)
+  // still said "LOT nonstop Newark → London Heathrow" — the same flight,
+  // disagreeing with itself.
+  const correctedCarrierPlan = {
+    destination: "London",
+    meta: "1 night",
+    introduction: { arc: "x", differentiators: "NONE_FLAGGED" },
+    days: [
+      {
+        label: "Day 1 · Sat Oct 10 · Arrive London",
+        city: "London",
+        headline: "x",
+        items: [
+          {
+            type: "Flight", time: "17:30", text: "LOT nonstop Newark → London Heathrow",
+            flight: {
+              carrier: "United or British Airways or Virgin Atlantic",
+              flight_number: null,
+              from_airport: "EWR", to_airport: "LHR",
+              depart_time: "17:30", arrive_time: "05:50",
+              nonstop: true,
+              confirmation_note: "Book directly with United. Verify flight number, times and equipment at booking — schedules change.",
+              _carrierOverride: true,
+              _originalCarrier: "LOT Polish Airlines",
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const html = buildWebApp(correctedCarrierPlan, {});
+  // The developer-handoff JSON embed at the bottom of the page carries the
+  // real, raw plan data verbatim (including the model's original item.text)
+  // by design — the assertion below checks only the VISIBLE rendered HTML,
+  // not that embed, for the stale carrier text.
+  const visibleHtml = html.slice(0, html.indexOf('<script id="trip-data"'));
+  assert("the corrected carrier appears as the flight item's name",
+    visibleHtml.includes("United or British Airways or Virgin Atlantic"));
+  assert("the model's stale, uncorrected carrier text does not appear in the visible page",
+    !visibleHtml.includes("LOT nonstop Newark"));
+  assert("the corrected confirmation note (why to book with United instead) appears",
+    visibleHtml.includes("Book directly with United"));
+
+  // A Flight item with no carrier at all (should never happen in practice,
+  // but itemVenue must not crash or produce an empty name) still falls back
+  // to item.text.
+  const noCarrierPlan = JSON.parse(JSON.stringify(correctedCarrierPlan));
+  noCarrierPlan.days[0].items[0].flight.carrier = null;
+  noCarrierPlan.days[0].items[0].flight.flight_number = null;
+  const html2 = buildWebApp(noCarrierPlan, {});
+  assert("falls back to item.text when the flight has neither carrier nor flight_number",
+    html2.includes("LOT nonstop Newark"));
+}
+
+console.log("\nFlight times — depart_time/arrive_time already in 12-hour format is not re-flipped (2026-08-09 regression)\n");
+{
+  // formatTime used to assume 24-hour "HH:MM" input unconditionally, so a
+  // flight.depart_time/arrive_time already written as "3:05 PM" (12-hour,
+  // with AM/PM) got its hour re-read as if it were 24-hour: 3 is never
+  // >= 12, so the recomputed AM/PM was always AM regardless of the real
+  // value — "3:05 PM" silently became "3:05 AM". Real observed case: the
+  // day header (from item.time="15:05", genuinely 24-hour) correctly showed
+  // "3:05 PM" while the flight detail line right below it, built from the
+  // already-12-hour depart_time/arrive_time, showed "3:05 AM"/"5:30 AM".
+  const ampmFlightPlan = {
+    destination: "Paris",
+    meta: "1 night",
+    introduction: { arc: "x", differentiators: "NONE_FLAGGED" },
+    days: [
+      {
+        label: "Day 5 · Wed Oct 14 · Depart for Normandy",
+        city: "Normandy",
+        headline: "x",
+        items: [
+          {
+            type: "Flight", time: "15:05", text: "British Airways nonstop London Heathrow → Paris Charles de Gaulle",
+            flight: {
+              carrier: "British Airways", flight_number: "BA308",
+              from_airport: "LHR", to_airport: "CDG",
+              depart_time: "3:05 PM", arrive_time: "5:30 PM",
+              nonstop: true,
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const htmlAmpm = buildWebApp(ampmFlightPlan, {});
+  assert("the flight detail line shows the correct PM departure, not flipped to AM",
+    htmlAmpm.includes("Departs 3:05") && htmlAmpm.match(/Departs 3:05.PM/), htmlAmpm.match(/Departs[^<]*/)?.[0]);
+  assert("the flight detail line shows the correct PM arrival, not flipped to AM",
+    htmlAmpm.match(/Arrives 5:30.PM/), htmlAmpm.match(/Arrives[^<]*/)?.[0]);
+  assert("no stray AM appears for either time (the actual reported bug)",
+    !htmlAmpm.includes("3:05 AM") && !htmlAmpm.includes("5:30 AM"));
+
+  // 24-hour input (the top-of-file PLAN fixture's own Day 1 flight,
+  // depart_time="08:45"/arrive_time="11:20") must still convert correctly —
+  // not a regression from adding the 12-hour branch above. Checked against
+  // the module-level `html`, built from PLAN at the top of this file.
+  assert("existing 24-hour depart_time (08:45) still converts to 8:45 AM",
+    html.match(/Departs 8:45.AM/), html.match(/Departs[^<]*/)?.[0]);
+  assert("existing 24-hour arrive_time (11:20) still converts to 11:20 AM",
+    html.match(/Arrives 11:20.AM/), html.match(/Arrives[^<]*/)?.[0]);
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

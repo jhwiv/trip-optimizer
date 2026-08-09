@@ -9,7 +9,7 @@
 // deliberately narrow — see the last block, which is the important one: a
 // venue's real closure data must never be edited.
 
-import { assertWeekdayClaims } from "../src/dateFacts.js";
+import { assertWeekdayClaims, enforceDayLabelDates } from "../src/dateFacts.js";
 
 let passed = 0, failed = 0;
 function assert(name, cond, detail = "") {
@@ -176,6 +176,59 @@ console.log("\n=== degenerate input ===");
     Array.isArray(assertWeekdayClaims({ days: [null, { day: 2, items: [] }] }, START).plan.days));
   assert("a clean plan is returned by reference",
     assertWeekdayClaims({ days: [{ day: 1, notes: "Nothing to see.", items: [] }] }, START).flags.length === 0);
+}
+
+console.log("\n=== enforceDayLabelDates — day.label's own date stamp (2026-08-09 regression) ===");
+{
+  // Real observed case, three independent exports of the same
+  // London/Normandy/Nuremberg/Porto build: Day 5 labeled "Wed Oct 15" and
+  // Day 6 labeled "Thu Oct 15" — the identical date twice, Oct 14 skipped
+  // from the sequence entirely. assertWeekdayClaims never caught this
+  // because it only scans PROSE fields (headline, notes, ...), never the
+  // label's own date segment. Trip starts Sat Oct 10, 2026.
+  const LABEL_START = "2026-10-10";
+  const brokenLabels = {
+    days: [
+      { label: "Day 1 · Sat Oct 10 · Arrive London", city: "London", items: [] },
+      { label: "Day 2 · Sun Oct 11 · Settle into London", city: "London", items: [] },
+      { label: "Day 3 · Mon Oct 12 · Imperial War Museum", city: "London", items: [] },
+      { label: "Day 4 · Tue Oct 13 · Bletchley Park day trip", city: "London", items: [] },
+      { label: "Day 5 · Wed Oct 15 · Depart for Normandy", city: "Normandy", items: [] },
+      { label: "Day 6 · Thu Oct 15 · Normandy D-Day exploration", city: "Normandy", items: [] },
+    ],
+  };
+  const result = enforceDayLabelDates(brokenLabels, LABEL_START);
+  assert("Day 5's wrong date stamp is corrected from Oct 15 to Oct 14",
+    result.plan.days[4].label === "Day 5 · Wed Oct 14 · Depart for Normandy", result.plan.days[4].label);
+  assert("Day 6's already-correct stamp (Thu Oct 15) is left untouched",
+    result.plan.days[5].label === "Day 6 · Thu Oct 15 · Normandy D-Day exploration", result.plan.days[5].label);
+  assert("the 4 already-correct days are untouched (same object references)",
+    [0, 1, 2, 3].every(i => result.plan.days[i] === brokenLabels.days[i]));
+  assert("exactly one flag raised, for Day 5 only",
+    result.flags.length === 1 && result.flags[0].day === 5, JSON.stringify(result.flags));
+  assert("the flag is WEEKDAY_CLAIM_MISMATCH, warn severity, targeting the label",
+    result.flags[0].code === "WEEKDAY_CLAIM_MISMATCH" && result.flags[0].severity === "warn" && result.flags[0].target === "label");
+  assert("one correction string recorded", result.corrections.length === 1, JSON.stringify(result.corrections));
+
+  const alreadyCorrect = {
+    days: [
+      { label: "Day 1 · Sat Oct 10 · Arrive London", city: "London", items: [] },
+      { label: "Day 2 · Sun Oct 11 · Settle into London", city: "London", items: [] },
+    ],
+  };
+  const clean = enforceDayLabelDates(alreadyCorrect, LABEL_START);
+  assert("a fully correct plan is returned by reference, no flags", clean.plan === alreadyCorrect && clean.flags.length === 0);
+
+  const malformedLabel = { days: [{ label: "Arrive London", city: "London", items: [] }] };
+  assert("a label with fewer than 3 '·' segments is left untouched (fail safe, not guessed at)",
+    enforceDayLabelDates(malformedLabel, LABEL_START).plan.days[0].label === "Arrive London");
+
+  assert("missing start date → no change", enforceDayLabelDates(brokenLabels, undefined).plan === brokenLabels);
+  assert("malformed start date → no change", enforceDayLabelDates(brokenLabels, "next tuesday").plan === brokenLabels);
+  assert("null plan is safe", enforceDayLabelDates(null, LABEL_START).plan === null);
+  assert("no days is safe", enforceDayLabelDates({}, LABEL_START).flags.length === 0);
+  assert("null day entries survive",
+    Array.isArray(enforceDayLabelDates({ days: [null, { label: "Day 2 · Sun Oct 11 · x", items: [] }] }, LABEL_START).plan.days));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

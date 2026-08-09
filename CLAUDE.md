@@ -1009,6 +1009,117 @@ lessons, and a fast turnaround under user pressure doesn't lower the bar for che
 exemption's trigger condition (a bare regex on `item.text`) could also match text that should take
 a different code path entirely.
 
+### KNOWN FAILURE MODE #18 — the web export showed a flight's stale, pre-correction carrier and silently flipped PM times to AM; day.label's own date stamp was never verified against the computed calendar, only prose weekday claims were.
+
+**2026-08-09, from a detailed independent review of a build export** (the same trip's data as KNOWN
+FAILURE MODE #17, re-sent for review — extracted via "Export as Web App," same technique as every
+prior investigation in this file). Traced each claim in the review against the actual code rather
+than assuming the report was either fully right or fully wrong.
+
+**Two of the reported defects are real, code-level bugs, both in `src/webExport.js` specifically —
+the live app was already correct.**
+
+1. **Stale carrier text.** `applyQualityLayer`'s `KNOWN_NONSTOPS` carrier-correction (§2c,
+   `src/App.jsx`) rewrites `item.flight.carrier`/`flight_number`/`confirmation_note` when the
+   model's claimed carrier doesn't actually fly a route nonstop — it never touches `item.text`, the
+   model's own original prose ("LOT nonstop Newark → London Heathrow"). The live app's `FlightCard`
+   was already unaffected: its title comes from `buildFlightCardTitle()`, which reads
+   `flight.carrier` directly and never falls back to `item.text` unless the carrier is empty. But
+   `webExport.js`'s `itemVenue()` read `item.text` FIRST for every non-Hotel, non-Restaurant item
+   (its only Flight-specific handling was a fallback used solely when `item.text` was empty) — so
+   the export's "At a glance" table (which reads `flight.carrier` directly, unaffected) correctly
+   showed the corrected "United or British Airways or Virgin Atlantic," while the same flight's own
+   item card, a few lines down, showed the stale, uncorrected "LOT nonstop Newark → London Heathrow"
+   — the identical flight disagreeing with itself on the same page.
+2. **PM silently flipped to AM.** `webExport.js`'s `formatTime()` assumed all time strings are
+   24-hour `"HH:MM"` and unconditionally re-derived AM/PM from the leading hour
+   (`h >= 12 ? "PM" : "AM"`). `item.time` (the day-header time) is always genuinely 24-hour,
+   code-formatted — but `flight.depart_time`/`arrive_time` can already be 12-hour strings WITH an
+   AM/PM suffix (model- or resolver-written), and the old regex only captured the hour/minute,
+   silently discarding whatever AM/PM was already there. A real "3:05 PM" departure read its hour
+   (3), decided `3 >= 12` is false, and printed "3:05 AM" — flipped, with no relation to the actual
+   value. The reported build's header correctly showed "3:05 PM" (from `item.time="15:05"`,
+   genuinely 24-hour) directly above a flight detail line reading "Departs 3:05 AM · Arrives 5:30
+   AM" (from `depart_time`/`arrive_time` already being 12-hour) — internally contradictory, on the
+   same flight, a few pixels apart.
+
+**Fix (`src/webExport.js`), both narrowly scoped:**
+- `formatTime()` now checks for an already-present AM/PM suffix first (normalizing case/spacing
+  without re-deriving it) before falling through to the existing 24-hour-only parse — the 24-hour
+  path is completely unchanged, so nothing that already worked regresses.
+- `itemVenue()` gained a dedicated Flight branch, checked BEFORE the generic `item.text` fallback:
+  `[carrier, flight_number].join(" ")` (the corrected, structured fields — the same source
+  `buildFlightCardTitle` already trusts in the live app) wins, falling back to `item.text` only if
+  both are empty. Also surfaces `flight.confirmation_note` as the card's notes, which the export
+  never showed at all before (the "why book with the corrected carrier" explanation reached the live
+  app's `FlightCard` but not the export).
+
+Confirmed live via Playwright against the real dev server: seeded a session with exactly this
+carrier-correction shape, clicked the actual "Export as Web App" button, captured the real
+`download` event, and read the saved file — the corrected carrier and confirmation note appear, the
+stale carrier text does not (checked against the visible page only; the developer-handoff JSON embed
+at the bottom of the export correctly still carries the real, uncorrected `item.text` verbatim, by
+design), and both times render as PM, not flipped to AM. 8 new regression assertions in
+`tests/test_web_export.mjs`.
+
+**A third reported defect (the date skip — Day 5 labeled "Wed Oct 15," Day 6 labeled "Thu Oct 15,"
+Oct 14 missing from the sequence) is the SAME systemic gap flagged but not yet fixed while
+diagnosing KNOWN FAILURE MODE #17: `assertWeekdayClaims` (`src/dateFacts.js`) cross-checks weekday
+CLAIMS in free PROSE fields (`headline`, `notes`, ...) against the computed calendar, but never
+checked `day.label` itself** — the field the model is instructed to copy verbatim from the
+`COMPUTED DATE TABLE` (`"Day N · <stamp> · <purpose>"`) but where nothing previously verified it
+actually did. This is the third independent observation of the identical defect (two exports of the
+same build in this session, both showing the exact same Oct-14-skipped/Oct-15-doubled shape), which
+is what elevated it from "worth flagging" to "fix now."
+
+**Fix (`src/dateFacts.js`):** new `enforceDayLabelDates(plan, startDateISO)`, structurally parallel
+to `assertWeekdayClaims` but scoped to the label's own date segment: splits `day.label` on `"·"`,
+recomputes the correct stamp via the existing `addDays`/`shortStamp` helpers, and rewrites the
+middle segment when it disagrees — emitting the same `WEEKDAY_CLAIM_MISMATCH` code (this is the
+identical conceptual category: a date/weekday claim disagreeing with the computed calendar, just in
+a different field) with `target: "label"`. A label that doesn't split into at least 3 segments is
+left untouched entirely — fail safe rather than guess at rewriting an unrecognized shape. Wired into
+`applyQualityLayer` (`src/App.jsx`) immediately alongside `assertWeekdayClaims`, sharing the same
+`inputs.basics.startDate` guard. Confirmed against the actual reported plan JSON: Day 5's label goes
+from `"Day 5 · Wed Oct 15 · Depart for Normandy"` to `"Day 5 · Wed Oct 14 · Depart for Normandy"`;
+Day 6's already-correct `"Thu Oct 15"` is left untouched (verified via reference equality in tests,
+not just value equality). 13 new regression assertions in `tests/test_weekday_claim_check.mjs`.
+
+**Two remaining reported defects are NOT code bugs and were NOT touched — they are real, correctly-
+flagged duplicated content from the same generation shape KNOWN FAILURE MODE #17 targets (chunk-
+boundary transition duplication: the Day 1/Day 2 duplicate overnight flight, and the Day 10/Day 11
+duplicate Nuremberg→Porto flight with contradictory times).** This build's data predates that fix
+(same `generatedOn` timestamp as the build used to diagnose #17, confirmed by diffing the two plan
+JSONs byte-for-byte — literally the same export, re-submitted for review, not a fresh rebuild). Per
+this file's own hard rule, these are NOT the kind of defect a downstream checker should be taught to
+tolerate or silently repair — they need the itinerary regenerated with #17's fix in place, not a
+weakened gate.
+
+**One reported defect (an "11-hour drive" claimed in the narrative/headline prose vs. "~7 hours
+driving" in the actual Transport item's own text, for the identical Bayeux→Nuremberg leg) was
+identified but deliberately NOT fixed in this pass.** Unlike every other fix in this file, there is
+no established ground truth to correct against — this app has no routing/distance API computing an
+authoritative drive duration, so both numbers are model-estimated, just inconsistent with each
+other. A cross-check validator for "does free narrative prose numerically agree with a specific
+item's own stated duration" would be a new, more speculative class of check than anything else in
+this file, and was judged out of scope for this pass rather than guessed at. Documented as a known
+gap, not silently dropped.
+
+**The pattern to watch for:** the SAME correction (KNOWN_NONSTOPS carrier rewrite) has now had stale
+prose surface in FOUR different places across two failure modes — `tonight`/`logistics`/`flags`
+top-level arrays (KNOWN FAILURE MODE #8), and now `webExport.js`'s own independent rendering of
+`item.text` — because each is a SEPARATE consumer of the same underlying plan object, and a
+correction applied to one structured field doesn't propagate to every place that field's OLD value
+was ever echoed into prose or copied verbatim into a different render path. Any future "rewrite a
+structured field" fix should be checked against every renderer of the plan (live app, PDF, web
+export), not just the one path that prompted the fix — this is the second time in this file
+`webExport.js` specifically has been the renderer nobody thought to check (the first was the
+original five-field-name-bug audit, KNOWN FAILURE MODE section header). Separately: `formatTime()`'s
+AM/PM bug is a reminder that "this field is always 24-hour" is an assumption about DATA SHAPE, not
+DATA MEANING — two fields that both represent "a time of day" can still disagree on string format
+depending on which code path wrote them, and a formatter that doesn't check which format it actually
+received will confidently produce a wrong answer rather than an error.
+
 ## Implementation map
 
 | Concern | File |

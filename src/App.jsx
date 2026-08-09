@@ -5,7 +5,7 @@ import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { arrivalOrderExportError } from "./arrivalOrderCheck.js";
 import { findContinuityIssues, findStructuralBlockingIssues } from "./dayContinuityCheck.js";
 import { deriveCityNights, reconcileMetaNights, parseMetaNightsBreakdown } from "./legNights.js";
-import { buildDateTable, assertWeekdayClaims } from "./dateFacts.js";
+import { buildDateTable, assertWeekdayClaims, enforceDayLabelDates } from "./dateFacts.js";
 import { pickScheduledFlight, parseClockToMinutes, resolveAirlineIata, normalizeAirportCode } from "./flightSelect.js";
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
 import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, activityHeadName, itemVenueName } from "./swapAlternatives.js";
@@ -3812,6 +3812,14 @@ function applyQualityLayer(input, inputs) {
     out = wk.plan;
     weekdayFlags.push(...wk.flags);
     fixes.push(...wk.corrections);
+
+    // day.label's own date stamp is a separate surface from the prose
+    // assertWeekdayClaims scans above — see enforceDayLabelDates's header
+    // comment (src/dateFacts.js) for the real observed bug this closes.
+    const lbl = enforceDayLabelDates(out, inputs.basics.startDate);
+    out = lbl.plan;
+    weekdayFlags.push(...lbl.flags);
+    fixes.push(...lbl.corrections);
   }
 
   // Structural validators. Each is a pure day-scoped check returning flags in
