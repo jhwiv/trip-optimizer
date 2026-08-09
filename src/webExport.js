@@ -130,8 +130,15 @@ function itemHtml(item) {
   const type = item.type || "Note";
   const time = formatTime(item.time);
   const { name, address, phone, website, notes } = itemVenue(item);
+  // Stop status ("nonstop" vs "no direct flights") never appeared in the
+  // export at all before — the live app's FlightCard shows it as a
+  // stopLabel badge, but webExport built its own separate detail line from
+  // scratch and never included the equivalent field.
+  const stopStatus = item.flight
+    ? (item.flight.nonstop ? "Nonstop" : (item.flight.connection ? `No direct flights — connect via ${esc(item.flight.connection)}` : "No direct flights"))
+    : "";
   const flightDetail = item.flight
-    ? `${esc(item.flight.from_airport || "")}→${esc(item.flight.to_airport || "")}${item.flight.depart_time ? " · Departs " + formatTime(item.flight.depart_time) : ""}${item.flight.arrive_time ? " · Arrives " + formatTime(item.flight.arrive_time) : ""}`
+    ? `${esc(item.flight.from_airport || "")}→${esc(item.flight.to_airport || "")}${item.flight.depart_time ? " · Departs " + formatTime(item.flight.depart_time) : ""}${item.flight.arrive_time ? " · Arrives " + formatTime(item.flight.arrive_time) : ""}${stopStatus ? " · " + stopStatus : ""}`
     : "";
 
   return `

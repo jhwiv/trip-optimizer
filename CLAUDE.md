@@ -1120,6 +1120,97 @@ DATA MEANING — two fields that both represent "a time of day" can still disagr
 depending on which code path wrote them, and a formatter that doesn't check which format it actually
 received will confidently produce a wrong answer rather than an error.
 
+### KNOWN FAILURE MODE #19 — the "LOT Polish Airlines" recurrence across many rebuilds of the same trip turned out to be the traveler's own prompt, not a bug — closed with two new pre-build clarification checks plus explicit "no direct flights" surfacing, rather than another after-the-fact correction.
+
+**2026-08-09, after the user pushed back directly** ("I have used the exact same prompt a dozen
+times... what you're telling me is the itinerary gets rebuilt the same every time despite all of
+your supposed fixes") **on being told every export they'd sent traced back to one stale August 8th
+build.** Asked to see the actual saved prompt rather than keep guessing from generated output. It
+read, in relevant part: *"Any airline but maybe Lot is best for WWII history focused trip... 2/3 to
+3/4 WWII history finish in porto... Countries should include england, france and portuga[l]."*
+
+**Root cause, confirmed by reading the prompt directly rather than inferring from symptoms:** the
+model was correctly honoring an explicit traveler preference for LOT — it isn't a spelling error or
+a hallucination, LOT is a real, correctly-named airline. The problem is LOT doesn't operate a
+plausible itinerary on either leg this trip needs (EWR–LHR, NUE–OPO), so every rebuild spent effort
+trying to honor the instruction anyway, producing exactly the fabricated-nonstop and implausible-
+routing symptoms `KNOWN_NONSTOPS` (§2c) was already built to catch and correct downstream. Separately,
+the same prompt's "Countries should include England, France, Portugal" never mentioned Germany, even
+though the same prompt's own "Nuremberg Courthouse... a must visit" requirement is only satisfiable
+in Germany — every build correctly added Nuremberg (honoring the must-visit) while the country list
+stayed silently incomplete, because nothing cross-checked the two against each other.
+
+**Both are real gaps in what this app asks the model to verify BEFORE building, not bugs in the
+build itself** — the existing `name_checks` extraction mechanism (`functions/api/extract-trip.js`)
+already pauses before a build to ask the traveler to confirm an uncertain hotel/restaurant/airline/
+activity name, but only for spelling/identity ambiguity ("did you mean this Marriott or that one"),
+never for a real, correctly-identified airline that simply doesn't serve the requested route, and
+there was no check at all for a must-visit venue implying a country the traveler's own list omitted.
+
+**Fix, three independent additions, all user-requested directly:**
+1. **AIRLINE ROUTE PLAUSIBILITY** (`functions/api/extract-trip.js`): extends the EXISTING
+   `name_checks` mechanism — same `kind: "airline"`, same confirmation UI, same resolution logic
+   (`src/App.jsx`'s `pendingNameChecks`/`confirmNameChecks`) — to also fire when a named, correctly-
+   spelled carrier doesn't plausibly serve any leg the itinerary implies, with `candidates[]`
+   listing real carriers that do. No new UI needed; the mechanism already existed for a different
+   reason and generalizes cleanly to this one. Worked example locked into the prompt verbatim: LOT /
+   Newark–London → candidates `['United','British Airways','Virgin Atlantic']`, the exact reported
+   case.
+2. **DESTINATION CONSISTENCY** (`functions/api/extract-trip.js` + `src/App.jsx`): a new
+   `destination_notes[]` extraction field. When a must-visit venue implies a country/region never
+   named in `basics.destinations`, the extractor now ADDS that stop (in correct visiting-order
+   position — `basics.destinations` has been display-only since KNOWN FAILURE MODE #12, so this is
+   safe: it cannot touch `basics.cities[]`/night-budget math) and explains the addition in
+   `destination_notes[]`. Surfaced client-side as a new, always-visible banner ("Added to your
+   destinations") on the pre-build screen — deliberately informational, not a build-blocking gate
+   like `name_checks` (the trip is buildable either way; this just explains a change the traveler
+   didn't explicitly ask for). **Placement bug caught before shipping:** the first version put the
+   banner inside the collapsible "Reading your prompt" card, which auto-collapses the instant
+   extraction finishes — hiding the note at exactly the moment it first appears. Moved outside that
+   card, verified live via Playwright that it renders and stays visible regardless of the card's
+   expand state.
+3. **EXPLICIT "NO DIRECT FLIGHTS" SURFACING** (`src/App.jsx`, `src/pdf/itineraryPdf.js`,
+   `src/webExport.js`): the build prompt already instructs the model to search for nonstop first and
+   only fall back to a connection when no reasonable nonstop exists, and `flight.nonstop`/
+   `flight.connection` were already structured, correctly-populated fields — but the live app's
+   `FlightCard` only ever showed a bare "Connecting" or "Connect LHR" badge, the PDF showed "· via
+   LHR", and `webExport.js` didn't show stop status AT ALL. None of the three said plainly that no
+   direct flight exists. All three now say "No direct flights" explicitly (with the connection
+   airport named when known) — a wording change only; `flight.nonstop`/`connection` were already
+   correct, this just stops under-stating what they already meant. `webExport.js` gained the field
+   for the first time (a genuine gap, not a wording tweak, matching this file's repeated finding that
+   web export lags the live app on new fields).
+
+Confirmed live via Playwright: a connecting flight (`nonstop:false, connection:"FRA"`) renders "No
+direct flights — connect via FRA" in the actual live app (not just a unit-test mirror); a mocked
+extraction returning the exact reported LOT/Nuremberg-Germany shape renders the real "Added to your
+destinations" banner with the real note text, outside the collapsed card. 31 new regression
+assertions across `tests/test_direct_flight_surfacing.mjs` (new), `tests/test_extract_trip_checks.mjs`
+(new, source-text assertions against the actual system prompt and schema — this Cloudflare Pages
+Function has no exported pure functions to import directly, per this file's established convention
+for prompt/schema content).
+
+**What this fix does and does not claim:** `name_checks` and `destination_notes` are both MODEL-
+JUDGMENT checks, not deterministic verification — the extraction model uses its own knowledge to
+decide whether an airline plausibly serves a route or a venue implies an unlisted country, the same
+way it already judges whether a hotel name is real. This sandbox has no live `ANTHROPIC_API_KEY`, so
+whether the extraction model reliably raises these checks on a real narrative can only be confirmed
+by the user running one — the live check above proves the client correctly renders and doesn't
+gate the build on whatever the extractor returns, not that the extractor always returns the right
+thing. The `flight.nonstop`/`connection` wording change is deterministic and fully verified.
+
+**The pattern to watch for:** the LOT symptom looked, for several rebuilds, exactly like a bug in
+this app's carrier-verification code — it kept showing up broken, rebuild after rebuild, which is
+also what a code bug looks like. It wasn't; it was the traveler's own instruction, faithfully
+followed, running into a route that doesn't exist. The fix was reading the actual prompt, not
+guessing further at the generated output — the same discipline this file has repeatedly required for
+diagnosing the app's own bugs (real plan JSON, not screenshots) applies just as much to diagnosing
+whether something is even a bug in THIS app at all. Separately: reusing an existing mechanism
+(`name_checks`) for a new, conceptually-adjacent purpose (route plausibility, not spelling) shipped
+with zero new UI risk — the alternative, a bespoke new confirmation flow, would have needed the same
+kind of live verification this file's `HotelCard` `flags` prop gap (KNOWN FAILURE MODE #9) already
+proved is easy to get wrong when a genuinely new render path is involved.
+
 ## Implementation map
 
 | Concern | File |

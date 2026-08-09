@@ -1290,7 +1290,13 @@ function FlightCard({ type, time, end_time, flight: f, text, flags, dayLabel, on
 
   if (!f) return null;
   const route = [f.from_airport, f.to_airport].filter(Boolean).join(" → ");
-  const stopLabel = f.nonstop ? "Nonstop" : (f.connection ? `Connect ${f.connection}` : "Connecting");
+  // Explicit "no direct flights" wording, not just "Connecting" — the build
+  // prompt already instructs the model to search for nonstop first and only
+  // fall back to a connection when no reasonable nonstop exists (see the
+  // CARRIER SELECTION / route-search rules), so nonstop:false already means
+  // the traveler should be told plainly that this leg has no direct option,
+  // not just shown a bare stop count.
+  const stopLabel = f.nonstop ? "Nonstop" : (f.connection ? `No direct flights — connect via ${f.connection}` : "No direct flights — connecting");
   const note = f.confirmation_note || "";
   const carrierLower = (f.carrier || "").toLowerCase();
   // Multi-carrier strings like "SAS or Delta" — don't pick a single booking host;
@@ -13282,6 +13288,7 @@ function PreBuildScreen({
   reviewerSourceIds, setReviewerSourceIds,
   extractingFromGuidelines, onBack, onBuild,
   cardStyleR, vp, progressPanelRef,
+  destinationNotes,
 }) {
   // Phase 1 opens only while extraction is actually running. Arriving with it
   // already finished (the usual case — the narrative path resolves extraction
@@ -13315,6 +13322,30 @@ function PreBuildScreen({
       <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 1.25rem", lineHeight: 1.5, maxWidth: "56ch" }}>
         Four steps, top to bottom. Tap Edit on any of them to change it.
       </p>
+
+      {/* Destination-consistency notes (functions/api/extract-trip.js): a
+          stop the extractor added because a must-visit venue implied it,
+          even though the traveler's own destination list omitted it — e.g.
+          a Nuremberg museum required when only "England, France, Portugal"
+          were listed as countries. Informational, not a gate — the trip is
+          buildable either way, this just explains a change the traveler
+          didn't explicitly ask for. Rendered OUTSIDE the collapsible
+          "Reading your prompt" card, not inside it: that card auto-collapses
+          the instant extraction finishes (see wasExtractingRef below), which
+          would hide this note at exactly the moment it first appears unless
+          the user thought to re-expand a card that had already been read. */}
+      {!extractingFromGuidelines && Array.isArray(destinationNotes) && destinationNotes.length > 0 && (
+        <div style={{ margin: "0 0 1.25rem", padding: "9px 11px", background: "var(--color-surface-2)", border: `0.5px solid ${ACCENT}`, borderRadius: "var(--border-radius-md)" }}>
+          <p style={{ fontSize: "10.5px", fontWeight: 700, color: ACCENT_DARK, letterSpacing: "0.06em", textTransform: "uppercase", margin: "0 0 4px" }}>
+            <span aria-hidden="true">◉ </span>Added to your destinations
+          </p>
+          {destinationNotes.map((note, i) => (
+            <p key={i} style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: i === 0 ? 0 : "4px 0 0", lineHeight: 1.5 }}>
+              {note}
+            </p>
+          ))}
+        </div>
+      )}
 
       {/* ── PHASE 1 ─────────────────────────────────────────────────────── */}
       <PhaseCard
@@ -13725,6 +13756,17 @@ export default function TripOptimizer() {
   // resolutions are keyed by the check's index in checks[].
   const [pendingNameChecks, setPendingNameChecks] = useState(null);
 
+  // Destination-consistency notes. When extraction adds a stop to
+  // basics.destinations that the traveler didn't explicitly list (a
+  // must-visit venue implied a country never named — see
+  // DESTINATION CONSISTENCY in functions/api/extract-trip.js), surface it
+  // as a small, non-blocking banner rather than pausing the build like
+  // pendingNameChecks does: this is informational (the trip is still
+  // buildable either way), not a choice the traveler must resolve before
+  // proceeding. Cleared on "Reset"/"Plan another trip" alongside other
+  // per-build state.
+  const [destinationNotes, setDestinationNotes] = useState([]);
+
   // "Build from this →" shortcut. POSTs the guidelines text to the extraction
   // endpoint, merges whatever structured fields come back into the form state,
   // and arms a flag that handleBuild fires off on the next render. The
@@ -13826,6 +13868,14 @@ export default function TripOptimizer() {
       const exDestinations = Array.isArray(exBasics.destinations)
         ? exBasics.destinations.map((d) => (typeof d === "string" ? d.trim() : "")).filter(Boolean)
         : [];
+      // DESTINATION CONSISTENCY (functions/api/extract-trip.js): a stop the
+      // model added to basics.destinations because a must-visit venue
+      // implied it, even though the traveler never named it — surfaced as a
+      // banner, not a build-blocking gate (see destinationNotes above).
+      const exDestinationNotes = Array.isArray(ex.destination_notes)
+        ? ex.destination_notes.filter((n) => typeof n === "string" && n.trim()).map((n) => n.trim())
+        : [];
+      setDestinationNotes(exDestinationNotes);
       setB((prev) => normalizeBasics({
         ...prev,
         destination: exBasics.destination || prev.destination,
@@ -13910,6 +13960,7 @@ export default function TripOptimizer() {
     setExtractingFromGuidelines(false);
     setPendingBuildFromGuidelines(false);
     setPendingNameChecks(null);
+    setDestinationNotes([]);
     setResult(null);
     setError("");
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
@@ -17359,6 +17410,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               progressPanelRef={progressPanelRef}
               narrative={narrative}
               guidelines={guidelines}
+              destinationNotes={destinationNotes}
             />
             {/* Uncertain-name confirmation. Surfaces as a modal card so the
                 question is impossible to miss regardless of scroll position. */}

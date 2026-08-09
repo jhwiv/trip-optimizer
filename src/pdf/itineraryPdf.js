@@ -1530,7 +1530,7 @@ function renderFlightBlock(cur, fl, x, maxW) {
     "→",
     [fl.to_airport, to12h(fl.arrive_time) && `${timePrefix}${to12h(fl.arrive_time)}`].filter(Boolean).join(" "),
     (!_verifyTrusted && fl.duration) ? `· ${fl.duration}` : "",
-    fl.nonstop ? "· nonstop" : (fl.connection ? `· via ${fl.connection}` : ""),
+    fl.nonstop ? "· nonstop" : (fl.connection ? `· no direct flights, via ${fl.connection}` : "· no direct flights"),
   ].filter(s => s && s !== "→ ").join(" ").replace(/\s+/g, " ").trim();
   if (headline) renderDetailLine(cur, "Flight", headline, x, maxW);
   if (fl.cabin) renderDetailLine(cur, "Cabin", fl.cabin, x, maxW);

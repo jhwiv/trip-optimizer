@@ -141,7 +141,7 @@ const EXTRACT_TOOL = {
       name_checks: {
         type: "array",
         description:
-          "Names from the narrative whose spelling, brand, or property identity you are NOT confident about. Use this whenever the traveler writes a hotel/restaurant/airline/activity name that might be misspelled, ambiguous between multiple real properties, or doesn't match any property you know. NEVER silently correct \u2014 always echo the original text verbatim in the relevant field AND list it here with candidate alternatives so the traveler can confirm. Empty array if every named entity is clearly identified.",
+          "Names from the narrative you are NOT confident are both real AND workable as stated. Use this whenever the traveler writes a hotel/restaurant/airline/activity name that might be misspelled, ambiguous between multiple real properties, doesn't match any property you know, OR \u2014 for airline \u2014 is a real, correctly-spelled carrier that does not plausibly operate on the route(s) this itinerary implies (e.g. a transatlantic or intercontinental leg that carrier doesn't fly). NEVER silently correct or silently drop the preference \u2014 always echo the original text verbatim in the relevant field AND list it here with candidate alternatives so the traveler can confirm. Empty array if every named entity is clearly identified AND workable.",
         items: {
           type: "object",
           properties: {
@@ -157,17 +157,23 @@ const EXTRACT_TOOL = {
             reason: {
               type: "string",
               description:
-                "One short sentence on why you're uncertain. Examples: 'Marriott has multiple properties in Park City \u2014 unclear which one', 'No restaurant by this exact name in Santa Fe \u2014 possible misspelling of Sazon', 'Hotel brand named but specific property not stated'.",
+                "One short sentence on why you're uncertain. Examples: 'Marriott has multiple properties in Park City \u2014 unclear which one', 'No restaurant by this exact name in Santa Fe \u2014 possible misspelling of Sazon', 'Hotel brand named but specific property not stated', 'LOT Polish Airlines does not operate this route \u2014 not a spelling issue, a route-plausibility issue'.",
             },
             candidates: {
               type: "array",
               items: { type: "string" },
               description:
-                "Up to 4 likely real-world names the traveler might have meant. Order by likelihood. Examples: ['Marriott's MountainSide Resort, Park City', 'Marriott Vacation Club at Park City'].",
+                "Up to 4 likely real-world names/carriers the traveler might have meant, OR \u2014 for a route-implausible airline \u2014 up to 4 real carriers that DO plausibly operate the route(s) instead. Order by likelihood. Examples: ['Marriott's MountainSide Resort, Park City', 'Marriott Vacation Club at Park City'] or ['United', 'British Airways', 'Virgin Atlantic'].",
             },
           },
           required: ["kind", "original", "reason"],
         },
+      },
+      destination_notes: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "One short sentence per implied stop you added to basics.destinations that the traveler did NOT explicitly list as a country/region/city. This happens when a named must-visit venue, activity, or landmark is clearly located somewhere outside every stop already named \u2014 e.g. the traveler lists 'England, France, Portugal' as the countries but also says a specific Nuremberg museum is a must-visit (Nuremberg is in Germany, never mentioned). In that case, ADD the implied stop to basics.destinations in its correct visiting-order position (do not silently drop the must-visit requirement, and do not silently leave the destination list incomplete either) AND add one entry here explaining the addition, e.g. 'Added Germany to destinations \u2014 required by the must-visit \"Nuremberg Trials Memorial,\" which is not in Germany-free England/France/Portugal.' Empty array when every named must-visit is already covered by the traveler's own stated destinations.",
       },
     },
     required: ["basics"],
@@ -219,6 +225,8 @@ EXTRACTION RULES — STRICT:
   basics.destinations: ["London", "Paris", "Normandy", "Porto"]
   This applies EVEN IF the narrative describes the stops loosely by country/region rather than by city name (e.g. "starting in England, then on to France, then Portugal") — extract basics.destinations as ["England", "France", "Portugal"] in that case, matching whatever granularity the traveler actually used. Getting this field right matters: it drives what the traveler sees on the build-progress screen while their trip is generating, and an incomplete list makes a real multi-country trip look like it only covers the first stop.
 • UNCERTAIN NAMES — CRITICAL: If a hotel/restaurant/airline/activity name in the narrative looks misspelled, ambiguous between multiple real properties, or doesn't match a property you can clearly identify, you MUST: (1) keep the exact original text in the relevant field (mustHave / restaurants[] / activities[] / airline), AND (2) add an entry to name_checks with the original text, the reason, and up to 4 candidate real-world names. NEVER silently substitute a 'corrected' name. A wrong silent correction is worse than asking the traveler to confirm. Example: traveler writes 'Marriot Mountainside' → keep 'Marriot Mountainside' in hotel.mustHave, add name_checks entry: { kind:'hotel', original:'Marriot Mountainside', reason:'Multiple Marriott properties could match', candidates:['Marriott\'s MountainSide at Park City','Park City Marriott'] }.
+• AIRLINE ROUTE PLAUSIBILITY — CRITICAL, a DIFFERENT check from spelling: even when an airline name is real and correctly spelled, check whether it plausibly operates ANY leg implied by this itinerary (the home airport to the first destination, and between named destinations, at minimum). A real airline that doesn't serve any of these routes is still a name_check, same mechanism as a misspelling — kind:'airline', reason explaining it's a route-plausibility issue (not spelling), candidates listing 2-4 real carriers that DO plausibly serve the route(s). Example: traveler writes 'depart Newark, maybe LOT is best for a WWII history trip' with a London-first itinerary → keep 'LOT' in flights.airline, add name_checks entry: { kind:'airline', original:'LOT', reason:'LOT Polish Airlines does not operate Newark–London — route-plausibility issue, not a spelling issue', candidates:['United','British Airways','Virgin Atlantic'] }.
+• DESTINATION CONSISTENCY — CRITICAL: after extracting basics.destinations (per the MULTI-CITY rule above) and any must-visit venues/activities, check whether every must-visit is actually located within one of the stated destinations. If a must-visit venue is clearly located somewhere else entirely (a different country/region never named), ADD that place to basics.destinations in the correct visiting-order position — do not silently drop the must-visit requirement, and do not silently leave the destination list incomplete either — AND add a destination_notes[] entry explaining the addition. Example: traveler writes 'countries should include England, France, Portugal' plus 'Nuremberg Trials Memorial is a must-visit' → basics.destinations must include Germany even though the traveler's own country list omitted it, with destination_notes: ["Added Germany to destinations — required by the must-visit \\"Nuremberg Trials Memorial,\\" which is not in England, France, or Portugal."].
 
 DO NOT emit any prose. Only call the tool.`;
 
