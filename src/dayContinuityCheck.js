@@ -152,18 +152,28 @@ function itemDestination(item, canonical) {
   };
 }
 
-function hotelEvent(item) {
+// `hotelOutSoFar` is whether a check-out has already been recorded earlier
+// THIS SAME DAY (leg.hotelOut at the point this item is reached) — a real
+// transit day's new-hotel arrival is sometimes written as "Overnight at
+// [Hotel]" with no separate "check in" line, and that item must still count
+// as a check-in. The OVERNIGHT_REMINDER_RE exemption below is deliberately
+// scoped to "no check-out yet today": a same-night reminder on an ordinary
+// stay-put day never has a same-day check-out to compare against, while a
+// transit day always does (checkout is written before the new arrival).
+function hotelEvent(item, hotelOutSoFar) {
   const type = String(item?.type || "");
   if (!/^Hotel$/i.test(type)) return null;
   const name = item?.hotel?.name || item?.text || "";
   const text = `${item?.text || ""} ${item?.hotel?.name || ""}`;
-  // Check-out is the narrower phrasing, so test it first; a bare Hotel item
-  // with neither phrase is a check-in (the model's default shape) UNLESS it's
-  // a same-night "Overnight at..." reminder, which is neither — see
-  // OVERNIGHT_REMINDER_RE above.
+  // Check-out is the narrower phrasing, so test it first. Explicit check-in
+  // phrasing is checked BEFORE the overnight-reminder pattern — a real
+  // check-in item can itself start with "Overnight" (e.g. "Overnight
+  // arrival, check in at Hotel B" for a red-eye landing) and must not be
+  // misread as a same-night reminder just because of that leading word.
   const kind = CHECKOUT_RE.test(text) ? "out"
-    : OVERNIGHT_REMINDER_RE.test(String(item?.text || "").trim()) ? null
-    : (CHECKIN_RE.test(text) || item?.hotel ? "in" : null);
+    : CHECKIN_RE.test(text) ? "in"
+    : (OVERNIGHT_REMINDER_RE.test(String(item?.text || "").trim()) && !hotelOutSoFar) ? null
+    : (item?.hotel ? "in" : null);
   return kind ? { kind, name: String(name).trim() } : null;
 }
 
@@ -272,7 +282,7 @@ export function buildDayLegs(plan) {
         currentCity = dest.to;
       }
       if (isTransportType && (!dest || !dest.to)) sawUnresolvedTransportEarlierToday = true;
-      const hotel = hotelEvent(item);
+      const hotel = hotelEvent(item, !!leg.hotelOut);
       if (hotel?.kind === "in" && !leg.hotelIn) leg.hotelIn = { ...hotel, itemIdx, time: item.time || "" };
       if (hotel?.kind === "out" && !leg.hotelOut) leg.hotelOut = { ...hotel, itemIdx, time: item.time || "" };
     });

@@ -960,6 +960,55 @@ Verified against all 77 pre-existing regression assertions before writing any of
 
 **The pattern to watch for:** this file's chunked-build architecture (`chunkPlan.js`/`runChunkedBuild`) treats each chunk's generation as fully independent — cheaper and more reliable per call, but it means any fact that depends on adjacent chunks (here: who owns the transition day) has to be computed in code and handed to each chunk explicitly, or both chunks will guess, and sometimes both guess "yes." This is the same shape as `dayContinuityCheck.js`'s own cross-chunk restaurant dedupe (`usedRestaurants`, already threaded through the same loop) — the transition-ownership fix is the day-level analog of a pattern already proven necessary for venue names. Separately: two more false-positive shapes turned up in `dayContinuityCheck.js` on real, previously-unseen data, for the fourth and fifth time this file's fixture set has been proven incomplete (#3, #6, #14) — the real plan JSON, not the fixture set, is what keeps finding the next one; expect this to recur, and reach for the real data before guessing at the next fix.
 
+**SAME-DAY FOLLOW-UP (2026-08-09), found by a code-review pass on this exact commit, not from a new
+user report.** The `OVERNIGHT_REMINDER_RE` fix above shipped with two real gaps of its own:
+
+1. **Ordering bug.** `hotelEvent()` tested `OVERNIGHT_REMINDER_RE` BEFORE `CHECKIN_RE`, so a genuine
+   check-in item that happens to start with the word "Overnight" — plausible, since the build
+   prompt itself uses "overnight / red-eye arrival" language (`src/App.jsx`'s pacing rules) for late
+   landings, e.g. a model writing "Overnight arrival — check in at Park Hyatt Tokyo" — was
+   misclassified as a same-night reminder (`kind: null`) instead of a real check-in, purely because
+   of word order.
+2. **Sibling function drift.** `src/legNights.js`'s `dayHasHotelEvent()`, documented in its own file
+   as a mirror of `hotelEvent()`, was not updated with the same exemption. A genuine transit day
+   whose ONLY signal for the new hotel is "Overnight at [Hotel]" (no separate explicit "check in"
+   line — plausible for a late arrival where the two ideas collapse into one item) would then have
+   `hotelEvent()` return `kind: null` (post-fix) while `dayHasHotelEvent()` still returned `"in"`
+   (unfixed) for the identical item text — reproducing this file's own repeatedly-documented
+   sibling-implementation-drift failure class (KNOWN FAILURE MODE #7/#8) rather than closing it.
+
+**Fix (`src/dayContinuityCheck.js`), one change that closes both gaps without touching
+`legNights.js` at all:** reordered `hotelEvent()` to check `CHECKIN_RE` before
+`OVERNIGHT_REMINDER_RE` (explicit phrasing always wins, regardless of word order), and scoped the
+reminder exemption to require NO check-out recorded yet that same day
+(`hotelEvent(item, hotelOutSoFar)`, threaded from `buildDayLegs`'s already-tracked `leg.hotelOut`).
+A same-night reminder on an ordinary stay-put day never has a same-day check-out to compare
+against; a genuine transit day always does (the check-out is written before the new arrival) — so a
+transit day's "Overnight at..." arrival now correctly falls through to the `item?.hotel` fallback
+and returns `"in"` in `hotelEvent()` too, matching `dayHasHotelEvent()`'s existing (correct)
+behavior for that shape without needing a second copy of the same conditional. `legNights.js`'s only
+consumer of `dayHasHotelEvent()` (`isTransitDay`, which requires BOTH `"out"` and `"in"` the same
+day) was traced to confirm this: on a genuine non-transit day the "in" question is moot regardless
+of which function answers it, because there's no check-out that day for the AND to succeed on.
+
+3 new regression assertions in `tests/test_day_continuity_check.mjs` (the ordering case, and the
+transit-day-with-only-a-reminder case) plus 1 in `tests/test_leg_nights.mjs` proving
+`deriveLegNights` still correctly attributes the night to the destination city rather than
+collapsing to a single leg (which is what happens if the transit day goes undetected — the final
+leg's night count rounds to zero and gets filtered out, dropping below the two-leg minimum
+`deriveLegNights` requires). All 89 pre-existing + new assertions in
+`tests/test_day_continuity_check.mjs` and 58 in `tests/test_leg_nights.mjs` pass; full suite
+unaffected (3034 passed, only the one known pre-existing unrelated failure).
+
+**The pattern to watch for:** a fix written and shipped in the same session it was diagnosed is not
+exempt from the review step other fixes get — this file has now separately documented BOTH "a
+mirror function drifting from the thing it mirrors" (KNOWN FAILURE MODE #7/#8, about
+`legNights.js` and `carrierCodeCheck.js`) AND, here, a case of introducing that exact drift while
+writing a fix that was ITSELF trying to close a different bug — the two are not mutually exclusive
+lessons, and a fast turnaround under user pressure doesn't lower the bar for checking whether a new
+exemption's trigger condition (a bare regex on `item.text`) could also match text that should take
+a different code path entirely.
+
 ## Implementation map
 
 | Concern | File |

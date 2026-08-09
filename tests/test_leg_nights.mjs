@@ -258,5 +258,51 @@ console.log("\n=== rewriteMetaNights / stripMetaNightsBreakdown — bare 'a+b+c 
     JSON.stringify(parseMetaNightsBreakdown("4 nights · 5+1 nights")));
 }
 
+console.log("\n=== dayHasHotelEvent / dayContinuityCheck.js's hotelEvent — sibling consistency (2026-08-09 follow-up) ===");
+{
+  // A code-review pass on the dayContinuityCheck.js hotelEvent() fix (added
+  // an "Overnight at..." reminder → not a check-in exemption) flagged that
+  // this file's own dayHasHotelEvent(), documented as its mirror, was not
+  // updated with the same exemption — risking the two "same input, same
+  // classification" functions disagreeing on a genuine transit day whose
+  // ONLY new-hotel signal is "Overnight at [Hotel]" (no separate "check in"
+  // line). dayContinuityCheck.js's fix was instead scoped to "no check-out
+  // recorded yet today" rather than a bare text match, so a real transit day
+  // (which always has an earlier same-day check-out) still counts its
+  // "Overnight at..." arrival as a check-in in BOTH files — this test proves
+  // deriveLegNights still recognizes the transit day correctly post-fix,
+  // i.e. the two files did not end up disagreeing on this real shape.
+  // Day 2's own city label names the ORIGIN (the exact real-world pattern
+  // this module's header comment documents) even though the night is spent
+  // in Nuremberg — only correctly detecting Day 2 as a transit day (both a
+  // check-out AND a check-in that day) makes deriveLegNights borrow Day 3's
+  // settled label forward and attribute the night to Nuremberg instead of
+  // Bayeux. If hotelEvent()/dayHasHotelEvent() disagreed on whether
+  // "Overnight at Sheraton..." (no separate "check in" line) counts as a
+  // check-in, this transit day would go undetected, Day 2 would stay grouped
+  // under "Bayeux," and the final leg's night would round down to zero and
+  // get filtered out entirely — collapsing 2 real legs into 1 and returning
+  // null (deriveLegNights requires >= 2 legs).
+  const transitDayOvernightOnly = {
+    days: [
+      { day: 1, city: "Bayeux", items: [
+        { type: "Activity", text: "Bayeux Tapestry" },
+      ] },
+      { day: 2, city: "Bayeux", items: [
+        { type: "Hotel", text: "Check out of Mercure Omaha Beach", hotel: { name: "Mercure Omaha Beach" } },
+        { type: "Transport", text: "Drive Bayeux to Nuremberg — 7h" },
+        { type: "Hotel", text: "Overnight at Sheraton Carlton Hotel Nuremberg", hotel: { name: "Sheraton Carlton Hotel Nuremberg" } },
+      ] },
+      { day: 3, city: "Nuremberg", items: [
+        { type: "Activity", text: "Nuremberg Trials Memorial" },
+      ] },
+    ],
+  };
+  const legs = deriveLegNights(transitDayOvernightOnly);
+  assert("Day 2 is correctly detected as a transit day and its night borrows forward to Nuremberg, not Bayeux",
+    JSON.stringify(legs) === JSON.stringify([{ city: "Bayeux", nights: 1 }, { city: "Nuremberg", nights: 1 }]),
+    JSON.stringify(legs));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

@@ -627,6 +627,47 @@ console.log("\n=== DUPLICATE_CHECKIN — an 'Overnight at...' reminder is not a 
     issues2.some(i => i.code === "DUPLICATE_CHECKIN"), JSON.stringify(issues2));
 }
 
+console.log("\n=== hotelEvent — 'Overnight' text ordering and transit-day edge cases (2026-08-09 follow-up) ===");
+{
+  // A real check-in item can itself start with "Overnight" (the build prompt
+  // uses "overnight / red-eye arrival" language for late landings) — the
+  // explicit check-in phrase must win over the reminder pattern regardless
+  // of word order, not be misread as a same-night reminder.
+  const overnightArrivalCheckin = {
+    cities: [{ name: "Tokyo" }],
+    days: [
+      { day: 1, city: "Tokyo", items: [
+        { type: "Hotel", text: "Overnight arrival — check in at Park Hyatt Tokyo", hotel: { name: "Park Hyatt Tokyo" } },
+      ] },
+    ],
+  };
+  const legs1 = buildDayLegs(overnightArrivalCheckin);
+  assert("an 'Overnight arrival, check in at...' item is still recorded as a real check-in",
+    legs1[0].hotelIn?.name === "Park Hyatt Tokyo", JSON.stringify(legs1[0].hotelIn));
+
+  // A genuine transit day whose ONLY signal for the new hotel is "Overnight
+  // at [Hotel]" (no separate explicit "check in" line) must still register
+  // as a check-in — the reminder exemption is scoped to "no check-out
+  // recorded yet today," and a transit day always has one (written first).
+  const transitDayOvernightOnly = {
+    cities: [{ name: "Bayeux" }, { name: "Nuremberg" }],
+    days: [
+      { day: 1, city: "Bayeux", items: [
+        { type: "Hotel", text: "Check out of Mercure Omaha Beach", hotel: { name: "Mercure Omaha Beach" } },
+      ] },
+      { day: 2, city: "Nuremberg", items: [
+        { type: "Hotel", text: "Check out of Mercure Omaha Beach", hotel: { name: "Mercure Omaha Beach" } },
+        { type: "Transport", text: "Drive Bayeux to Nuremberg — 7h" },
+        { type: "Hotel", text: "Overnight at Sheraton Carlton Hotel Nuremberg", hotel: { name: "Sheraton Carlton Hotel Nuremberg" } },
+      ] },
+    ],
+  };
+  const legs2 = buildDayLegs(transitDayOvernightOnly);
+  assert("a transit day's ONLY 'Overnight at...' item is still recorded as the real check-in",
+    legs2[1].hotelIn?.name === "Sheraton Carlton Hotel Nuremberg", JSON.stringify(legs2[1].hotelIn));
+  assert("the same day's real checkout is still recorded", legs2[1].hotelOut?.name === "Mercure Omaha Beach");
+}
+
 console.log("\n=== degenerate input ===");
 {
   assert("null plan → []", findContinuityIssues(null).length === 0);
