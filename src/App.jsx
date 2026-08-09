@@ -15798,7 +15798,38 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         const cityHint = Array.isArray(c.cityNames) && c.cityNames.length
           ? ` These days belong to: ${c.cityNames.join(" / ")}. Set each day's "city" field to its city name (use "From→To" only on an actual inter-city transit day).`
           : "";
-        const chunkConstraint = `\n\nCHUNK MODE — GENERATE ONLY Day ${c.startDay}–Day ${c.endDay}.\nReturn days[] containing ONLY those days (in order). Do NOT include any other day. Omit logistics/weather_window/pack/flags/planb/snobs/tonight in chunk mode (a final pass produces them). Still copy the weekday stamps from the COMPUTED DATE TABLE.\nIMPORTANT: every day in this chunk MUST set its "city" field.${cityHint}\nRestaurants already used on earlier days (do NOT reuse): ${usedList}.`;
+        // KNOWN FAILURE MODE #17: each chunk was told only its OWN day range
+        // and city — nothing about what the chunk before or after it is
+        // doing. When a city-to-city transition lands exactly on a chunk
+        // boundary, neither model call knows the other is handling it, so
+        // BOTH defensively write the full journey — checkout, departure,
+        // flight, arrival, hotel check-in — once on the boundary day of each
+        // chunk. Two real observed builds of the same trip: chunk[1-4] and
+        // chunk[5-8] (a single London leg sub-split by MAX_DAYS_PER_CHUNK)
+        // both wrote a full transition into Normandy days apart, with a
+        // duplicate Bletchley Park visit and a skipped calendar date
+        // sandwiched between; and chunk[8-10] (Nuremberg) ended by flying to
+        // Porto and checking into the hotel, then chunk[11-15] (Porto)
+        // opened by flying to Porto and checking into the same hotel again.
+        // Fix: tell each chunk explicitly, by day number, whether a
+        // transition happens on its own first/last day, and whose job it is
+        // — the model no longer has to guess or defensively duplicate.
+        const prevChunk = chunks[i - 1];
+        const nextChunk = chunks[i + 1];
+        const myCity = Array.isArray(c.cityNames) ? c.cityNames[0] : null;
+        const prevCity = prevChunk && Array.isArray(prevChunk.cityNames) ? prevChunk.cityNames[0] : null;
+        const nextCity = nextChunk && Array.isArray(nextChunk.cityNames) ? nextChunk.cityNames[0] : null;
+        const sameCity = (a, b) => !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+        let transitionNote = "";
+        if (myCity && prevCity && !sameCity(myCity, prevCity)) {
+          transitionNote += `\nDay ${c.startDay} is the arrival/transition day FROM ${prevCity} TO ${myCity} — a PRIOR, separate generation pass already ended with an ORDINARY day still in ${prevCity} (it wrote no departure). Write the FULL journey — checkout, departure, travel, arrival, hotel check-in — on Day ${c.startDay} only. Do not repeat any part of this transition later in this chunk.`;
+        } else if (myCity && prevCity && sameCity(myCity, prevCity)) {
+          transitionNote += `\nThis chunk CONTINUES the same ${myCity} stay from a prior generation pass, already under way — do not write any inter-city transition unless a day in this chunk's own range is listed above as belonging to a different city.`;
+        }
+        if (myCity && nextCity && !sameCity(myCity, nextCity)) {
+          transitionNote += `\nDay ${c.endDay} is your LAST day and MUST stay an ORDINARY day in ${myCity} — do NOT write any departure, travel, or arrival toward ${nextCity} on this day. That transition is written entirely in a LATER, separate generation pass, on its own first day.`;
+        }
+        const chunkConstraint = `\n\nCHUNK MODE — GENERATE ONLY Day ${c.startDay}–Day ${c.endDay}.\nReturn days[] containing ONLY those days (in order). Do NOT include any other day. Omit logistics/weather_window/pack/flags/planb/snobs/tonight in chunk mode (a final pass produces them). Still copy the weekday stamps from the COMPUTED DATE TABLE.\nIMPORTANT: every day in this chunk MUST set its "city" field.${cityHint}${transitionNote}\nRestaurants already used on earlier days (do NOT reuse): ${usedList}.`;
 
         const body = {
           model: "claude-sonnet-4-5",

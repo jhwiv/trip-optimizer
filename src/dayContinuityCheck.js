@@ -31,6 +31,19 @@ const RENTAL_DROPOFF_RE = /(?:drop[\s-]?off|return|turn in)[^.]{0,40}\b(?:car|re
 // leg the day-trip-return exemption below depends on detecting.
 const PICKUP_RE = /\bpick[\s-]?up\b/i;
 
+// A same-night reminder line ("Overnight at The Yeatman Hotel") that this app
+// writes as the last item of most days — restating where the traveller is
+// already sleeping, not a new arrival. It matches neither CHECKIN_RE nor
+// CHECKOUT_RE, so hotelEvent's fallback (any Hotel-type item carrying an
+// `item.hotel` object defaults to a check-in) misclassified it as a fresh
+// check-in on any day that has no OTHER, earlier Hotel item — i.e. every
+// night after the first at a multi-night stay. Real observed case
+// (2026-08-09, a London/Normandy/Nuremberg/Porto rebuild): three consecutive
+// nights at the Sheraton Carlton Hotel Nuremberg, each day's only Hotel item
+// an "Overnight at..." reminder, produced DUPLICATE_CHECKIN on every night
+// after the first at a hotel nobody re-checked into.
+const OVERNIGHT_REMINDER_RE = /^overnight\b/i;
+
 // Within how many days a repeated check-in at the same property is suspicious.
 // 2 covers the observed failure (consecutive days) plus a one-day gap, without
 // flagging a legitimate return to a base hotel later in the trip.
@@ -145,17 +158,31 @@ function hotelEvent(item) {
   const name = item?.hotel?.name || item?.text || "";
   const text = `${item?.text || ""} ${item?.hotel?.name || ""}`;
   // Check-out is the narrower phrasing, so test it first; a bare Hotel item
-  // with neither phrase is a check-in (the model's default shape).
-  const kind = CHECKOUT_RE.test(text) ? "out" : CHECKIN_RE.test(text) || item?.hotel ? "in" : null;
+  // with neither phrase is a check-in (the model's default shape) UNLESS it's
+  // a same-night "Overnight at..." reminder, which is neither — see
+  // OVERNIGHT_REMINDER_RE above.
+  const kind = CHECKOUT_RE.test(text) ? "out"
+    : OVERNIGHT_REMINDER_RE.test(String(item?.text || "").trim()) ? null
+    : (CHECKIN_RE.test(text) || item?.hotel ? "in" : null);
   return kind ? { kind, name: String(name).trim() } : null;
 }
 
 // Left-to-right pass. One entry per day: the day's city, the hotel check-in /
 // check-out that happened on it, and every inter-city transition it contains.
+//
+// A sequential loop (not .map()), because the same-city exemption below needs
+// to know where the traveller already is BEFORE today's first item runs —
+// carried forward from the previous day's own resolved ending point, not
+// re-derived from a separate pass over the finished legs.
 export function buildDayLegs(plan) {
   const canonical = canonicalCities(plan);
   const days = Array.isArray(plan?.days) ? plan.days : [];
-  return days.map((day, dayIdx) => {
+  const legs = [];
+  // Where the traveller is as of the start of the day being processed —
+  // the previous day's last resolved transition, or its city label if it
+  // had none. null for Day 1 (nothing to carry in yet).
+  let priorDayEnd = null;
+  days.forEach((day, dayIdx) => {
     const items = Array.isArray(day?.items) ? day.items : [];
     const leg = {
       day: dayIdx + 1,
@@ -174,9 +201,14 @@ export function buildDayLegs(plan) {
     // recognized as that outbound leg's return half, not a genuine new
     // arrival — see isDaytripReturn below.
     let sawUnresolvedTransportEarlierToday = false;
+    // Where the traveller currently is, updated as resolved transitions are
+    // recorded through the day — starts as wherever the previous day left
+    // them (see isSameCityNoMove below).
+    let currentCity = priorDayEnd;
     items.forEach((item, itemIdx) => {
       if (!item || typeof item !== "object") return;
       const isTransportType = TRANSPORT_TYPES.test(String(item.type || ""));
+      const isFlightType = /^Flight$/i.test(String(item.type || ""));
       if (isTransportType) leg.hasTransport = true;
       const dest = itemDestination(item, canonical);
       // Real observed case (2026-08-04): "Private car London to Bletchley
@@ -213,16 +245,41 @@ export function buildDayLegs(plan) {
       // somewhere turns out to be.
       const isDaytripReturn =
         dest?.to && !dest.from && sawUnresolvedTransportEarlierToday && !leg.hotelOut && norm(dest.to) === norm(leg.city);
-      if (dest && dest.to && !isDaytripReturn) {
-        leg.transitions.push({ ...dest, itemIdx, label: String(item.text || "").trim() });
+      // A Transport item (never Flight — see below) whose resolved
+      // destination is exactly where the traveller already is describes a
+      // local errand or a transfer to one's own departure point, not a
+      // change of city. Two real observed shapes (2026-08-09, a
+      // London/Normandy/Nuremberg/Porto rebuild): "Drive to Memorium
+      // Nuremberg Trials" (a museum whose own name contains the city,
+      // visited on an ordinary day with no travel at all) and "Taxi to
+      // London Heathrow" / "Drive to Nuremberg Airport" (a transfer TO one's
+      // own city's departure airport, misread as arriving in that city
+      // because the airport's name contains it). Both resolved to the
+      // SAME city the traveller was already in — carried forward from the
+      // previous day via currentCity — with nothing about them describing
+      // an actual move.
+      //
+      // Deliberately Transport-only, never Flight: a Flight item resolving
+      // to a city the traveller is already in is a much stronger signal of
+      // a real duplicated-content bug (an overnight flight's arrival
+      // re-listed as its own item on the next day, or an entire arrival
+      // sequence duplicated across a chunked build's leg boundary) and must
+      // keep being recorded so ORPHANED_TRANSITION can still catch it.
+      const isSameCityNoMove =
+        isTransportType && !isFlightType && !!dest?.to && !!currentCity && norm(dest.to) === norm(currentCity);
+      if (dest && dest.to && !isDaytripReturn && !isSameCityNoMove) {
+        leg.transitions.push({ ...dest, itemIdx, label: String(item.text || "").trim(), type: item.type });
+        currentCity = dest.to;
       }
       if (isTransportType && (!dest || !dest.to)) sawUnresolvedTransportEarlierToday = true;
       const hotel = hotelEvent(item);
       if (hotel?.kind === "in" && !leg.hotelIn) leg.hotelIn = { ...hotel, itemIdx, time: item.time || "" };
       if (hotel?.kind === "out" && !leg.hotelOut) leg.hotelOut = { ...hotel, itemIdx, time: item.time || "" };
     });
-    return leg;
+    legs.push(leg);
+    priorDayEnd = (leg.transitions.length > 0 ? leg.transitions[leg.transitions.length - 1].to : null) || leg.city || priorDayEnd;
   });
+  return legs;
 }
 
 // Returns a flat array of flag objects:

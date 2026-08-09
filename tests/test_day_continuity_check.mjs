@@ -504,6 +504,129 @@ console.log("\n=== ORPHANED_TRANSITION — a hallucinated day's earlier unresolv
     legs[1].transitions.some(t => t.to === "Porto"), JSON.stringify(legs[1].transitions));
 }
 
+console.log("\n=== ORPHANED_TRANSITION — a same-city local errand or own-airport transfer is not a re-arrival (2026-08-09 regression) ===");
+{
+  // Real observed case, a London/Normandy/Nuremberg/Porto rebuild: "Drive to
+  // Memorium Nuremberg Trials" (a museum whose own name contains the city,
+  // on an ordinary day with no travel at all) and "Taxi to London Heathrow"
+  // / "Drive to Nuremberg Airport" (a transfer TO one's own city's departure
+  // airport) both resolved to the city the traveller was already in —
+  // carried forward from the previous day — and were misread as fresh
+  // arrivals, false-blocking a correct itinerary.
+  const localErrand = {
+    cities: [{ name: "Nuremberg" }, { name: "Porto" }],
+    days: [
+      { day: 1, city: "Nuremberg", items: [
+        { type: "Flight", text: "Fly Frankfurt → Nuremberg" },
+        { type: "Hotel", text: "Check in Sheraton Carlton Hotel Nuremberg", hotel: { name: "Sheraton Carlton Hotel Nuremberg" } },
+      ] },
+      { day: 2, city: "Nuremberg", items: [
+        { type: "Transport", text: "Drive to Memorium Nuremberg Trials — 15 min from hotel" },
+        { type: "Activity", text: "Memorium Nurnberger Prozesse" },
+        { type: "Dinner", text: "Dinner at Waidwerk" },
+      ] },
+    ],
+  };
+  const issues = findContinuityIssues(localErrand);
+  assert("a same-city local errand is not flagged as ORPHANED_TRANSITION",
+    !issues.some(i => i.code === "ORPHANED_TRANSITION"), JSON.stringify(issues));
+  const legs = buildDayLegs(localErrand);
+  assert("the local errand is not recorded as a transition at all",
+    legs[1].transitions.length === 0, JSON.stringify(legs[1].transitions));
+
+  const airportTransfer = {
+    cities: [{ name: "London" }, { name: "Paris" }],
+    days: [
+      { day: 1, city: "London", items: [
+        { type: "Flight", text: "Fly Newark → London Heathrow" },
+        { type: "Hotel", text: "Check in London Marriott Park Lane", hotel: { name: "London Marriott Park Lane" } },
+      ] },
+      { day: 2, city: "London", items: [
+        { type: "Activity", text: "Churchill War Rooms" },
+      ] },
+      { day: 3, city: "Paris", items: [
+        { type: "Hotel", text: "Check out London Marriott Park Lane", hotel: { name: "London Marriott Park Lane" } },
+        { type: "Transport", text: "Taxi to London Heathrow — 45 min" },
+        { type: "Flight", text: "British Airways nonstop London Heathrow → Paris Charles de Gaulle" },
+        { type: "Hotel", text: "Check in Le Meurice", hotel: { name: "Le Meurice" } },
+      ] },
+    ],
+  };
+  const issues2 = findContinuityIssues(airportTransfer);
+  assert("a departure transfer to one's own city's airport is not flagged as ORPHANED_TRANSITION",
+    !issues2.some(i => i.code === "ORPHANED_TRANSITION"), JSON.stringify(issues2));
+
+  // A Flight item resolving to the same city the traveller is already in is
+  // a much stronger signal of real duplicated content and must still be
+  // caught — the exemption above is deliberately Transport-only.
+  const duplicateFlight = {
+    cities: [{ name: "London" }],
+    days: [
+      { day: 1, city: "London", items: [
+        { type: "Flight", text: "LOT nonstop Newark → London Heathrow" },
+      ] },
+      { day: 2, city: "London", items: [
+        { type: "Flight", text: "LOT arrival London Heathrow (overnight from Newark)" },
+        { type: "Hotel", text: "Check in London Marriott Park Lane", hotel: { name: "London Marriott Park Lane" } },
+      ] },
+    ],
+  };
+  const issues3 = findContinuityIssues(duplicateFlight);
+  assert("a duplicated Flight item into the same city IS still flagged as ORPHANED_TRANSITION",
+    issues3.some(i => i.code === "ORPHANED_TRANSITION" && i.day === 2), JSON.stringify(issues3));
+}
+
+console.log("\n=== DUPLICATE_CHECKIN — an 'Overnight at...' reminder is not a re-check-in (2026-08-09 regression) ===");
+{
+  // Real observed case, same rebuild: three consecutive nights at the
+  // Sheraton Carlton Hotel Nuremberg, each day's only Hotel item an
+  // "Overnight at..." reminder (no "check in" phrasing), produced
+  // DUPLICATE_CHECKIN on every night after the first at a hotel nobody
+  // re-checked into.
+  const multiNightStay = {
+    cities: [{ name: "Nuremberg" }],
+    days: [
+      { day: 1, city: "Nuremberg", items: [
+        { type: "Hotel", text: "Check in to Sheraton Carlton Hotel Nuremberg", hotel: { name: "Sheraton Carlton Hotel Nuremberg" } },
+        { type: "Hotel", text: "Overnight at Sheraton Carlton Hotel Nuremberg", hotel: { name: "Sheraton Carlton Hotel Nuremberg" } },
+      ] },
+      { day: 2, city: "Nuremberg", items: [
+        { type: "Activity", text: "Nuremberg Trials Memorial" },
+        { type: "Hotel", text: "Overnight at Sheraton Carlton Hotel Nuremberg", hotel: { name: "Sheraton Carlton Hotel Nuremberg" } },
+      ] },
+      { day: 3, city: "Nuremberg", items: [
+        { type: "Activity", text: "Old Town walk" },
+        { type: "Hotel", text: "Overnight at Sheraton Carlton Hotel Nuremberg", hotel: { name: "Sheraton Carlton Hotel Nuremberg" } },
+      ] },
+    ],
+  };
+  const issues = findContinuityIssues(multiNightStay);
+  assert("no DUPLICATE_CHECKIN across a multi-night stay with only 'Overnight at...' reminders",
+    !issues.some(i => i.code === "DUPLICATE_CHECKIN"), JSON.stringify(issues));
+
+  const legs = buildDayLegs(multiNightStay);
+  assert("Day 1's real check-in is still recorded", legs[0].hotelIn?.name === "Sheraton Carlton Hotel Nuremberg");
+  assert("Day 2's 'Overnight at...' reminder is not recorded as a check-in", legs[1].hotelIn === null, JSON.stringify(legs[1].hotelIn));
+  assert("Day 3's 'Overnight at...' reminder is not recorded as a check-in", legs[2].hotelIn === null, JSON.stringify(legs[2].hotelIn));
+
+  // A genuine re-check-in at the same hotel (real duplicate-booking bug)
+  // still uses explicit check-in phrasing and must still be caught.
+  const realDuplicateCheckin = {
+    cities: [{ name: "Amsterdam" }],
+    days: [
+      { day: 1, city: "Amsterdam", items: [
+        { type: "Hotel", text: "Check in at Amsterdam Marriott Hotel", hotel: { name: "Amsterdam Marriott Hotel" } },
+      ] },
+      { day: 2, city: "Amsterdam", items: [
+        { type: "Hotel", text: "Check in at Amsterdam Marriott Hotel", hotel: { name: "Amsterdam Marriott Hotel" } },
+      ] },
+    ],
+  };
+  const issues2 = findContinuityIssues(realDuplicateCheckin);
+  assert("a genuine re-check-in (explicit phrasing, two days) is still flagged as DUPLICATE_CHECKIN",
+    issues2.some(i => i.code === "DUPLICATE_CHECKIN"), JSON.stringify(issues2));
+}
+
 console.log("\n=== degenerate input ===");
 {
   assert("null plan → []", findContinuityIssues(null).length === 0);
