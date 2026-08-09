@@ -1211,6 +1211,84 @@ with zero new UI risk — the alternative, a bespoke new confirmation flow, woul
 kind of live verification this file's `HotelCard` `flags` prop gap (KNOWN FAILURE MODE #9) already
 proved is easy to get wrong when a genuinely new render path is involved.
 
+### KNOWN FAILURE MODE #19 follow-up (same day) — the chunk-boundary transition instruction still didn't hold on a real rebuild; added a deterministic auto-repair as a backstop instead of another prompt tweak.
+
+**2026-08-09, from a genuinely fresh build** (`generatedOn: August 9, 2026`, `build 9b03ea5` — the
+first real end-to-end test of that day's fixes, confirmed via the `__BUILD_ID__` stamp matching the
+just-merged commit, not a stale August 8th export). Traced all three of its reported blocking issues
+against the real plan JSON rather than assuming they were false positives. Two (`BOOKING_URL_IMPLAUSIBLE`
+on two restaurants) were confirmed genuinely fabricated — a live web search found real OpenTable UK
+URLs require a `/r/` path segment (`opentable.co.uk/r/bar-etna-london`) that both flagged links were
+missing entirely. The third — `ORPHANED_TRANSITION` on the Nuremberg→Porto leg — was the SAME
+chunk-boundary duplication shape KNOWN FAILURE MODE #17's prompt instruction was built to prevent,
+recurring despite that instruction being correctly delivered to the model (confirmed, same day, by
+capturing the real request body). This is the concrete confirmation of the limit that fix's own
+writeup already flagged: "a prompt-level nudge, not a deterministic guarantee."
+
+**Decision, made explicitly rather than by default:** rather than trying another prompt wording (the
+pattern the user had just directly pushed back on — "why do we keep iterating... will this proposed
+fix really make a difference"), built a deterministic code-level backstop. This is not "the same fix
+again" — it does not depend on the model complying with anything; it inspects the stitched output
+after the fact and repairs the specific shape in code.
+
+**Fix — `dedupeChunkBoundaryArrivals` (`src/dayContinuityCheck.js`), wired into `applyQualityLayer`
+(`src/App.jsx`) immediately before `findContinuityIssues` computes the final structural flags, so a
+successfully repaired day never trips `ORPHANED_TRANSITION` at all.** Walks the same `lastArrival`
+sequence `findContinuityIssues`'s own ORPHANED_TRANSITION check already does; when it finds a
+duplicate arrival, strips the later day's redundant Flight/Transport/Hotel run instead of just
+flagging it. Deliberately conservative in two ways found necessary by checking against this file's
+own existing regression fixtures before shipping, not after:
+
+1. **Only acts when the duplicate arrival is the day's very first item (`itemIdx === 0`).** This
+   module's own foundational Amsterdam-collision fixture has its flagged Flight at `itemIdx 2`,
+   preceded by real (if fabricated) Activity/Note content — a hallucinated return-to-Normandy-and-
+   re-fly storyline, not a clean chunk-boundary artifact. Stripping only the flight/hotel there would
+   have removed the ONE signal pointing at a genuinely broken day while leaving the fabricated content
+   behind, unflagged — silently making the export WORSE, not better. Caught by checking this exact
+   fixture before writing the strip logic, given this file's documented history of exemptions causing
+   new regressions (#6, #14, #17's own follow-up).
+2. **Only acts when real content survives the strip.** A real, different rebuild of the same trip
+   (found while designing this fix) has a Day 11 that is ENTIRELY the duplicate arrival — a second
+   flight, a second connecting-flight "arrival" leg, a transfer, and a hotel check-in at a DIFFERENT
+   named hotel than the first arrival — with nothing else. Stripping would leave the day completely
+   empty, which is worse than duplicated; that shape is left untouched, `ORPHANED_TRANSITION` stays
+   BLOCKING, and the itinerary genuinely needs that leg regenerated. No auto-fix invents replacement
+   content, per this file's hard rule.
+
+Confirmed against BOTH real builds directly: the earlier Nuremberg→Porto build (KNOWN FAILURE MODE
+#17's own example) now self-heals completely — `findContinuityIssues` returns zero issues after the
+repair, where it previously blocked export — and ALSO self-heals an until-now-undiscussed second
+duplicate on the same build's Day 2 (the EWR→LHR overnight flight duplicated across Day 1/Day 2,
+present since this session's very first traces of this trip but never fixed until now, since it was
+Flight-type and deliberately preserved by KNOWN FAILURE MODE #17's own Transport-only exemption). The
+fresh `generatedOn: August 9` build's genuinely-empty-if-stripped Day 11 is correctly left untouched
+and still blocks, exactly as designed. Confirmed live via Playwright against the real dev server,
+loading the actual previously-broken plan: the Quality Check panel shows `"Auto-fixed 3 items: ...
+Day 2: removed 3 duplicate arrival items for London ... Day 1 already arrived there ... with nothing
+in between"` and the page shows no `"Cannot export"` blocking message at all — a plan that used to be
+gated is now exportable, live, not just in a unit test. 13 new regression assertions in
+`tests/test_day_continuity_check.mjs`, including explicit negative-control cases for both conservative
+guards above (the Amsterdam fixture stays untouched; the fully-empty-if-stripped case stays untouched
+and still blocks). `tests/test_apply_quality_layer_structural.mjs`'s hand-copied mirror of the
+`applyQualityLayer` structural tail (kept in sync with the real source as a drift guard, per this
+file's established convention for un-importable closures) updated to match.
+
+**What this fix does and does not claim:** it is a real backstop for the specific chunk-boundary
+duplication shape, not a general "fix all generation bugs" mechanism — it does nothing for a
+fabricated booking URL, a hallucinated day with real content preceding the duplicate, or any other
+failure shape this file has documented. Within its narrow scope it is deterministic and fully
+verified, unlike the prompt instruction it backs up: it does not depend on what the model chooses to
+write on the next generation.
+
+**The pattern to watch for:** when a prompt-level fix for a probabilistic (model-generation) failure
+doesn't fully hold on a real rebuild, the answer is not automatically "try wording it differently
+again" — that is the exact cycle the user was pushing back on directly ("we keep iterating... will
+this really make a difference"). The categorically different move is a deterministic backstop that
+repairs the OUTPUT regardless of what the model wrote, which is the same shape as every fully-reliable
+fix already in this file (the false-positive checker corrections, the webExport field fixes) versus
+the partially-reliable ones (any fix that only changes what's asked of the model). Recognize which
+category a given bug actually belongs to before proposing the next iteration.
+
 ## Implementation map
 
 | Concern | File |
@@ -1296,6 +1374,7 @@ They ride on `day.structural_flags[]` and reach the pre-export gate through
 | `FLIGHT_UNVERIFIED` | warn | The flight resolver could not confirm the route or times against a live schedule. Fail safe — annotate, never remove | no |
 | `MEAL_POLICY_STRIP` | info | An item was removed by meal-policy enforcement (`applyQualityLayer` §1c). Carries `item_name` + `reason` so a misfiring negation is traceable to the specific meal it deleted | no |
 | `DUPLICATE_VENUE_SAME_DAY` | warn | The same restaurant (same meal type) OR the same activity (same time slot) was emitted twice on the same day (`applyQualityLayer` §1) — a generation duplication bug, confirmed systemic across both venue kinds (Elote Cafe as two Dinners; "Sunset at Airport Mesa overlook" as two identical 5:30 PM Activities), not a second visit. The duplicate item is auto-removed (kept: the FIRST occurrence by array position — not a content-completeness comparison; the one real restaurant example had the fuller copy first, but that is not guaranteed); the flag is for visibility | no |
+| `DUPLICATE_ARRIVAL_STRIPPED` | info | A day's opening run of Flight/Transport/Hotel items duplicated an arrival an earlier day already made, with nothing in between (`dedupeChunkBoundaryArrivals`, `src/dayContinuityCheck.js`) — the chunk-boundary transition-duplication shape from KNOWN FAILURE MODE #17/#19. The duplicate run is auto-removed, ONLY when it is the day's very first item AND real content survives afterward; the flag is for visibility. When either condition fails, nothing is touched and `ORPHANED_TRANSITION` stays a blocking flag instead — see KNOWN FAILURE MODE #19's second follow-up | no |
 
 A venue with any `severity:"block"` flag must NOT reach the PDF
 exporter. The pre-export gate is the last line of defense; it is not

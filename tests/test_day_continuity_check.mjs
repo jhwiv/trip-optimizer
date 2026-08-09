@@ -12,7 +12,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { buildDayLegs, findContinuityIssues, findStructuralBlockingIssues } from "../src/dayContinuityCheck.js";
+import { buildDayLegs, findContinuityIssues, findStructuralBlockingIssues, dedupeChunkBoundaryArrivals } from "../src/dayContinuityCheck.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const fixture = (name) => JSON.parse(readFileSync(join(HERE, "fixtures", name), "utf8"));
@@ -666,6 +666,99 @@ console.log("\n=== hotelEvent — 'Overnight' text ordering and transit-day edge
   assert("a transit day's ONLY 'Overnight at...' item is still recorded as the real check-in",
     legs2[1].hotelIn?.name === "Sheraton Carlton Hotel Nuremberg", JSON.stringify(legs2[1].hotelIn));
   assert("the same day's real checkout is still recorded", legs2[1].hotelOut?.name === "Mercure Omaha Beach");
+}
+
+console.log("\n=== dedupeChunkBoundaryArrivals — deterministic backstop for chunk-boundary duplicate arrivals (2026-08-09) ===");
+{
+  // Real observed case: a later day opens cold with a duplicate flight,
+  // duplicate transfer, and duplicate hotel check-in for a city an earlier
+  // day already arrived in — but ALSO has real, non-duplicate activity/
+  // dining content afterward. The duplicate arrival sequence is stripped;
+  // the real content survives untouched.
+  const partialDuplicate = {
+    cities: [{ name: "Nuremberg" }, { name: "Porto" }],
+    days: [
+      { day: 1, city: "Nuremberg", items: [
+        { type: "Flight", text: "Flight to Porto (nonstop)" },
+        { type: "Hotel", text: "Check in to The Yeatman Hotel", hotel: { name: "The Yeatman Hotel" } },
+      ] },
+      { day: 2, city: "Porto", items: [
+        { type: "Flight", text: "Fly Nuremberg → Porto, nonstop" },
+        { type: "Transport", text: "Private car OPO airport → The Yeatman Hotel · 25 min" },
+        { type: "Hotel", text: "Check in · The Yeatman", hotel: { name: "The Yeatman" } },
+        { type: "Activity", text: "Walk Ribeira district · UNESCO old town" },
+        { type: "Dinner", text: "Dinner · O Paparico" },
+      ] },
+    ],
+  };
+  const result = dedupeChunkBoundaryArrivals(partialDuplicate);
+  assert("3 duplicate items are removed from Day 2 (Flight, Transport, Hotel)",
+    result.plan.days[1].items.length === 2, JSON.stringify(result.plan.days[1].items));
+  assert("the real Activity and Dinner survive untouched",
+    result.plan.days[1].items[0].type === "Activity" && result.plan.days[1].items[1].type === "Dinner");
+  assert("one fix message is recorded", result.fixes.length === 1, JSON.stringify(result.fixes));
+  assert("one info-severity DUPLICATE_ARRIVAL_STRIPPED flag is recorded",
+    result.flags.length === 1 && result.flags[0].code === "DUPLICATE_ARRIVAL_STRIPPED" && result.flags[0].severity === "info");
+  assert("findContinuityIssues no longer flags this trip after the repair",
+    findContinuityIssues(result.plan).length === 0, JSON.stringify(findContinuityIssues(result.plan)));
+
+  // Real observed case, a DIFFERENT rebuild of the same trip: Day 2 is
+  // ENTIRELY the duplicate arrival sequence — flight, a second "arrival"
+  // flight leg, transfer, hotel check-in at a DIFFERENT named hotel than
+  // the first arrival — with nothing else. Stripping would leave the day
+  // completely empty, which is worse than leaving it duplicated; this must
+  // be left untouched and stay a BLOCKING flag.
+  const totalDuplicate = {
+    cities: [{ name: "Nuremberg" }, { name: "Porto" }],
+    days: [
+      { day: 1, city: "Nuremberg", items: [
+        { type: "Transport", text: "Drive to Nuremberg Airport (NUE)" },
+        { type: "Flight", text: "Fly Nuremberg (NUE) to Porto (OPO) — nonstop" },
+        { type: "Transport", text: "Taxi from Porto Airport to hotel" },
+        { type: "Hotel", text: "Check in Sheraton Porto Hotel & Spa", hotel: { name: "Sheraton Porto Hotel & Spa" } },
+      ] },
+      { day: 2, city: "Porto", items: [
+        { type: "Flight", text: "Flight from Nuremberg to Porto · connecting via Frankfurt" },
+        { type: "Flight", text: "Arrive Porto (OPO) · connecting flight" },
+        { type: "Transport", text: "Private car to hotel" },
+        { type: "Hotel", text: "Check in — The Yeatman Hotel", hotel: { name: "The Yeatman Hotel" } },
+      ] },
+    ],
+  };
+  const result2 = dedupeChunkBoundaryArrivals(totalDuplicate);
+  assert("an entirely-duplicate day is left completely untouched (same object reference)",
+    result2.plan === totalDuplicate);
+  assert("no fixes recorded for the entirely-duplicate case", result2.fixes.length === 0);
+  assert("ORPHANED_TRANSITION still fires and still blocks — the itinerary genuinely needs regenerating",
+    findContinuityIssues(totalDuplicate).some((i) => i.code === "ORPHANED_TRANSITION" && i.severity === "block"));
+
+  // The Amsterdam-collision fixture (this module's own foundational
+  // regression case): the flagged Flight is at itemIdx 2, preceded by real
+  // (if fabricated) Activity/Note content — must NEVER be touched, since
+  // stripping only the flight/hotel there would hide a genuine, more
+  // serious hallucination instead of surfacing it.
+  const collisionResult = dedupeChunkBoundaryArrivals(collision);
+  assert("the Amsterdam-collision fixture (duplicate NOT at itemIdx 0) is left completely untouched",
+    collisionResult.plan === collision && collisionResult.fixes.length === 0);
+
+  // A duplicate flight with NOTHING after it at all (run reaches the exact
+  // end of the day's items) must also be left untouched, not just one with
+  // a shorter run than the day's length.
+  const exactlyDuplicateNoTrailing = {
+    cities: [{ name: "X" }, { name: "Y" }],
+    days: [
+      { day: 1, city: "X", items: [{ type: "Flight", text: "Fly to Y" }] },
+      { day: 2, city: "Y", items: [{ type: "Flight", text: "Fly to Y again" }] },
+    ],
+  };
+  const result3 = dedupeChunkBoundaryArrivals(exactlyDuplicateNoTrailing);
+  assert("a single-item duplicate day with nothing else is left untouched",
+    result3.plan === exactlyDuplicateNoTrailing && result3.fixes.length === 0);
+
+  assert("null plan is safe", dedupeChunkBoundaryArrivals(null).plan === null);
+  assert("no days is safe", dedupeChunkBoundaryArrivals({}).fixes.length === 0);
+  assert("single day is safe (nothing to compare against)",
+    dedupeChunkBoundaryArrivals({ days: [{ city: "X", items: [] }] }).fixes.length === 0);
 }
 
 console.log("\n=== degenerate input ===");

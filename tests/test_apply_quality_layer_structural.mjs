@@ -19,7 +19,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { findContinuityIssues, findStructuralBlockingIssues } from "../src/dayContinuityCheck.js";
+import { findContinuityIssues, findStructuralBlockingIssues, dedupeChunkBoundaryArrivals } from "../src/dayContinuityCheck.js";
 import { deriveCityNights, reconcileMetaNights, parseMetaNightsBreakdown } from "../src/legNights.js";
 import { assertWeekdayClaims } from "../src/dateFacts.js";
 import { findFlightTimeMismatches } from "../src/flightTimeConsistency.js";
@@ -52,6 +52,14 @@ function structuralQualityTail(input, inputs) {
     fixes.push(...wk.corrections);
   }
 
+  let dedupFlags = [];
+  if (Array.isArray(out.days)) {
+    const dedup = dedupeChunkBoundaryArrivals(out);
+    out = dedup.plan;
+    fixes.push(...dedup.fixes);
+    dedupFlags = dedup.flags;
+  }
+
   if (Array.isArray(out.days)) {
     const structural = [
       ...findContinuityIssues(out),
@@ -60,6 +68,7 @@ function structuralQualityTail(input, inputs) {
       ...findCarrierCodeMismatches(out),
       ...findUnverifiedFlights(out),
       ...weekdayFlags,
+      ...dedupFlags,
     ];
     if (structural.length > 0) {
       out.days = out.days.map((day, dayIdx) => {

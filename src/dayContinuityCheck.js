@@ -491,3 +491,115 @@ export function findStructuralBlockingIssues(plan) {
   });
   return issues;
 }
+
+const STRIPPABLE_ARRIVAL_TYPES = /^(Flight|Transport|Hotel)$/i;
+// Defense-in-depth bound — every real observed run of duplicate-arrival
+// items has been 2-4 items long. A run this long is a sign something is
+// structurally unusual enough that this function should not touch it.
+const MAX_STRIP_RUN = 8;
+
+// Deterministic backstop for the ORPHANED_TRANSITION shape specifically
+// produced by chunked-build stitching (KNOWN FAILURE MODE #17/#19): the
+// same city-to-city transition written once at the end of one chunk's last
+// day and again at the start of the next chunk's first day. The per-chunk
+// prompt instruction (runChunkedBuild, src/App.jsx) that tells each chunk
+// whose job the transition is reduces how often this happens but is a
+// prompt-level nudge, not a guarantee — confirmed by a real rebuild that
+// still duplicated the Nuremberg→Porto leg with the instruction correctly
+// in place. This function repairs the narrow, specific shape that keeps
+// recurring in code, so export doesn't stay blocked on something the app
+// can safely fix itself.
+//
+// Deliberately conservative in two ways that together are load-bearing —
+// removing EITHER one reopens the exact false-fix risk they were added to
+// close:
+//
+//   1. Only strips when the duplicate arrival is the day's very first item
+//      (t.itemIdx === 0). The Amsterdam-collision fixture this module was
+//      originally built around (a hallucinated return-to-Normandy-and-
+//      re-fly storyline) has its flagged Flight at itemIdx 2, preceded by a
+//      real (if fabricated) Activity and Note — stripping only the flight
+//      and hotel there would remove the ONE signal pointing at a genuinely
+//      broken day while leaving the fabricated Pointe du Hoc/rental-car
+//      content behind, unflagged. A duplicate that opens the day cold, with
+//      nothing before it, is the clean chunk-boundary artifact this
+//      function targets; anything else is left as a BLOCKING flag, exactly
+//      as before this function existed.
+//   2. Only strips when at least one substantive (non-Flight/Transport/
+//      Hotel) item remains afterward. A later day that is ENTIRELY the
+//      duplicate arrival sequence — real observed case, same rebuild as
+//      above: Day 11 opens with a second Nuremberg→Porto flight, a second
+//      airport transfer, and a second hotel check-in (at a DIFFERENT named
+//      hotel than the first arrival), and has nothing else — would be left
+//      completely empty by stripping. An empty day is worse than a
+//      duplicate one, and this app's hard rule is fail-safe: never invent
+//      replacement content. That day's ORPHANED_TRANSITION stays BLOCKING;
+//      the itinerary genuinely needs that leg regenerated, not patched.
+//
+// Returns { plan, fixes, flags }, matching assertWeekdayClaims/
+// enforceDayLabelDates's shape (src/dateFacts.js) for the same reason: a
+// pure transform that a caller folds into applyQualityLayer's fixes[]/
+// warnings[] alongside every other auto-correction.
+export function dedupeChunkBoundaryArrivals(plan) {
+  const days = Array.isArray(plan?.days) ? plan.days : [];
+  if (days.length < 2) return { plan, fixes: [], flags: [] };
+
+  const legs = buildDayLegs(plan);
+  const stripRanges = []; // { dayIdx, from, to, city, priorDay, label, priorLabel }
+
+  let lastArrival = null; // { city, leg, label }
+  for (const leg of legs) {
+    for (const t of leg.transitions) {
+      if (lastArrival && norm(lastArrival.city) === norm(t.to) && lastArrival.leg.day !== leg.day) {
+        const items = Array.isArray(days[leg.dayIdx]?.items) ? days[leg.dayIdx].items : [];
+        if (t.itemIdx === 0) {
+          let end = 0;
+          while (
+            end < items.length &&
+            end < MAX_STRIP_RUN &&
+            STRIPPABLE_ARRIVAL_TYPES.test(String(items[end]?.type || ""))
+          ) end++;
+          if (end < items.length) {
+            stripRanges.push({
+              dayIdx: leg.dayIdx, from: 0, to: end,
+              city: t.to, priorDay: lastArrival.leg.day,
+              label: t.label, priorLabel: lastArrival.label,
+            });
+          }
+        }
+      }
+      lastArrival = { city: t.to, leg, label: t.label };
+    }
+  }
+
+  if (stripRanges.length === 0) return { plan, fixes: [], flags: [] };
+
+  const fixes = [];
+  const flags = [];
+  const nextDays = days.map((day, dayIdx) => {
+    const ranges = stripRanges.filter((r) => r.dayIdx === dayIdx);
+    if (ranges.length === 0) return day;
+    const items = Array.isArray(day.items) ? day.items : [];
+    const toRemove = new Set();
+    for (const r of ranges) {
+      for (let i = r.from; i < r.to; i++) toRemove.add(i);
+    }
+    const nextItems = items.filter((_, i) => !toRemove.has(i));
+    for (const r of ranges) {
+      const removedCount = r.to - r.from;
+      const msg = `Day ${dayIdx + 1}: removed ${removedCount} duplicate arrival item${removedCount === 1 ? "" : "s"} for ${r.city} ("${r.label}") — Day ${r.priorDay} already arrived there ("${r.priorLabel}") with nothing in between.`;
+      fixes.push(msg);
+      flags.push({
+        code: "DUPLICATE_ARRIVAL_STRIPPED",
+        severity: "info",
+        dayIdx,
+        day: dayIdx + 1,
+        target: r.city,
+        message: msg,
+      });
+    }
+    return { ...day, items: nextItems };
+  });
+
+  return { plan: { ...plan, days: nextDays }, fixes, flags };
+}

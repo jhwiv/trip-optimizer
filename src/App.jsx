@@ -3,7 +3,7 @@ import { useViewport } from "./useViewport.js";
 import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, findBlockingIssues, findVenuesOutsideRadius, computeLegRadii, activityName } from "./placesVerify.js";
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { arrivalOrderExportError } from "./arrivalOrderCheck.js";
-import { findContinuityIssues, findStructuralBlockingIssues } from "./dayContinuityCheck.js";
+import { findContinuityIssues, findStructuralBlockingIssues, dedupeChunkBoundaryArrivals } from "./dayContinuityCheck.js";
 import { deriveCityNights, reconcileMetaNights, parseMetaNightsBreakdown } from "./legNights.js";
 import { buildDateTable, assertWeekdayClaims, enforceDayLabelDates } from "./dateFacts.js";
 import { pickScheduledFlight, parseClockToMinutes, resolveAirlineIata, normalizeAirportCode } from "./flightSelect.js";
@@ -3828,6 +3828,20 @@ function applyQualityLayer(input, inputs) {
     fixes.push(...lbl.corrections);
   }
 
+  // Chunk-boundary duplicate-arrival auto-repair (KNOWN FAILURE MODE #17/#19
+  // follow-up) — runs BEFORE findContinuityIssues below so a successfully
+  // repaired day no longer trips ORPHANED_TRANSITION at all. Deliberately
+  // conservative (see dedupeChunkBoundaryArrivals's own header comment,
+  // src/dayContinuityCheck.js): only acts on a narrow, specific shape, and
+  // leaves everything else exactly as blocking as it was before this ran.
+  let dedupFlags = [];
+  if (Array.isArray(out.days)) {
+    const dedup = dedupeChunkBoundaryArrivals(out);
+    out = dedup.plan;
+    fixes.push(...dedup.fixes);
+    dedupFlags = dedup.flags;
+  }
+
   // Structural validators. Each is a pure day-scoped check returning flags in
   // placesVerify's shape; they run last so they see the normalized city names
   // and the post-cap item lists. Block-severity flags land on
@@ -3839,6 +3853,7 @@ function applyQualityLayer(input, inputs) {
   //   findImplausibleBookingUrls — fabricated-looking operator deep links
   //   findCarrierCodeMismatches — carrier name vs flight-number prefix
   //   weekdayFlags             — wrong weekday claims, already corrected above
+  //   dedupFlags               — duplicate arrival items removed, already stripped above
   //
   // findCarrierCodeMismatches runs BEFORE findUnverifiedFlights: its Case B
   // repair sets _flightUnverified on the flight it strips, and the unverified
@@ -3851,6 +3866,7 @@ function applyQualityLayer(input, inputs) {
       ...findCarrierCodeMismatches(out),
       ...findUnverifiedFlights(out),
       ...weekdayFlags,
+      ...dedupFlags,
     ];
     if (structural.length > 0) {
       out.days = out.days.map((day, dayIdx) => {
