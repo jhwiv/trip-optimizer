@@ -39,7 +39,9 @@ const samplePlan = {
     {
       label: "Day 2 · Rovinj",
       headline: "Istrian coast",
-      items: [{ type: "Activity", name: "Roxanich winery" }],
+      // DAY_ITEM_SCHEMA items have no `name` field — an Activity's only
+      // display text is `text`, formatted "Venue Name — description".
+      items: [{ type: "Activity", text: "Roxanich winery" }],
     },
   ],
 };
@@ -65,9 +67,73 @@ assert("nights/travelers/pace/budget", req.nights === "11" && req.travelers === 
 assert("style array joined", req.style === "Food & wine, Slow travel");
 assert("days are strings, one per day", Array.isArray(req.days) && req.days.length === 2 && typeof req.days[0] === "string");
 assert("day line includes label + headline + named items", req.days[0].includes("Day 1 · Zagreb") && req.days[0].includes("Arrival and old town") && req.days[0].includes("Noel"));
-assert("day line caps named items at 3", (req.days[0].match(/;/g) || []).length <= 2);
-assert("activity name (no text) still captured", req.days[1].includes("Roxanich winery"));
 assert("transport item excluded from named items", !req.days[0].includes("airport transfer"));
+
+// Regression: shapeIntroRequest used to filter named items down to only
+// Activity/Dinner/Hotel, silently dropping Breakfast/Brunch/Lunch. A day's
+// lunch stop is exactly as real a scheduled fact as its dinner stop — leaving
+// it out of the grounding sent to /api/introduction gave the narrative-writing
+// call no way to know a lunch was (or wasn't) scheduled, free to invent one
+// from general destination knowledge. This mirrors a real reported incident:
+// a Napa Day 2 narrative named "The Charter Oak" for lunch when the actual
+// day only had a Dinner item (Press) and no Lunch item at all.
+console.log("=== shapeIntroRequest: all meal types grounded (Charter Oak regression) ===");
+const napaDay2NoLunch = {
+  destination: "Napa Valley",
+  cities: [{ name: "Napa" }, { name: "St. Helena" }],
+  days: [
+    {
+      label: "Day 2 · St. Helena",
+      headline: "Sparkling caves and hillside tastings",
+      items: [
+        { type: "Activity", text: "Schramsberg Vineyards — cave tour and sparkling flight" },
+        { type: "Dinner", text: "Press — St. Helena steakhouse with an open-fire hearth" },
+      ],
+    },
+  ],
+};
+const napaReq = shapeIntroRequest(napaDay2NoLunch, {});
+assert("scheduled dinner (Press) is grounded", napaReq.days[0].includes("Press"));
+assert("no Lunch item -> no lunch venue invented in the grounding line (only what's actually scheduled appears)", !napaReq.days[0].includes("Charter Oak"));
+
+const napaDay2WithLunch = {
+  ...napaDay2NoLunch,
+  days: [
+    {
+      ...napaDay2NoLunch.days[0],
+      items: [
+        { type: "Lunch", text: "The Charter Oak — open-fire cooking in St. Helena" },
+        ...napaDay2NoLunch.days[0].items,
+      ],
+    },
+  ],
+};
+const napaReqWithLunch = shapeIntroRequest(napaDay2WithLunch, {});
+assert("Lunch item IS grounded when actually scheduled", napaReqWithLunch.days[0].includes("Charter Oak"));
+assert("Breakfast item is grounded", shapeIntroRequest({ days: [{ label: "D1", items: [{ type: "Breakfast", text: "Model Bakery" }] }] }, {}).days[0].includes("Model Bakery"));
+assert("Brunch item is grounded", shapeIntroRequest({ days: [{ label: "D1", items: [{ type: "Brunch", text: "Gott's Roadside" }] }] }, {}).days[0].includes("Gott's Roadside"));
+
+// Cap raised from 3 to 5 named items per day now that all meal types count —
+// a full day (breakfast+lunch+dinner+activity+hotel) no longer silently loses
+// an item to the old, tighter cap.
+const busyDay = {
+  days: [
+    {
+      label: "D1",
+      items: [
+        { type: "Breakfast", text: "A" },
+        { type: "Lunch", text: "B" },
+        { type: "Dinner", text: "C" },
+        { type: "Activity", text: "D" },
+        { type: "Hotel", text: "E" },
+      ],
+    },
+  ],
+};
+const busyReq = shapeIntroRequest(busyDay, {});
+assert("all 5 named items on a full day are retained (cap raised for meal coverage)", ["A", "B", "C", "D", "E"].every((n) => busyReq.days[0].includes(n)));
+
+assert("activity captured via `text` (items have no `name` field per DAY_ITEM_SCHEMA)", req.days[1].includes("Roxanich winery"));
 assert("flags filtered to non-empty, capped at 4", Array.isArray(req.flags) && req.flags.length === 2 && req.flags[0] === "Plitvice closed Mondays");
 
 // single-city plan -> no route

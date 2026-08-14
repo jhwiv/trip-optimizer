@@ -16,6 +16,20 @@
 
 export const NONE_FLAGGED = "NONE_FLAGGED";
 
+// Item types worth naming in the day-by-day grounding summary sent to
+// /api/introduction. Mirrors the restaurantTypes set in src/App.jsx's
+// extractRestaurantNames — all five meal types count, not just Dinner.
+const NAMED_ITEM_TYPES = new Set([
+  "Activity",
+  "Hotel",
+  "Breakfast",
+  "Brunch",
+  "Lunch",
+  "Dinner",
+  "Dining",
+]);
+const NAMED_ITEMS_PER_DAY = 5;
+
 // True when the plan already carries a non-empty introduction (arc or
 // differentiators present after trimming). Gate for auto-generation: we only
 // auto-fill when the plan has no introduction yet, so an explicit paste/edit
@@ -63,11 +77,20 @@ export function shapeIntroRequest(plan, inputs) {
       const headline = String(d?.headline || "").trim();
       const items = Array.isArray(d?.items) ? d.items : [];
       // Top few named items so the endpoint knows what's actually scheduled.
+      // NAMED_ITEM_TYPES must include every meal type (Breakfast/Brunch/Lunch/
+      // Dinner/Dining), not just Dinner — a day's Lunch stop is exactly as
+      // real a scheduled fact as its Dinner stop, and omitting it here left
+      // the narrative-writing call with no grounding for lunch at all, free
+      // to invent a plausible-sounding one from general destination knowledge.
+      // DAY_ITEM_SCHEMA (src/App.jsx) has no `name` field on items — only
+      // `text` (Activity's only display text) and, for meals, `restaurant.name`
+      // nested under the item; `text` already carries the venue-name-first
+      // headline for both, per the app's `"Venue Name — description"` convention.
       const namedItems = items
-        .filter((it) => it && (it.type === "Activity" || it.type === "Dinner" || it.type === "Hotel"))
-        .map((it) => String(it.text || it.name || "").trim())
+        .filter((it) => it && NAMED_ITEM_TYPES.has(it.type))
+        .map((it) => String(it.text || "").trim())
         .filter(Boolean)
-        .slice(0, 3)
+        .slice(0, NAMED_ITEMS_PER_DAY)
         .join("; ");
       const tail = [headline, namedItems].filter(Boolean).join(" — ");
       return `${label}${tail ? ": " + tail : ""}`;
