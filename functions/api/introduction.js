@@ -122,7 +122,7 @@ export async function onRequestPost(context) {
 
 GROUNDING — HARD RULE
 • Use ONLY the trip facts and the day-by-day routing provided in the user message. Reference the stops, restaurants, and sequencing that are actually listed.
-• Invent NOTHING. Do not name a place, venue, neighborhood, or experience that does not appear in the provided routing. If you are tempted to add color the routing doesn't support, leave it out.
+• Invent NOTHING. Do not name a place, venue, neighborhood, or experience that does not appear in the provided routing — this applies even to a venue you know to be real, famous, or a highly plausible fit for this kind of trip in this destination. Being a well-known name for the region is not grounding; appearing in the ITINERARY lines below is the only thing that is. If a day's line doesn't name a lunch stop, a specific tasting room, or any other detail, do not supply one from general knowledge — describe that day only in terms of what IS listed, or leave it out of your narrative entirely.
 • This is an introduction to a SPECIFIC itinerary, not generic destination marketing.
 
 FORMAT (strict)

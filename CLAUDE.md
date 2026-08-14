@@ -1289,6 +1289,81 @@ fix already in this file (the false-positive checker corrections, the webExport 
 the partially-reliable ones (any fix that only changes what's asked of the model). Recognize which
 category a given bug actually belongs to before proposing the next iteration.
 
+### KNOWN FAILURE MODE #20 — the Introduction narrative's day-by-day grounding silently excluded three of five meal types, leaving the separate narrative-writing call free to invent an unscheduled venue from general destination knowledge.
+
+**2026-08-14, reported directly:** a Napa Valley intro paragraph named "The Charter Oak" in St.
+Helena for open-fire cooking as part of Day 2, but Day 2's actual scheduled items had no Charter
+Oak stop anywhere — only a Dinner at Press. (A separate, unrelated typo — "a appointment-only
+experience" — was also reported in the same paragraph, in the Matthiasson description.)
+
+**Root cause, confirmed by reading the actual grounding code, not the generated prose:** per this
+file's own architecture notes, the Introduction is already a SEPARATE, post-build call
+(`POST /api/introduction`, `functions/api/introduction.js`) grounded on a day-by-day summary built
+by `shapeIntroRequest()` (`src/introduction.js`) — i.e. the sequencing fix this class of bug
+usually needs (narrative generated FROM the finalized schedule, not independently of it) was
+already in place. But `shapeIntroRequest`'s `namedItems` filter only kept
+`it.type === "Activity" || it.type === "Dinner" || it.type === "Hotel"` — silently dropping
+`Breakfast`, `Brunch`, and `Lunch`, three of the five meal types `DAY_ITEM_SCHEMA` defines and
+exactly the type omission `extractRestaurantNames` (`src/App.jsx`) already gets right via its own
+`restaurantTypes = new Set(["Breakfast","Brunch","Lunch","Dinner","Dining"])`. A day's lunch stop
+is exactly as real a scheduled fact as its dinner stop; leaving it out of the payload sent to
+`/api/introduction` meant the narrative-writing call had zero grounding for lunch on ANY day of ANY
+trip, and — because the system prompt's "invent nothing" instruction is a soft LLM instruction, not
+a hard tool-enforced constraint — a gap in the grounding is exactly the condition under which a
+model reaches for a real, well-known, plausible-sounding venue from its own general knowledge of
+the destination instead. Separately, the same filter's `.map((it) => String(it.text || it.name ||
+"").trim())` carried the same dead `it.name` fallback this file's header section already documents
+as never existing on a real item — harmless in practice (the fallback never fires; `text` is
+required), but inconsistent with this file's own standing rule to check field names against the
+real schema rather than what "seems like it should be there."
+
+**Fix, two parts, both in the grounding path, no fuzzy/NLP entity-matching layer added:**
+1. `src/introduction.js`: `namedItems`'s filter now uses a `NAMED_ITEM_TYPES` set (Activity, Hotel,
+   Breakfast, Brunch, Lunch, Dinner, Dining) mirroring `extractRestaurantNames`'s existing
+   `restaurantTypes`, and the `it.name` dead fallback is removed (`it.text` only). The per-day cap
+   rose from 3 to `NAMED_ITEMS_PER_DAY = 5` so a full day (breakfast + lunch + dinner + activity +
+   hotel) doesn't lose an item to a cap sized for the old, narrower type list.
+2. `functions/api/introduction.js`'s system prompt GROUNDING — HARD RULE section was strengthened
+   to name the specific failure mode explicitly: being a real, famous, or highly plausible venue for
+   the destination is NOT grounding; appearing in the provided ITINERARY lines is the only thing
+   that is. A day with no lunch line means describe that day only in terms of what IS listed, never
+   supply a plausible one.
+
+A general venue-name-extraction-and-cross-check validator (extract every proper noun from the
+narrative, fuzzy-match against day items, flag/block on mismatch) was deliberately NOT built —
+proper-noun extraction from free prose is a real NLP problem (region names vs. venue names, partial
+matches, category references) and would be a fragile, over-engineered response to what traced back
+to a closable grounding gap, not a missing validation layer. If the closed grounding gap plus the
+hardened prompt instruction still doesn't hold on real trips, that is the trigger to revisit this
+decision — not a default to build the fuzzy matcher now.
+
+**What this fix does and does not claim:** the type-filter fix and dead-fallback removal are
+deterministic and fully unit-tested (`tests/test_introduction.mjs`, including a fixture mirroring
+this exact incident's shape — a Day 2 with a Dinner-only vs. a Lunch-added variant — proving the
+grounding line now reflects exactly what's scheduled, no more, no less). The system-prompt
+hardening is, like every other prompt-level fix in this file, a nudge the model may or may not fully
+comply with on a given generation — this sandbox has no live `ANTHROPIC_API_KEY`, so whether it
+closes the gap on a real rebuild could not be confirmed live this session. **The two specific
+pieces of already-delivered content the report named — the "a appointment-only" article typo and
+the Charter Oak reference itself — were NOT hand-edited anywhere in this codebase, because neither
+exists as a file or fixture in this repo.** Both are non-deterministic model output already
+persisted in this one user's own saved trip (client-side state / a shared link), not source text
+this repo controls — there is no string in the codebase to find-and-replace. Per this file's
+established pattern for every prior incident, resolving that SPECIFIC trip's content requires either
+the user's actual "Export as Web App" plan JSON (to confirm current state and, if needed, hand-patch
+the saved data) or regenerating the Introduction against the now-fixed grounding — neither was
+available in this session.
+
+**The pattern to watch for:** this is the same class of bug this file's header section was written
+about (narrative generation and day-by-day generation drifting out of sync) — but here the
+sequencing was already correct (narrative generated from the finished schedule, in a separate,
+later call, per the architecture notes above); the bug was a narrower, single-line type-filter gap
+inside otherwise-correct grounding plumbing. Before assuming a reported "narrative doesn't match the
+schedule" bug needs an architectural fix (regenerate narrative after schedule, cross-check
+validator, etc.), check whether the grounding path that's supposed to already prevent this has a
+gap first — a systemic-sounding symptom can still have a one-field-filter cause, the same lesson
+this file's `input`/`inputs` incidents (#2, #5) already established for a different code shape.
+
 ## Implementation map
 
 | Concern | File |
