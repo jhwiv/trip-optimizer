@@ -31,6 +31,7 @@ import { groupItemsByCategory } from "../categoryGroups.js";
 import { bucketProviders, PROVIDER_PDF_CAP } from "../localProviders.js";
 import { parseClockToMinutes } from "../flightSelect.js";
 import { deriveLegNights, deriveCityNights, rewriteMetaNights } from "../legNights.js";
+import { normalizeCostEstimate, formatCostRange, formatBreakdownLine } from "../costEstimate.js";
 
 // Re-exported for callers (and tests) that have always imported the night math
 // from this module; the implementation now lives in ../legNights.js so the
@@ -1916,13 +1917,14 @@ function renderReferences(cur, data) {
     logistics: take(data?.logistics, 12),
     weather: safe(data?.weather_window),
     pack: take(data?.pack, 10),
+    cost: normalizeCostEstimate(data?.cost_estimate),
     flags: take(data?.flags, 6),
     planb: take(data?.planb, 5),
     snobs: take(data?.snobs, 5),
     tonight: take(data?.tonight, 6),
   };
 
-  const hasAny = ref.logistics.length || ref.weather || ref.pack.length || ref.flags.length || ref.planb.length || ref.snobs.length || ref.tonight.length;
+  const hasAny = ref.logistics.length || ref.weather || ref.pack.length || ref.cost || ref.flags.length || ref.planb.length || ref.snobs.length || ref.tonight.length;
   if (!hasAny) return;
 
   // Start references — push to a new page only if very little space remains.
@@ -1966,6 +1968,14 @@ function renderReferences(cur, data) {
   if (ref.pack.length) {
     sectionHeader(cur, "Pack");
     ref.pack.forEach(p => cur.bullet(p));
+  }
+
+  if (ref.cost) {
+    sectionHeader(cur, "Estimated cost");
+    cur.text(formatCostRange(ref.cost), { size: 13, style: "bold", color: COLOR.ink, space: 0.5 });
+    cur.text("Total for all travelers, rough estimate -- not a quote.", { size: 8.5, color: COLOR.inkFaint, space: 0.5 });
+    ref.cost.breakdown.forEach(b => cur.bullet(formatBreakdownLine(b, ref.cost.currency)));
+    if (ref.cost.basis) cur.text(ref.cost.basis, { size: 9, color: COLOR.inkFaint, leading: 1.35, space: 1 });
   }
 
   if (ref.flags.length) {

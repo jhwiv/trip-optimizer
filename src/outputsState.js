@@ -27,6 +27,7 @@
 export const DEFAULT_OUTPUTS = Object.freeze({
   itinerary: true,
   weather: true,
+  cost: true,
   navigation: true,
   logistics: true,
   tonight: true,

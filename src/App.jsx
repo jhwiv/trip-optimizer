@@ -12,6 +12,7 @@ import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, ac
 import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
+import { normalizeCostEstimate, formatCostRange, formatBreakdownLine } from "./costEstimate.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnverifiedFlightPayload, findUnverifiedFlights, withFlightMerge } from "./flightResolver.js";
 import { normalizeClock, findFlightTimeMismatches } from "./flightTimeConsistency.js";
@@ -3828,6 +3829,23 @@ function applyQualityLayer(input, inputs) {
     fixes.push(...lbl.corrections);
   }
 
+  // cost_estimate is model-estimated (this app has no live pricing/booking
+  // API) — this is a SHAPE guard only (backwards low/high, non-finite
+  // amounts), the same limitation weather_window already has for forecasts.
+  // It cannot verify whether the numbers themselves are realistic. A shape
+  // too broken to normalize (no usable low/high at all) is dropped rather
+  // than shipping a "$NaN-$NaN" to the screen, PDF, or web export.
+  if (out.cost_estimate) {
+    const normalizedCost = normalizeCostEstimate(out.cost_estimate);
+    if (normalizedCost) {
+      out = { ...out, cost_estimate: normalizedCost };
+    } else {
+      const { cost_estimate: _droppedCost, ...restCost } = out;
+      out = restCost;
+      fixes.push("Dropped an unusable cost estimate (no usable low/high amount) rather than show a broken number.");
+    }
+  }
+
   // Chunk-boundary duplicate-arrival auto-repair (KNOWN FAILURE MODE #17/#19
   // follow-up) — runs BEFORE findContinuityIssues below so a successfully
   // repaired day no longer trips ORPHANED_TRANSITION at all. Deliberately
@@ -5568,6 +5586,7 @@ function hasEssentialsContent(data) {
     (Array.isArray(data.tonight) && data.tonight.length > 0) ||
     !!data.weather_window ||
     (Array.isArray(data.pack) && data.pack.length > 0) ||
+    !!data.cost_estimate ||
     (Array.isArray(data.flags) && data.flags.length > 0) ||
     (Array.isArray(data.planb) && data.planb.length > 0) ||
     (Array.isArray(data.snobs) && data.snobs.length > 0)
@@ -5579,10 +5598,11 @@ function EssentialsView({ data }) {
     ? [...data.tonight].map((t, i) => ({ t, i, p: tonightPriority(t) })).sort((a, b) => a.p.rank - b.p.rank || a.i - b.i)
     : [];
   const hasWeather = !!data.weather_window || (Array.isArray(data.pack) && data.pack.length > 0);
+  const hasCost = !!data.cost_estimate;
   const hasFlags = Array.isArray(data.flags) && data.flags.length > 0;
   const hasPlanB = Array.isArray(data.planb) && data.planb.length > 0;
   const hasSnobs = Array.isArray(data.snobs) && data.snobs.length > 0;
-  if (sortedTonight.length === 0 && !hasWeather && !hasFlags && !hasPlanB && !hasSnobs) {
+  if (sortedTonight.length === 0 && !hasWeather && !hasCost && !hasFlags && !hasPlanB && !hasSnobs) {
     return (
       <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "20px 0", textAlign: "center" }}>
         No essentials yet — rebuild the plan to get weather, Plan B, and insider notes.
@@ -5592,6 +5612,28 @@ function EssentialsView({ data }) {
   const H = EssentialsSectionHeading;
   return (
     <div>
+      {hasCost && (
+        <>
+          <H>Estimated cost</H>
+          <div style={{ padding: "12px 14px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", marginBottom: "4px" }}>
+            <p style={{ fontSize: "20px", fontWeight: 700, color: "var(--color-text-primary)", margin: "0 0 2px", fontFamily: "var(--font-serif)" }}>{formatCostRange(data.cost_estimate)}</p>
+            <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "0 0 10px" }}>Total for all travelers · rough estimate, not a quote</p>
+            {Array.isArray(data.cost_estimate.breakdown) && data.cost_estimate.breakdown.length > 0 && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "3px", marginBottom: data.cost_estimate.basis ? "10px" : 0 }}>
+                {data.cost_estimate.breakdown.map((b, i) => (
+                  <div key={i} style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", display: "flex", justifyContent: "space-between", gap: "10px" }}>
+                    <span>{b.category}</span>
+                    <span>{formatBreakdownLine(b, data.cost_estimate.currency).split(": ")[1]}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {data.cost_estimate.basis && (
+              <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: 0, lineHeight: 1.5, fontStyle: "italic" }}>{data.cost_estimate.basis}</p>
+            )}
+          </div>
+        </>
+      )}
       {sortedTonight.length > 0 && (
         <>
           <H>Do this tonight</H>
@@ -5931,14 +5973,15 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
       else if (it.restaurant && /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/.test(it.type)) dining++;
       else if (it.type === "Activity") activities++;
     }));
-    // Essentials count = number of essentials blocks present (Tonight, Weather, Flags, PlanB, Snobs).
+    // Essentials count = number of essentials blocks present (Tonight, Weather, Cost, Flags, PlanB, Snobs).
     if (Array.isArray(data.tonight) && data.tonight.length > 0) essentials++;
     if (data.weather_window || (Array.isArray(data.pack) && data.pack.length > 0)) essentials++;
+    if (data.cost_estimate) essentials++;
     if (Array.isArray(data.flags) && data.flags.length > 0) essentials++;
     if (Array.isArray(data.planb) && data.planb.length > 0) essentials++;
     if (Array.isArray(data.snobs) && data.snobs.length > 0) essentials++;
     return { flights, hotels, transport, dining, activities, essentials };
-  }, [days, data.tonight, data.weather_window, data.pack, data.flags, data.planb, data.snobs]);
+  }, [days, data.tonight, data.weather_window, data.pack, data.cost_estimate, data.flags, data.planb, data.snobs]);
   // #11 B-prime: split the legacy 9-pill strip into 5 always-on
   // primaries (Overview · Flights · Hotels · Dining · Activities) +
   // a "More ▾" overflow popover for Transport / By category /
@@ -10524,6 +10567,40 @@ const TRIP_PLAN_TOOL = {
         minItems: 3,
         maxItems: 8,
       },
+      // This app has no live pricing/booking API, so this is the model's own
+      // estimate from the flights/hotel tier/dining/activities actually in
+      // this plan plus typical costs for this destination and tier — an
+      // estimate for planning purposes, never presented as a quote or a
+      // verified price (see CLAUDE.md verification discipline). Normalized
+      // by src/costEstimate.js after generation, which guards the shape
+      // (backwards low/high, non-finite amounts) but cannot verify the
+      // numbers themselves.
+      cost_estimate: {
+        type: "object",
+        description: "WRITE AFTER DAYS. A rough TOTAL trip cost estimate covering ALL travelers combined, for the ENTIRE trip in this plan. Base it on what's actually in the plan — the flights, the hotel tier/nights, the restaurants' price tiers, the activities/tours — plus your knowledge of typical costs for this destination. This is an ESTIMATE for budgeting purposes, not a quote: never claim it is confirmed or verified pricing.",
+        properties: {
+          currency: { type: "string", description: "3-letter ISO code, e.g. 'USD', 'EUR', 'GBP'. Default to USD unless the trip clearly implies otherwise." },
+          low: { type: "integer", description: "Low end of the total estimated cost for ALL travelers combined, whole numbers only, no currency symbol." },
+          high: { type: "integer", description: "High end of the total estimated cost for ALL travelers combined." },
+          breakdown: {
+            type: "array",
+            description: "3-6 line items covering the major cost categories actually present in this plan, e.g. 'Flights', 'Lodging', 'Dining', 'Activities & tours', 'Ground transport'. Each with its own low-high range for ALL travelers combined. Omit a category this plan genuinely doesn't have (e.g. no 'Flights' line on a plan with no Flight items).",
+            items: {
+              type: "object",
+              properties: {
+                category: { type: "string" },
+                low: { type: "integer" },
+                high: { type: "integer" },
+              },
+              required: ["category", "low", "high"],
+            },
+            minItems: 2,
+            maxItems: 6,
+          },
+          basis: { type: "string", description: "ONE short sentence on what this estimate is based on, e.g. 'Based on the flights, hotel tier, and dining/activity picks in this plan, using typical costs for this destination.'" },
+        },
+        required: ["currency", "low", "high", "breakdown"],
+      },
       flags: { type: "array", items: { type: "string" }, description: "WRITE AFTER DAYS. Constraint flags: closures, booking lead times." },
       planb: {
         type: "array",
@@ -11239,11 +11316,11 @@ ${findingsBlock}
 ${externalReviewBlock}
 
 REVISION RULES:
-• Re-emit the COMPLETE plan with every field (destination, meta, days, logistics, weather_window, pack, flags, planb, snobs, tonight). Do not return a partial plan.
+• Re-emit the COMPLETE plan with every field (destination, meta, days, logistics, weather_window, pack, cost_estimate, flags, planb, snobs, tonight). Do not return a partial plan.
 • Address every finding above. Where a finding calls for pacing or neighborhood changes, restructure the affected days fully — don't just relabel.
 • Preserve what was working: keep restaurants, hotels, and activities that the review did NOT flag, unless adjusting them is necessary to fix a flagged issue.
 • Respect the user's stated budget, style, pace, AND guidelines above as hard constraints. If the user asked for moderate-tier excursions or a family-friendly tone, the revised plan must keep that. Do not push the trip up-market past what the user requested.
-• Same field emission order rule applies: destination, meta, ${Array.isArray(plan?.cities) && plan.cities.length > 1 ? "cities, " : ""}days, then logistics/flags/planb/snobs/tonight last.
+• Same field emission order rule applies: destination, meta, ${Array.isArray(plan?.cities) && plan.cities.length > 1 ? "cities, " : ""}days, then logistics/flags/planb/snobs/tonight last. If anything in this plan changed (hotel, flights, restaurants, activities), also update cost_estimate to reflect the revised plan.
 • days[] must contain exactly ${totalDays} entries.
 • VARIETY: no restaurant repeats across days. Each unique name appears at most once across the whole plan.
 • EVERY item in items[] MUST have a "time" field (24h local time).
@@ -14644,8 +14721,8 @@ Total: ${totalNights} nights = ${totalDays} days.
     const staticRules = `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.
 
 FIELD EMISSION ORDER — CRITICAL:
-Write the tool input in this exact order: destination, meta, days, logistics, flags, planb, snobs, tonight. (Multi-city trips also emit a cities[] field — see the per-trip preamble below for placement.)
-days[] is the main deliverable. Write the entire days[] array BEFORE writing logistics, flags, planb, snobs, or tonight. Never write logistics/flags/planb first and then days — if anything gets cut off, we lose the whole plan. Always write days first.
+Write the tool input in this exact order: destination, meta, days, logistics, weather_window, pack, cost_estimate, flags, planb, snobs, tonight. (Multi-city trips also emit a cities[] field — see the per-trip preamble below for placement.)
+days[] is the main deliverable. Write the entire days[] array BEFORE writing logistics, weather_window, pack, cost_estimate, flags, planb, snobs, or tonight. Never write those fields first and then days — if anything gets cut off, we lose the whole plan. Always write days first.
 
 TRIP REQUIREMENTS:
 • The exact required day count for this trip is given in the per-trip preamble below. Use the COMPUTED DATE TABLE for every day's weekday and date — do not compute weekdays yourself.
@@ -14838,7 +14915,7 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
       ? `\nDESTINATION-SPECIFIC ROUTE TRUTH for this trip (apply per the FLIGHTS rule):\n${_routeTruthBlock}`
       : "";
     const _multiCityFieldOrder = isMultiCity
-      ? `\nFIELD EMISSION ORDER OVERRIDE — MULTI-CITY: this is a multi-city trip. Insert a cities[] field between meta and days in the tool input, so the order becomes: destination, meta, cities, days, logistics, flags, planb, snobs, tonight.`
+      ? `\nFIELD EMISSION ORDER OVERRIDE — MULTI-CITY: this is a multi-city trip. Insert a cities[] field between meta and days in the tool input, so the order becomes: destination, meta, cities, days, logistics, weather_window, pack, cost_estimate, flags, planb, snobs, tonight.`
       : "";
 
     // Activity-count hard cap. Deterministic classifier scans the
@@ -15964,7 +16041,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         const city = d?.city ? ` (${d.city})` : "";
         return `${label}${city}: ${keyNames || "—"}`;
       });
-      const wrapperConstraint = `\n\nASSEMBLED ITINERARY (for reference — do NOT regenerate days):\n${summaryLines.join("\n")}\n\nWRAPPER MODE — GENERATE ONLY the wrapper fields: destination, meta, cities[], logistics, weather_window, pack, flags, planb (>=5 entries), snobs, tonight. Return an EMPTY days[] array. Do NOT regenerate the day-by-day itinerary — it is already built above.`;
+      const wrapperConstraint = `\n\nASSEMBLED ITINERARY (for reference — do NOT regenerate days):\n${summaryLines.join("\n")}\n\nWRAPPER MODE — GENERATE ONLY the wrapper fields: destination, meta, cities[], logistics, weather_window, pack, cost_estimate, flags, planb (>=5 entries), snobs, tonight. Return an EMPTY days[] array. Do NOT regenerate the day-by-day itinerary — it is already built above. Base cost_estimate on the flights/hotel/dining/activities implied by the assembled itinerary above and the traveler's original request, same as you would for a single-call build.`;
 
       const wrapperBody = {
         model: "claude-sonnet-4-5",
@@ -16709,6 +16786,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   const outputDefs = [
     ["itinerary","Day-by-day itinerary","Full sequenced schedule with timing"],
     ["weather","Weather per day","Forecast strip with rain %, wind, sunrise / sunset"],
+    ["cost","Cost estimate","Rough total + category breakdown — not a quote"],
     ["navigation","One-tap navigation","Google Maps, Apple Maps, Waze on each driving day"],
     ["logistics","Logistics callout cards","Flights, hotel, car — each as a structured card"],
     ["tonight",'"Do this tonight" prompts',"Sequenced evening reminders keyed to the next day"],

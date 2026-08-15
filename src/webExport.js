@@ -11,6 +11,8 @@
 // maritimesgrandloop.com: serif headings, generous whitespace, clean
 // day-by-day timeline, venue contact cards.
 
+import { normalizeCostEstimate, formatCostRange } from "./costEstimate.js";
+
 function esc(s) {
   if (!s && s !== 0) return "";
   return String(s)
@@ -200,6 +202,8 @@ function overviewHtml(data) {
   if (inbound && inbound !== outbound) rows.push(`<tr><th>Return</th><td>${esc(inbound.carrier)} ${esc(inbound.flight_number)} · ${esc(inbound.from_airport)}→${esc(inbound.to_airport)}${inbound.depart_time ? " · " + formatTime(inbound.depart_time) : ""}</td></tr>`);
   if (hotelItem) rows.push(`<tr><th>Stay</th><td>${esc(hotelItem.name)}</td></tr>`);
   if (mealCount > 0 || activityCount > 0) rows.push(`<tr><th>Plan</th><td>${mealCount} meals · ${activityCount} activities · ${(data.days || []).length} days</td></tr>`);
+  const cost = normalizeCostEstimate(data.cost_estimate);
+  if (cost) rows.push(`<tr><th>Est. cost</th><td>${esc(formatCostRange(cost))} total, all travelers <span class="cost-note">(rough estimate, not a quote)</span></td></tr>`);
 
   if (!rows.length) return "";
   return `
@@ -362,6 +366,7 @@ const CSS = `
     padding-right: 16px;
   }
   .logistics { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 16px; }
+  .cost-note { color: #9aa1ad; font-size: 11.5px; font-style: italic; }
   .tag {
     font-size: 11.5px;
     background: #fff;

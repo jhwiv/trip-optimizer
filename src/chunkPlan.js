@@ -250,6 +250,11 @@ export function stitchPlan({ dayChunks, wrapper, expectedDays }) {
     ...(Array.isArray(w.logistics) ? { logistics: w.logistics } : {}),
     ...(w.weather_window ? { weather_window: w.weather_window } : {}),
     ...(Array.isArray(w.pack) ? { pack: w.pack } : {}),
+    // Same explicit-whitelist shape as every other wrapper field here on
+    // purpose (not a generic {...w} spread) - a new wrapper field is silently
+    // dropped on every chunked build unless it's added to this list too, the
+    // same class of gap already documented for logistics/weather/pack/etc.
+    ...(w.cost_estimate && typeof w.cost_estimate === "object" ? { cost_estimate: w.cost_estimate } : {}),
     ...(Array.isArray(w.flags) ? { flags: w.flags } : {}),
     ...(Array.isArray(w.planb) ? { planb: w.planb } : {}),
     ...(Array.isArray(w.snobs) ? { snobs: w.snobs } : {}),

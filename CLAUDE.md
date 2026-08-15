@@ -1301,6 +1301,7 @@ category a given bug actually belongs to before proposing the next iteration.
 | Per-trip Breakfast/Lunch opt-in — one classifier feeds both the prompt and the post-build strip | `src/mealPolicy.js` (see `docs/wiki/concepts/meal-policy.md`) |
 | Pre-export gate before PDF render | `src/App.jsx` (PDF export path) |
 | Share-first PDF save (iOS Share Sheet, anchor download fallback) | `src/pdf/savePdfShareFirst.js` |
+| Trip cost estimate — normalize/format helpers | `src/costEstimate.js` |
 
 ### PDF save is share-first — do not "simplify" it back to `pdf.save()`
 

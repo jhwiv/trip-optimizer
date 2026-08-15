@@ -28,6 +28,14 @@ const PLAN = {
     differentiators: "The Pink Jeep Broken Arrow tour and the Elote Cafe waitlist ritual are the two things a first-timer wouldn't find without local knowledge.",
   },
   logistics: ["EWR-PHX nonstop", "Residence Inn Sedona", "Hertz rental"],
+  cost_estimate: {
+    currency: "USD", low: 3200, high: 4800,
+    breakdown: [
+      { category: "Flights", low: 1200, high: 1600 },
+      { category: "Lodging", low: 1400, high: 2000 },
+    ],
+    basis: "Based on the flights, hotel tier, and dining/activity picks in this plan.",
+  },
   days: [
     {
       label: "Day 1 · Wed Aug 25 · Arrive Sedona",
@@ -82,6 +90,18 @@ console.log("\nbuildWebApp() against a realistic Sedona-shaped plan\n");
 const html = buildWebApp(PLAN, {});
 
 assert("produces a non-empty HTML document", typeof html === "string" && html.includes("<!DOCTYPE html>"));
+
+console.log("\nCost estimate — the 'At a glance' Est. cost row\n");
+assert("the formatted cost range appears", html.includes("$3,200") && html.includes("$4,800"));
+assert("the 'not a quote' disclaimer appears", html.toLowerCase().includes("not a quote"));
+{
+  const htmlNoCost = buildWebApp({ ...PLAN, cost_estimate: undefined }, {});
+  assert("no Est. cost row when the plan has no cost_estimate", !htmlNoCost.includes("Est. cost"));
+}
+{
+  const htmlBadCost = buildWebApp({ ...PLAN, cost_estimate: { currency: "USD" } }, {});
+  assert("a cost_estimate with no usable low/high renders no row (not '$NaN')", !htmlBadCost.includes("Est. cost") && !htmlBadCost.includes("NaN"));
+}
 
 console.log("\nItem names/addresses/phones/websites — the item.name/.address/.phone/.website/.notes bug\n");
 assert("the hotel's real name appears (was: item.name, always undefined)",

@@ -121,13 +121,25 @@ console.log("\n[7] stitchPlan — concatenates in order + merges wrapper");
     logistics: ["Water taxi from VCE"],
     planb: ["a", "b", "c", "d", "e"],
     cities: [{ name: "Venice", nights: 2 }],
+    cost_estimate: { currency: "USD", low: 2000, high: 3000, breakdown: [{ category: "Lodging", low: 1200, high: 1800 }] },
   };
   const { plan, warnings } = stitchPlan({ dayChunks, wrapper, expectedDays: 3 });
   assert("days concatenated in order", plan.days.map(d => d.label).join(",") === "Day 1,Day 2,Day 3");
   assert("wrapper destination merged", plan.destination === "Venice");
   assert("wrapper planb merged", Array.isArray(plan.planb) && plan.planb.length === 5);
   assert("cities merged", Array.isArray(plan.cities) && plan.cities[0].name === "Venice");
+  // Regression: a new wrapper field is silently dropped on every chunked
+  // build unless stitchPlan's explicit whitelist is updated too - this is
+  // the same shape of gap already documented for logistics/weather/pack.
+  assert("wrapper cost_estimate merged", plan.cost_estimate && plan.cost_estimate.low === 2000 && plan.cost_estimate.high === 3000, JSON.stringify(plan.cost_estimate));
   assert("no spurious warnings", warnings.length === 0, JSON.stringify(warnings));
+}
+
+console.log("\n[7b] stitchPlan — omits cost_estimate entirely when wrapper doesn't have one");
+{
+  const dayChunks = [{ days: [{ label: "Day 1", items: [] }] }];
+  const { plan } = stitchPlan({ dayChunks, wrapper: { destination: "Venice", meta: "x" }, expectedDays: 1 });
+  assert("no cost_estimate key when wrapper omitted it", !("cost_estimate" in plan), JSON.stringify(plan));
 }
 
 console.log("\n[8] stitchPlan — rejects an incomplete assembly (truncation guard)");

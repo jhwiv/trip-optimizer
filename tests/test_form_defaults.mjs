@@ -77,7 +77,7 @@ assert("noFlight default still false", fieldDefault(flightsBody, "noFlight") ===
 // that source of truth rather than the old inline App.jsx literals.
 console.log("\n[outputs defaults — itinerary on, add-ons off]");
 
-const OUTPUT_KEYS = ["itinerary","weather","navigation","logistics","tonight","menus","flags","planb","snobs","practical","badges","pronunciation"];
+const OUTPUT_KEYS = ["itinerary","weather","cost","navigation","logistics","tonight","menus","flags","planb","snobs","practical","badges","pronunciation"];
 
 function outputDefault(body, key) {
   const m = body.match(new RegExp(`\\b${key}\\s*:\\s*(true|false)`));
