@@ -13605,11 +13605,29 @@ export default function TripOptimizer() {
   const LS_KEY = "trip-optimizer-form-v4";
 
   // BLANK = truly empty state. Used on every launch and on "Plan another trip".
+  //
+  // hotel.brand and transport.company used to default to ["Marriott / Bonvoy"]
+  // and "Hertz" — real company names pre-filled as if the traveler had chosen
+  // them, unlike every other free-text/multi-select field here (which starts
+  // genuinely empty). A user who never touched those two fields got both
+  // silently injected into the build prompt as real preferences. Reported
+  // 2026-08-15 from a real generated Costa Rica itinerary: a "Hertz 4WD
+  // reserved" logistics chip with no use case anywhere in a plan built
+  // entirely around private hotel transfers and guided tours, AND — worse —
+  // a fabricated "Bonvoy points post 2-3 days after checkout" note on Nayara
+  // Gardens, a Leading Hotels of the World / Amex FHR property with no
+  // Marriott affiliation at all (verified via WebSearch). The model was
+  // trying to honor a phantom "Hotel brand: Marriott / Bonvoy" preference
+  // alongside the traveler's actual named must-have hotel, and fabricated a
+  // loyalty claim to reconcile the two. See the buildUserPrompt guard below
+  // for the second half of this fix — even a genuinely user-chosen brand
+  // preference must not produce this claim when it conflicts with a named
+  // must-have hotel.
   const BLANK = {
     basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: [] },
     flights: { homeAirport: "EWR", airline: "", cabin: "", flex: "", noFlight: false },
-    hotel: { brand: ["Marriott / Bonvoy"], tier: "", mustHave: "" },
-    transport: { type: [], company: "Hertz", vehicle: "" },
+    hotel: { brand: [], tier: "", mustHave: "" },
+    transport: { type: [], company: "", vehicle: "" },
     dining: { cuisine: "", budget: [] },
     restaurants: [],
     activities: [],
@@ -14981,6 +14999,23 @@ ${totalDaysLine}${_multiCityFieldOrder}${multiCityBlock}${_marqueePreamble}${_ai
     const groundModeText = trainAllowed
       ? "driving or train (user opted into rail)"
       : "driving only — NO trains, NO rail, NO Amtrak under any circumstances";
+    // Cabin defaulted to plain "no preference" regardless of budget tier,
+    // and the model would independently pick Economy even on a stated
+    // $$$$$ ultra-high-end trip — reported 2026-08-15 from a real Costa
+    // Rica itinerary where Economy was booked and the flight's own NOTE
+    // field flagged a Polaris business upgrade as an afterthought rather
+    // than the model actually defaulting to it. Only fires when the
+    // traveler left cabin genuinely unspecified — an explicit cabin choice
+    // (including an explicit "Economy") always wins outright.
+    const budgetDollarSigns = (Array.isArray(basics.budget) ? basics.budget.join(" ") : String(basics.budget || "")).match(/\${2,5}/g) || [];
+    const budgetTier = budgetDollarSigns.reduce((max, m) => Math.max(max, m.length), 0);
+    const cabinPref = flights.cabin || (
+      budgetTier >= 5
+        ? "no preference stated — but the traveler's budget is $$$$$ (ultra high end): default to Business class (or the closest premium-cabin equivalent) for any flight 4+ hours, not Economy. If you show Economy anyway for a short/regional hop, say why."
+        : budgetTier === 4
+        ? "no preference stated — but the traveler's budget is $$$$ (luxury): lean toward Premium Economy or Business for any flight 4+ hours rather than defaulting to plain Economy."
+        : "no preference"
+    );
     // COMPUTED DATE TABLE — weekday-of-date is computed in code and
     // injected here. The model is empirically unreliable at this math
     // (Aug 25 2027 was rendered "Monday" when it's Wednesday). Forcing
@@ -14995,8 +15030,9 @@ Return date: ${formatDateForDisplay(basics.endDate) || basics.endDate}` : ""}
 Nights: ${isMultiCity ? totalNightsFromCities : basics.nights}${isMultiCity ? "  (" + cities.map(c => `${c.nights} in ${c.name}`).join(" + ") + ")" : ""}
 Travelers: ${basics.travelers}
 Style: ${prefToText(basics.style)} · Pace: ${basics.pace || "Relaxed (1 activity/day) — traveler did not specify; use this conservative default"} · Budget: ${prefToText(basics.budget)}
-${flights.noFlight ? `Transportation mode: GROUND ONLY (${groundModeText}). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the ${trainAllowed ? "drive or rail" : "drive"} journey from the user's origin to the destination, with realistic time + distance.` : (flights.homeAirport.trim() ? `Home airport: ${flights.homeAirport} (use IATA ${extractAirportCode(flights.homeAirport)} on Flight items) · Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin || "no preference"}` : `Home airport: not specified — infer the most logical departure airport from the traveler narrative/guidelines, or use the nearest major hub. INCLUDE Flight items: Day 1 must have an outbound Flight, and the final day must have a return Flight. Airline: ${flights.airline || "no preference"} · Cabin: ${flights.cabin || "no preference"}`)}
+${flights.noFlight ? `Transportation mode: GROUND ONLY (${groundModeText}). No flights. Do NOT emit any Flight items. Day 1 arrival is a Transport item describing the ${trainAllowed ? "drive or rail" : "drive"} journey from the user's origin to the destination, with realistic time + distance.` : (flights.homeAirport.trim() ? `Home airport: ${flights.homeAirport} (use IATA ${extractAirportCode(flights.homeAirport)} on Flight items) · Airline: ${flights.airline || "no preference"} · Cabin: ${cabinPref}` : `Home airport: not specified — infer the most logical departure airport from the traveler narrative/guidelines, or use the nearest major hub. INCLUDE Flight items: Day 1 must have an outbound Flight, and the final day must have a return Flight. Airline: ${flights.airline || "no preference"} · Cabin: ${cabinPref}`)}
 Hotel brand: ${prefToText(hotel.brand)}${hotel.tier ? ` · ${hotel.tier}` : ""} · Must-haves: ${hotel.mustHave || "none"}
+${hotel.mustHave.trim() && hotel.brand.length ? `IMPORTANT: the must-have hotel above is the traveler's real request — book it even if it is not actually part of the ${prefToText(hotel.brand)} family. Do NOT claim, state, or imply that this specific hotel participates in, earns, or redeems points in ${prefToText(hotel.brand)} (or any loyalty program it does not actually belong to) just to satisfy the brand preference above. If you are confident of the hotel's real loyalty program or consortium (e.g. Leading Hotels of the World, Virtuoso, Relais & Chateaux, its own independent program), state that instead; if unsure, omit loyalty-program language for this hotel entirely rather than guess.` : ""}
 Transport: ${prefToText(transport.type)}${transport.company ? ` · ${transport.company}` : ""}
 Cuisine: ${dining.cuisine || "local"} · Dinner budget: ${prefToText(dining.budget)}
 Restaurants requested: ${restaurants.length ? restaurants.join(", ") : "suggest"}

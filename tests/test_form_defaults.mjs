@@ -68,6 +68,49 @@ assert("cabin default still empty string", fieldDefault(flightsBody, "cabin") ==
 assert("flex default still empty string", fieldDefault(flightsBody, "flex") === '""', `got: ${fieldDefault(flightsBody, "flex")}`);
 assert("noFlight default still false", fieldDefault(flightsBody, "noFlight") === "false", `got: ${fieldDefault(flightsBody, "noFlight")}`);
 
+// --- hotel.brand / transport.company must NOT default to a real company ---
+// Reported 2026-08-15 from a real generated itinerary: BLANK.hotel.brand
+// defaulted to ["Marriott / Bonvoy"] and BLANK.transport.company to "Hertz"
+// — real company names pre-filled as if the traveler had chosen them, unlike
+// every other free-text/multi-select field in BLANK (which starts genuinely
+// empty). A user who never touched these two fields got both silently
+// injected into the build prompt as real preferences: a redundant Hertz
+// rental with no use case in an itinerary built entirely around private
+// transfers, and — worse — a fabricated "Bonvoy points" claim on a hotel
+// (Nayara Gardens) with no Marriott affiliation at all.
+console.log("\n[hotel.brand / transport.company default to genuinely empty]");
+const hotelMatch = SRC.match(/\bhotel:\s*\{([^}]*)\}/);
+assert("BLANK.hotel literal found in App.jsx", !!hotelMatch, "could not locate `hotel: { ... }`");
+const hotelBody = hotelMatch ? hotelMatch[1] : "";
+assert("hotel.brand defaults to an empty array, not a real brand", /\bbrand:\s*\[\]/.test(hotelBody), `got: ${hotelBody}`);
+assert("hotel.tier default still empty string", fieldDefault(hotelBody, "tier") === '""', `got: ${fieldDefault(hotelBody, "tier")}`);
+assert("hotel.mustHave default still empty string", fieldDefault(hotelBody, "mustHave") === '""', `got: ${fieldDefault(hotelBody, "mustHave")}`);
+
+const transportMatch = SRC.match(/\btransport:\s*\{([^}]*)\}/);
+assert("BLANK.transport literal found in App.jsx", !!transportMatch, "could not locate `transport: { ... }`");
+const transportBody = transportMatch ? transportMatch[1] : "";
+assert("transport.company defaults to an empty string, not a real company", fieldDefault(transportBody, "company") === '""', `got: ${fieldDefault(transportBody, "company")}`);
+assert("transport.type default still empty array", /\btype:\s*\[\]/.test(transportBody), `got: ${transportBody}`);
+assert("transport.vehicle default still empty string", fieldDefault(transportBody, "vehicle") === '""', `got: ${fieldDefault(transportBody, "vehicle")}`);
+
+// --- The build prompt must warn against fabricating loyalty affiliation ---
+// when a specifically-named must-have hotel doesn't match the stated brand
+// preference — a defense-in-depth backstop for a traveler who genuinely
+// picks a brand AND separately names a hotel outside it.
+console.log("\n[build prompt guards against fabricated loyalty claims]");
+assert("prompt warns against claiming loyalty-program participation for a mismatched must-have hotel",
+  /do not claim, state, or imply that this specific hotel participates in, earns, or redeems points/i.test(SRC),
+  "expected the hotel-brand mismatch guard sentence in buildUserPrompt");
+
+// --- The build prompt must connect an unspecified cabin to budget tier ----
+console.log("\n[build prompt connects unspecified cabin to budget tier]");
+assert("prompt defaults toward Business for an unspecified cabin on a $$$$$ budget",
+  /ultra high end.*default to Business class/i.test(SRC),
+  "expected the $$$$$ -> Business cabin default sentence in buildUserPrompt");
+assert("prompt leans toward Premium Economy/Business for an unspecified cabin on a $$$$ budget",
+  /luxury.*lean toward Premium Economy or Business/i.test(SRC),
+  "expected the $$$$ -> Premium Economy/Business cabin lean sentence in buildUserPrompt");
+
 // --- Output sections default shape ----------------------------------------
 // The default output selection must enable ONLY the day-by-day itinerary;
 // every add-on section defaults OFF so the user opts in on the choices panel

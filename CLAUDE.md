@@ -1289,6 +1289,90 @@ fix already in this file (the false-positive checker corrections, the webExport 
 the partially-reliable ones (any fix that only changes what's asked of the model). Recognize which
 category a given bug actually belongs to before proposing the next iteration.
 
+### KNOWN FAILURE MODE #20 — two hardcoded wizard defaults ("Marriott / Bonvoy", "Hertz") silently rode into every build as if the traveler had chosen them, producing a fabricated loyalty claim and a redundant rental car on a real itinerary.
+
+**2026-08-15, from a direct PDF review of a real Arenal/La Fortuna, Costa Rica build**, flagging two
+findings: a $$$$$ (ultra-high-end) budget with both flights booked Economy despite the flight's own
+NOTE mentioning a Polaris business-class upgrade path as an afterthought; and a "Hertz 4WD reserved"
+logistics chip with no use case anywhere in an itinerary built entirely around private hotel transfers
+and guided tours. Tracing the second finding to its root cause — rather than assuming it was the
+model's own poor judgment — found the real cause in `BLANK.transport.company`, which defaulted to the
+literal string `"Hertz"` instead of `""`, unlike every other free-text field in `BLANK` (all genuinely
+empty). A traveler who never touched that field got a real company name silently injected into the
+build prompt as if they had asked for it.
+
+**A second, worse instance of the identical defect, found while fixing the first:** `BLANK.hotel.brand`
+defaulted to `["Marriott / Bonvoy"]`, the same shape of bug. This build's traveler had named a specific
+must-have hotel (Nayara Gardens) instead of picking a brand — correctly honored as the actual booked
+property — but the phantom "Hotel brand: Marriott / Bonvoy" preference still reached the model, which
+tried to satisfy both and wrote "Bonvoy points post 2–3 days after checkout" into the hotel's
+confirmation note. **Verified via WebSearch: Nayara Gardens is a Leading Hotels of the World / Amex
+Fine Hotels + Resorts property with no Marriott affiliation at all** — a fabricated loyalty claim,
+told to a paying customer as a real way to earn points. This is precisely the gap this file's own
+`applyQualityLayer` §2e comment (the hotel loyalty-fabrication check, `src/App.jsx`) already documents
+as NOT caught: a DIRECT, non-reciprocal false claim that an independently-named boutique hotel belongs
+to a specific chain, which the existing check can't catch because it only fires on CROSS-chain claims
+(2+ different chains named together) and an independent hotel's name carries no brand keyword to check
+against. That comment called a curated per-hotel denylist the only fix "guessed at" — this incident
+instead found the actual generation-time MECHANISM (a stale brand preference reaching the model
+alongside a mismatched named hotel), which is a much more tractable thing to fix than trying to
+enumerate every real hotel's real chain affiliation after the fact.
+
+**Fix, four parts, all in `src/App.jsx`:**
+1. `BLANK.hotel.brand` → `[]`, `BLANK.transport.company` → `""` — both fields now start genuinely
+   empty like every other free-text/multi-select field in `BLANK`, matching the deliberate, tested,
+   documented exception this file already carries for `flights.homeAirport` defaulting to `"EWR"`
+   (see `tests/test_form_defaults.mjs`) — the difference being that default is intentional and this
+   session found no equivalent justification for pre-filling a specific rental company or hotel chain.
+2. `buildUserPrompt`: when `hotel.mustHave` is set AND `hotel.brand` is non-empty, an explicit
+   `IMPORTANT` line now tells the model the named hotel wins regardless of brand match, and to NOT
+   claim/imply loyalty-program participation in a brand the hotel doesn't actually belong to — stating
+   the hotel's real program if confident (Leading Hotels of the World, Virtuoso, Relais & Chateaux,
+   etc.), omitting loyalty language entirely if unsure. This is a defense-in-depth backstop independent
+   of fix #1 — it also covers a traveler who genuinely picks a brand preference AND separately names a
+   hotel outside it, not just the stale-default case.
+3. `buildUserPrompt`: cabin now defaults to a budget-tier-aware hint instead of bare "no preference"
+   when the traveler left it unspecified — $$$$$ (ultra high end) nudges toward Business class for
+   flights 4+ hours instead of the model silently defaulting to Economy; $$$$ (luxury) nudges toward
+   Premium Economy/Business. An explicit cabin choice, including an explicit "Economy", always wins
+   outright — this only fires on the genuinely-unspecified case.
+4. New regression tests in `tests/test_form_defaults.mjs`: locks in the two empty defaults via the same
+   source-text-isolation technique already used for `homeAirport`, plus source-text assertions that the
+   loyalty-mismatch guard sentence and both budget-tier cabin sentences actually exist in
+   `buildUserPrompt`.
+
+Confirmed live, not just source-checked: seeded a real session snapshot (budget $$$$$, hotel brand
+Marriott / Bonvoy, must-have "Nayara Gardens, Arenal National Park, Costa Rica", cabin unspecified,
+transport company unspecified), drove the actual wizard UI to the real "Plan my trip" tap, and
+intercepted the real constructed `/api/build` request body. The captured prompt's Cabin line correctly
+read "no preference stated — but the traveler's budget is $$$$$... default to Business class..."; the
+Hotel brand line was immediately followed by the full loyalty-mismatch guard sentence verbatim; and the
+Transport line read "No preference" with no trace of Hertz. Full test suite green (3143 passed, only
+the one pre-existing unrelated Node-version failure in `test_save_pdf_share_first.mjs`), lint warning
+count unchanged, build succeeds.
+
+**What this fix does and does not claim:** fixes #1–3 are prompt-level nudges for the model, not
+deterministic guarantees — same limitation this file has documented repeatedly for anything that only
+changes what's asked of the model (see KNOWN FAILURE MODE #19's own follow-up on chunk-boundary
+duplication). Fix #4 makes the *code* correct and verified; whether the model reliably complies with
+the cabin/loyalty guidance on a live rebuild can only be confirmed by an actual production build, not
+by this sandbox (no live `ANTHROPIC_API_KEY` here, matching every other prompt-only fix in this file).
+The existing `applyQualityLayer` §2e cross-chain detector remains untouched and still exists as a
+second, independent layer for the cross-chain fabrication shape it was built for — this fix does not
+attempt to extend detection-side coverage to the direct-claim shape, which is deliberately left as the
+same documented ceiling it already was (a curated per-hotel denylist is still the only detection-side
+option, and still not attempted, for the reasons already given there).
+
+**The pattern to watch for:** a form default that happens to be a real, specific, named entity (a
+company, a brand) rather than a genuinely empty value is a standing risk in this codebase's own
+established terms — it's indistinguishable, once it reaches the build prompt, from a traveler's actual
+explicit choice, and this file's own hard rule elsewhere is that an explicit choice is honored
+literally. The only thing that makes such a default "wrong" is that nobody chose it — and that context
+is invisible by the time the prompt is built. Any future default value for a free-text or brand-style
+field should be treated as suspect if it names something specific rather than starting empty, the same
+way `homeAirport: "EWR"` earned its explicit test-locked justification instead of just being assumed
+fine.
+
 ## Implementation map
 
 | Concern | File |
