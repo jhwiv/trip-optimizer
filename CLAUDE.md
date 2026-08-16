@@ -1373,6 +1373,71 @@ field should be treated as suspect if it names something specific rather than st
 way `homeAirport: "EWR"` earned its explicit test-locked justification instead of just being assumed
 fine.
 
+### KNOWN FAILURE MODE #21 — ~50% of builds for one user came back with a valid, non-truncated response and every top-level field populated EXCEPT days[] (empty); added a silent one-time auto-retry rather than another prompt tweak.
+
+**2026-08-15, reported directly from production** ("No day-by-day plan returned (build 616e9ed).
+Got keys: destination, meta, days, logistics, weather_window, pack, flags, planb, snobs, tonight.
+Tap Build again.") on a 5-night Portugal build. Confirmed via the `__BUILD_ID__` stamp this was
+running the actual current `master` (predates this session's other fixes, which were still
+unmerged on a feature branch) — a live, currently-shipping bug, not a regression from anything else
+in this file. Asked directly whether retrying helped: **"I tried tapping build again twice. It
+didn't work. Happens roughly 50% of the time."** — too frequent and too reproducible to be a rare
+model fluke tolerable behind a manual "Tap Build again," and a 5-night single-city trip is well
+under this app's chunked-build threshold (`shouldChunk`), so this was the plain single-call path,
+not a chunking/stitching bug.
+
+**What the error shape actually says:** `applyBuiltPlan` throws this specific error only when
+`Array.isArray(parsed?.days)` is true but empty (or `days` isn't an array at all) — i.e. the raw
+`toolJson` parsed as syntactically valid JSON (no salvage, no parse error) and `stop_reason` was
+`end_turn`, not `max_tokens` (the error carries no `[truncated]` suffix, confirming this). Every
+OTHER top-level field (`logistics`, `weather_window`, `pack`, `flags`, `planb`, `snobs`, `tonight`)
+was present — the model completed the ENTIRE tool call cleanly, it just wrote `days: []` (or
+equivalent) instead of the day-by-day plan that field description says is "THE MAIN DELIVERABLE...
+Never empty." This is model non-compliance with an explicit, `minItems`-enforced schema field, at a
+rate far too high to reduce by editing the prompt's wording again (this file has already documented,
+more than once, that a probabilistic model-compliance problem doesn't reliably get better from
+another round of "try wording it differently" — see KNOWN FAILURE MODE #19's own follow-up).
+
+**Fix (`src/App.jsx`), a deterministic backstop instead of a prompt edit:**
+1. `applyBuiltPlan`'s empty-days error is now tagged `err._emptyDaysRetryable = !parsed?._truncated`
+   — retryable only when the response wasn't ALSO a genuine token-budget truncation (retrying a
+   truncated response would likely fail the same way while spending tokens for nothing; that case
+   still surfaces the existing truncation-specific error immediately).
+2. `runBuildForJob` gained `buildBody`/`retryAttempt` parameters. Its catch block now rethrows
+   (tagged `_needsBuildRetry`) instead of calling `setError` — but ONLY on the first attempt
+   (`retryAttempt === 0`) of a retryable empty-days failure; every other error path is completely
+   unchanged (still calls `setError` internally, still doesn't throw).
+3. `handleBuild`'s single-call path wraps its `runBuildForJob` call in try/catch. On
+   `_needsBuildRetry`, it fires a **fresh** `POST /api/build` with the same request body (the
+   original stream is already fully consumed, so this can't be a resume — it has to be a new job)
+   and calls `runBuildForJob` again with `retryAttempt: 1`, capping it at exactly one silent retry
+   (two total attempts) before any error reaches the user. `initialMsg` changes to "First attempt
+   came back incomplete — retrying automatically…" so a retry is visible in the loading state, not
+   silently invisible.
+4. Only wired into the primary fresh-build call site. The two resume-on-mount call sites (recovering
+   an interrupted build after a reload) don't have the original request body persisted and are left
+   on the existing manual-retry behavior — a much rarer path than the main "Plan my trip" tap this
+   report was about.
+
+Confirmed live via Playwright: mocked the FIRST `/api/build` call to return exactly the reported
+shape (valid JSON, `stop_reason: end_turn`, every field populated, `days: []`) and the second call to
+return a real plan — the app made exactly 2 `submit_trip_plan` calls (confirmed by inspecting each
+request's `tools[].name`, distinguishing the retry from the pre-existing, unrelated auto-running
+Expert Review's own separate `submit_review` call that fires afterward) and the real itinerary
+rendered with zero console errors. Also confirmed the cap holds: forcing BOTH attempts to return
+empty days produces exactly 2 calls, then the existing error message — no infinite retry loop. Full
+test suite green (3143 passed), lint unchanged (0 errors, 13 warnings), build succeeds.
+
+**What this fix does and does not claim:** this makes a ~50%-failure-rate bug into (assuming
+independent per-attempt failure odds) a ~25% first-pass failure rate that resolves invisibly on
+retry, dropping the RATE the user ever sees an error to roughly 25% instead of 50% — a large,
+immediate mitigation, not a cure. It does not explain WHY the model returns empty days[] this often
+for this class of request, and this sandbox has no live `ANTHROPIC_API_KEY` to investigate that
+further (matching every other prompt-behavior limitation already documented in this file). If empty
+days[] turns out to correlate with something specific (trip size, active output-section count,
+destination) rather than being uniformly random, that would be worth a follow-up investigation with
+real production data — not guessed at here.
+
 ## Implementation map
 
 | Concern | File |

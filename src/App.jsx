@@ -15371,7 +15371,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
   // localStorage). Caller provides the expected nights so progress can be
   // computed without re-deriving from current form state (which may be empty
   // on a resume into a fresh tab).
-  const runBuildForJob = async ({ jobId, nightsNum, expectedTokens, startedAt, citiesCount = 1, outputsCount = 0, streamResp = null, onJobIdReady = null, initialMsg = null }) => {
+  const runBuildForJob = async ({ jobId, nightsNum, expectedTokens, startedAt, citiesCount = 1, outputsCount = 0, streamResp = null, onJobIdReady = null, initialMsg = null, buildBody = null, retryAttempt = 0 }) => {
     setLoading(true);
     setError("");
     setProgress(0);
@@ -15601,6 +15601,20 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
 
       applyBuiltPlan(parsed, { nightsNum });
     } catch (err) {
+      // Reported 2026-08-15: ~50% of builds for one user came back with a
+      // syntactically valid, non-truncated response where every top-level
+      // field was populated EXCEPT days[] (empty). Too frequent to treat as
+      // a rare fluke worth only a manual "Tap Build again" — hand off to
+      // handleBuild's retry wrapper instead of surfacing an error on the
+      // FIRST occurrence. The finally block below still resets this
+      // attempt's loading/progress state; the retry is a fresh invocation
+      // with its own. Only ever fires once per build (retryAttempt === 0
+      // guards against retrying a retry) and never on a genuinely truncated
+      // response (that's a real token-budget problem, not noise).
+      if (err?._emptyDaysRetryable && retryAttempt === 0 && buildBody) {
+        err._needsBuildRetry = true;
+        throw err;
+      }
       let msg;
       if (err?.name === "AbortError") {
         msg = "Build timed out on your device. The server may still be finishing — refresh the page within a few minutes to recover the completed plan.";
@@ -15640,7 +15654,19 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
         const keys = parsed ? Object.keys(parsed).join(", ") : "(no object)";
         const truncFlag = parsed?._truncated ? " [truncated]" : "";
         const buildId = (typeof __BUILD_ID__ !== "undefined") ? __BUILD_ID__ : "unknown";
-        throw new Error(`No day-by-day plan returned (build ${buildId}${truncFlag}). Got keys: ${keys}. Tap Build again.`);
+        const err = new Error(`No day-by-day plan returned (build ${buildId}${truncFlag}). Got keys: ${keys}. Tap Build again.`);
+        // Reported 2026-08-15: this happened on ~50% of builds for one user —
+        // a syntactically valid, non-truncated tool call with every OTHER
+        // top-level field populated but days[] empty. Too frequent to be a
+        // one-off model fluke; tagged so runBuildForJob can silently retry
+        // the whole build once before surfacing an error, same as this
+        // file's established "deterministic backstop, not another prompt
+        // tweak" pattern (see KNOWN FAILURE MODE #19's follow-up). Never
+        // retried when _truncated is set — that's a real token-budget
+        // problem, not noise, and retrying as-is would likely fail the same
+        // way while spending tokens for nothing.
+        err._emptyDaysRetryable = !parsed?._truncated;
+        throw err;
       }
       if (gotDays < Math.max(2, expectedDays - 1) && !parsed._truncated) {
         parsed._dayCountWarning = `Expected ~${expectedDays} days, got ${gotDays}`;
@@ -16612,28 +16638,68 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     // To keep this simple and robust, runBuildForJob accepts the open
     // response and calls streamBuildResponse with an onJob callback that
     // writes localStorage as soon as the jobId lands.
-    await runBuildForJob({
-      jobId: null,
-      nightsNum,
-      expectedTokens,
-      startedAt,
-      citiesCount,
-      outputsCount,
-      streamResp,
-      onJobIdReady: (id) => {
-        try {
-          localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({
-            jobId: id,
-            startedAt,
-            nightsNum,
-            expectedTokens,
-            citiesCount,
-            outputsCount,
-            destination: basicsDestinationLabel(basics) || "your trip",
-          }));
-        } catch {}
-      },
-    });
+    const onJobIdReady = (id) => {
+      try {
+        localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({
+          jobId: id,
+          startedAt,
+          nightsNum,
+          expectedTokens,
+          citiesCount,
+          outputsCount,
+          destination: basicsDestinationLabel(basics) || "your trip",
+        }));
+      } catch {}
+    };
+    try {
+      await runBuildForJob({
+        jobId: null,
+        nightsNum,
+        expectedTokens,
+        startedAt,
+        citiesCount,
+        outputsCount,
+        streamResp,
+        buildBody: body,
+        onJobIdReady,
+      });
+    } catch (err) {
+      // Silent one-time retry for the "valid response, zero days" shape —
+      // see runBuildForJob's own catch block for why this is a retry
+      // rather than a prompt tweak. A fresh POST is required (not a resume)
+      // since the first attempt's stream is already fully consumed.
+      if (!err?._needsBuildRetry) { setError(cleanErrorMessage(err?.message, "Something went wrong generating the plan. Please try again.")); return; }
+      let retryResp;
+      try {
+        retryResp = await fetch("/api/build", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!retryResp.ok) {
+          const txt = await retryResp.text();
+          let msg = `Could not start build (HTTP ${retryResp.status}).`;
+          try { const j = JSON.parse(txt); msg = j?.error?.message || msg; } catch { if (txt) msg = txt.slice(0, 240); }
+          throw new Error(msg, { cause: err });
+        }
+      } catch (retryFetchErr) {
+        setError(cleanErrorMessage(retryFetchErr?.message, "Could not retry build. Please try again."));
+        return;
+      }
+      await runBuildForJob({
+        jobId: null,
+        nightsNum,
+        expectedTokens,
+        startedAt: Date.now(),
+        citiesCount,
+        outputsCount,
+        streamResp: retryResp,
+        buildBody: body,
+        retryAttempt: 1,
+        initialMsg: "First attempt came back incomplete — retrying automatically…",
+        onJobIdReady,
+      });
+    }
   };
 
   // Auto-scroll the streaming-progress panel into view when a build starts.
