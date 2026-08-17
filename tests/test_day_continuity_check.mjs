@@ -379,6 +379,35 @@ console.log("\n=== CITY_BACKTRACK ===");
 
   assert("the clean linear plan stays clean",
     !findContinuityIssues(clean).some(i => i.code === "CITY_BACKTRACK"));
+
+  // Real observed case (2026-08-17, Lisbon→Porto→Palma de Mallorca→Barcelona
+  // build): no direct Porto→Mallorca routing, so Day 5 trains back through
+  // Lisbon (already left after Day 3) purely to catch a connecting flight —
+  // a normal, correct hub-transit day. The connecting-flight prep was
+  // written as a Note ("Arrive Lisbon airport (LIS) — check in for LIS → PMI
+  // flight") with location "Lisbon Airport departures", not a Transport
+  // item, so the existing Transport-type exemption never reached it.
+  const airportTransit = structuredClone(backtrack);
+  airportTransit.days[2].items = [
+    { type: "Note", text: "Arrive Bayeux airport — check in for connecting flight", location: "Bayeux Airport departures" },
+  ];
+  assert("a same-day connecting-flight Note at an abandoned city's airport is not flagged",
+    !findContinuityIssues(airportTransit).some(i => i.code === "CITY_BACKTRACK"),
+    JSON.stringify(findContinuityIssues(airportTransit)));
+
+  // Negative control: the airport-wording exemption must not swallow a real
+  // backtrack just because the item happens to mention a terminal in passing
+  // — only the exemption's OWN location text triggers it, and every OTHER
+  // item on the day (a real venue with no airport wording) must still fire.
+  const airportPlusRealBacktrack = structuredClone(backtrack);
+  airportPlusRealBacktrack.days[2].items = [
+    { type: "Note", text: "Arrive Bayeux airport — check in for connecting flight", location: "Bayeux Airport departures" },
+    { type: "Activity", text: "Pointe du Hoc", location: "Bayeux" },
+  ];
+  const mixedIssues = findContinuityIssues(airportPlusRealBacktrack);
+  assert("a real backtrack item alongside an airport-transit item is still flagged",
+    mixedIssues.some(i => i.code === "CITY_BACKTRACK" && i.target === "Bayeux"),
+    JSON.stringify(mixedIssues));
 }
 
 console.log("\n=== VEHICLE_STATE_CONFLICT ===");

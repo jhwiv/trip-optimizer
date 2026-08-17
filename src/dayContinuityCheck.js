@@ -44,6 +44,25 @@ const PICKUP_RE = /\bpick[\s-]?up\b/i;
 // after the first at a hotel nobody re-checked into.
 const OVERNIGHT_REMINDER_RE = /^overnight\b/i;
 
+// A non-Transport item whose LOCATION itself names an airport/departures/
+// terminal is describing a same-day connection through that city, not a
+// visit to it — CITY_BACKTRACK's own doc comment already exempts Flight/
+// Transport items for exactly this reason ("naming the origin city is
+// exactly what they are for"), but a model sometimes writes the connecting-
+// flight prep as a Note instead ("Arrive Lisbon airport (LIS) — check in for
+// LIS → PMI flight"), which the Transport-type exemption doesn't reach. Real
+// observed case (2026-08-17, a Lisbon→Porto→Palma de Mallorca→Barcelona
+// build): Day 5 trains from Porto back through Lisbon purely to catch a
+// connecting flight to Mallorca — a normal, correct hub-transit routing —
+// and a Note item with location "Lisbon Airport departures" false-blocked
+// export as a backtrack into a city the plan had already left. Deliberately
+// scoped to the RAW location text (before resolveCity reduces it to a bare
+// canonical city name, which loses the airport/departures qualifier) and to
+// the airport itself, not the city in general — a real venue visit inside an
+// abandoned city (the Bayeux/Pointe du Hoc case this check exists to catch)
+// never carries this wording and still fires.
+const AIRPORT_LOCATION_RE = /\bairport\b|\bdepartures?\b|\bterminal\b/i;
+
 // Within how many days a repeated check-in at the same property is suspicious.
 // 2 covers the observed failure (consecutive days) plus a one-day gap, without
 // flagging a legitimate return to a base hotel later in the trip.
@@ -409,7 +428,10 @@ export function findContinuityIssues(plan) {
   //      • Flight/Transport items are skipped — naming the origin city is
   //        exactly what they are for;
   //      • a day's own start city, end city, and every city its transitions
-  //        touch are all allowed, so departure mornings don't trip it.
+  //        touch are all allowed, so departure mornings don't trip it;
+  //      • a non-Transport item whose own location names an airport/
+  //        departures/terminal is a same-day connection, not a visit — see
+  //        AIRPORT_LOCATION_RE above.
   const runs = []; // ordered city runs, derived from each day's END city
   const runIdxOf = new Map(); // normalized city → last run index
   const dayRun = legs.map((leg, i) => {
@@ -435,6 +457,7 @@ export function findContinuityIssues(plan) {
     const reported = new Set();
     for (const item of items) {
       if (!item || TRANSPORT_TYPES.test(String(item.type || ""))) continue;
+      if (AIRPORT_LOCATION_RE.test(String(item.location || ""))) continue;
       const where = resolveCity(item.location, canonical);
       if (!where || allowed.has(norm(where)) || reported.has(norm(where))) continue;
       const lastRun = runIdxOf.get(norm(where));
