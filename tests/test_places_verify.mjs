@@ -14,6 +14,8 @@
 //  10.  HTTP timeout                                → found:false with error, NOT cached
 //  11.  Cache key is sensitive to name             AND insensitive to case / whitespace
 //  12.  Location bias passed when lat/lng provided
+//  13.  Negative results cached 6h, confirmed venues 30d
+//  14.  One retry without the city term, only when coordinates bound it
 
 import { onRequestPost } from "../functions/api/places-verify.js";
 
@@ -419,6 +421,131 @@ console.log("\n[12] Location bias on lat/lng");
   assert("locationBias.circle.center.latitude set", capturedBody?.locationBias?.circle?.center?.latitude === 35.7);
   assert("locationBias.circle.center.longitude set", capturedBody?.locationBias?.circle?.center?.longitude === -105.9);
   assert("locationBias.circle.radius set", capturedBody?.locationBias?.circle?.radius === 50000);
+  globalThis.fetch = originalFetch;
+}
+
+// ============================================================
+// Test 13: negative results get a short TTL, positive ones the long TTL
+// ============================================================
+// A "not-found" is usually a bad city string or a transient index gap, not a
+// durable fact. At the 30-day positive TTL one malformed search poisoned the
+// cache long past the deploy of any fix.
+function makeKVRecordingOpts() {
+  const store = new Map();
+  const puts = [];
+  return {
+    async get(k) { return store.has(k) ? store.get(k) : null; },
+    async put(k, v, opts) { store.set(k, v); puts.push({ key: k, opts }); },
+    _puts: puts,
+  };
+}
+
+{
+  const originalFetch = globalThis.fetch;
+  const KV = makeKVRecordingOpts();
+  globalThis.fetch = async () => textSearchResp([]);
+  const res = await onRequestPost({
+    request: makeReq({ name: "Nowhere Cafe", city: "Chatham cape cod mass" }),
+    env: { GOOGLE_PLACES_API_KEY: "k", PLACES: KV },
+    waitUntil: (p) => p,
+  });
+  const body = await res.json();
+  assert("not-found is still reported", body.found === false && body.error === "not-found");
+  assert("not-found was cached", KV._puts.length === 1, JSON.stringify(KV._puts));
+  assert(
+    "not-found cached for 6 hours, not 30 days",
+    KV._puts[0]?.opts?.expirationTtl === 60 * 60 * 6,
+    JSON.stringify(KV._puts[0]?.opts),
+  );
+  globalThis.fetch = originalFetch;
+}
+
+{
+  const originalFetch = globalThis.fetch;
+  const KV = makeKVRecordingOpts();
+  globalThis.fetch = async (url) => {
+    if (url === TEXT_SEARCH_URL) {
+      return textSearchResp([{ id: "id_ok", displayName: { text: "Open Cafe" } }]);
+    }
+    return detailsResp({ id: "id_ok", displayName: { text: "Open Cafe" }, businessStatus: "OPERATIONAL" });
+  };
+  const res = await onRequestPost({
+    request: makeReq({ name: "Open Cafe", city: "Chatham, MA" }),
+    env: { GOOGLE_PLACES_API_KEY: "k", PLACES: KV },
+    waitUntil: (p) => p,
+  });
+  const body = await res.json();
+  assert("found venue is reported", body.found === true, JSON.stringify(body));
+  assert(
+    "confirmed venue keeps the 30-day TTL",
+    KV._puts[0]?.opts?.expirationTtl === 60 * 60 * 24 * 30,
+    JSON.stringify(KV._puts[0]?.opts),
+  );
+  globalThis.fetch = originalFetch;
+}
+
+// ============================================================
+// Test 14: one coordinate-guarded retry without the city term
+// ============================================================
+// A malformed or colloquial city string makes Text Search miss venues that
+// resolve fine when the search is bounded geographically instead. The retry is
+// gated on coordinates so the search is never widened without a geographic
+// bound — doing that would reintroduce the cross-country matches
+// WRONG_LOCATION exists to catch.
+{
+  const originalFetch = globalThis.fetch;
+  const searches = [];
+  globalThis.fetch = async (url, opts) => {
+    if (url === TEXT_SEARCH_URL) {
+      const body = JSON.parse(opts.body);
+      searches.push(body);
+      if (body.textQuery.includes("Chatham cape cod mass")) return textSearchResp([]);
+      return textSearchResp([{ id: "id_io", displayName: { text: "Impudent Oyster" } }]);
+    }
+    return detailsResp({ id: "id_io", displayName: { text: "Impudent Oyster" }, businessStatus: "OPERATIONAL" });
+  };
+  const res = await onRequestPost({
+    request: makeReq({
+      name: "Impudent Oyster",
+      city: "Chatham cape cod mass",
+      lat: 41.6821,
+      lng: -69.96,
+    }),
+    env: { GOOGLE_PLACES_API_KEY: "k", PLACES: makeKV() },
+    waitUntil: (p) => p,
+  });
+  const body = await res.json();
+  assert("retry: venue found on the second attempt", body.found === true, JSON.stringify(body));
+  assert("retry: exactly two Text Searches", searches.length === 2, JSON.stringify(searches));
+  assert("retry: first attempt included the bad city", searches[0]?.textQuery === "Impudent Oyster, Chatham cape cod mass");
+  assert("retry: second attempt dropped the city", searches[1]?.textQuery === "Impudent Oyster", JSON.stringify(searches[1]));
+  assert(
+    "retry: second attempt still bounded by coordinates",
+    searches[1]?.locationBias?.circle?.center?.latitude === 41.6821,
+    JSON.stringify(searches[1]?.locationBias),
+  );
+  globalThis.fetch = originalFetch;
+}
+
+{
+  const originalFetch = globalThis.fetch;
+  const searches = [];
+  globalThis.fetch = async (url, opts) => {
+    searches.push(JSON.parse(opts.body));
+    return textSearchResp([]);
+  };
+  const res = await onRequestPost({
+    request: makeReq({ name: "Impudent Oyster", city: "Chatham cape cod mass" }),
+    env: { GOOGLE_PLACES_API_KEY: "k", PLACES: makeKV() },
+    waitUntil: (p) => p,
+  });
+  const body = await res.json();
+  assert("no-coords: stays not-found", body.found === false && body.error === "not-found");
+  assert(
+    "no-coords: search is never widened without a geographic bound",
+    searches.length === 1,
+    JSON.stringify(searches),
+  );
   globalThis.fetch = originalFetch;
 }
 

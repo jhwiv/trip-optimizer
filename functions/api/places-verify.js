@@ -89,6 +89,11 @@ const TEXT_SEARCH_FIELD_MASK = [
 
 const CACHE_VERSION = "v1";
 const CACHE_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
+// Negative results get a much shorter life than positive ones. A "not-found"
+// is often a bad or colloquial city string, or a transient Places index gap —
+// not a durable fact about the venue. At the 30-day TTL a single malformed
+// search poisoned the cache well past the deploy of any fix.
+const NEGATIVE_CACHE_TTL_SECONDS = 60 * 60 * 6; // 6 hours
 const HTTP_TIMEOUT_MS = 8000;
 
 function corsHeaders() {
@@ -159,7 +164,8 @@ function writeCache(env, ctx, key, payload) {
   // Only cache definitive results: found+operational/closed, or "not found".
   // Don't cache transient errors so we get a second chance next call.
   if (payload && payload.error && payload.error !== "not-found") return;
-  const p = env.PLACES.put(key, JSON.stringify(payload), { expirationTtl: CACHE_TTL_SECONDS }).catch(() => {});
+  const ttl = payload?.error === "not-found" ? NEGATIVE_CACHE_TTL_SECONDS : CACHE_TTL_SECONDS;
+  const p = env.PLACES.put(key, JSON.stringify(payload), { expirationTtl: ttl }).catch(() => {});
   if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(p);
 }
 
@@ -283,7 +289,16 @@ export async function verifyOneVenue({ env, ctx, name, city, lat, lng }) {
   }
 
   try {
-    const textHit = await textSearch(env.GOOGLE_PLACES_API_KEY, name, city, lat, lng);
+    let textHit = await textSearch(env.GOOGLE_PLACES_API_KEY, name, city, lat, lng);
+    // Retry once without the city term. A malformed or colloquial city string
+    // ("Chatham cape cod mass") makes Text Search miss venues that resolve
+    // fine when the search is constrained geographically instead. Guarded on
+    // coordinates so the search is never widened without a geographic bound —
+    // doing that would reintroduce the cross-country matches WRONG_LOCATION
+    // exists to catch.
+    if (!textHit && city && typeof lat === "number" && typeof lng === "number") {
+      textHit = await textSearch(env.GOOGLE_PLACES_API_KEY, name, "", lat, lng);
+    }
     if (!textHit || !textHit.id) {
       const result = { found: false, error: "not-found" };
       writeCache(env, ctx, key, result);
@@ -379,6 +394,48 @@ export async function geocodeCity({ env, ctx, name }) {
       // Got a hit but no coords — don't cache, surface as error.
       return { found: false, error: "no-location" };
     }
+    writeCache(env, ctx, cacheKey, result);
+    return result;
+  } catch (err) {
+    return { found: false, error: String(err?.message || err).slice(0, 200) };
+  }
+}
+
+// ----------------------------------------------------------------------
+// geocodePlaceId — resolve a known place_id to {lat, lng, name}
+// ----------------------------------------------------------------------
+// Used by /api/find when the user picked an autocomplete suggestion. A
+// place_id is already disambiguated, so this skips Text Search (and its
+// fuzzy-match risk) entirely and goes straight to Place Details.
+//
+// Shares the geocity cache namespace — keyed on the place_id rather than a
+// name, so it cannot collide with geocodeCity's name-hashed keys.
+const GEOPLACE_CACHE_PREFIX = "geoplace:" + CACHE_VERSION + ":";
+
+export async function geocodePlaceId({ env, ctx, placeId }) {
+  if (!placeId || typeof placeId !== "string") return { found: false, error: "missing-place-id" };
+
+  const cacheKey = GEOPLACE_CACHE_PREFIX + normalizeForCacheKey(placeId);
+  const cached = await readCache(env, cacheKey);
+  if (cached) return { ...cached, cached: true };
+
+  if (!env?.GOOGLE_PLACES_API_KEY) {
+    return { found: false, error: "no-key" };
+  }
+
+  try {
+    const details = await placeDetails(env.GOOGLE_PLACES_API_KEY, placeId);
+    const loc = details?.location || {};
+    if (typeof loc.latitude !== "number" || typeof loc.longitude !== "number") {
+      return { found: false, error: "no-location" };
+    }
+    const result = {
+      found: true,
+      place_id: placeId,
+      name: details?.displayName?.text || details?.formattedAddress || "",
+      lat: loc.latitude,
+      lng: loc.longitude,
+    };
     writeCache(env, ctx, cacheKey, result);
     return result;
   } catch (err) {
