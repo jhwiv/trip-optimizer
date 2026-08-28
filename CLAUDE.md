@@ -1438,6 +1438,124 @@ days[] turns out to correlate with something specific (trip size, active output-
 destination) rather than being uniformly random, that would be worth a follow-up investigation with
 real production data — not guessed at here.
 
+### KNOWN FAILURE MODE #22 — closed the KNOWN FAILURE MODE #18 drive-time gap with a real routing API, after ruling out two other newly-added connectors as dead ends for server-side use.
+
+**2026-08-28, following a direct request** ("What other connectors should I enable to help with my
+builds") after a `CITY_BACKTRACK` false-positive fix earlier the same day. Four new MCP connectors
+were added to the account (Tripadvisor, Resy, Civitatis, Uber) and evaluated for whether they could
+close real, already-documented gaps in this file — not by guessing from tool names, but by calling
+each one live and reading the actual response shapes.
+
+**Two evaluated and ruled out for server-side wiring, both for the same underlying reason: they are
+session-side MCP tools with no accessible self-serve REST API for a Cloudflare Worker to call.**
+
+1. **Tripadvisor.** A live `hotel_details` call for "JW Marriott Lisboa, Lisbon, Portugal" silently
+   resolved to **JW Marriott Marco Island Beach Resort — Florida**, a different hotel on a different
+   continent, on the very first test — proving free-text hotel lookup is unreliable without
+   disambiguation. Separately, the response schema has no structured `brand`/`chain` field at all
+   (brand only ever appears embedded in the property's own name string). Getting a real, provisioned
+   `TRIPADVISOR_API_KEY` was pursued, but this sandbox's egress policy blocks
+   `tripadvisor-content-api.readme.io`, `developer-tripadvisor.com`, and `tripadvisor.com` itself —
+   the same way it already blocks `routesmith.ai` — so the real Content API's schema could not be
+   confirmed even with a key in hand. Deferred by the user ("I'll come back to this") rather than
+   shipped unverified.
+2. **DirectBooker.** A live, well-controlled test DID find a real, usable signal here — see the win
+   below — but the product's own documentation states server-side access "works with technical teams
+   to establish the data connection using existing infrastructure," i.e. a bespoke business
+   integration, not a self-serve API key. No amount of code quality changes that; this stays a
+   manual audit tool only, the same ceiling as Resy/Civitatis already carry.
+
+**The DirectBooker finding, for the record (not shipped, but real and worth keeping):** its
+`hotel-lookup-by-name-and-coordinates` tool accepts a `brand` input filter and its match confidence
+responds meaningfully to whether the filter is true. Controlled A/B, same hotel, same coordinates,
+only the brand filter changed:
+
+| Query | Confidence |
+|---|---|
+| "Lisbon Marriott Hotel" + coords, no brand | `exact_match` |
+| same + `brand: "Marriott"` (the hotel's real brand) | `exact_match` — unchanged |
+| same + `brand: "Hilton"` (false) | `possible_match` — degraded |
+
+The same pattern held for Villa Lara, Bayeux — a genuinely independent hotel (confirmed via its own
+`hotel-details` description, zero chain language) — against a false `brand: "Marriott"` filter. This
+is real, reproducible evidence that a *direct* fabricated-chain claim (KNOWN FAILURE MODE #9's
+documented "known ceiling," never caught before because the existing check only fires on
+*cross-chain* claims) is technically detectable — just not through a connector this app can actually
+call from production today.
+
+**TomTom: the one that shipped, and closed a real, previously-explicitly-unfixed gap.** KNOWN
+FAILURE MODE #18 stated outright: "this app has no routing/distance API computing an authoritative
+drive duration." Empirically confirmed the real number for the exact leg that entry was about — a
+live `tomtom-routing` call for Bayeux → Nuremberg returned **1,066 km / 9h19m**, meaning BOTH the
+narrative's "11 hours" and the item's own "~7 hours" from that original incident were wrong. TomTom
+is a large, established mapping company with a genuine self-serve public REST API (`api.tomtom.com`)
+— architecturally the same category as Google Places, unlike Tripadvisor/DirectBooker.
+
+**Fix, mirroring the Places verification architecture exactly (`src/placesVerify.js` /
+`functions/api/places-verify.js` / `src/bookingUrlCheck.js`'s `stripDeadBookingUrls`):**
+1. `src/driveTimeVerify.js` — pure client-side logic. `isDriveTransportItem` classifies a Transport
+   item as a genuine drive (car/taxi/rideshare/private transfer) from the text BEFORE its first dash,
+   explicitly excluding train/rail/ferry/flight/transit and excluding Flight-type items outright.
+   `parseClaimedMinutes` extracts a duration from real observed phrasings ("2h 45m", "11-hour drive",
+   "~7 hours", "35 min"). `collectDriveLegs` only keeps legs claiming 45+ minutes (short local hops
+   are dropped — too much address-level imprecision to be worth checking) with both endpoints long
+   enough to plausibly geocode. `applyDriveTimeFlags` compares claimed vs. real minutes with a
+   deliberately generous margin — `max(60 minutes, 35% of the real time)` — before flagging, so route
+   -choice variance doesn't produce false positives; confirmed this margin correctly does NOT flag
+   the real Bayeux/Nuremberg leg (11h claimed vs 9h19m real — only a 101-minute gap, under the
+   195-minute margin) while still catching a genuinely wrong claim.
+2. `functions/api/drive-time-verify.js` — batch endpoint. Geocodes both endpoints via TomTom Search,
+   routes via TomTom Routing with `traffic=false` (typical conditions, not live-right-now traffic —
+   the itinerary's travel date is arbitrary/future, so live traffic isn't the meaningful ground
+   truth). Reuses the existing `PLACES` KV binding (prefix `drivetime:v1:`, 14-day TTL) rather than
+   provisioning a new namespace. Gated on `TOMTOM_API_KEY`; fails safe (`{error:...}`, never throws)
+   exactly like every other verification endpoint in this file.
+3. Wired into `src/App.jsx` as a third async merge stage chained after the existing booking-URL
+   liveness pass — `collectDriveLegs` → `useDriveTimeVerification` (a new hook, structurally
+   identical to the existing `useURLVerification`) → `applyDriveTimeFlags`, appending
+   `DRIVE_TIME_IMPLAUSIBLE` (warn) to `day.structural_flags[]` and to `qc.warnings` the same way
+   `BOOKING_URL_DEAD` already does.
+
+**A real lint regression caught before it shipped:** the first version of `useDriveTimeVerification`
+referenced the outer `legs` array directly inside its `useEffect` body, triggering a genuine
+`react-hooks/exhaustive-deps` warning (14 vs. the established 13-warning baseline). Fixed by copying
+`useURLVerification`'s own trick exactly: encode everything the effect needs into the memoized `key`
+string (using `\x01`/`\x02` field/row separators, since real place names can contain `:`/`|`) and
+re-parse `key` inside the effect instead of closing over the outer prop — the same reason that trick
+exists in the pre-existing code, now applied to a second hook.
+
+**Confirmed live via Playwright** against the real dev server, not just the unit tests (which also
+pass, 42 new assertions in `tests/test_drive_time_verify.mjs`): seeded a real session snapshot with a
+Bayeux→Nuremberg Transport item falsely claiming "3 hours," mocked `/api/drive-time-verify` to return
+the real TomTom numbers captured earlier in the same session (559 minutes / 1066 km), and confirmed
+the Quality Check banner rendered **"Day 1: 'Drive Bayeux → Nuremberg — 3 hours' claims 3h, but real
+driving time is 9h 19m (1066 km)."** — the exact `QualityBadge` component, not a separate unrendered
+path (the specific class of gap KNOWN FAILURE MODE #9 found for `HotelCard`'s `flags` prop). Also
+confirmed the generous-margin design directly: the SAME fixture with the original, true "11 hours"
+claim produced zero drive-time warnings, live, not just in the unit test that asserts the same thing.
+
+**What this fix does and does not claim:** `functions/api/drive-time-verify.js` was written against
+TomTom's publicly documented Search/Routing REST API shape from general knowledge — this sandbox's
+egress policy blocks `api.tomtom.com` the same way it blocks every other third-party API host tried
+this session, so the exact request/response field names in that file could NOT be confirmed with a
+live REST call before shipping. The empirical numbers used to validate the FEATURE's logic (9h19m /
+1066km, the margin math, the live UI render) came from the MCP TomTom connector — a real but
+DIFFERENT product surface than the raw REST API the deployed function calls. Treat this file as
+confident best-effort, not yet live-verified end-to-end, until a real `TOMTOM_API_KEY` is provisioned
+in the Cloudflare Pages dashboard and a request is captured against the actual deployed endpoint —
+flagged explicitly in a comment at the top of that file itself, not left implicit.
+
+**The pattern to watch for:** three connectors got the identical live-verification treatment (call
+it for real, read the actual response, don't trust the tool's name or description) and produced
+three different, honest verdicts — one dead end from a bad first test that a proper control corrected
+(DirectBooker's real signal was nearly missed because the first test confounded a name mismatch with
+a brand mismatch), one dead end that no amount of code care can fix (Tripadvisor/DirectBooker's
+access model), and one real win. The discipline that mattered wasn't picking the "best" connector in
+the abstract — it was refusing to build server-side code against any of them until their actual
+data/access model was checked empirically, the same standard this file has demanded of plan JSON
+investigations all along, now applied to a decision about which third-party service is even worth
+building against.
+
 ## Implementation map
 
 | Concern | File |
@@ -1451,6 +1569,7 @@ real production data — not guessed at here.
 | Pre-export gate before PDF render | `src/App.jsx` (PDF export path) |
 | Share-first PDF save (iOS Share Sheet, anchor download fallback) | `src/pdf/savePdfShareFirst.js` |
 | Trip cost estimate — normalize/format helpers | `src/costEstimate.js` |
+| Real drive-time verification (TomTom) — collect/parse/merge | `src/driveTimeVerify.js`, server call in `functions/api/drive-time-verify.js` |
 
 ### PDF save is share-first — do not "simplify" it back to `pdf.save()`
 
@@ -1525,6 +1644,7 @@ They ride on `day.structural_flags[]` and reach the pre-export gate through
 | `MEAL_POLICY_STRIP` | info | An item was removed by meal-policy enforcement (`applyQualityLayer` §1c). Carries `item_name` + `reason` so a misfiring negation is traceable to the specific meal it deleted | no |
 | `DUPLICATE_VENUE_SAME_DAY` | warn | The same restaurant (same meal type) OR the same activity (same time slot) was emitted twice on the same day (`applyQualityLayer` §1) — a generation duplication bug, confirmed systemic across both venue kinds (Elote Cafe as two Dinners; "Sunset at Airport Mesa overlook" as two identical 5:30 PM Activities), not a second visit. The duplicate item is auto-removed (kept: the FIRST occurrence by array position — not a content-completeness comparison; the one real restaurant example had the fuller copy first, but that is not guaranteed); the flag is for visibility | no |
 | `DUPLICATE_ARRIVAL_STRIPPED` | info | A day's opening run of Flight/Transport/Hotel items duplicated an arrival an earlier day already made, with nothing in between (`dedupeChunkBoundaryArrivals`, `src/dayContinuityCheck.js`) — the chunk-boundary transition-duplication shape from KNOWN FAILURE MODE #17/#19. The duplicate run is auto-removed, ONLY when it is the day's very first item AND real content survives afterward; the flag is for visibility. When either condition fails, nothing is touched and `ORPHANED_TRANSITION` stays a blocking flag instead — see KNOWN FAILURE MODE #19's second follow-up | no |
+| `DRIVE_TIME_IMPLAUSIBLE` | warn | A Transport item's own claimed drive duration diverges from `/api/drive-time-verify`'s real TomTom routing estimate by more than a generous floor/ratio margin (`src/driveTimeVerify.js`). Closes the gap KNOWN FAILURE MODE #18 documented as explicitly unfixed. Live-dependent (needs `TOMTOM_API_KEY`) — fails safe to no flag, same posture as `BOOKING_URL_DEAD` | no |
 
 A venue with any `severity:"block"` flag must NOT reach the PDF
 exporter. The pre-export gate is the last line of defense; it is not
@@ -1539,6 +1659,7 @@ Required in Cloudflare Pages:
 - `GOOGLE_PLACES_API_KEY` — **new**. Without it, every venue is UNVERIFIED. Add as encrypted secret in the Pages dashboard, never in code.
 - `JOBS` KV binding (existing) — build job mirror
 - `PLACES` KV binding — **new**. 30-day TTL per entry. Bind a fresh namespace in the Pages dashboard.
+- `TOMTOM_API_KEY` — **new**, optional. Without it, `/api/drive-time-verify` returns `{error:"no-key"}` for every leg and `DRIVE_TIME_IMPLAUSIBLE` never fires — fails safe, does not block anything. Reuses the `PLACES` KV binding (prefix `drivetime:v1:`), no new namespace needed. See the `NOT LIVE-VERIFIED` note on this feature below.
 
 ## AVAILABLE CONNECTORS (added 2026-08-28) — agent-session verification aids, NOT build-pipeline integrations
 

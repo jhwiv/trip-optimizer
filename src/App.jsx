@@ -13,6 +13,7 @@ import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
 import { normalizeCostEstimate, formatCostRange, formatBreakdownLine } from "./costEstimate.js";
+import { collectDriveLegs, applyDriveTimeFlags } from "./driveTimeVerify.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnverifiedFlightPayload, findUnverifiedFlights, withFlightMerge } from "./flightResolver.js";
 import { normalizeClock, findFlightTimeMismatches } from "./flightTimeConsistency.js";
@@ -8320,7 +8321,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
   // href to a Google search, so the plan object — and therefore the PDF — kept
   // printing links we already knew were dead. Strip them at the data layer
   // instead; the UI fallback below still handles the pending/unknown window.
-  const { data, qc } = useMemo(() => {
+  const { data: urlStripped, qc: urlQc } = useMemo(() => {
     const { data: stripped, flags, removed } = stripDeadBookingUrls(layeredData, urlVerify.status);
     if (removed.length === 0) return { data: layeredData, qc: layeredQc };
     const withFlags = { ...stripped, days: stripped.days.map((day, dayIdx) => {
@@ -8337,6 +8338,29 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       },
     };
   }, [layeredData, layeredQc, urlVerify.status]);
+
+  // Real-world drive-time check (added 2026-08-28) — same shape as the
+  // booking-url liveness pass above: collect candidate legs, POST them to
+  // a server-side routing check, merge the verdict into
+  // day.structural_flags[] as a warn-severity DRIVE_TIME_IMPLAUSIBLE flag.
+  // See src/driveTimeVerify.js for why this is scoped to Transport-only,
+  // drive-mode-only, long-leg-only candidates.
+  const driveLegs = useMemo(
+    () => collectDriveLegs(urlStripped, (day) => day?.city || urlStripped?.destination || ""),
+    [urlStripped],
+  );
+  const driveVerify = useDriveTimeVerification(driveLegs);
+  const { data, qc } = useMemo(() => {
+    const { data: withDriveFlags, flags } = applyDriveTimeFlags(urlStripped, driveLegs, driveVerify.results);
+    if (flags.length === 0) return { data: urlStripped, qc: urlQc };
+    return {
+      data: withDriveFlags,
+      qc: {
+        fixes: urlQc.fixes,
+        warnings: [...urlQc.warnings, ...flags.map(f => `Day ${f.day}: ${f.message}`)],
+      },
+    };
+  }, [urlStripped, urlQc, driveLegs, driveVerify.results]);
   // Multi-city: track which day starts a new leg so we can render a divider.
   const cityByDay = (data.days || []).map(d => d.city || null);
   const isMultiCityPlan = Array.isArray(data.cities) && data.cities.length > 1;
@@ -8666,6 +8690,69 @@ function useURLVerification(urls) {
     return () => { cancelled = true; };
   }, [key]);
   return { status, isReady };
+}
+
+// Verify a list of candidate drive legs against /api/drive-time-verify.
+// Returns { results: Map<"dayIdx:itemIdx", {realMinutes, realKm, error}>, isReady }.
+// Mirrors useURLVerification exactly — same stable-key memoization, same
+// "unknown while pending" posture, same silent-fallback-to-empty on any
+// request failure (fail safe: no verdict means no flag, never a wrong one).
+const DRIVE_LEG_KEY_SEP = ""; // field separator, distinct from ':' / '|' which appear in real place text
+const DRIVE_LEG_ROW_SEP = ""; // leg separator
+
+function useDriveTimeVerification(legs) {
+  const [results, setResults] = useState(() => new Map());
+  const [isReady, setIsReady] = useState(false);
+  // Encode everything the effect needs into one stable string, the same
+  // trick useURLVerification uses — the effect below re-derives its
+  // working list FROM `key` rather than closing over the `legs` prop
+  // directly, so `[key]` is a complete, lint-correct dependency array.
+  const key = useMemo(
+    () => (Array.isArray(legs)
+      ? legs.map(l => [l.dayIdx, l.itemIdx, l.origin, l.destination].join(DRIVE_LEG_KEY_SEP)).join(DRIVE_LEG_ROW_SEP)
+      : ""),
+    [legs],
+  );
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing local verify-result cache with leg-set prop
+    if (!key) { setResults(new Map()); setIsReady(true); return; }
+    const parsedLegs = key.split(DRIVE_LEG_ROW_SEP).map((row) => {
+      const [dayIdx, itemIdx, origin, destination] = row.split(DRIVE_LEG_KEY_SEP);
+      return { dayIdx: Number(dayIdx), itemIdx: Number(itemIdx), origin, destination };
+    });
+    let cancelled = false;
+    setResults(new Map());
+    setIsReady(false);
+    (async () => {
+      try {
+        const res = await fetch("/api/drive-time-verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ legs: parsedLegs.map(l => ({ origin: l.origin, destination: l.destination })) }),
+        });
+        if (!res.ok) throw new Error(`drive-time-verify ${res.status}`);
+        const json = await res.json();
+        if (cancelled) return;
+        const next = new Map();
+        const rows = Array.isArray(json?.results) ? json.results : [];
+        // Server preserves request order, so zip by index rather than
+        // trying to re-match by origin/destination text (which could
+        // collide if two legs share endpoints).
+        parsedLegs.forEach((leg, i) => {
+          const r = rows[i];
+          if (r) next.set(`${leg.dayIdx}:${leg.itemIdx}`, r);
+        });
+        setResults(next);
+        setIsReady(true);
+      } catch {
+        if (cancelled) return;
+        setResults(new Map());
+        setIsReady(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [key]);
+  return { results, isReady };
 }
 
 function Field({ label, children, hint }) {
