@@ -1540,6 +1540,47 @@ Required in Cloudflare Pages:
 - `JOBS` KV binding (existing) — build job mirror
 - `PLACES` KV binding — **new**. 30-day TTL per entry. Bind a fresh namespace in the Pages dashboard.
 
+## AVAILABLE CONNECTORS (added 2026-08-28) — agent-session verification aids, NOT build-pipeline integrations
+
+Tripadvisor, Resy, Civitatis, and Uber MCP connectors were added to this account on
+2026-08-28. **These are tools available to an agent working in a chat session — they are
+NOT available inside `functions/api/build.js`, `places-verify.js`, or any other Cloudflare
+Pages Function at request time.** The live build pipeline's server-side code only has
+`ANTHROPIC_API_KEY`, `PERPLEXITY_API_KEY`, and `GOOGLE_PLACES_API_KEY` (see Environment
+above). Nothing about adding a connector to this session changes what the deployed app on
+routesmith.ai can call. Do not describe production verification as improved by this section
+until real server-side API access (a REST endpoint + a Cloudflare Pages secret) is actually
+wired in — that is a separate, larger task from "connector added to a session," scoped at
+the bottom of this section.
+
+Until then, treat these as **manual investigation tools for auditing a specific reported
+itinerary** — the same role WebSearch played in KNOWN FAILURE MODE #20 (confirming Nayara
+Gardens has no real Marriott affiliation) — not as something that runs automatically on
+every build.
+
+| Connector | What it actually gives you | Use it to audit… | Does NOT do |
+| --- | --- | --- | --- |
+| **Tripadvisor** (`search_hotels`, `hotel_details`, `compare_hotels`) | Real hotel existence, amenities, live pricing, bubble ratings, reviews | A reported fabricated brand/loyalty claim (KNOWN FAILURE MODE #9's Novotel Bayeux, #20's Nayara Gardens shape) — pull real `hotelBrands`/amenities for the specific property instead of guessing or WebSearching prose | Restaurant or activity data. Does not check `applyQualityLayer`'s §2e cross-chain logic for you — read the code, this only gets you the ground truth to compare against |
+| **Resy** (`display_resy_restaurant_availabilities_app`) | Real booking-slot availability for a restaurant already confirmed to be on the Resy platform, given a valid Google Places ID | Whether a specific flagged reservation is actually bookable on the date/party size the itinerary claims | General restaurant existence/closure checking — it explicitly requires the caller to already have a verified Google Places ID and a live resy.com page; it is not a substitute for Places verification or the `CLOSED_RESTAURANTS` denylist, and most restaurants aren't on Resy at all |
+| **Civitatis** (`suggest-itinerary`, `search-activities`, `get-activity-detail`, `check-availability`) | Real, bookable tours/activities with real prices, cancellation policies, and live availability | A model-guessed private-tour entry ("€180–250 for private 2.5h guide... Context Travel or Walks of Italy") — check whether a comparable real, bookable tour exists at a plausible price for that city, useful context when auditing `cost_estimate`'s Activities category | Verify a SPECIFIC named provider (Context Travel, Walks of Italy) is real or offers that exact tour — it surfaces Civitatis's own catalog, not arbitrary third-party operators |
+| **Uber** (`get_estimates_between_two_locations_claude`) | Real ride time/price estimates between two named locations, right now | Sanity-checking a claimed transfer duration or cost during a manual audit (e.g. the "11-hour drive vs ~7 hours" prose-mismatch class of gap noted as unresolved in KNOWN FAILURE MODE #18) — also useful context when auditing the `cost_estimate` Transport category | Scheduled/future rides — estimates are live-now only, not for the itinerary's actual travel date. Never invent an origin/destination; the tool schema forbids guessing a location the user didn't name |
+
+**Also added, infra-only, not itinerary-content-relevant:** Cloudflare Developer Platform
+tools (D1/KV/R2/Workers inspection — useful for directly reading a stuck job's `JOBS`/`PLACES`
+KV entry when debugging live, instead of guessing from a screenshot) and Railway (unrelated —
+this project deploys on Cloudflare Pages, not Railway; likely added for a different project in
+this account).
+
+**If you want any of this to actually affect production builds:** that means the maintainer
+getting real REST API credentials for the relevant service (Tripadvisor/Resy/Civitatis/Uber
+each have real developer APIs independent of these MCP connectors), adding them as Cloudflare
+Pages secrets the same way `GOOGLE_PLACES_API_KEY` was added, and writing new server-side fetch
+calls into `functions/api/` plus a corresponding client-side flag/merge path (mirroring how
+`places-verify-batch.js` → `src/placesVerify.js` already works for Google Places). That is a
+scoped, real engineering task — ask before starting it, since it touches the streaming build
+endpoint's delicate architecture (see the note under Scope discipline below) and adds new
+secrets/spend the maintainer needs to provision.
+
 ## Scope discipline
 
 When touching this codebase:
