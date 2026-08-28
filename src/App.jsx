@@ -14,6 +14,7 @@ import { relevantProviderCategories, bucketProviders, providerCategoryMeta } fro
 import { resolveOutputs } from "./outputsState.js";
 import { normalizeCostEstimate, formatCostRange, formatBreakdownLine } from "./costEstimate.js";
 import { collectDriveLegs, applyDriveTimeFlags } from "./driveTimeVerify.js";
+import { collectHotelBrandClaims, applyHotelBrandFlags } from "./hotelBrandVerify.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnverifiedFlightPayload, findUnverifiedFlights, withFlightMerge } from "./flightResolver.js";
 import { normalizeClock, findFlightTimeMismatches } from "./flightTimeConsistency.js";
@@ -8350,7 +8351,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
     [urlStripped],
   );
   const driveVerify = useDriveTimeVerification(driveLegs);
-  const { data, qc } = useMemo(() => {
+  const { data: driveChecked, qc: driveQc } = useMemo(() => {
     const { data: withDriveFlags, flags } = applyDriveTimeFlags(urlStripped, driveLegs, driveVerify.results);
     if (flags.length === 0) return { data: urlStripped, qc: urlQc };
     return {
@@ -8361,6 +8362,29 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
       },
     };
   }, [urlStripped, urlQc, driveLegs, driveVerify.results]);
+
+  // Independent hotel brand-claim check (added 2026-08-28) — same shape
+  // again: collect single-chain claims applyQualityLayer's §2e cross-chain
+  // check can't evaluate on its own, POST them to a server-side Tripadvisor
+  // lookup, merge into item.flags (the same array §2e already populates,
+  // so HotelCard's existing flags rendering picks this up with no new UI
+  // wiring). See src/hotelBrandVerify.js.
+  const hotelBrandClaims = useMemo(
+    () => collectHotelBrandClaims(driveChecked, (day) => day?.city || driveChecked?.destination || ""),
+    [driveChecked],
+  );
+  const hotelBrandVerify = useHotelBrandVerification(hotelBrandClaims);
+  const { data, qc } = useMemo(() => {
+    const { data: withBrandFlags, flags } = applyHotelBrandFlags(driveChecked, hotelBrandClaims, hotelBrandVerify.results);
+    if (flags.length === 0) return { data: driveChecked, qc: driveQc };
+    return {
+      data: withBrandFlags,
+      qc: {
+        fixes: driveQc.fixes,
+        warnings: [...driveQc.warnings, ...flags.map(f => `Day ${f.day}: ${f.message}`)],
+      },
+    };
+  }, [driveChecked, driveQc, hotelBrandClaims, hotelBrandVerify.results]);
   // Multi-city: track which day starts a new leg so we can render a divider.
   const cityByDay = (data.days || []).map(d => d.city || null);
   const isMultiCityPlan = Array.isArray(data.cities) && data.cities.length > 1;
@@ -8697,8 +8721,8 @@ function useURLVerification(urls) {
 // Mirrors useURLVerification exactly — same stable-key memoization, same
 // "unknown while pending" posture, same silent-fallback-to-empty on any
 // request failure (fail safe: no verdict means no flag, never a wrong one).
-const DRIVE_LEG_KEY_SEP = ""; // field separator, distinct from ':' / '|' which appear in real place text
-const DRIVE_LEG_ROW_SEP = ""; // leg separator
+const ASYNC_VERIFY_FIELD_SEP = ""; // field separator, distinct from ':' / '|' which appear in real place text
+const ASYNC_VERIFY_ROW_SEP = ""; // leg separator
 
 function useDriveTimeVerification(legs) {
   const [results, setResults] = useState(() => new Map());
@@ -8709,15 +8733,15 @@ function useDriveTimeVerification(legs) {
   // directly, so `[key]` is a complete, lint-correct dependency array.
   const key = useMemo(
     () => (Array.isArray(legs)
-      ? legs.map(l => [l.dayIdx, l.itemIdx, l.origin, l.destination].join(DRIVE_LEG_KEY_SEP)).join(DRIVE_LEG_ROW_SEP)
+      ? legs.map(l => [l.dayIdx, l.itemIdx, l.origin, l.destination].join(ASYNC_VERIFY_FIELD_SEP)).join(ASYNC_VERIFY_ROW_SEP)
       : ""),
     [legs],
   );
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing local verify-result cache with leg-set prop
     if (!key) { setResults(new Map()); setIsReady(true); return; }
-    const parsedLegs = key.split(DRIVE_LEG_ROW_SEP).map((row) => {
-      const [dayIdx, itemIdx, origin, destination] = row.split(DRIVE_LEG_KEY_SEP);
+    const parsedLegs = key.split(ASYNC_VERIFY_ROW_SEP).map((row) => {
+      const [dayIdx, itemIdx, origin, destination] = row.split(ASYNC_VERIFY_FIELD_SEP);
       return { dayIdx: Number(dayIdx), itemIdx: Number(itemIdx), origin, destination };
     });
     let cancelled = false;
@@ -8741,6 +8765,60 @@ function useDriveTimeVerification(legs) {
         parsedLegs.forEach((leg, i) => {
           const r = rows[i];
           if (r) next.set(`${leg.dayIdx}:${leg.itemIdx}`, r);
+        });
+        setResults(next);
+        setIsReady(true);
+      } catch {
+        if (cancelled) return;
+        setResults(new Map());
+        setIsReady(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [key]);
+  return { results, isReady };
+}
+
+// Verify a list of candidate hotel-brand claims against
+// /api/tripadvisor-verify. Returns { results: Map<"dayIdx:itemIdx",
+// {matched, resolvedName, description, error}>, isReady }. Same
+// key-encoding trick as useDriveTimeVerification — the effect re-derives
+// its working list from the stable `key` string rather than closing over
+// the `claims` prop, so `[key]` is a complete dependency array.
+function useHotelBrandVerification(claims) {
+  const [results, setResults] = useState(() => new Map());
+  const [isReady, setIsReady] = useState(false);
+  const key = useMemo(
+    () => (Array.isArray(claims)
+      ? claims.map(c => [c.dayIdx, c.itemIdx, c.hotelName, c.city].join(ASYNC_VERIFY_FIELD_SEP)).join(ASYNC_VERIFY_ROW_SEP)
+      : ""),
+    [claims],
+  );
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing local verify-result cache with claim-set prop
+    if (!key) { setResults(new Map()); setIsReady(true); return; }
+    const parsedClaims = key.split(ASYNC_VERIFY_ROW_SEP).map((row) => {
+      const [dayIdx, itemIdx, hotelName, city] = row.split(ASYNC_VERIFY_FIELD_SEP);
+      return { dayIdx: Number(dayIdx), itemIdx: Number(itemIdx), hotelName, city };
+    });
+    let cancelled = false;
+    setResults(new Map());
+    setIsReady(false);
+    (async () => {
+      try {
+        const res = await fetch("/api/tripadvisor-verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hotels: parsedClaims.map(c => ({ name: c.hotelName, city: c.city })) }),
+        });
+        if (!res.ok) throw new Error(`tripadvisor-verify ${res.status}`);
+        const json = await res.json();
+        if (cancelled) return;
+        const next = new Map();
+        const rows = Array.isArray(json?.results) ? json.results : [];
+        parsedClaims.forEach((claim, i) => {
+          const r = rows[i];
+          if (r) next.set(`${claim.dayIdx}:${claim.itemIdx}`, r);
         });
         setResults(next);
         setIsReady(true);

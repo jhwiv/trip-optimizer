@@ -1556,6 +1556,60 @@ data/access model was checked empirically, the same standard this file has deman
 investigations all along, now applied to a decision about which third-party service is even worth
 building against.
 
+**SAME-DAY FOLLOW-UP — Tripadvisor built after all, once a real key was provisioned.** After the
+above ruled Tripadvisor's egress-blocked docs out as unverifiable, the user provisioned a real
+`TRIPADVISOR_API_KEY` and asked for it to be added. A `curl`-and-paste verification loop was
+attempted (mirroring the TomTom approach) but hit real friction: the first draft accidentally placed
+the key before the hostname in the URL, and separately, Windows PowerShell aliases `curl` to
+`Invoke-WebRequest`, which doesn't accept a bare `-H "header: value"` string the way real curl does —
+producing a confusing `ParameterBindingException` with no obvious fix from the error text alone. The
+user's direct feedback ("this was a bullshit task... nearly impossible") was correct: handing a
+non-technical user a raw curl command with a header flag, across an unstated OS, is bad tooling to
+lean on when it can be avoided. The right call was to drop that path entirely rather than iterate on
+better curl instructions.
+
+**Fix, built without a live-verified response, using the SAME defensive posture already established
+for TomTom in this section:** `functions/api/tripadvisor-verify.js` (batch search+details, KV-cached
+under the `PLACES` binding at `tripadvisor:v1:`, gated on `TRIPADVISOR_API_KEY`) and
+`src/hotelBrandVerify.js` (client-side collect/merge, architecturally identical to
+`src/driveTimeVerify.js`). Targets specifically the gap `applyQualityLayer`'s §2e comment documents
+as its own known ceiling: a DIRECT single-chain claim on an independently-named hotel (Villa Lara /
+The Yeatman falsely claiming "Marriott Tribute Portfolio," no second chain named), which §2e's
+cross-chain-only logic structurally cannot evaluate. Reuses `src/nameMatch.js`'s `nameMatchScore` —
+the same 0.80 hotel-specific threshold CLAUDE.md's `HOTEL_MATCH_UNCERTAIN` flag already uses for
+Google Places — to guard against exactly the wrong-property risk this section's own DirectBooker
+test proved is real (a live MCP test resolved "JW Marriott Lisboa" to a same-named Marriott property
+in Florida). A hotel Tripadvisor doesn't confidently resolve is skipped entirely, never compared.
+
+**Confirmed live via Playwright against the real dev server** (not the MCP connector this time — a
+mocked `/api/tripadvisor-verify` response shaped exactly like the real endpoint's contract, built
+from the real Villa Lara data captured earlier in this same session): seeded a plan with Villa Lara
+falsely claiming "Marriott Tribute Portfolio," and the resulting flag rendered on BOTH surfaces —
+directly on the `HotelCard` itself ("No independent confirmation of Marriott affiliation found for
+Villa Lara — verify directly with the property before relying on this claim.", the same `item.flags`
+render path KNOWN FAILURE MODE #9 had to wire up for §2e) and summarized in the Quality Check banner.
+23 new regression assertions in `tests/test_hotel_brand_verify.mjs`, including a negative control
+(a genuinely Marriott-affiliated hotel whose Tripadvisor description mentions Marriott produces no
+flag) and a fail-safe control (a low-confidence or errored lookup produces no flag either way).
+
+**What this fix does and does not claim:** carries the exact same "NOT LIVE-VERIFIED" caveat as the
+TomTom file in the entry above — `functions/api/tripadvisor-verify.js`'s exact REST field names
+(`data.data[]`, `location_id`, `description`, etc.) are written from general knowledge of Tripadvisor's
+publicly documented Content API shape, not confirmed by a real call from this sandbox (every
+Tripadvisor host is egress-blocked here, and the curl-based verification path was abandoned per the
+friction above). Every field access is defensive — optional chaining with silent fallback — so a
+wrong guess about the response shape degrades to "this check never fires," never a crash or a false
+accusation. Flagged explicitly in a comment at the top of that file, matching this section's own
+established convention for a feature shipped confident-but-unconfirmed.
+
+**The pattern to watch for:** asking a user to run a terminal command to unblock a verification loop
+is not free — it has a real failure mode of its own (OS-specific tooling quirks, copy-paste mistakes,
+accidentally pasting a secret into a shared transcript, as happened here) that can cost more user
+friction than the verification gap it was meant to close. When an equally-safe fallback exists (build
+defensively, fail safe on a wrong guess, verify against the real thing once it's actually live) that
+doesn't ask the user to operate infrastructure, prefer it — the manual-verification loop is a tool for
+when it's cheap and reliable, not a default to reach for regardless of the user's technical context.
+
 ## Implementation map
 
 | Concern | File |
@@ -1570,6 +1624,7 @@ building against.
 | Share-first PDF save (iOS Share Sheet, anchor download fallback) | `src/pdf/savePdfShareFirst.js` |
 | Trip cost estimate — normalize/format helpers | `src/costEstimate.js` |
 | Real drive-time verification (TomTom) — collect/parse/merge | `src/driveTimeVerify.js`, server call in `functions/api/drive-time-verify.js` |
+| Independent hotel brand-claim verification (Tripadvisor) — collect/merge | `src/hotelBrandVerify.js`, server call in `functions/api/tripadvisor-verify.js` |
 
 ### PDF save is share-first — do not "simplify" it back to `pdf.save()`
 
@@ -1645,6 +1700,7 @@ They ride on `day.structural_flags[]` and reach the pre-export gate through
 | `DUPLICATE_VENUE_SAME_DAY` | warn | The same restaurant (same meal type) OR the same activity (same time slot) was emitted twice on the same day (`applyQualityLayer` §1) — a generation duplication bug, confirmed systemic across both venue kinds (Elote Cafe as two Dinners; "Sunset at Airport Mesa overlook" as two identical 5:30 PM Activities), not a second visit. The duplicate item is auto-removed (kept: the FIRST occurrence by array position — not a content-completeness comparison; the one real restaurant example had the fuller copy first, but that is not guaranteed); the flag is for visibility | no |
 | `DUPLICATE_ARRIVAL_STRIPPED` | info | A day's opening run of Flight/Transport/Hotel items duplicated an arrival an earlier day already made, with nothing in between (`dedupeChunkBoundaryArrivals`, `src/dayContinuityCheck.js`) — the chunk-boundary transition-duplication shape from KNOWN FAILURE MODE #17/#19. The duplicate run is auto-removed, ONLY when it is the day's very first item AND real content survives afterward; the flag is for visibility. When either condition fails, nothing is touched and `ORPHANED_TRANSITION` stays a blocking flag instead — see KNOWN FAILURE MODE #19's second follow-up | no |
 | `DRIVE_TIME_IMPLAUSIBLE` | warn | A Transport item's own claimed drive duration diverges from `/api/drive-time-verify`'s real TomTom routing estimate by more than a generous floor/ratio margin (`src/driveTimeVerify.js`). Closes the gap KNOWN FAILURE MODE #18 documented as explicitly unfixed. Live-dependent (needs `TOMTOM_API_KEY`) — fails safe to no flag, same posture as `BOOKING_URL_DEAD` | no |
+| `HOTEL_BRAND_UNCONFIRMED` | warn | A hotel claims a single major chain's affiliation, but `/api/tripadvisor-verify`'s independently-resolved listing (name + description) never mentions that chain (`src/hotelBrandVerify.js`). Closes the DIRECT-claim gap `applyQualityLayer` §2e's own comment documents as its known ceiling (only catches CROSS-chain claims). Deliberately worded as "no independent confirmation," not "fabricated" — absence of evidence in a terse listing isn't proof. Live-dependent (needs `TRIPADVISOR_API_KEY`) — fails safe to no flag | no |
 
 A venue with any `severity:"block"` flag must NOT reach the PDF
 exporter. The pre-export gate is the last line of defense; it is not
@@ -1660,6 +1716,7 @@ Required in Cloudflare Pages:
 - `JOBS` KV binding (existing) — build job mirror
 - `PLACES` KV binding — **new**. 30-day TTL per entry. Bind a fresh namespace in the Pages dashboard.
 - `TOMTOM_API_KEY` — **new**, optional. Without it, `/api/drive-time-verify` returns `{error:"no-key"}` for every leg and `DRIVE_TIME_IMPLAUSIBLE` never fires — fails safe, does not block anything. Reuses the `PLACES` KV binding (prefix `drivetime:v1:`), no new namespace needed. See the `NOT LIVE-VERIFIED` note on this feature below.
+- `TRIPADVISOR_API_KEY` — **new**, optional. Without it, `/api/tripadvisor-verify` returns `matched:false` for every hotel and `HOTEL_BRAND_UNCONFIRMED` never fires — fails safe, does not block anything. Reuses the `PLACES` KV binding (prefix `tripadvisor:v1:`), no new namespace needed. Same NOT-LIVE-VERIFIED caveat as TomTom — see KNOWN FAILURE MODE #22's follow-up entry.
 
 ## AVAILABLE CONNECTORS (added 2026-08-28) — agent-session verification aids, NOT build-pipeline integrations
 
