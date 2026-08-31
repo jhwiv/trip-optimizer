@@ -9,7 +9,7 @@
 // deliberately narrow — see the last block, which is the important one: a
 // venue's real closure data must never be edited.
 
-import { assertWeekdayClaims, enforceDayLabelDates } from "../src/dateFacts.js";
+import { assertWeekdayClaims, enforceDayLabelDates, enforceMetaDateRange } from "../src/dateFacts.js";
 
 let passed = 0, failed = 0;
 function assert(name, cond, detail = "") {
@@ -229,6 +229,57 @@ console.log("\n=== enforceDayLabelDates — day.label's own date stamp (2026-08-
   assert("no days is safe", enforceDayLabelDates({}, LABEL_START).flags.length === 0);
   assert("null day entries survive",
     Array.isArray(enforceDayLabelDates({ days: [null, { label: "Day 2 · Sun Oct 11 · x", items: [] }] }, LABEL_START).plan.days));
+}
+
+console.log("\n=== enforceMetaDateRange — trip summary's own date range (2026-08-31 regression) ===");
+{
+  // Real observed case: a correct 12-night, 13-day Carvoeiro/Évora/Seville
+  // build (Day 1 Fri May 2 through Day 13 Wed May 14, exactly matching the
+  // 7+2+3 nights sum) shipped with meta reading "Fri May 2–Thu May 15" —
+  // one day past the real last day. Both the web export's <title> and hero
+  // banner reuse plan.meta verbatim, so the wrong date reached the page
+  // even though every day.label underneath it was already correct.
+  const META_START = "2025-05-02"; // a real Friday, matching the observed case
+  const days13 = Array.from({ length: 13 }, (_, i) => ({ label: `Day ${i + 1} · placeholder`, items: [] }));
+
+  const broken = {
+    meta: "Fri May 2–Thu May 15 · 7+2+3 nights · 2 travelers · Luxury boutique · Relaxed pace",
+    days: days13,
+  };
+  const result = enforceMetaDateRange(broken, META_START);
+  assert("end date corrected from Thu May 15 to the real last day, Wed May 14",
+    result.plan.meta === "Fri May 2–Wed May 14 · 7+2+3 nights · 2 travelers · Luxury boutique · Relaxed pace",
+    result.plan.meta);
+  assert("exactly one flag raised, targeting meta",
+    result.flags.length === 1 && result.flags[0].target === "meta", JSON.stringify(result.flags));
+  assert("the flag is WEEKDAY_CLAIM_MISMATCH, warn severity",
+    result.flags[0].code === "WEEKDAY_CLAIM_MISMATCH" && result.flags[0].severity === "warn");
+  assert("one correction string recorded", result.corrections.length === 1, JSON.stringify(result.corrections));
+
+  const alreadyCorrect = {
+    meta: "Fri May 2–Wed May 14 · 7+2+3 nights · 2 travelers · Luxury boutique · Relaxed pace",
+    days: days13,
+  };
+  const clean = enforceMetaDateRange(alreadyCorrect, META_START);
+  assert("an already-correct meta is returned by reference, no flags",
+    clean.plan === alreadyCorrect && clean.flags.length === 0);
+
+  const emDash = {
+    meta: "Fri May 2—Thu May 15 · 7+2+3 nights",
+    days: days13,
+  };
+  assert("an em dash separator is preserved in the correction",
+    enforceMetaDateRange(emDash, META_START).plan.meta === "Fri May 2—Wed May 14 · 7+2+3 nights");
+
+  const unrecognized = { meta: "Our Portugal & Spain trip · 12 nights", days: days13 };
+  assert("a meta string with no recognizable date-range clause is left untouched (fail safe)",
+    enforceMetaDateRange(unrecognized, META_START).plan === unrecognized);
+
+  assert("missing meta field → no change", enforceMetaDateRange({ days: days13 }, META_START).flags.length === 0);
+  assert("missing start date → no change", enforceMetaDateRange(broken, undefined).plan === broken);
+  assert("malformed start date → no change", enforceMetaDateRange(broken, "next tuesday").plan === broken);
+  assert("null plan is safe", enforceMetaDateRange(null, META_START).plan === null);
+  assert("no days is safe", enforceMetaDateRange({ meta: broken.meta, days: [] }, META_START).flags.length === 0);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

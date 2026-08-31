@@ -329,3 +329,60 @@ export function enforceDayLabelDates(plan, startDateISO) {
   if (!changed) return { plan, flags, corrections };
   return { plan: { ...plan, days: nextDays }, flags, corrections };
 }
+
+// ---------------------------------------------------------------------------
+// Top-level meta date-range enforcement
+// ---------------------------------------------------------------------------
+//
+// enforceDayLabelDates (above) fixes each day.label's own date stamp.
+// Neither it nor assertWeekdayClaims ever touches plan.meta — the single
+// free-text summary line ("Fri May 2–Thu May 15 · 7+2+3 nights · 2
+// travelers...") that reconcileMetaNights (src/legNights.js) already
+// code-corrects for the NIGHTS-BREAKDOWN clause specifically, but nothing
+// checks the DATE RANGE clause at its front. Real observed case
+// (2026-08-31, a Carvoeiro/Évora/Seville build): a correct 12-night,
+// 13-day itinerary (Day 1 Fri May 2 through Day 13 Wed May 14, matching
+// the 7+2+3 nights sum exactly) had meta reading "Fri May 2–Thu May 15" —
+// one day past the real last day. Because webExport.js's hero and <title>
+// both reuse plan.meta verbatim, the wrong end date shipped to the page
+// title and the hero banner on every export, independent of the (correct)
+// day-by-day content beneath it.
+//
+// Deliberately conservative, matching enforceDayLabelDates's own posture:
+// only rewrites when the meta string's leading clause parses as
+// "<stamp><dash><stamp>" using the same shortStamp format day labels use
+// ("Www Mmm D") — an unrecognized shape is left untouched rather than
+// guessed at.
+const META_DATE_RANGE_RE = /^(\w{3}\s+\w{3}\s+\d{1,2})(\s*[–—-]\s*)(\w{3}\s+\w{3}\s+\d{1,2})/;
+
+export function enforceMetaDateRange(plan, startDateISO) {
+  const days = Array.isArray(plan?.days) ? plan.days : [];
+  if (days.length === 0 || typeof plan?.meta !== "string" || !parseISODate(startDateISO)) {
+    return { plan, flags: [], corrections: [] };
+  }
+  const match = plan.meta.match(META_DATE_RANGE_RE);
+  if (!match) return { plan, flags: [], corrections: [] };
+
+  const correctStart = shortStamp(startDateISO);
+  const correctEnd = shortStamp(addDays(startDateISO, days.length - 1));
+  if (!correctStart || !correctEnd) return { plan, flags: [], corrections: [] };
+
+  const [full, claimedStart, dash, claimedEnd] = match;
+  if (claimedStart === correctStart && claimedEnd === correctEnd) {
+    return { plan, flags: [], corrections: [] };
+  }
+
+  const correctedClause = `${correctStart}${dash}${correctEnd}`;
+  const nextMeta = correctedClause + plan.meta.slice(full.length);
+  const claimedClause = `${claimedStart}${dash}${claimedEnd}`;
+  const flags = [{
+    code: "WEEKDAY_CLAIM_MISMATCH",
+    severity: "warn",
+    dayIdx: 0,
+    day: 1,
+    target: "meta",
+    message: `Trip summary date range "${claimedClause}" is wrong — the itinerary's real span is "${correctedClause}" (${days.length} days). Corrected.`,
+  }];
+  const corrections = [`Trip summary date range: "${claimedClause}" → "${correctedClause}"`];
+  return { plan: { ...plan, meta: nextMeta }, flags, corrections };
+}

@@ -5,7 +5,7 @@ import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { arrivalOrderExportError } from "./arrivalOrderCheck.js";
 import { findContinuityIssues, findStructuralBlockingIssues, dedupeChunkBoundaryArrivals } from "./dayContinuityCheck.js";
 import { deriveCityNights, reconcileMetaNights, parseMetaNightsBreakdown } from "./legNights.js";
-import { buildDateTable, assertWeekdayClaims, enforceDayLabelDates } from "./dateFacts.js";
+import { buildDateTable, assertWeekdayClaims, enforceDayLabelDates, enforceMetaDateRange } from "./dateFacts.js";
 import { pickScheduledFlight, parseClockToMinutes, resolveAirlineIata, normalizeAirportCode } from "./flightSelect.js";
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
 import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, activityHeadName, itemVenueName } from "./swapAlternatives.js";
@@ -3829,6 +3829,15 @@ function applyQualityLayer(input, inputs) {
     out = lbl.plan;
     weekdayFlags.push(...lbl.flags);
     fixes.push(...lbl.corrections);
+
+    // The trip summary line's own date RANGE ("Fri May 2–Thu May 15") is a
+    // third, separate surface from both the prose above and each day's own
+    // label — see enforceMetaDateRange's header comment (src/dateFacts.js)
+    // for the real observed case this closes.
+    const metaRange = enforceMetaDateRange(out, inputs.basics.startDate);
+    out = metaRange.plan;
+    weekdayFlags.push(...metaRange.flags);
+    fixes.push(...metaRange.corrections);
   }
 
   // cost_estimate is model-estimated (this app has no live pricing/booking
@@ -7927,7 +7936,21 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         // but invented. Withhold the strip exemption and null it here.
         // The horizon guard above is what makes a zero-row answer
         // trustworthy enough to act on. Report §2 / §7 Q3.
-        if (t.mode === "verify" && t.fl.flight_number) {
+        //
+        // The /\d/.test guard (2026-08-31) is a second instance of the
+        // exact bug src/flightNumberStrip.js's own zero-digit fix closes:
+        // "the model emitted a flight_number" was read as "the model
+        // emitted a complete flight" without checking it actually looks
+        // like a number. Real observed case: flight_number: "Typical
+        // routing via MAD or LIS" (the model hedging in prose about an
+        // uncertain connection) reached this branch, got
+        // _scheduleVerified: true, and that protection then defeated
+        // flightNumberStrip's own zero-digit check downstream — the
+        // strip's exemption for "the resolver already verified this" is
+        // legitimate, but only when there was ever a real number to
+        // verify. Without this guard the prose falls through here to the
+        // safe final branch below, which never grants that protection.
+        if (t.mode === "verify" && t.fl.flight_number && /\d/.test(t.fl.flight_number)) {
           const noSuchRoute = routeExists === false;
           resolved.push({
             di: t.di,
@@ -7951,7 +7974,11 @@ function FlightNumberAutoResolver({ plan, onPlanRevised }) {
         // number and the user sees nothing. _timesUnconfirmed tells the
         // PDF to render an honest "check with airline" line in place of
         // blank clock rows.
-        if (t.mode === "times" && t.fl.flight_number) {
+        //
+        // Same /\d/.test guard as the verify-mode branch above, same
+        // reason: a zero-digit flight_number is prose, not a number worth
+        // protecting from the strip.
+        if (t.mode === "times" && t.fl.flight_number && /\d/.test(t.fl.flight_number)) {
           resolved.push({
             di: t.di,
             ii: t.ii,

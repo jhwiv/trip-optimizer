@@ -1610,6 +1610,83 @@ defensively, fail safe on a wrong guess, verify against the real thing once it's
 doesn't ask the user to operate infrastructure, prefer it — the manual-verification loop is a tool for
 when it's cheap and reliable, not a default to reach for regardless of the user's technical context.
 
+### KNOWN FAILURE MODE #23 — the trip summary's own date range was never reconciled against the real day sequence, and a fix for a prose flight_number bug had a second, unfixed instance of the same bug in the resolver that feeds it.
+
+**2026-08-31, from a real, unprompted itinerary paste** (a Carvoeiro/Évora/Seville build) — audited the
+same way every export this session has been: trace the real embedded JSON against the actual code,
+don't assume a title looks right just because it reads fluently. Two independent, real bugs found and
+fixed, both in this same export.
+
+**Bug 1 — `plan.meta`'s own date RANGE was never checked against the real day sequence.** The trip was
+a correct 12-night, 13-day itinerary (Day 1 Fri May 2 through Day 13 Wed May 14, exactly matching the
+`7+2+3` nights sum) — every `day.label` was individually correct. But `plan.meta` read "Fri May 2–**Thu
+May 15**" — one day past the real last day. `enforceDayLabelDates` (KNOWN FAILURE MODE-adjacent fix,
+`src/dateFacts.js`) already reconciles each day's own label date stamp against the computed calendar,
+and `reconcileMetaNights` (`src/legNights.js`) already reconciles `meta`'s NIGHTS-BREAKDOWN clause — but
+nothing checked `meta`'s DATE RANGE clause specifically. Because `webExport.js`'s hero and `<title>`
+both reuse `plan.meta` verbatim, the wrong end date shipped to the page title and hero banner on every
+export, independent of the correct content underneath it.
+
+**Fix:** new `enforceMetaDateRange(plan, startDateISO)` in `src/dateFacts.js`, structurally identical to
+`enforceDayLabelDates` — parses `meta`'s leading `"<stamp><dash><stamp>"` clause (same `shortStamp`
+format day labels use), recomputes the real start/end from `startDateISO` + `days.length`, and rewrites
+only when they disagree. Fails safe on an unrecognized shape (no dash-separated stamp pair found) rather
+than guessing, matching `enforceDayLabelDates`'s own posture. Wired into `applyQualityLayer` immediately
+after `enforceDayLabelDates`, sharing the same `inputs.basics.startDate` guard. 22 new regression
+assertions in `tests/test_weekday_claim_check.mjs`, including an em-dash-preservation case and the
+exact real "Fri May 2–Thu May 15" → "Fri May 2–Wed May 14" correction.
+
+**Bug 2 — a zero-digit `flight_number` (model prose, not a number) survived TWO independent code paths
+that both assumed "non-empty means real," and fixing only the first one didn't fix the live symptom.**
+The return flight's `flight_number` was the literal string `"Typical routing via MAD or LIS"` — the
+model hedging about an uncertain connecting route rather than leaving the field empty. `webExport.js`'s
+`itemVenue()` (fixed under KNOWN FAILURE MODE #18) joins `[carrier, flight_number]` for the flight card
+title, so the export showed **"United / TAP / Iberia Typical routing via MAD or LIS"** as the flight's
+display name.
+
+The first fix (`src/flightNumberStrip.js`, `applyFlightNumberStrip`) was straightforward: its Rule 3
+("keep the number, mark it `_modelEstimatedFlightNumber`") assumed *some* digit-like value was present
+and never anticipated zero digits. Added a `digits === null` branch that clears `flight_number` to
+`null` (preserving the original in `_originalFlightNumber` for audit) instead of preserving prose as a
+fake estimate — mirroring the exact repair shape `src/carrierCodeCheck.js` already uses for a related
+carrier/number conflict.
+
+**Live verification caught a SECOND, independent instance of the identical bug before this could ship
+as "fixed."** A Playwright check seeding a plan with `_flightUnverified: true` already set (simulating a
+plan that had already been through one resolver pass — a realistic shape, since `FlightNumberAutoResolver`
+runs asynchronously after the initial build) showed the garbled title **still rendering**, even with the
+strip fix in place and unit-tested. Root cause: `FlightNumberAutoResolver` (`src/App.jsx`, ~line 7707) —
+a separate async component that live-checks flight schedules after the build completes — has its own
+"verify-fallback" and "times-fallback" branches with the identical flaw: `if (t.mode === "verify" &&
+t.fl.flight_number)` treated a non-empty `flight_number` as "the model emitted a complete flight worth
+protecting," writing `_scheduleVerified: true` onto the plan. That flag is exactly what
+`flightNumberStrip.js`'s Rule 1 exemption ("the resolver already verified this, never touch it") is
+built to respect — a legitimate exemption when there was a real number to verify, but here it re-granted
+protection to prose, permanently defeating the strip's own zero-digit fix on the very next render.
+
+**Fix:** added the same `/\d/.test(t.fl.flight_number)` guard to both the "verify" mode branch (line
+~7940) and the "times" mode branch (line ~7978) in `FlightNumberAutoResolver` — a zero-digit
+`flight_number` now falls through to the existing safe final branch (`buildUnverifiedFlightPayload`,
+no `_scheduleVerified` protection granted), the same path already used when the model emits no number
+at all. Confirmed live via Playwright, end-to-end, with the real async resolver running (not just the
+isolated `flightNumberStrip.js` unit test): before this second fix, "Typical routing via MAD or LIS"
+still rendered in the live app despite the first fix; after it, the garbled text is gone entirely and
+the flight card title reads cleanly. 1 new regression assertion in `tests/test_flight_number_strip.mjs`
+(Contract E) plus the live end-to-end confirmation — `FlightNumberAutoResolver` itself has no existing
+dedicated unit-test harness to extend (it's a component with an internal async effect, matching this
+file's established note elsewhere about un-importable closures needing live verification instead).
+
+**The pattern to watch for:** this is now the **second** time in this file a fix verified correct in
+isolation (a clean unit test, a passing assertion) did not hold in the live app, because a SECOND,
+independent consumer shared the exact same wrong assumption the first fix corrected (the first time was
+KNOWN FAILURE MODE #18's four-places-echoing-a-stale-carrier finding). The specific lesson here: "this
+value is non-empty" is not the same claim as "this value is real" — flight numbers, dates, and any other
+structured-looking field the model writes can all be filled with hedging prose instead of the real
+value when the model is uncertain, and every consumer that branches on emptiness alone (not shape) is a
+candidate for this exact bug. Finding the second instance required NOT trusting the first fix's own unit
+test as sufficient — the live Playwright check, run with the real resolver in the loop rather than a
+hand-built fixture that skipped it, is what surfaced it.
+
 ## Implementation map
 
 | Concern | File |

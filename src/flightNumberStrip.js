@@ -91,6 +91,23 @@ export function applyFlightNumberStrip(days, inputs) {
               f.flight_number = digits;
               f._userSuppliedFlightNumber = true;
               fixes.push(`Day ${dayIdx + 1} flight: kept user-supplied flight number ${f.carrier || ""}${digits}`);
+            } else if (digits === null) {
+              // No digits anywhere in the string — this isn't a flight number
+              // at all, it's prose the model wrote when it didn't actually
+              // have one (e.g. flight_number: "Typical routing via MAD or
+              // LIS"). Rule 3 below is written for a real-but-unverified
+              // NUMBER; keeping a zero-digit sentence as a "model-estimated
+              // flight number" produces a garbled fact, not an estimate —
+              // real observed case (2026-08-31): itemVenue() in webExport.js
+              // joins carrier + flight_number for the card title, so this
+              // rendered as "United / TAP / Iberia Typical routing via MAD
+              // or LIS". Clear it exactly like the missing-number branch
+              // below does; the "no direct flights" wording already covers
+              // telling the traveler the routing is uncertain.
+              f._originalFlightNumber = f.flight_number;
+              f.flight_number = null;
+              f._flightUnverified = true;
+              fixes.push(`Day ${dayIdx + 1} flight: flight_number "${f._originalFlightNumber}" has no digits — cleared rather than shown as a real flight number`);
             } else {
               f._originalFlightNumber = f.flight_number;
               // Keep the number but mark it as a model estimate. The resolver

@@ -197,6 +197,47 @@ console.log("=== Contract D — back-fill user number when model omits ===");
     outbound._userSuppliedFlightNumber === true && return_._userSuppliedFlightNumber === true);
 }
 
+console.log("=== Contract E — a zero-digit flight_number (prose, not a number) is cleared, not kept (2026-08-31 regression) ===");
+{
+  // Real observed case: a Seville→Newark connecting flight with no known
+  // schedule got flight_number: "Typical routing via MAD or LIS" — the
+  // model hedging in prose rather than leaving the field empty. Contract
+  // A*'s "keep the number, mark it estimated" rule assumes SOME digit-like
+  // value is present; a zero-digit string isn't a flight number at all, and
+  // keeping it produced a garbled web-export card title ("United / TAP /
+  // Iberia Typical routing via MAD or LIS" — see itemVenue() in
+  // src/webExport.js, which joins carrier + flight_number verbatim).
+  const days = [{
+    label: "Wed May 14",
+    items: [{
+      type: "Flight",
+      flight: {
+        carrier: "United / TAP / Iberia",
+        flight_number: "Typical routing via MAD or LIS",
+        from_airport: "SVQ",
+        to_airport: "EWR",
+        nonstop: false,
+        connection: "MAD or LIS",
+      },
+    }],
+  }];
+  const { days: out, fixes } = applyFlightNumberStrip(days, { narrative: "", guidelines: "" });
+  const f = out[0].items[0].flight;
+  assert("Contract E: zero-digit flight_number is cleared to null",
+    f.flight_number === null, f.flight_number);
+  assert("Contract E: the original prose is preserved for audit",
+    f._originalFlightNumber === "Typical routing via MAD or LIS");
+  assert("Contract E: NOT marked _modelEstimatedFlightNumber (it was never a number)",
+    f._modelEstimatedFlightNumber === undefined);
+  assert("Contract E: marked _flightUnverified",
+    f._flightUnverified === true);
+  assert("Contract E: a fix is logged explaining the clear",
+    fixes.some(x => /has no digits/.test(x)), JSON.stringify(fixes));
+  const title = [f.carrier, f.flight_number].filter(Boolean).join(" ").trim();
+  assert("Contract E: the web-export title construction no longer includes the garbled prose",
+    title === "United / TAP / Iberia", title);
+}
+
 console.log("=== Edge — no flights in plan ===");
 {
   const days = [{ label: "Thu Aug 15", items: [{ type: "Hotel", hotel: { name: "Foo" } }] }];
