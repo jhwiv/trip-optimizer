@@ -1702,6 +1702,8 @@ hand-built fixture that skipped it, is what surfaced it.
 | Trip cost estimate — normalize/format helpers | `src/costEstimate.js` |
 | Real drive-time verification (TomTom) — collect/parse/merge | `src/driveTimeVerify.js`, server call in `functions/api/drive-time-verify.js` |
 | Independent hotel brand-claim verification (Tripadvisor) — collect/merge | `src/hotelBrandVerify.js`, server call in `functions/api/tripadvisor-verify.js` |
+| Cost-estimate breakdown-vs-total internal consistency check | `src/budgetTotalsCheck.js` |
+| "Confident language vs. unverified venue" contradiction check | `src/overconfidentLanguageCheck.js` |
 
 ### PDF save is share-first — do not "simplify" it back to `pdf.save()`
 
@@ -1778,10 +1780,60 @@ They ride on `day.structural_flags[]` and reach the pre-export gate through
 | `DUPLICATE_ARRIVAL_STRIPPED` | info | A day's opening run of Flight/Transport/Hotel items duplicated an arrival an earlier day already made, with nothing in between (`dedupeChunkBoundaryArrivals`, `src/dayContinuityCheck.js`) — the chunk-boundary transition-duplication shape from KNOWN FAILURE MODE #17/#19. The duplicate run is auto-removed, ONLY when it is the day's very first item AND real content survives afterward; the flag is for visibility. When either condition fails, nothing is touched and `ORPHANED_TRANSITION` stays a blocking flag instead — see KNOWN FAILURE MODE #19's second follow-up | no |
 | `DRIVE_TIME_IMPLAUSIBLE` | warn | A Transport item's own claimed drive duration diverges from `/api/drive-time-verify`'s real TomTom routing estimate by more than a generous floor/ratio margin (`src/driveTimeVerify.js`). Closes the gap KNOWN FAILURE MODE #18 documented as explicitly unfixed. Live-dependent (needs `TOMTOM_API_KEY`) — fails safe to no flag, same posture as `BOOKING_URL_DEAD` | no |
 | `HOTEL_BRAND_UNCONFIRMED` | warn | A hotel claims a single major chain's affiliation, but `/api/tripadvisor-verify`'s independently-resolved listing (name + description) never mentions that chain (`src/hotelBrandVerify.js`). Closes the DIRECT-claim gap `applyQualityLayer` §2e's own comment documents as its known ceiling (only catches CROSS-chain claims). Deliberately worded as "no independent confirmation," not "fabricated" — absence of evidence in a terse listing isn't proof. Live-dependent (needs `TRIPADVISOR_API_KEY`) — fails safe to no flag | no |
+| `BUDGET_TOTAL_MISMATCH` | warn | `cost_estimate.breakdown[]`'s own low-end sum already exceeds the stated high-case total by a wide margin (`src/budgetTotalsCheck.js`) — one of the two numbers about the same trip cost has to be wrong. Only checks the overshoot direction; a breakdown summing to noticeably LESS than the total is deliberately not flagged, since `cost_estimate`'s schema explicitly allows omitting a category the plan doesn't have (a short, honest, partial breakdown is normal, not a contradiction). Part of the ROUTESMITH ITINERARY-QUALITY UPGRADE §15 "budget totals" contradiction check | no |
+| `OVERCONFIDENT_LANGUAGE` | warn | A `tonight[]`/`flags[]` entry uses "safe"/"confirmed"/"verified" language while naming a restaurant whose `verify_status` is still `verify_before_booking` (`src/overconfidentLanguageCheck.js`) — the ROUTESMITH ITINERARY-QUALITY UPGRADE §15 spec's own literal example ("do not publish reassuring language... when the underlying information does not support it"). Restaurants only for this first pass — `verify_status` is the one structured, always-populated confirmation field; hotel/activity confirmation isn't a single clean field the same way | no |
 
 A venue with any `severity:"block"` flag must NOT reach the PDF
 exporter. The pre-export gate is the last line of defense; it is not
 optional, even when the user clicks "Export anyway."
+
+## ROUTESMITH ITINERARY-QUALITY UPGRADE — phased additive-patch rollout
+
+2026-09-01: the maintainer supplied an 18-section spec ("ROUTESMITH
+ITINERARY-QUALITY UPGRADE — ADDITIVE PATCH") asking for a large set of
+advisor-judgment and QA upgrades layered onto the existing build pipeline —
+explicitly additive, not a replacement of the planning engine. Mapped
+against the actual code before starting (several sections were already
+substantially built — pacing rules, private-driver gating, night-count
+reconciliation, hours/weekday/flight-time contradiction checks) and phased
+by verifiability, since a prompt instruction is a nudge (unverifiable in
+this sandbox — no live `ANTHROPIC_API_KEY`) while a deterministic post-build
+check is fully testable end-to-end. Full plan and section-by-section mapping:
+`/root/.claude/plans/serene-plotting-lerdorf.md` (session-local path — copy
+survives only as long as that session's plan store does; the mapping table
+is reproduced in spirit by the Implementation map / Flag taxonomy entries
+added alongside each phase).
+
+- **Phase A — done.** Two new deterministic contradiction-QA checks (spec
+  §15): `BUDGET_TOTAL_MISMATCH` (`src/budgetTotalsCheck.js`) and
+  `OVERCONFIDENT_LANGUAGE` (`src/overconfidentLanguageCheck.js`), wired into
+  `applyQualityLayer` immediately after the existing `NIGHT_COUNT_MISMATCH`
+  check, same shape (trip-level `structural_flags[]` + `qc.warnings`). Real
+  unit tests (`tests/test_budget_totals_check.mjs`,
+  `tests/test_overconfident_language_check.mjs`), full suite green (one
+  pre-existing unrelated Node-version failure in
+  `test_save_pdf_share_first.mjs`, same as always), lint unchanged (0
+  errors, 13 warnings), build succeeds. Confirmed live via Playwright
+  against the real dev server (not just the unit tests): a seeded plan with
+  a self-contradicting `cost_estimate` and an overconfident `tonight[]`
+  entry about an unconfirmed restaurant shows both warnings verbatim in the
+  actual Quality Check banner.
+- **Phase B (prompt-only additions) — not started.** Constraint-compliance
+  self-check, architecture review, pacing top-up, spend/save judgment,
+  provider-selection criteria, service-selectivity classification,
+  points/loyalty decision rule, rental-car fee checklist, booking-priority
+  scarcity order (spec §§1,2,3,4,5,6,7,9,14). Verifiable only at the
+  prompt-text level (capture the real constructed `system` blocks), not at
+  the live-compliance level — see the plan file's "Governing constraint."
+- **Phase C (new schema fields + small UI, no new wizard inputs) — not
+  started.** Waze links, backup-plan matrix, travel-protection section,
+  phone-ready reference sheet, Expert Review checklist expansion (spec
+  §§10,11,12,13,18).
+- **Phase D (hard budget ceiling) — not started, deliberately scoped
+  separately.** The one spec item (§8) that needs a genuinely new
+  user-facing input — there is currently no numeric "maximum budget" field
+  anywhere in the wizard, only the `$`–`$$$$$` style-tier selector. Needs a
+  quick check-in on where that field belongs in the wizard before starting.
 
 ## Environment
 

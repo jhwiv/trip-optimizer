@@ -15,6 +15,8 @@ import { resolveOutputs } from "./outputsState.js";
 import { normalizeCostEstimate, formatCostRange, formatBreakdownLine } from "./costEstimate.js";
 import { collectDriveLegs, applyDriveTimeFlags } from "./driveTimeVerify.js";
 import { collectHotelBrandClaims, applyHotelBrandFlags } from "./hotelBrandVerify.js";
+import { findBudgetTotalMismatches } from "./budgetTotalsCheck.js";
+import { findOverconfidentLanguage } from "./overconfidentLanguageCheck.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnverifiedFlightPayload, findUnverifiedFlights, withFlightMerge } from "./flightResolver.js";
 import { normalizeClock, findFlightTimeMismatches } from "./flightTimeConsistency.js";
@@ -3954,6 +3956,22 @@ function applyQualityLayer(input, inputs) {
       message: "The model's night counts disagreed with the day-by-day city sequence; the itinerary now shows the computed counts.",
     }];
     warnings.push("Night counts disagreed with the day-by-day city sequence — replaced with computed values");
+  }
+
+  // Contradiction QA (ROUTESMITH ITINERARY-QUALITY UPGRADE §15) — trip-level
+  // internal-consistency checks, same shape as the NIGHT_COUNT_MISMATCH check
+  // just above: pure functions in their own files (real unit-test coverage,
+  // not the hand-copied-mirror convention this closure otherwise requires),
+  // wired in here so they see the fully normalized plan (post cost_estimate
+  // normalization, post city normalization, post activity-cap trim).
+  const contradictionFlags = [
+    ...findBudgetTotalMismatches(out),
+    ...findOverconfidentLanguage(out),
+  ];
+  if (contradictionFlags.length > 0) {
+    const prior = Array.isArray(out.structural_flags) ? out.structural_flags : [];
+    out.structural_flags = [...prior, ...contradictionFlags];
+    for (const f of contradictionFlags) warnings.push(f.message);
   }
 
   return { data: out, qc: { fixes, warnings } };

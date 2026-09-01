@@ -26,6 +26,8 @@ import { findFlightTimeMismatches } from "../src/flightTimeConsistency.js";
 import { findImplausibleBookingUrls } from "../src/bookingUrlCheck.js";
 import { findUnverifiedFlights } from "../src/flightResolver.js";
 import { findCarrierCodeMismatches } from "../src/carrierCodeCheck.js";
+import { findBudgetTotalMismatches } from "../src/budgetTotalsCheck.js";
+import { findOverconfidentLanguage } from "../src/overconfidentLanguageCheck.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const fixture = (name) => JSON.parse(readFileSync(join(HERE, "fixtures", name), "utf8"));
@@ -122,6 +124,22 @@ function structuralQualityTail(input, inputs) {
       message: "The model's night counts disagreed with the day-by-day city sequence; the itinerary now shows the computed counts.",
     }];
     warnings.push("Night counts disagreed with the day-by-day city sequence — replaced with computed values");
+  }
+
+  // Contradiction QA (ROUTESMITH ITINERARY-QUALITY UPGRADE §15) — trip-level
+  // internal-consistency checks, same shape as the NIGHT_COUNT_MISMATCH check
+  // just above: pure functions in their own files (real unit-test coverage,
+  // not the hand-copied-mirror convention this closure otherwise requires),
+  // wired in here so they see the fully normalized plan (post cost_estimate
+  // normalization, post city normalization, post activity-cap trim).
+  const contradictionFlags = [
+    ...findBudgetTotalMismatches(out),
+    ...findOverconfidentLanguage(out),
+  ];
+  if (contradictionFlags.length > 0) {
+    const prior = Array.isArray(out.structural_flags) ? out.structural_flags : [];
+    out.structural_flags = [...prior, ...contradictionFlags];
+    for (const f of contradictionFlags) warnings.push(f.message);
   }
 
   return { data: out, qc: { fixes, warnings } };
