@@ -36,6 +36,7 @@ export const DEFAULT_OUTPUTS = Object.freeze({
   planb: true,
   snobs: true,
   practical: true,
+  reference: true,
   badges: false,
   pronunciation: false,
 });

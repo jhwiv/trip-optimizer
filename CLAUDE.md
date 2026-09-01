@@ -1704,6 +1704,8 @@ hand-built fixture that skipped it, is what surfaced it.
 | Independent hotel brand-claim verification (Tripadvisor) — collect/merge | `src/hotelBrandVerify.js`, server call in `functions/api/tripadvisor-verify.js` |
 | Cost-estimate breakdown-vs-total internal consistency check | `src/budgetTotalsCheck.js` |
 | "Confident language vs. unverified venue" contradiction check | `src/overconfidentLanguageCheck.js` |
+| Waze deep links on meaningful driving legs (reuses driveTimeVerify's leg classifier) | `src/wazeLinks.js` |
+| Phone-ready reference sheet — client-side aggregation of hotels/transport/booked restaurants | `src/referenceSheet.js` |
 
 ### PDF save is share-first — do not "simplify" it back to `pdf.save()`
 
@@ -1836,10 +1838,48 @@ added alongside each phase).
   verbatim in the live `system` payload sent for the initial
   `submit_trip_plan` call — proves prompt DELIVERY, not model compliance,
   which cannot be checked without a live `ANTHROPIC_API_KEY`.
-- **Phase C (new schema fields + small UI, no new wizard inputs) — not
-  started.** Waze links, backup-plan matrix, travel-protection section,
-  phone-ready reference sheet, Expert Review checklist expansion (spec
-  §§10,11,12,13,18).
+- **Phase C (new schema fields + small UI, no new wizard inputs) — done.**
+  - §10 Waze links: `src/wazeLinks.js` reuses `driveTimeVerify.js`'s
+    `collectDriveLegs` classifier verbatim (per the plan's explicit
+    instruction not to write a second one) — a `waze.com/ul?q=...&navigate=yes`
+    link renders next to the existing contact block on every meaningful
+    Transport-tab drive leg.
+  - §11 backup_matrix / §12 travel_protection: two new optional top-level
+    schema fields on `submit_trip_plan` (structured `{if_this, do_this}`
+    pairs and a short bullet array respectively), prompt instructions added
+    alongside the existing PLAN B block, rendered in `EssentialsView`
+    ("If this happens, do this instead" / "Financial exposure") — additive
+    alongside the existing `planb[]`, no new output toggle needed (same
+    "if the model wrote it, show it" pattern already used for flags/planb).
+  - §13 phone-ready reference sheet: `src/referenceSheet.js`, a pure
+    client-side aggregator — **no new model output** — pulling
+    hotel/transport-contact/booked-restaurant fields the model already
+    writes into one curated card. New `reference` toggle in
+    `outputsState.js`'s `DEFAULT_OUTPUTS` (default on). Deliberately scoped
+    to structural signals only (every Hotel item; Transport items with real
+    contact info; restaurants with `reservation.platform !== "walkin"`) —
+    private-guide/boat-operator Activity items are NOT separated out in
+    this pass (no structural field distinguishes them from ordinary
+    sightseeing), documented as a known gap rather than guessed at.
+  - §18 checklist expansion: 3 new MUST-VERIFY CHECKLIST items
+    (constraint_compliance, experience_judgment, own_data_consistency)
+    added to `REVIEW_TOOL`'s enum and `buildReviewSystemPrompt`, mirroring
+    exactly how KNOWN FAILURE MODE #10 added items 8–9 — checklist count
+    nine → twelve throughout.
+  - Verified live via Playwright against the real dev server (not just unit
+    tests): a seeded plan showed the backup-matrix table, the travel-
+    protection bullets, and the curated reference sheet all rendering in the
+    actual Quality Check / Essentials view, and the Transport tab rendered a
+    real, clickable Waze link (`https://waze.com/ul?q=...&navigate=yes`) next
+    to a real drive leg. Also re-ran the Phase B prompt-capture technique to
+    confirm both new schema fields' instructions AND all three new checklist
+    items reach the real `/api/build` request bodies (the initial build call
+    and the separate Expert Review call respectively) — again, this proves
+    prompt delivery, not model compliance. New unit tests:
+    `tests/test_waze_links.mjs`, `tests/test_reference_sheet.mjs`, plus
+    updates to `tests/test_outputs_state.mjs` (14 keys, not 13) and
+    `tests/test_review_quality_escalation.mjs` (nine → twelve checklist
+    areas, new REVIEW_TOOL source-text assertions).
 - **Phase D (hard budget ceiling) — not started, deliberately scoped
   separately.** The one spec item (§8) that needs a genuinely new
   user-facing input — there is currently no numeric "maximum budget" field

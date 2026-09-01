@@ -43,7 +43,7 @@ function contentWarningsForReview(warnings) {
 function buildKnownWarningsBlock(qcWarnings) {
   const contentWarnings = contentWarningsForReview(qcWarnings);
   return contentWarnings.length
-    ? `\nKNOWN QUALITY WARNINGS (already flagged by deterministic checks before this review — verify each is genuinely still unresolved in the plan below. A warning matching one of the nine MUST-VERIFY CHECKLIST areas — especially MARQUEE PROMISES and LOYALTY-CLAIM PLAUSIBILITY — MUST be escalated in structural_findings[] with the matching check id if still unresolved. Anything else worth a note belongs in ordinary findings[]):\n${contentWarnings.map((w) => `• ${w}`).join("\n")}\n`
+    ? `\nKNOWN QUALITY WARNINGS (already flagged by deterministic checks before this review — verify each is genuinely still unresolved in the plan below. A warning matching one of the twelve MUST-VERIFY CHECKLIST areas — especially MARQUEE PROMISES and LOYALTY-CLAIM PLAUSIBILITY — MUST be escalated in structural_findings[] with the matching check id if still unresolved. Anything else worth a note belongs in ordinary findings[]):\n${contentWarnings.map((w) => `• ${w}`).join("\n")}\n`
     : "";
 }
 
@@ -105,11 +105,16 @@ console.log("\nKNOWN QUALITY WARNINGS block — only appears when there's someth
   // warning from applyQualityLayer §2e gets escalated into the uncapped
   // structural_findings[] bucket instead of competing for one of the
   // capped ordinary findings[] slots.
+  //
+  // 2026-09-01 follow-up: the checklist grew again, nine areas to twelve
+  // (constraint_compliance, experience_judgment, own_data_consistency added
+  // — ROUTESMITH ITINERARY-QUALITY UPGRADE spec §18's three-part
+  // pre-publication test). Same escalation-count assertion, updated count.
   const withLoyaltyGap = buildKnownWarningsBlock([
     "Day 1 hotel (Novotel Bayeux): claims a cross-chain loyalty affiliation (marriott / accor) that does not exist in the hotel industry — verify before booking",
   ]);
-  assert("the block references nine checklist areas, not the stale seven",
-    withLoyaltyGap.includes("nine MUST-VERIFY CHECKLIST areas") && !withLoyaltyGap.includes("seven MUST-VERIFY"));
+  assert("the block references twelve checklist areas, not a stale count",
+    withLoyaltyGap.includes("twelve MUST-VERIFY CHECKLIST areas") && !withLoyaltyGap.includes("nine MUST-VERIFY") && !withLoyaltyGap.includes("seven MUST-VERIFY"));
   assert("the block explicitly calls out LOYALTY-CLAIM PLAUSIBILITY for escalation, same as MARQUEE PROMISES",
     withLoyaltyGap.includes("LOYALTY-CLAIM PLAUSIBILITY") && withLoyaltyGap.includes("MARQUEE PROMISES"));
   assert("the block names the actual hotel loyalty gap (Novotel Bayeux)",
@@ -131,6 +136,33 @@ console.log("\nKNOWN QUALITY WARNINGS block — only appears when there's someth
   const noWarnings = buildKnownWarningsBlock(undefined);
   assert("undefined qcWarnings (e.g. a first-ever review with no qc prop yet) degrades to no block",
     noWarnings === "");
+}
+
+console.log("\nREVIEW_TOOL schema and MUST-VERIFY CHECKLIST source text — the three new §18 checklist items actually reached the real App.jsx source\n");
+{
+  // buildReviewSystemPrompt is a closure and can't be imported directly
+  // (see the mirror convention at the top of this file) — verify the real
+  // source text instead, same technique used elsewhere in this repo
+  // (test_apply_quality_layer_structural.mjs, test_direct_flight_surfacing.mjs).
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { dirname, join } = await import("node:path");
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const appSrc = readFileSync(join(HERE, "..", "src", "App.jsx"), "utf8");
+
+  assert("REVIEW_TOOL's check enum includes constraint_compliance",
+    appSrc.includes('"constraint_compliance"'));
+  assert("REVIEW_TOOL's check enum includes experience_judgment",
+    appSrc.includes('"experience_judgment"'));
+  assert("REVIEW_TOOL's check enum includes own_data_consistency",
+    appSrc.includes('"own_data_consistency"'));
+  assert("the MUST-VERIFY CHECKLIST prose names all three new items",
+    appSrc.includes("10. CONSTRAINT COMPLIANCE") &&
+    appSrc.includes("11. EXPERIENCE JUDGMENT") &&
+    appSrc.includes("12. OWN-DATA CONSISTENCY"));
+  assert("the checklist description says twelve checks, not the stale nine",
+    appSrc.includes("Leave empty if the plan passes all twelve checks") &&
+    !appSrc.includes("Leave empty if the plan passes all nine checks"));
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

@@ -20,17 +20,17 @@ function assert(name, cond, detail) {
 
 const ALL_KEYS = [
   "itinerary", "weather", "cost", "navigation", "logistics", "tonight", "menus",
-  "flags", "planb", "snobs", "practical", "badges", "pronunciation",
+  "flags", "planb", "snobs", "practical", "reference", "badges", "pronunciation",
 ];
 
 console.log("\n[1] DEFAULT_OUTPUTS shape");
 {
-  assert("has exactly the 13 known keys", ALL_KEYS.every(k => k in DEFAULT_OUTPUTS) && Object.keys(DEFAULT_OUTPUTS).length === 13, JSON.stringify(Object.keys(DEFAULT_OUTPUTS)));
+  assert("has exactly the 14 known keys", ALL_KEYS.every(k => k in DEFAULT_OUTPUTS) && Object.keys(DEFAULT_OUTPUTS).length === 14, JSON.stringify(Object.keys(DEFAULT_OUTPUTS)));
   assert("itinerary defaults on", DEFAULT_OUTPUTS.itinerary === true);
   // New spec (#4): preselect all sections except the last two in display order.
   const OFF_BY_DEFAULT = ["badges", "pronunciation"];
   assert("only badges & pronunciation default off", ALL_KEYS.every(k => OFF_BY_DEFAULT.includes(k) ? DEFAULT_OUTPUTS[k] === false : DEFAULT_OUTPUTS[k] === true));
-  assert("exactly 11 sections default on", ALL_KEYS.filter(k => DEFAULT_OUTPUTS[k] === true).length === 11);
+  assert("exactly 12 sections default on", ALL_KEYS.filter(k => DEFAULT_OUTPUTS[k] === true).length === 12);
   assert("defaultOutputs() returns a fresh copy", defaultOutputs() !== DEFAULT_OUTPUTS && JSON.stringify(defaultOutputs()) === JSON.stringify(DEFAULT_OUTPUTS));
   // The frozen canonical must not be mutated through the fresh copy.
   const copy = defaultOutputs();
@@ -55,7 +55,7 @@ console.log("\n[3] resolveOutputs PRESERVES a persisted user selection (the core
   const userPicked = {
     itinerary: true, weather: true, cost: false, navigation: false, logistics: true,
     tonight: true, menus: false, flags: true, planb: true, snobs: true,
-    practical: false, badges: false, pronunciation: false,
+    practical: false, reference: true, badges: false, pronunciation: false,
   };
   const restored = resolveOutputs(userPicked);
   assert("weather preserved on", restored.weather === true);
@@ -84,7 +84,7 @@ console.log("\n[4] resolveOutputs invariants: itinerary forced on, missing keys 
   assert("missing on-by-default keys backfilled true", r2.navigation === true && r2.snobs === true);
   assert("missing off-by-default keys backfilled false", r2.badges === false && r2.pronunciation === false);
   assert("backfilled keys match DEFAULT_OUTPUTS", ALL_KEYS.filter(k => k !== "weather" && k !== "itinerary").every(k => r2[k] === DEFAULT_OUTPUTS[k]));
-  assert("backfilled map has all 13 keys", ALL_KEYS.every(k => k in r2));
+  assert("backfilled map has all 14 keys", ALL_KEYS.every(k => k in r2));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

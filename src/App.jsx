@@ -17,6 +17,8 @@ import { collectDriveLegs, applyDriveTimeFlags } from "./driveTimeVerify.js";
 import { collectHotelBrandClaims, applyHotelBrandFlags } from "./hotelBrandVerify.js";
 import { findBudgetTotalMismatches } from "./budgetTotalsCheck.js";
 import { findOverconfidentLanguage } from "./overconfidentLanguageCheck.js";
+import { collectWazeLinks } from "./wazeLinks.js";
+import { buildReferenceSheet } from "./referenceSheet.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnverifiedFlightPayload, findUnverifiedFlights, withFlightMerge } from "./flightResolver.js";
 import { normalizeClock, findFlightTimeMismatches } from "./flightTimeConsistency.js";
@@ -5194,11 +5196,12 @@ function LodgingView({ data }) {
 // Renders a compact card with time + description + any contact info (rental
 // agency phone, transfer service link).
 function TransportView({ data }) {
+  const wazeLinks = useMemo(() => collectWazeLinks(data), [data]);
   const transport = [];
   (data.days || []).forEach((d, di) => {
-    (d.items || []).forEach((item) => {
+    (d.items || []).forEach((item, ii) => {
       if (item.type === "Transport") {
-        transport.push({ item, day: d, dayIndex: di });
+        transport.push({ item, day: d, dayIndex: di, itemIndex: ii });
       }
     });
   });
@@ -5212,7 +5215,9 @@ function TransportView({ data }) {
   return (
     <div>
       <p style={{ fontSize: "10.5px", fontWeight: 600, color: ACCENT, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px" }}>Ground transport · {transport.length}</p>
-      {transport.map(({ item, day, dayIndex }, i) => (
+      {transport.map(({ item, day, dayIndex, itemIndex }, i) => {
+        const wazeUrl = wazeLinks.get(`${dayIndex}:${itemIndex}`);
+        return (
         <div key={i} style={{ marginBottom: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "var(--border-radius-md)", padding: "12px 14px", background: "var(--color-background-primary)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
             {item.time && <TimePill time={item.time} end_time={item.end_time} />}
@@ -5223,8 +5228,16 @@ function TransportView({ data }) {
           {item.location && <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: "0 0 6px" }}>{item.location}</p>}
           {item.duration && <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "0 0 6px" }}>⏱ {item.duration}</p>}
           <ContactBlock contact={item.contact} name={item.text} />
+          {wazeUrl && (
+            <div style={{ marginTop: "6px" }}>
+              <a href={wazeUrl} target="_blank" rel="noopener noreferrer" title="Open this route in Waze" style={{ fontSize: "11px", padding: "6px 10px", borderRadius: "4px", border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", textDecoration: "none", letterSpacing: "0.05em", textTransform: "uppercase", fontWeight: 500, display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                🧭 Waze
+              </a>
+            </div>
+          )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -5618,11 +5631,18 @@ function hasEssentialsContent(data) {
     !!data.cost_estimate ||
     (Array.isArray(data.flags) && data.flags.length > 0) ||
     (Array.isArray(data.planb) && data.planb.length > 0) ||
+    (Array.isArray(data.backup_matrix) && data.backup_matrix.length > 0) ||
+    (Array.isArray(data.travel_protection) && data.travel_protection.length > 0) ||
     (Array.isArray(data.snobs) && data.snobs.length > 0)
   );
 }
 
-function EssentialsView({ data }) {
+function EssentialsView({ data, inputs }) {
+  const showReferenceSheet = inputs?.outputs?.reference !== false;
+  const referenceSheet = useMemo(
+    () => (showReferenceSheet ? buildReferenceSheet(data) : []),
+    [data, showReferenceSheet],
+  );
   const sortedTonight = Array.isArray(data.tonight)
     ? [...data.tonight].map((t, i) => ({ t, i, p: tonightPriority(t) })).sort((a, b) => a.p.rank - b.p.rank || a.i - b.i)
     : [];
@@ -5630,8 +5650,11 @@ function EssentialsView({ data }) {
   const hasCost = !!data.cost_estimate;
   const hasFlags = Array.isArray(data.flags) && data.flags.length > 0;
   const hasPlanB = Array.isArray(data.planb) && data.planb.length > 0;
+  const hasBackupMatrix = Array.isArray(data.backup_matrix) && data.backup_matrix.length > 0;
+  const hasTravelProtection = Array.isArray(data.travel_protection) && data.travel_protection.length > 0;
   const hasSnobs = Array.isArray(data.snobs) && data.snobs.length > 0;
-  if (sortedTonight.length === 0 && !hasWeather && !hasCost && !hasFlags && !hasPlanB && !hasSnobs) {
+  const hasReferenceSheet = referenceSheet.length > 0;
+  if (sortedTonight.length === 0 && !hasWeather && !hasCost && !hasFlags && !hasPlanB && !hasBackupMatrix && !hasTravelProtection && !hasSnobs && !hasReferenceSheet) {
     return (
       <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "20px 0", textAlign: "center" }}>
         No essentials yet — rebuild the plan to get weather, Plan B, and insider notes.
@@ -5720,12 +5743,53 @@ function EssentialsView({ data }) {
           ))}
         </>
       )}
+      {hasBackupMatrix && (
+        <>
+          <H>If this happens, do this instead</H>
+          <div style={{ borderRadius: "var(--border-radius-md)", overflow: "hidden", border: "0.5px solid var(--color-border-secondary)" }}>
+            {data.backup_matrix.map((row, i) => (
+              <div key={i} style={{ display: "flex", flexWrap: "wrap", gap: "6px 10px", padding: "10px 12px", borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                <span style={{ flex: "0 0 auto", fontSize: "12.5px", fontWeight: 600, color: "var(--color-text-primary)" }}>{row?.if_this}</span>
+                <span style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>→ {row?.do_this}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {hasTravelProtection && (
+        <>
+          <H>Financial exposure</H>
+          {data.travel_protection.map((t, i) => (
+            <div key={i} style={{ fontSize: "13px", color: "var(--color-text-primary)", padding: "0 0 8px", lineHeight: 1.55 }}>{t}</div>
+          ))}
+        </>
+      )}
       {hasSnobs && (
         <>
           <H>Snob's guide</H>
           {data.snobs.map((s, i) => (
             <div key={i} style={{ fontSize: "13px", color: "var(--color-text-secondary)", padding: "8px 12px", borderLeft: `2px solid var(--color-category-rose)`, marginBottom: "8px", lineHeight: "1.6", borderRadius: 0 }}>{s}</div>
           ))}
+        </>
+      )}
+      {hasReferenceSheet && (
+        <>
+          <H>Reference sheet</H>
+          <div style={{ borderRadius: "var(--border-radius-md)", overflow: "hidden", border: "0.5px solid var(--color-border-secondary)" }}>
+            {referenceSheet.map((e, i) => (
+              <div key={i} style={{ padding: "10px 12px", borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap", marginBottom: "2px" }}>
+                  <span style={{ fontSize: "9.5px", fontWeight: 700, color: ACCENT, letterSpacing: "0.08em", textTransform: "uppercase" }}>{e.kind}</span>
+                  <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{e.name}</span>
+                </div>
+                {e.address && <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "0 0 2px" }}>{e.address}</p>}
+                <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                  {e.phone && <a href={`tel:${String(e.phone).replace(/[^0-9+]/g, "")}`} style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", textDecoration: "none" }}>📞 {e.phone}</a>}
+                  {e.website && <a href={e.website} target="_blank" rel="noopener noreferrer" style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", textDecoration: "none" }}>🔗 Website</a>}
+                </div>
+              </div>
+            ))}
+          </div>
         </>
       )}
     </div>
@@ -6002,15 +6066,17 @@ function TripTabs({ data, tab, onTabChange, dayFilter, onDayFilterChange, showPr
       else if (it.restaurant && /^(Breakfast|Brunch|Lunch|Dinner|Dining)$/.test(it.type)) dining++;
       else if (it.type === "Activity") activities++;
     }));
-    // Essentials count = number of essentials blocks present (Tonight, Weather, Cost, Flags, PlanB, Snobs).
+    // Essentials count = number of essentials blocks present (Tonight, Weather, Cost, Flags, PlanB, Backup matrix, Travel protection, Snobs).
     if (Array.isArray(data.tonight) && data.tonight.length > 0) essentials++;
     if (data.weather_window || (Array.isArray(data.pack) && data.pack.length > 0)) essentials++;
     if (data.cost_estimate) essentials++;
     if (Array.isArray(data.flags) && data.flags.length > 0) essentials++;
     if (Array.isArray(data.planb) && data.planb.length > 0) essentials++;
+    if (Array.isArray(data.backup_matrix) && data.backup_matrix.length > 0) essentials++;
+    if (Array.isArray(data.travel_protection) && data.travel_protection.length > 0) essentials++;
     if (Array.isArray(data.snobs) && data.snobs.length > 0) essentials++;
     return { flights, hotels, transport, dining, activities, essentials };
-  }, [days, data.tonight, data.weather_window, data.pack, data.cost_estimate, data.flags, data.planb, data.snobs]);
+  }, [days, data.tonight, data.weather_window, data.pack, data.cost_estimate, data.flags, data.planb, data.backup_matrix, data.travel_protection, data.snobs]);
   // #11 B-prime: split the legacy 9-pill strip into 5 always-on
   // primaries (Overview · Flights · Hotels · Dining · Activities) +
   // a "More ▾" overflow popover for Transport / By category /
@@ -6236,7 +6302,7 @@ function TripSectionView({ tab, data, inputs, onOpenMenu, providers }) {
   if (tab === "activities") return <ActivitiesView data={data} />;
   if (tab === "category") return <CategoryView data={data} onOpenMenu={onOpenMenu} />;
   if (tab === "providers") return <LocalProvidersView providers={providers} />;
-  if (tab === "essentials") return <EssentialsView data={data} />;
+  if (tab === "essentials") return <EssentialsView data={data} inputs={inputs} />;
   return null;
 }
 
@@ -8623,7 +8689,7 @@ function ItineraryView({ data: rawData, inputs, onBack, onEditTrip, onReset, onS
           scoped to one day. */}
       {!autoReviewRunning && data.days && data.days.length > 0 && tab === "overview" && dayFilter < 0 && hasEssentialsContent(data) && (
         <Section title="Trip reference">
-          <EssentialsView data={data} />
+          <EssentialsView data={data} inputs={inputs} />
         </Section>
       )}
 
@@ -10818,6 +10884,25 @@ const TRIP_PLAN_TOOL = {
         description: "WRITE AFTER DAYS. AT LEAST 5 disruption alternatives. Cover at minimum: weather/rain, a sold-out marquee restaurant, a closed-day activity, a transport disruption (canceled flight / car issue), and a health/altitude/illness day. Each entry: brief scenario → concrete substitute.",
         minItems: 5,
       },
+      backup_matrix: {
+        type: "array",
+        description: "WRITE AFTER PLANB. OPTIONAL — a short, CONSOLIDATED if-this/do-this table drawn from the same disruptions already covered above (planb + flags), not new material. 4-8 entries covering this trip's biggest real vulnerabilities: rough seas, bad weather, a sold-out attraction, a restaurant falling through, a winery/tour unavailable, a flight disruption, a private-driver cancellation, a rental-car issue, or a hotel unavailable — pick whichever of these actually apply to THIS trip, skip the ones that don't. A backup must preserve the CHARACTER of the day it's replacing — never just 'add more sightseeing' as the fallback for a cancelled activity.",
+        items: {
+          type: "object",
+          properties: {
+            if_this: { type: "string", description: "The disruption, stated briefly, e.g. 'Winery tour cancelled for weather'." },
+            do_this: { type: "string", description: "The concrete substitute that preserves the day's character, e.g. 'Indoor tasting room 10 min away, same appointment-only tier'." },
+          },
+          required: ["if_this", "do_this"],
+        },
+        maxItems: 8,
+      },
+      travel_protection: {
+        type: "array",
+        items: { type: "string" },
+        description: "WRITE AFTER BACKUP_MATRIX. OPTIONAL — only populate for a genuinely expensive trip (premium/luxury tier, or large non-refundable bookings). 3-6 short bullets naming the trip's actual financial exposure: which bookings in THIS plan are non-refundable and their cancellation deadlines, trip-interruption exposure, whether overseas medical/evacuation coverage is worth a look for this destination, and whether the traveler's credit card likely already covers some of this (name the card type generically, e.g. 'a premium travel card' — never assume a specific card the traveler didn't mention). Explain the exposure so the traveler can decide what to insure vs. self-insure — do NOT recommend buying insurance outright, and do NOT populate this field at all for an inexpensive or low-commitment trip.",
+        maxItems: 6,
+      },
       snobs: { type: "array", items: { type: "string" }, description: "WRITE LAST. Insider tone notes." },
       tonight: { type: "array", items: { type: "string" }, description: "WRITE LAST. Action items to do tonight — each prefixed with priority: '⚠︎ Must today:', '· This week:', or 'Anytime:'. Most urgent first." },
       // NOTE: introduction is intentionally NOT in this schema. It is
@@ -11033,12 +11118,12 @@ const REVIEW_TOOL = {
       },
       structural_findings: {
         type: "array",
-        description: "Hits from the MUST-VERIFY CHECKLIST only: day continuity, night arithmetic, weekday claims, flight times, booking links, route plausibility, marquee promises, carrier consistency, loyalty claims. UNCAPPED — report every hit. Leave empty if the plan passes all nine checks. Do NOT put editorial or taste observations here.",
+        description: "Hits from the MUST-VERIFY CHECKLIST only: day continuity, night arithmetic, weekday claims, flight times, booking links, route plausibility, marquee promises, carrier consistency, loyalty claims, constraint compliance, experience judgment, own-data consistency. UNCAPPED — report every hit. Leave empty if the plan passes all twelve checks. Do NOT put editorial or taste observations here.",
         items: {
           type: "object",
           properties: {
             id: { type: "string", description: "Stable id: 's1', 's2', 's3', etc." },
-            check: { type: "string", enum: ["day_continuity", "night_arithmetic", "weekday_claims", "flight_times", "booking_links", "route_plausibility", "marquee_promises", "carrier_consistency", "loyalty_claims"], description: "Which checklist item this hit came from." },
+            check: { type: "string", enum: ["day_continuity", "night_arithmetic", "weekday_claims", "flight_times", "booking_links", "route_plausibility", "marquee_promises", "carrier_consistency", "loyalty_claims", "constraint_compliance", "experience_judgment", "own_data_consistency"], description: "Which checklist item this hit came from." },
             target: { type: "string", description: "What this finding is ABOUT, in the user's language. Format: 'Day N · context'. Examples: 'Day 7 · hotel', 'Day 1 · flight UA934'." },
             summary: { type: "string", description: "One sentence (≤22 words) stating the contradiction, naming both conflicting values. Example: 'Day 7 checks into the Amsterdam Marriott again after Day 6 already checked in.'" },
             action: { type: "string", description: "One sentence (≤22 words) stating the concrete change to make." },
@@ -11330,7 +11415,7 @@ function buildReviewSystemPrompt(plan, sources, inputs, liveSnippets = [], qcWar
 
   const contentWarnings = contentWarningsForReview(qcWarnings);
   const knownWarningsBlock = contentWarnings.length
-    ? `\nKNOWN QUALITY WARNINGS (already flagged by deterministic checks before this review — verify each is genuinely still unresolved in the plan below. A warning matching one of the nine MUST-VERIFY CHECKLIST areas — especially MARQUEE PROMISES and LOYALTY-CLAIM PLAUSIBILITY — MUST be escalated in structural_findings[] with the matching check id if still unresolved. Anything else worth a note belongs in ordinary findings[]):\n${contentWarnings.map((w) => `• ${w}`).join("\n")}\n`
+    ? `\nKNOWN QUALITY WARNINGS (already flagged by deterministic checks before this review — verify each is genuinely still unresolved in the plan below. A warning matching one of the twelve MUST-VERIFY CHECKLIST areas — especially MARQUEE PROMISES and LOYALTY-CLAIM PLAUSIBILITY — MUST be escalated in structural_findings[] with the matching check id if still unresolved. Anything else worth a note belongs in ordinary findings[]):\n${contentWarnings.map((w) => `• ${w}`).join("\n")}\n`
     : "";
 
   return `You are a panel of travel experts conducting a professional review of a finalized trip plan. Your job is to evaluate the plan AGAINST THE USER'S STATED BUDGET, STYLE, AND GUIDELINES — not against your sources' default tier. You will call the submit_review tool exactly once. Do NOT emit any prose — only the tool call.
@@ -11421,6 +11506,23 @@ structural, not editorial; report any hit as severity:"critical".
    of which two chains are named. Real example: "Novotel Bayeux (Marriott
    Bonvoy affiliate via Accor partnership)" — Accor and Marriott are
    competitors; no such program exists.
+10. CONSTRAINT COMPLIANCE — does the plan actually match what the traveler
+    explicitly asked for? Check nights per named destination, required
+    destinations, arrival/departure airports, cabin preference, hotel
+    requirements, transportation preference, budget tier, and pace. Flag any
+    place the plan silently substituted a different structure than the
+    traveler's own request (e.g. traveler asked for "3 days in Carvoeiro,
+    then 9 days touring" and the plan quietly gives 7 nights in Carvoeiro).
+11. EXPERIENCE JUDGMENT — did the day-by-day actually improve the trip, or
+    does it just add volume? Flag an activity that reads like it's there
+    only because it exists (not because it earns its slot), a day
+    overloaded past the traveler's stated pace, or a genuinely missing
+    recovery window after a red-eye arrival or a heavy excursion day.
+12. OWN-DATA CONSISTENCY — a final catch-all beyond the specific categories
+    above: does any two facts about the SAME thing in this plan disagree
+    with each other? (A stated hotel night count vs. a logistics chip, a
+    cost total vs. its own breakdown, a restaurant's reservation platform
+    contradicting a "walk-in only" note elsewhere, etc.)
 
 Report checklist hits in structural_findings[], NOT in findings[].
 structural_findings[] is uncapped — the 3-critical / 8-total caps apply only
@@ -14949,7 +15051,7 @@ Total: ${totalNights} nights = ${totalDays} days.
     const staticRules = `You are a luxury travel planner. Call the submit_trip_plan tool exactly once with the finalized plan. Do not emit any prose — only the tool call.
 
 FIELD EMISSION ORDER — CRITICAL:
-Write the tool input in this exact order: destination, meta, days, logistics, weather_window, pack, cost_estimate, flags, planb, snobs, tonight. (Multi-city trips also emit a cities[] field — see the per-trip preamble below for placement.)
+Write the tool input in this exact order: destination, meta, days, logistics, weather_window, pack, cost_estimate, flags, planb, backup_matrix, travel_protection, snobs, tonight. (Multi-city trips also emit a cities[] field — see the per-trip preamble below for placement. backup_matrix and travel_protection are both OPTIONAL — see their own field descriptions for when to skip them.)
 days[] is the main deliverable. Write the entire days[] array BEFORE writing logistics, weather_window, pack, cost_estimate, flags, planb, snobs, or tonight. Never write those fields first and then days — if anything gets cut off, we lose the whole plan. Always write days first.
 
 TRIP REQUIREMENTS:
@@ -15124,6 +15226,12 @@ PACK (top-level):
 PLAN B (top-level, ≥5 entries):
 • Cover: weather/rain, sold-out marquee restaurant, closed-day activity substitute, transport disruption (canceled flight or rental car issue), health/altitude/illness day, and any destination-specific risk.
 
+BACKUP MATRIX (top-level, OPTIONAL, 4–8 entries):
+• A compact if-this/do-this table — a CONSOLIDATION of the biggest vulnerabilities already covered in Plan B and flags, not new content. Pick 4–8 of: rough seas, bad weather, an attraction sold out, a restaurant unavailable, a winery/tour unavailable, flight disruption, private-driver cancellation, rental-car issue, hotel unavailable — whichever genuinely apply to this trip. Each backup must preserve the CHARACTER of the day it replaces (a cancelled wine-country day becomes a different wine experience, not generic sightseeing).
+
+TRAVEL PROTECTION (top-level, OPTIONAL, 3–6 entries):
+• Only populate for a genuinely expensive/premium trip. Name this trip's actual financial exposure: which of THIS plan's bookings are non-refundable and by when, trip-interruption exposure, whether overseas medical/evacuation coverage is worth a look for this destination, and whether a premium travel credit card (generic — never assume a specific card) likely already covers part of this. Explain the exposure so the traveler can decide what to insure vs. self-insure. Do NOT recommend buying insurance outright, and leave this field out entirely for an inexpensive or low-commitment trip.
+
 TONIGHT (top-level):
 • Prefix each action: '⚠︎ Must today:' for things that lose value if delayed (sold-out restaurants, advance-only tours), '· This week:' for important but flexible, 'Anytime:' for low-urgency. Order most-urgent first.
 
@@ -15166,7 +15274,7 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
       ? `\nDESTINATION-SPECIFIC ROUTE TRUTH for this trip (apply per the FLIGHTS rule):\n${_routeTruthBlock}`
       : "";
     const _multiCityFieldOrder = isMultiCity
-      ? `\nFIELD EMISSION ORDER OVERRIDE — MULTI-CITY: this is a multi-city trip. Insert a cities[] field between meta and days in the tool input, so the order becomes: destination, meta, cities, days, logistics, weather_window, pack, cost_estimate, flags, planb, snobs, tonight.`
+      ? `\nFIELD EMISSION ORDER OVERRIDE — MULTI-CITY: this is a multi-city trip. Insert a cities[] field between meta and days in the tool input, so the order becomes: destination, meta, cities, days, logistics, weather_window, pack, cost_estimate, flags, planb, backup_matrix, travel_protection, snobs, tonight.`
       : "";
 
     // Activity-count hard cap. Deterministic classifier scans the
@@ -17130,6 +17238,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
     ["planb","Plan B alternatives","Fallbacks for weather cancellations or closures"],
     ["snobs","Snob's guide","Insider tone — what to know, skip, and say"],
     ["practical","Practical notes","Tipping, dress, connectivity, altitude"],
+    ["reference","Phone-ready reference sheet","Hotels, private drivers, and booked restaurants — one compact contact list"],
     ["badges","Personal recommendation badges","Flag places you've personally visited"],
     ["pronunciation","Pronunciation guide","Phonetic hints on unfamiliar place names"],
   ];
