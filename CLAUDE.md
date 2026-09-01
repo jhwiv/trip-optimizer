@@ -1818,13 +1818,24 @@ added alongside each phase).
   a self-contradicting `cost_estimate` and an overconfident `tonight[]`
   entry about an unconfirmed restaurant shows both warnings verbatim in the
   actual Quality Check banner.
-- **Phase B (prompt-only additions) — not started.** Constraint-compliance
-  self-check, architecture review, pacing top-up, spend/save judgment,
-  provider-selection criteria, service-selectivity classification,
-  points/loyalty decision rule, rental-car fee checklist, booking-priority
-  scarcity order (spec §§1,2,3,4,5,6,7,9,14). Verifiable only at the
-  prompt-text level (capture the real constructed `system` blocks), not at
-  the live-compliance level — see the plan file's "Governing constraint."
+- **Phase B (prompt-only additions) — done.** Added a new "ADVISOR JUDGMENT
+  & SELF-CHECK" block to `staticRules` (`src/App.jsx`, just before the TONE
+  line) covering constraint compliance, architecture review, spend/save
+  judgment, provider-selection criteria, service selectivity, points/
+  loyalty, rental-car analysis, booking priority, and a confident-language
+  reminder (spec §§1,2,4,5,6,7,9,14) — plus a pacing top-up (an unscheduled
+  day on 10+ night trips; downtime is legitimate itinerary time, spec §3) 
+  added directly into the existing NIGHTS-PER-CITY BALANCE section rather
+  than the new block, to keep all pacing rules co-located. Deliberately
+  prompt-text only — no schema changes, so lint/build/tests are unaffected
+  by design (confirmed: baseline unchanged). Verified at the ONLY level
+  this sandbox can verify (see "Governing constraint" in the plan file):
+  captured the actual constructed `/api/build` request body via Playwright
+  (driving the real wizard UI to a real "Plan my trip" tap, not a
+  hand-built fixture) and confirmed all ten new section headers appear
+  verbatim in the live `system` payload sent for the initial
+  `submit_trip_plan` call — proves prompt DELIVERY, not model compliance,
+  which cannot be checked without a live `ANTHROPIC_API_KEY`.
 - **Phase C (new schema fields + small UI, no new wizard inputs) — not
   started.** Waze links, backup-plan matrix, travel-protection section,
   phone-ready reference sheet, Expert Review checklist expansion (spec
