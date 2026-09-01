@@ -12,11 +12,12 @@ import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, ac
 import { groupItemsByCategory } from "./categoryGroups.js";
 import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
-import { normalizeCostEstimate, formatCostRange, formatBreakdownLine } from "./costEstimate.js";
+import { normalizeCostEstimate, formatCostRange, formatBreakdownLine, formatCostAmount } from "./costEstimate.js";
 import { collectDriveLegs, applyDriveTimeFlags } from "./driveTimeVerify.js";
 import { collectHotelBrandClaims, applyHotelBrandFlags } from "./hotelBrandVerify.js";
 import { findBudgetTotalMismatches } from "./budgetTotalsCheck.js";
 import { findOverconfidentLanguage } from "./overconfidentLanguageCheck.js";
+import { findBudgetCeilingExceeded } from "./budgetCeilingCheck.js";
 import { collectWazeLinks } from "./wazeLinks.js";
 import { buildReferenceSheet } from "./referenceSheet.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
@@ -3969,6 +3970,7 @@ function applyQualityLayer(input, inputs) {
   const contradictionFlags = [
     ...findBudgetTotalMismatches(out),
     ...findOverconfidentLanguage(out),
+    ...findBudgetCeilingExceeded(out, inputs),
   ];
   if (contradictionFlags.length > 0) {
     const prior = Array.isArray(out.structural_flags) ? out.structural_flags : [];
@@ -5682,6 +5684,28 @@ function EssentialsView({ data, inputs }) {
             )}
             {data.cost_estimate.basis && (
               <p style={{ fontSize: "11.5px", color: "var(--color-text-tertiary)", margin: 0, lineHeight: 1.5, fontStyle: "italic" }}>{data.cost_estimate.basis}</p>
+            )}
+            {data.cost_estimate.points_assumption && (
+              <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "6px 0 0", lineHeight: 1.5 }}>✈ Points: {data.cost_estimate.points_assumption}</p>
+            )}
+            {data.cost_estimate.contingency && (
+              <p style={{ fontSize: "11.5px", color: "var(--color-text-secondary)", margin: "4px 0 0", lineHeight: 1.5 }}>△ Contingency: {data.cost_estimate.contingency}</p>
+            )}
+            {Number.isFinite(data.cost_estimate.hard_ceiling) && (
+              <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "0.5px solid var(--color-border-tertiary)", display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "10px" }}>
+                <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", letterSpacing: "0.04em" }}>Your ceiling</span>
+                <span style={{ fontSize: "13px", fontWeight: 600, color: data.cost_estimate.high > data.cost_estimate.hard_ceiling ? "var(--color-warning)" : "var(--color-text-primary)" }}>
+                  {formatCostAmount(data.cost_estimate.hard_ceiling, data.cost_estimate.currency)}
+                </span>
+              </div>
+            )}
+            {Array.isArray(data.cost_estimate.ceiling_adjustment) && data.cost_estimate.ceiling_adjustment.length > 0 && (
+              <div style={{ marginTop: "6px" }}>
+                <p style={{ fontSize: "10.5px", fontWeight: 600, color: "var(--color-warning)", letterSpacing: "0.06em", textTransform: "uppercase", margin: "0 0 4px" }}>Over ceiling — consider</p>
+                {data.cost_estimate.ceiling_adjustment.map((a, i) => (
+                  <p key={i} style={{ fontSize: "12px", color: "var(--color-text-primary)", margin: "0 0 3px", lineHeight: 1.5 }}>• {a}</p>
+                ))}
+              </div>
             )}
           </div>
         </>
@@ -10874,6 +10898,15 @@ const TRIP_PLAN_TOOL = {
             maxItems: 6,
           },
           basis: { type: "string", description: "ONE short sentence on what this estimate is based on, e.g. 'Based on the flights, hotel tier, and dining/activity picks in this plan, using typical costs for this destination.'" },
+          points_assumption: { type: "string", description: "OPTIONAL. Only when the traveler mentioned hotel/airline/credit-card points — one short sentence on what points usage, if any, this estimate assumes. Never assume a speculative points transfer bonus. Omit entirely if the traveler never mentioned points." },
+          contingency: { type: "string", description: "OPTIONAL. A short buffer note, e.g. '10-15% for incidentals and rate changes.' Omit if not useful for this trip." },
+          hard_ceiling: { type: "integer", description: "OPTIONAL. Only set when the traveler stated a firm maximum budget (see the per-trip HARD BUDGET CEILING instruction below, when present) — echo their exact number back here, whole number, no currency symbol." },
+          ceiling_adjustment: {
+            type: "array",
+            items: { type: "string" },
+            description: "OPTIONAL. Only populate when hard_ceiling is set AND your own 'high' genuinely exceeds it — 2-4 concrete, specific adjustments the traveler could make (a room-category downgrade, using points for a flight, dropping one experience), not a restatement that it's over budget. Leave empty when there's no ceiling or the estimate is already within it.",
+            maxItems: 4,
+          },
         },
         required: ["currency", "low", "high", "breakdown"],
       },
@@ -13936,7 +13969,7 @@ export default function TripOptimizer() {
   // preference must not produce this claim when it conflicts with a named
   // must-have hotel.
   const BLANK = {
-    basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: [] },
+    basics: { destination: "", cities: [{ name: "", nights: "", focus: "" }], startDate: "", endDate: "", nights: "", travelers: "", baseArea: "", style: [], pace: "", budget: [], hardBudgetCeiling: "" },
     flights: { homeAirport: "EWR", airline: "", cabin: "", flex: "", noFlight: false },
     hotel: { brand: [], tier: "", mustHave: "" },
     transport: { type: [], company: "", vehicle: "" },
@@ -15297,7 +15330,23 @@ TONE: Insider, opinionated, specific. Real names, real dishes, real neighborhood
       classifyMealPolicy({ narrative, guidelines, dining, restaurants }),
     );
 
-    const dynamicPreamble = `PER-TRIP REQUIREMENTS (these are the trip-specific values + overrides referenced by the static rulebook above — follow them strictly):${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}${_activityCountRuleBlock}${_mealPolicyRuleBlock}
+    // ROUTESMITH ITINERARY-QUALITY UPGRADE §8 — hard budget ceiling. Only
+    // present when the traveler actually gave one (basics.hardBudgetCeiling,
+    // a plain optional numeric field distinct from the $-tier style
+    // selector above). The MODEL'S job here is just to write honest
+    // cost_estimate fields and, if its own high-case genuinely exceeds the
+    // ceiling, name a real adjustment — the actual pass/fail comparison is
+    // done deterministically in code (findBudgetCeilingExceeded, using the
+    // traveler's own stated number, not trusting the model's echo of it)
+    // because a real dollar ceiling is exactly the kind of fact this app's
+    // verification discipline says should never rest on model arithmetic
+    // alone.
+    const _hardCeiling = Number(String(basics?.hardBudgetCeiling || "").replace(/[^0-9]/g, ""));
+    const _budgetCeilingBlock = Number.isFinite(_hardCeiling) && _hardCeiling > 0
+      ? `\nHARD BUDGET CEILING: The traveler set a firm maximum of $${_hardCeiling.toLocaleString("en-US")} total (all travelers, cash). Populate cost_estimate.hard_ceiling with this exact number. If your own cost_estimate.high genuinely exceeds it, populate cost_estimate.ceiling_adjustment[] with 2-4 concrete, specific adjustments (e.g. 'Drop to a Deluxe room instead of a Suite — saves ~$X', 'Use points for the outbound flight', 'Remove the private day-trip on Day 5') — do not just restate that it's over budget. If your high-case estimate is already within the ceiling, leave ceiling_adjustment[] empty. Also populate cost_estimate.points_assumption when the traveler mentioned points/miles (state what you assumed, conceptually — never assume a speculative transfer bonus) and cost_estimate.contingency with a short buffer note (e.g. '10-15% for incidentals and rate changes').`
+      : "";
+
+    const dynamicPreamble = `PER-TRIP REQUIREMENTS (these are the trip-specific values + overrides referenced by the static rulebook above — follow them strictly):${trainRuleBlock}${privateDriverBlock}${privateTourBlock}${skipTheLineBlock}${_activityCountRuleBlock}${_mealPolicyRuleBlock}${_budgetCeilingBlock}
 ${_destinationFactsBlock}
 
 ${totalDaysLine}${_multiCityFieldOrder}${multiCityBlock}${_marqueePreamble}${_airportPreamble}${_routePreamble}`;
@@ -17847,6 +17896,11 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
               <div style={{ ...g2r, marginTop: "16px" }}>
                 <Field label="Pace"><Sel value={basics.pace} onChange={e => setB({ ...basics, pace: e.target.value })} opts={["Relaxed (1–2 things/day)","Moderate (2–3 things/day)","Full (3–4 things/day)"]} /></Field>
                 <Field label="Budget" hint="Tap one or more"><Sel multi value={basics.budget} onChange={e => setB({ ...basics, budget: e.target.value })} opts={["$$ — value","$$$ — mid range","$$$$ — luxury","$$$$$ — ultra high end"]} /></Field>
+              </div>
+              <div style={{ marginTop: "16px" }}>
+                <Field label="Hard maximum budget (optional)" hint="A firm ceiling — different from the style tier above. Leave blank if you don't have one.">
+                  <Inp value={basics.hardBudgetCeiling || ""} onChange={e => setB({ ...basics, hardBudgetCeiling: e.target.value.replace(/[^0-9]/g, "") })} placeholder="e.g. 15000 (total, all travelers, USD)" />
+                </Field>
               </div>
             </div>
 

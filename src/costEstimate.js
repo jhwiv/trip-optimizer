@@ -77,7 +77,23 @@ export function normalizeCostEstimate(raw) {
 
   const basis = typeof raw.basis === "string" ? raw.basis.trim() : "";
 
-  return { currency, low: range.low, high: range.high, breakdown, basis };
+  // ROUTESMITH ITINERARY-QUALITY UPGRADE §8 — hard budget ceiling fields.
+  // All optional; pass through only when genuinely present rather than
+  // manufacturing empty strings/arrays the UI would have to filter again.
+  const pointsAssumption = typeof raw.points_assumption === "string" ? raw.points_assumption.trim() : "";
+  const contingency = typeof raw.contingency === "string" ? raw.contingency.trim() : "";
+  const hardCeiling = cleanAmount(raw.hard_ceiling);
+  const ceilingAdjustment = Array.isArray(raw.ceiling_adjustment)
+    ? raw.ceiling_adjustment.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim())
+    : [];
+
+  return {
+    currency, low: range.low, high: range.high, breakdown, basis,
+    ...(pointsAssumption ? { points_assumption: pointsAssumption } : {}),
+    ...(contingency ? { contingency } : {}),
+    ...(hardCeiling != null ? { hard_ceiling: hardCeiling } : {}),
+    ...(ceilingAdjustment.length ? { ceiling_adjustment: ceilingAdjustment } : {}),
+  };
 }
 
 // "$3,200" — en-US thousands grouping regardless of currency, matching how

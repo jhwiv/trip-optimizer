@@ -1706,6 +1706,7 @@ hand-built fixture that skipped it, is what surfaced it.
 | "Confident language vs. unverified venue" contradiction check | `src/overconfidentLanguageCheck.js` |
 | Waze deep links on meaningful driving legs (reuses driveTimeVerify's leg classifier) | `src/wazeLinks.js` |
 | Phone-ready reference sheet — client-side aggregation of hotels/transport/booked restaurants | `src/referenceSheet.js` |
+| Hard budget ceiling check — user-stated ceiling vs. model's high-case cost | `src/budgetCeilingCheck.js` |
 
 ### PDF save is share-first — do not "simplify" it back to `pdf.save()`
 
@@ -1784,6 +1785,7 @@ They ride on `day.structural_flags[]` and reach the pre-export gate through
 | `HOTEL_BRAND_UNCONFIRMED` | warn | A hotel claims a single major chain's affiliation, but `/api/tripadvisor-verify`'s independently-resolved listing (name + description) never mentions that chain (`src/hotelBrandVerify.js`). Closes the DIRECT-claim gap `applyQualityLayer` §2e's own comment documents as its known ceiling (only catches CROSS-chain claims). Deliberately worded as "no independent confirmation," not "fabricated" — absence of evidence in a terse listing isn't proof. Live-dependent (needs `TRIPADVISOR_API_KEY`) — fails safe to no flag | no |
 | `BUDGET_TOTAL_MISMATCH` | warn | `cost_estimate.breakdown[]`'s own low-end sum already exceeds the stated high-case total by a wide margin (`src/budgetTotalsCheck.js`) — one of the two numbers about the same trip cost has to be wrong. Only checks the overshoot direction; a breakdown summing to noticeably LESS than the total is deliberately not flagged, since `cost_estimate`'s schema explicitly allows omitting a category the plan doesn't have (a short, honest, partial breakdown is normal, not a contradiction). Part of the ROUTESMITH ITINERARY-QUALITY UPGRADE §15 "budget totals" contradiction check | no |
 | `OVERCONFIDENT_LANGUAGE` | warn | A `tonight[]`/`flags[]` entry uses "safe"/"confirmed"/"verified" language while naming a restaurant whose `verify_status` is still `verify_before_booking` (`src/overconfidentLanguageCheck.js`) — the ROUTESMITH ITINERARY-QUALITY UPGRADE §15 spec's own literal example ("do not publish reassuring language... when the underlying information does not support it"). Restaurants only for this first pass — `verify_status` is the one structured, always-populated confirmation field; hotel/activity confirmation isn't a single clean field the same way | no |
+| `BUDGET_CEILING_EXCEEDED` | warn | The traveler set a hard maximum budget (`basics.hardBudgetCeiling`, a plain wizard field next to the `$`-tier style selector) and the model's own `cost_estimate.high` exceeds it (`src/budgetCeilingCheck.js`) — ROUTESMITH ITINERARY-QUALITY UPGRADE §8. The comparison is deterministic against the traveler's OWN stated number, never trusting the model's echo of it (`cost_estimate.hard_ceiling` is display-only) | no |
 
 A venue with any `severity:"block"` flag must NOT reach the PDF
 exporter. The pre-export gate is the last line of defense; it is not
@@ -1880,11 +1882,42 @@ added alongside each phase).
     updates to `tests/test_outputs_state.mjs` (14 keys, not 13) and
     `tests/test_review_quality_escalation.mjs` (nine → twelve checklist
     areas, new REVIEW_TOOL source-text assertions).
-- **Phase D (hard budget ceiling) — not started, deliberately scoped
-  separately.** The one spec item (§8) that needs a genuinely new
-  user-facing input — there is currently no numeric "maximum budget" field
-  anywhere in the wizard, only the `$`–`$$$$$` style-tier selector. Needs a
-  quick check-in on where that field belongs in the wizard before starting.
+- **Phase D (hard budget ceiling) — done.** The one spec item (§8) that
+  needed a genuinely new user-facing input; the maintainer chose "next to
+  the existing style-tier selector" when asked.
+  - New optional `basics.hardBudgetCeiling` wizard field (plain numeric
+    input, digits-only, in `BLANK.basics`), rendered directly under the
+    existing Pace/Budget row in step 2's "Trip style" card.
+  - `cost_estimate` schema extended with 4 new optional fields:
+    `points_assumption`, `contingency`, `hard_ceiling` (the model's echo of
+    the traveler's number, display-only), and `ceiling_adjustment[]`
+    (2-4 concrete fixes, only populated when the model's own `high`
+    exceeds the ceiling). `src/costEstimate.js`'s `normalizeCostEstimate`
+    updated to pass all four through (it previously only kept
+    currency/low/high/breakdown/basis — would have silently stripped
+    these).
+  - New prompt block (`dynamicPreamble`, only present when the traveler
+    set a ceiling) tells the model the exact dollar figure and what to
+    populate.
+  - New deterministic check, `src/budgetCeilingCheck.js`
+    (`BUDGET_CEILING_EXCEEDED`, warn) — compares the model's `cost_estimate
+    .high` against the traveler's OWN stated ceiling (`inputs.basics
+    .hardBudgetCeiling`), never trusting the model's own echo of that
+    number for the actual comparison. Wired into `applyQualityLayer`
+    alongside the other Phase A contradiction checks.
+  - `EssentialsView`'s cost card extended to show points assumption,
+    contingency, "Your ceiling" (highlighted when exceeded), and the
+    model's suggested adjustments when over.
+  - Confirmed live via Playwright against the real dev server, three ways:
+    (1) the new wizard field renders on the step-2 Details form and
+    accepts numeric input; (2) a seeded plan whose `cost_estimate.high`
+    exceeds the ceiling shows the `BUDGET_CEILING_EXCEEDED` warning in the
+    Quality Check banner AND the full cost-card breakdown (ceiling value,
+    suggested adjustments, points assumption, contingency); (3) the actual
+    constructed `/api/build` request body, captured from a real wizard
+    interaction with the ceiling field set, contains the HARD BUDGET
+    CEILING prompt line with the correct dollar figure. New unit tests in
+    `tests/test_budget_ceiling_check.mjs` (14 assertions).
 
 ## Environment
 

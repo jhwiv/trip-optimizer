@@ -28,6 +28,7 @@ import { findUnverifiedFlights } from "../src/flightResolver.js";
 import { findCarrierCodeMismatches } from "../src/carrierCodeCheck.js";
 import { findBudgetTotalMismatches } from "../src/budgetTotalsCheck.js";
 import { findOverconfidentLanguage } from "../src/overconfidentLanguageCheck.js";
+import { findBudgetCeilingExceeded } from "../src/budgetCeilingCheck.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const fixture = (name) => JSON.parse(readFileSync(join(HERE, "fixtures", name), "utf8"));
@@ -135,6 +136,7 @@ function structuralQualityTail(input, inputs) {
   const contradictionFlags = [
     ...findBudgetTotalMismatches(out),
     ...findOverconfidentLanguage(out),
+    ...findBudgetCeilingExceeded(out, inputs),
   ];
   if (contradictionFlags.length > 0) {
     const prior = Array.isArray(out.structural_flags) ? out.structural_flags : [];
