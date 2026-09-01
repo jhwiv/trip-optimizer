@@ -1146,6 +1146,45 @@ function renderIntroduction(cur, data, _inputs) {
 }
 
 // -----------------------------------------------------------------------------
+// TRIP MAP
+// -----------------------------------------------------------------------------
+// A route-overview map (numbered pins + connecting line), fetched by the
+// caller from /api/trip-map (see fetchTripMapImage, src/App.jsx) and passed
+// in as a data URL. Mirrors renderCover's coverPhoto handling: silently
+// skipped whenever no image was fetched (no key configured, geocoding
+// failed, a single-city trip with nothing to plot a route between, or the
+// addImage call itself throws) — a missing map must never break the export.
+function renderTripMap(cur, tripMapImage) {
+  const { pdf } = cur;
+  if (!tripMapImage) return;
+
+  // Static Maps request is 640x400 @ scale 2 (see functions/api/trip-map.js)
+  // — an 8:5 landscape ratio. Sized to match the cover/day-banner photo
+  // width (130mm) for visual consistency across the document.
+  const mapW = 130;
+  const mapH = Math.round(mapW * (400 / 640)); // ~81mm
+  cur.ensureSpace(mapH + 20);
+
+  cur.space(2);
+  pdf.setFont(FONT.sans, "bold");
+  pdf.setFontSize(10);
+  pdf.setCharSpace(1.6);
+  cur.setColor(COLOR.accent);
+  pdf.text("TRIP MAP", PAGE.marginX, cur.state.y);
+  pdf.setCharSpace(0);
+  cur.space(2);
+  cur.accentRule(48);
+  cur.space(4);
+
+  const mapX = (PAGE.width - mapW) / 2;
+  try {
+    const imgFormat = tripMapImage.match(/^data:image\/(\w+);/)?.[1]?.toUpperCase() ?? "PNG";
+    pdf.addImage(tripMapImage, imgFormat, mapX, cur.state.y, mapW, mapH, undefined, "FAST");
+    cur.state.y += mapH + 5;
+  } catch { /* addImage failure — skip the map, rest of the PDF is unaffected */ }
+}
+
+// -----------------------------------------------------------------------------
 // DAY PAGES
 // -----------------------------------------------------------------------------
 function renderDay(cur, day, index, opts = {}) {
@@ -2169,7 +2208,7 @@ function renderFooters(pdf, opts) {
 // PUBLIC ENTRYPOINT
 // -----------------------------------------------------------------------------
 export async function buildItineraryPdf(data, inputs, options = {}) {
-  const { setStatus, buildId, providers, coverPhoto, itemPhotos = {} } = options;
+  const { setStatus, buildId, providers, coverPhoto, itemPhotos = {}, tripMapImage } = options;
   if (setStatus) setStatus("Loading PDF engine…");
 
   const jsPDFModule = await import("jspdf");
@@ -2203,6 +2242,11 @@ export async function buildItineraryPdf(data, inputs, options = {}) {
   // Capture it so renderFooters can suppress the X/Y page number on it,
   // per the spec "no page number on this page".
   const introPageIndex = (cur.state.page > beforeIntroPage) ? cur.state.page : null;
+
+  // 2b. Trip map — a route-overview image, right after the narrative intro
+  // and before the day-by-day breakdown. Silently skipped when no map image
+  // was fetched (see renderTripMap).
+  renderTripMap(cur, tripMapImage);
 
   // 3. Days — flow onto the current page if there's room, otherwise let
   // ensureSpace push to a new page. Previously this hard-coded a newPage()

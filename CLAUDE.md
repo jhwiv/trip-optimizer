@@ -1707,6 +1707,7 @@ hand-built fixture that skipped it, is what surfaced it.
 | Waze deep links on meaningful driving legs (reuses driveTimeVerify's leg classifier) | `src/wazeLinks.js` |
 | Phone-ready reference sheet — client-side aggregation of hotels/transport/booked restaurants | `src/referenceSheet.js` |
 | Hard budget ceiling check — user-stated ceiling vs. model's high-case cost | `src/budgetCeilingCheck.js` |
+| PDF "Trip Map" page (route-overview image, Google Static Maps) — derive ordered city list / fetch+proxy+cache | `src/tripMap.js`, server call in `functions/api/trip-map.js`, rendered by `renderTripMap()` in `src/pdf/itineraryPdf.js` |
 
 ### PDF save is share-first — do not "simplify" it back to `pdf.save()`
 
@@ -1966,6 +1967,7 @@ Required in Cloudflare Pages:
 - `PLACES` KV binding — **new**. 30-day TTL per entry. Bind a fresh namespace in the Pages dashboard.
 - `TOMTOM_API_KEY` — **new**, optional. Without it, `/api/drive-time-verify` returns `{error:"no-key"}` for every leg and `DRIVE_TIME_IMPLAUSIBLE` never fires — fails safe, does not block anything. Reuses the `PLACES` KV binding (prefix `drivetime:v1:`), no new namespace needed. See the `NOT LIVE-VERIFIED` note on this feature below.
 - `TRIPADVISOR_API_KEY` — **new**, optional. Without it, `/api/tripadvisor-verify` returns `matched:false` for every hotel and `HOTEL_BRAND_UNCONFIRMED` never fires — fails safe, does not block anything. Reuses the `PLACES` KV binding (prefix `tripadvisor:v1:`), no new namespace needed. Same NOT-LIVE-VERIFIED caveat as TomTom — see KNOWN FAILURE MODE #22's follow-up entry.
+- `GOOGLE_PLACES_API_KEY` (same key, second use) drives `/api/trip-map`'s Static Maps request too (PDF "Trip Map" page, added 2026-09-01) — reuses the existing secret, no new one to provision. **"Maps Static API" is a SEPARATE enablement toggle in Google Cloud Console from "Places API (New)"** — it may need to be turned on for this key before the map actually renders (confirm in the Cloudflare Pages dashboard's linked GCP project). Without it (or if disabled), `/api/trip-map` returns a non-2xx and the PDF exports with no map page — fails safe, never blocks export. NOT LIVE-VERIFIED (see KNOWN FAILURE MODE #22's pattern) — this sandbox cannot reach `maps.googleapis.com` to confirm the request shape against a real response; written from Google's published docs, verified live in this codebase only up to the point of "a real image URL is proxied and embedded" (using a mocked upstream response), not "the real Static Maps API call succeeds."
 
 ## AVAILABLE CONNECTORS (added 2026-08-28) — agent-session verification aids, NOT build-pipeline integrations
 

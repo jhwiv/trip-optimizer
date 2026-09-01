@@ -20,6 +20,7 @@ import { findOverconfidentLanguage } from "./overconfidentLanguageCheck.js";
 import { findBudgetCeilingExceeded } from "./budgetCeilingCheck.js";
 import { collectWazeLinks } from "./wazeLinks.js";
 import { buildReferenceSheet } from "./referenceSheet.js";
+import { deriveTripMapCities } from "./tripMap.js";
 import { freshAbortController, replanTimeoutMs, classifyApplyError, shouldResumeViaPoll, StallError } from "./replanControl.js";
 import { flightNeedsResolve, pickFromPool, buildMergePayload, buildUnverifiedFlightPayload, findUnverifiedFlights, withFlightMerge } from "./flightResolver.js";
 import { normalizeClock, findFlightTimeMismatches } from "./flightTimeConsistency.js";
@@ -4277,6 +4278,29 @@ async function fetchCoverPhoto(destination) {
   }
 }
 
+// Fetch a route-overview map image (data URL) for the trip's cities, with a
+// 10 s client-side deadline mirroring fetchCoverPhoto's. Returns null on any
+// failure, missing data, or a fewer-than-2-city trip (nothing to plot a
+// route between) — the PDF exports cleanly with no map either way.
+async function fetchTripMapImage(data) {
+  const cities = deriveTripMapCities(data);
+  if (!Array.isArray(cities) || cities.length < 2) return null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const res = await fetch(
+      `/api/trip-map?cities=${encodeURIComponent(cities.join("|"))}`,
+      { signal: ctrl.signal }
+    );
+    if (!res.ok) return null;
+    return await blobToDataUrl(await res.blob());
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Build a polished, vector itinerary PDF from the trip plan data.
 // This is a purpose-built print template (NOT an html2canvas screenshot) —
 // sharp typography, hyperlinks (phones, addresses, booking URLs), proper
@@ -4346,14 +4370,15 @@ async function saveItineraryAsPDF(filename, setStatus, { data, inputs, providers
       // ItineraryView fires on mount). Cover photo reuses the hero image
       // already fetched for TripHero; only falls back to a network fetch if
       // that pre-fetch hasn't resolved yet (e.g. user clicks Export very fast).
-      const [{ buildItineraryPdf }, coverPhoto] = await Promise.all([
+      const [{ buildItineraryPdf }, coverPhoto, tripMapImage] = await Promise.all([
         import("./pdf/itineraryPdf.js"),
         preloadedCoverPhoto != null
           ? Promise.resolve(preloadedCoverPhoto)
           : (setStatus("Fetching cover photo…"), fetchCoverPhoto(destination)),
+        fetchTripMapImage(data),
       ]);
 
-      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers, coverPhoto, cityPhotos, itemPhotos });
+      const pdf = await buildItineraryPdf(data, inputs, { setStatus, buildId, providers, coverPhoto, cityPhotos, itemPhotos, tripMapImage });
       setStatus("Saving…");
       await savePdfShareFirst(pdf, filename);
       return;
