@@ -31,7 +31,8 @@ import { groupItemsByCategory } from "../categoryGroups.js";
 import { bucketProviders, PROVIDER_PDF_CAP } from "../localProviders.js";
 import { parseClockToMinutes } from "../flightSelect.js";
 import { deriveLegNights, deriveCityNights, rewriteMetaNights } from "../legNights.js";
-import { normalizeCostEstimate, formatCostRange, formatBreakdownLine } from "../costEstimate.js";
+import { normalizeCostEstimate, formatCostRange, formatBreakdownLine, formatCostAmount } from "../costEstimate.js";
+import { buildReferenceSheet } from "../referenceSheet.js";
 
 // Re-exported for callers (and tests) that have always imported the night math
 // from this module; the implementation now lives in ../legNights.js so the
@@ -1920,11 +1921,19 @@ function renderReferences(cur, data) {
     cost: normalizeCostEstimate(data?.cost_estimate),
     flags: take(data?.flags, 6),
     planb: take(data?.planb, 5),
+    // ROUTESMITH ITINERARY-QUALITY UPGRADE §11/§12/§13 — additive alongside
+    // the pre-existing planb/flags sections above, mirroring EssentialsView
+    // (src/App.jsx) so the PDF, the app's own primary deliverable, doesn't
+    // lag behind the live web view the way this file's own header comment
+    // already documents webExport.js has done for other fields in the past.
+    backupMatrix: Array.isArray(data?.backup_matrix) ? data.backup_matrix.filter(r => r && r.if_this && r.do_this).slice(0, 8) : [],
+    travelProtection: take(data?.travel_protection, 6),
+    referenceSheet: buildReferenceSheet(data).slice(0, 20),
     snobs: take(data?.snobs, 5),
     tonight: take(data?.tonight, 6),
   };
 
-  const hasAny = ref.logistics.length || ref.weather || ref.pack.length || ref.cost || ref.flags.length || ref.planb.length || ref.snobs.length || ref.tonight.length;
+  const hasAny = ref.logistics.length || ref.weather || ref.pack.length || ref.cost || ref.flags.length || ref.planb.length || ref.backupMatrix.length || ref.travelProtection.length || ref.referenceSheet.length || ref.snobs.length || ref.tonight.length;
   if (!hasAny) return;
 
   // Start references — push to a new page only if very little space remains.
@@ -1976,6 +1985,15 @@ function renderReferences(cur, data) {
     cur.text("Total for all travelers, rough estimate -- not a quote.", { size: 8.5, color: COLOR.inkFaint, space: 0.5 });
     ref.cost.breakdown.forEach(b => cur.bullet(formatBreakdownLine(b, ref.cost.currency)));
     if (ref.cost.basis) cur.text(ref.cost.basis, { size: 9, color: COLOR.inkFaint, leading: 1.35, space: 1 });
+    if (ref.cost.points_assumption) cur.text(`Points: ${ref.cost.points_assumption}`, { size: 9, color: COLOR.inkFaint, leading: 1.35, space: 0.5 });
+    if (ref.cost.contingency) cur.text(`Contingency: ${ref.cost.contingency}`, { size: 9, color: COLOR.inkFaint, leading: 1.35, space: 0.5 });
+    if (Number.isFinite(ref.cost.hard_ceiling)) {
+      const over = ref.cost.high > ref.cost.hard_ceiling;
+      cur.text(`Your budget ceiling: ${formatCostAmount(ref.cost.hard_ceiling, ref.cost.currency)}${over ? " -- HIGH-CASE ESTIMATE EXCEEDS THIS" : ""}`, { size: 9, style: over ? "bold" : "normal", color: over ? COLOR.accent : COLOR.inkFaint, leading: 1.35, space: 0.5 });
+      if (over && Array.isArray(ref.cost.ceiling_adjustment) && ref.cost.ceiling_adjustment.length) {
+        ref.cost.ceiling_adjustment.forEach(a => cur.bullet(a, { size: 9 }));
+      }
+    }
   }
 
   if (ref.flags.length) {
@@ -2030,12 +2048,32 @@ function renderReferences(cur, data) {
     });
   }
 
+  if (ref.backupMatrix.length) {
+    sectionHeader(cur, "If This Happens");
+    ref.backupMatrix.forEach(row => cur.bullet(`${row.if_this} -- ${row.do_this}`, { size: 9.5 }));
+  }
+
+  if (ref.travelProtection.length) {
+    sectionHeader(cur, "Financial Exposure");
+    ref.travelProtection.forEach(t => cur.bullet(t, { size: 9.5 }));
+  }
+
   if (ref.snobs.length) {
     sectionHeader(cur, "Insider notes");
     ref.snobs.forEach(s => {
       cur.text(`“${String(s).replace(/^["“”]+|["“”]+$/g, "")}”`, {
         font: FONT.serif, style: "italic", size: 10.5, color: COLOR.inkSoft, leading: 1.4, space: 1,
       });
+    });
+  }
+
+  if (ref.referenceSheet.length) {
+    sectionHeader(cur, "Reference Sheet");
+    ref.referenceSheet.forEach(e => {
+      cur.text(`${String(e.kind).toUpperCase()}: ${e.name}`, { size: 10, style: "bold", color: COLOR.ink, space: 0.3 });
+      if (e.address) cur.text(e.address, { size: 9, color: COLOR.inkFaint, space: 0.2 });
+      if (e.phone) cur.text(`Tel: ${e.phone}`, { size: 9, color: COLOR.inkFaint, space: 0.8 });
+      else cur.space(0.6);
     });
   }
 }

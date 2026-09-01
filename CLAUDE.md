@@ -1919,6 +1919,42 @@ added alongside each phase).
     CEILING prompt line with the correct dollar figure. New unit tests in
     `tests/test_budget_ceiling_check.mjs` (14 assertions).
 
+**Post-ship QA sweep (2026-09-01), two real gaps found and fixed:**
+
+1. **`src/pdf/itineraryPdf.js` never rendered any of Phase C/D's new
+   content** — `backup_matrix`, `travel_protection`, the phone-ready
+   reference sheet, and the new `cost_estimate` fields
+   (`points_assumption`/`contingency`/`hard_ceiling`/`ceiling_adjustment`)
+   all reached `EssentialsView` in the live app but not the PDF, this app's
+   own primary deliverable — exactly the "a correction applied to one
+   consumer doesn't propagate to every renderer of the plan" pattern this
+   file has documented repeatedly (most recently KNOWN FAILURE MODE #18).
+   Fixed: `renderReferences()` now renders "If This Happens" (backup
+   matrix), "Financial Exposure" (travel protection), and a "Reference
+   Sheet" section (reusing `buildReferenceSheet()` from `src/referenceSheet.js`
+   directly — no duplicated logic), and the existing "Estimated cost"
+   section now also shows points assumption, contingency, and the budget
+   ceiling (highlighted + the model's suggested adjustments when exceeded).
+   Confirmed live via Playwright: a real `download` event for the actual
+   generated PDF, on both a plan with every new field populated and a
+   plain minimal plan with none of them — no crash either way.
+2. **The step-1 form's "Output sections" summary had a hardcoded `"12"`
+   denominator** (`src/App.jsx`, two call sites) that went stale the moment
+   Phase C added a 14th `outputDefs` entry (`reference`) — it would have
+   read "12 of 12 active" by coincidence with default settings instead of
+   the correct "12 of 13". Fixed to compute the denominator as
+   `outputDefs.length - 1` (excluding the always-on `itinerary` toggle)
+   at both sites instead of a literal number. Confirmed live: the actual
+   step-2 Details screen now reads "12 of 13 active."
+
+Also confirmed via a live sweep (fresh page loads, not just seeded
+fixtures): zero console/page errors across the Hotels/Dining/Activities/
+Transport/By category/Essentials tabs, "Export as web app," "Save trip,"
+and opening a previously-saved trip — all tested with a plan carrying
+every new Phase A–D field at once, and separately with a plan carrying
+none of them (the common case), confirming no stray empty sections render
+when the new fields are simply absent.
+
 ## Environment
 
 Required in Cloudflare Pages:

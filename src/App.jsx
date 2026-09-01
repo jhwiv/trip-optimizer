@@ -13884,7 +13884,7 @@ function PreBuildScreen({
       <PhaseCard
         title="Output sections"
         status="done"
-        summary={`${activeCount} of 12 active`}
+        summary={`${activeCount} of ${outputDefs.length - 1} active`}
         expanded={outputsExpanded}
         onToggle={() => setOutputsExpanded((v) => !v)}
         cardStyleR={cardStyleR}
@@ -17796,7 +17796,7 @@ ${userWantsSkipTheLine ? `IMPORTANT — SKIP-THE-LINE REQUESTED: For EVERY major
                   style={{ width: "100%", border: "none", background: "transparent", padding: 0, cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}
                 >
                   <span>
-                    <span style={ctStyle}>{`Output sections  ·  ${activeCount} of 12 active`}</span>
+                    <span style={ctStyle}>{`Output sections  ·  ${activeCount} of ${outputDefs.length - 1} active`}</span>
                     {!step1OutputsOpen && (
                       <span style={{ display: "block", fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "4px", fontStyle: "italic" }}>
                         Want a slimmer PDF? Tap to choose which sections to include.
