@@ -16,6 +16,8 @@ import { dirname, join } from "node:path";
 import {
   deriveLegNights,
   deriveCityNights,
+  deriveLegNightsByPosition,
+  deriveHotelNights,
   rewriteMetaNights,
   stripMetaNightsBreakdown,
   reconcileMetaNights,
@@ -302,6 +304,170 @@ console.log("\n=== dayHasHotelEvent / dayContinuityCheck.js's hotelEvent — sib
   assert("Day 2 is correctly detected as a transit day and its night borrows forward to Nuremberg, not Bayeux",
     JSON.stringify(legs) === JSON.stringify([{ city: "Bayeux", nights: 1 }, { city: "Nuremberg", nights: 1 }]),
     JSON.stringify(legs));
+}
+
+console.log("\n=== resolvedDayCity via buildDayLegs (2026-09-02 regression: Carvoeiro/Lagos mislabeling) ===");
+{
+  // Real reported case: a 13-day, 3-leg Carvoeiro (friends) / Lagos (Cascade
+  // Wellness Resort) / Carvoeiro (Tivoli) trip. days[].city mislabeled Day 4
+  // (the transfer TO Lagos, where the traveller actually slept that night)
+  // and Day 6 (a same-day round-trip drive back to Carvoeiro for a
+  // paddleboard outing, returning to sleep in Lagos) both as "Carvoeiro" —
+  // even though both days have unambiguous Transport text naming the real
+  // city. The shipped meta line read "12 nights (4+1+1+3+3)"; the real split
+  // is 3+6+3.
+  const dayTrip = (n, city, extraItems = []) => ({
+    day: n, city, items: [{ type: "Activity", text: "A real waypoint activity" }, ...extraItems],
+  });
+  const plan = {
+    cities: [{ name: "Carvoeiro" }, { name: "Lagos" }, { name: "Carvoeiro" }],
+    days: [
+      dayTrip(1, "Carvoeiro"),
+      dayTrip(2, "Carvoeiro"),
+      dayTrip(3, "Carvoeiro"),
+      // Day 4: mislabeled "Carvoeiro" in days[].city, but the Transport item
+      // resolves cleanly to Lagos, and a Hotel check-in confirms it.
+      {
+        day: 4, city: "Carvoeiro",
+        items: [
+          { type: "Transport", text: "Drive Carvoeiro to Lagos — 30 min via N125" },
+          { type: "Hotel", text: "Check in to Cascade Wellness Resort", hotel: { name: "Cascade Wellness Resort" } },
+        ],
+      },
+      dayTrip(5, "Lagos"),
+      // Day 6: mislabeled "Carvoeiro" in days[].city (matching the day's
+      // OWN headline, "Return to Carvoeiro"), but it's a same-day round
+      // trip — both drives resolve, so the traveller never actually leaves
+      // Lagos as their base for the night.
+      {
+        day: 6, city: "Carvoeiro",
+        items: [
+          { type: "Transport", text: "Drive Lagos -> Carvoeiro · 30 min via N125" },
+          { type: "Activity", text: "Paddleboard to Benagil Cave" },
+          { type: "Transport", text: "Drive Carvoeiro -> Lagos · 30 min via N125 to return to resort" },
+        ],
+      },
+      dayTrip(7, "Lagos"),
+      dayTrip(8, "Lagos"),
+      dayTrip(9, "Lagos"),
+      // Day 10: correctly labeled "Carvoeiro" already (transfer to Tivoli).
+      {
+        day: 10, city: "Carvoeiro",
+        items: [
+          { type: "Transport", text: "Drive Lagos -> Carvoeiro · 30 min via N125" },
+          { type: "Hotel", text: "Check in to Tivoli Carvoeiro Algarve Resort", hotel: { name: "Tivoli Carvoeiro Algarve Resort" } },
+        ],
+      },
+      dayTrip(11, "Carvoeiro"),
+      dayTrip(12, "Carvoeiro"),
+      dayTrip(13, "Carvoeiro"), // departure day
+    ],
+  };
+  const legs = deriveLegNights(plan);
+  assert("three legs, not five — Day 4 and Day 6 no longer fracture the Lagos stay",
+    legs && legs.length === 3, JSON.stringify(legs));
+  assert("breakdown is 3+6+3, not the raw-label 4+1+1+3+3",
+    legs && legs.map(l => l.nights).join("+") === "3+6+3", JSON.stringify(legs));
+  assert("cities in visit order: Carvoeiro, Lagos, Carvoeiro",
+    legs && legs.map(l => l.city).join(",") === "Carvoeiro,Lagos,Carvoeiro", JSON.stringify(legs));
+  assert("nights sum to 12 (13 days − 1 departure day)",
+    legs && legs.reduce((n, l) => n + l.nights, 0) === 12);
+
+  const totals = deriveCityNights(plan);
+  assert("Carvoeiro totals 6 (3 + 3 across both legs)", totals && totals.get("carvoeiro") === 6, String(totals?.get("carvoeiro")));
+  assert("Lagos totals 6, not 8 (the raw-label count)", totals && totals.get("lagos") === 6, String(totals?.get("lagos")));
+
+  assert("meta breakdown is corrected to 3+6+3",
+    rewriteMetaNights("12 nights (4+1+1+3+3)", plan) === "12 nights (3+6+3)",
+    rewriteMetaNights("12 nights (4+1+1+3+3)", plan));
+}
+
+console.log("\n=== deriveLegNightsByPosition — per-LEG counts for A→B→A trips (2026-09-02) ===");
+{
+  // Same fixture shape as the real reported build: Carvoeiro (3n) → Lagos
+  // (6n) → Carvoeiro (3n). A per-city-aggregate lookup (the old bug) would
+  // show 6n on BOTH Carvoeiro entries (3+3 combined); a per-leg positional
+  // lookup must show each leg's own 3n.
+  const plan = {
+    days: [
+      { day: 1, city: "Carvoeiro" }, { day: 2, city: "Carvoeiro" }, { day: 3, city: "Carvoeiro" },
+      { day: 4, city: "Lagos" }, { day: 5, city: "Lagos" }, { day: 6, city: "Lagos" },
+      { day: 7, city: "Lagos" }, { day: 8, city: "Lagos" }, { day: 9, city: "Lagos" },
+      { day: 10, city: "Carvoeiro" }, { day: 11, city: "Carvoeiro" }, { day: 12, city: "Carvoeiro" }, { day: 13, city: "Carvoeiro" },
+    ],
+  };
+  const names = ["Carvoeiro", "Lagos", "Carvoeiro"];
+  const byPos = deriveLegNightsByPosition(plan, names);
+  assert("three entries, one per leg", byPos.length === 3, JSON.stringify(byPos));
+  assert("first Carvoeiro leg shows its OWN 3 nights, not the combined 6",
+    byPos[0] === 3, JSON.stringify(byPos));
+  assert("Lagos leg shows 6", byPos[1] === 6, JSON.stringify(byPos));
+  assert("second Carvoeiro leg ALSO shows its own 3, not 6 — the two legs differ",
+    byPos[2] === 3, JSON.stringify(byPos));
+
+  assert("length mismatch (fewer names than derived legs) → all null, no guessing",
+    JSON.stringify(deriveLegNightsByPosition(plan, ["Carvoeiro", "Lagos"])) === JSON.stringify([null, null]));
+  assert("length mismatch (more names than derived legs) → all null",
+    JSON.stringify(deriveLegNightsByPosition(plan, ["Carvoeiro", "Lagos", "Carvoeiro", "Extra"])) ===
+    JSON.stringify([null, null, null, null]));
+
+  assert("a mismatched single position is nulled individually, not the whole array",
+    JSON.stringify(deriveLegNightsByPosition(plan, ["Carvoeiro", "Wrong Name Entirely", "Carvoeiro"])) ===
+    JSON.stringify([3, null, 3]));
+
+  assert("underivable plan (single leg) → all null", JSON.stringify(deriveLegNightsByPosition(planOf("Rome", "Rome"), ["Rome"])) === JSON.stringify([null]));
+  assert("empty names → empty array", JSON.stringify(deriveLegNightsByPosition(plan, [])) === "[]");
+  assert("null names → empty array", JSON.stringify(deriveLegNightsByPosition(plan, null)) === "[]");
+}
+
+console.log("\n=== deriveHotelNights — real per-property counts (2026-09-02) ===");
+{
+  // Same real-world shape: 3 nights staying with friends (no Hotel item at
+  // all — unpaid, correctly excluded), 6 paid nights at Cascade Wellness
+  // Resort, 3 paid nights at Tivoli Carvoeiro Algarve Resort.
+  const act = (text) => ({ type: "Activity", text });
+  const plan = {
+    days: [
+      { city: "Carvoeiro", items: [act("Arrive at friends' home")] },
+      { city: "Carvoeiro", items: [act("Beach day")] },
+      { city: "Carvoeiro", items: [act("Benagil speedboat")] },
+      {
+        city: "Lagos",
+        items: [
+          { type: "Transport", text: "Drive Carvoeiro to Lagos" },
+          { type: "Hotel", text: "Check in to Cascade Wellness Resort", hotel: { name: "Cascade Wellness Resort" } },
+        ],
+      },
+      { city: "Lagos", items: [act("Old town")] },
+      { city: "Lagos", items: [act("Paddleboard day trip")] },
+      { city: "Lagos", items: [act("Ponta da Piedade")] },
+      { city: "Lagos", items: [act("Sagres")] },
+      { city: "Lagos", items: [act("Spa morning")] },
+      {
+        city: "Carvoeiro",
+        items: [
+          { type: "Transport", text: "Drive Lagos to Carvoeiro" },
+          { type: "Hotel", text: "Check in to Tivoli Carvoeiro Algarve Resort", hotel: { name: "Tivoli Carvoeiro Algarve Resort" } },
+        ],
+      },
+      { city: "Carvoeiro", items: [act("Sagres & Cape St. Vincent")] },
+      { city: "Carvoeiro", items: [act("Silves")] },
+      { city: "Carvoeiro", items: [{ type: "Hotel", text: "Check out of Tivoli Carvoeiro Algarve Resort", hotel: { name: "Tivoli Carvoeiro Algarve Resort" } }] },
+    ],
+  };
+  const hotelNights = deriveHotelNights(plan);
+  assert("two properties tracked", hotelNights && hotelNights.size === 2, hotelNights && JSON.stringify([...hotelNights]));
+  assert("Cascade Wellness Resort: 6 real paid nights",
+    hotelNights?.get("cascade wellness resort")?.nights === 6, JSON.stringify(hotelNights?.get("cascade wellness resort")));
+  assert("Tivoli Carvoeiro Algarve Resort: 3 real paid nights",
+    hotelNights?.get("tivoli carvoeiro algarve resort")?.nights === 3, JSON.stringify(hotelNights?.get("tivoli carvoeiro algarve resort")));
+  assert("staying-with-friends nights (no Hotel item) accrue to no property",
+    [...hotelNights.values()].reduce((n, h) => n + h.nights, 0) === 9);
+
+  assert("too few days → null", deriveHotelNights({ days: [{ city: "Rome" }] }) === null);
+  assert("no plan → null", deriveHotelNights(null) === null);
+  assert("no hotel ever checked in → null",
+    deriveHotelNights({ days: [{ city: "Rome", items: [act("Walk")] }, { city: "Rome", items: [act("Walk")] }] }) === null);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

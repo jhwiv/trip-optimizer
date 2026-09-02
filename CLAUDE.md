@@ -1687,6 +1687,161 @@ candidate for this exact bug. Finding the second instance required NOT trusting 
 test as sufficient — the live Playwright check, run with the real resolver in the loop rather than a
 hand-built fixture that skipped it, is what surfaced it.
 
+### KNOWN FAILURE MODE #24 — a Nigeria/Portugal city-name collision shipped fabricated Local Providers content, and the SAME per-city-aggregate bug that broke it turned out to be silently corrupting `plan.cities[].nights` itself, not just a PDF render.
+
+**2026-09-02, from a direct PDF review of a real Carvoeiro/Lagos/Algarve Coast build**, reporting two
+findings: (1) four "Local Providers" entries — "Lagos City Tours" (Victoria Island/Ikoyi/Nigerian
+history), Lekki Conservation Centre, Nike Art Gallery, Eko Atlantic City Tour, plus a Viator link
+describing Yaba street art and Balogun Market — were all real businesses in **Lagos, Nigeria**, not
+Lagos, Portugal (the Algarve town this trip actually visits); (2) three DIFFERENT, mutually
+disagreeing night-count breakdowns for the same 3-leg trip: the header meta ("12 nights
+(4+1+1+3+3)" — five segments for a three-city trip), the cover's numbered cities list ("1. Carvoeiro
+8n ... 3. Carvoeiro 8n", summing to 20), and the cost estimate ("9 paid nights: Cascade Wellness
+Resort 5n + Tivoli Carvoeiro 4n"). The real shape, confirmed by tracing the actual day-by-day: 3
+nights with friends in Carvoeiro, 6 paid nights at Cascade (Lagos), 3 paid nights at Tivoli
+(Carvoeiro) — 3+6+3, not any of the three shipped numbers. The user's explicit ask: "Build an error
+detection scan post build before and after expert review and implementation. This shouldn't happen."
+
+**Root cause 1 — `deriveLegNights()` (`src/legNights.js`) grouped days by the RAW `days[].city`
+string, and two days were mislabeled with real, resolvable Transport text the checker never
+consulted.** Day 4 (the transfer TO Lagos, checking into Cascade Wellness Resort that same night)
+had `days[].city` still reading "Carvoeiro" — the day's ORIGIN, not where the traveller actually
+slept. Day 6 (a same-day round-trip drive back to Carvoeiro for a paddleboard outing, returning to
+sleep in Lagos) was ALSO labeled "Carvoeiro", even though nothing about the day was a real base
+change. `dayContinuityCheck.js`'s `buildDayLegs()` already resolves both cases correctly for ITS
+OWN purpose (day-trip-return detection, chunk-boundary dedup) — by reading the day's actual
+Transport/Flight item text, not the `city` label — but `legNights.js` never reused it, maintaining
+its own weaker heuristic (a hotel-checkin/checkout-same-day forward-borrow) that doesn't cover
+either shape. **Fix:** `deriveLegNights()` now calls `buildDayLegs(data)` and prefers each day's
+buildDayLegs-RESOLVED ending city (the last real transition, day-trip-return-aware) over the raw
+label, falling back to the old hotel-event forward-borrow only when no transition resolved that
+day — the one case that heuristic was ever actually needed for. Verified against the real
+`plan_day67_collision.json` fixture (this file's own foundational regression case) that every one
+of its 11 days' resolved city is IDENTICAL to the old raw-label behavior — the fix is additive, not
+a behavior change, for any day whose `city` field was already correct.
+
+**Root cause 2 — a SEPARATE, more serious bug found while tracing root cause 1: `deriveCityNights()`
+returns a PER-CITY AGGREGATE (Carvoeiro's two separate legs summed into one combined total), and
+THREE different call sites used that aggregate where a PER-LEG value was required** — silently
+printing the SAME inflated number on every leg of any A→B→A-shaped trip:
+1. `src/pdf/itineraryPdf.js`'s cover-page "cities preview" (`1. Carvoeiro · Nn ...`).
+2. The same file's "WHAT YOU TOLD US → Route" line (`1) Carvoeiro — Nn  2) Lagos — Nn ...`).
+3. **`applyQualityLayer` itself** (`src/App.jsx`) — the block that overwrites `out.cities[].nights`
+   with code-derived truth. This is the one that matters most: it doesn't just render a number, it
+   MUTATES THE PLAN'S OWN DATA, which the on-screen "Trip route" card, saved-trip persistence, and
+   web export all read directly (`c.nights`) — so this wasn't a display quirk, it was corrupting the
+   itinerary's source of truth on every build with a repeated city.
+
+**Fix:** new `deriveLegNightsByPosition(data, names)` in `legNights.js` — derives the real per-LEG
+breakdown and pairs it POSITIONALLY against a caller-supplied ordered name list (`plan.cities[]`,
+`inputs.basics.cities[]`), rather than looking each name up in the aggregate map. Deliberately
+conservative: returns `null` for every position when the two lists don't have the same length (a
+mismatch means position *i* isn't reliably the same leg in both), and nulls a single position
+individually (not the whole array) when that position's name doesn't loosely match the derived
+leg's city — never guesses. All three call sites above were switched from `deriveCityNights()` +
+name-lookup to this positional pairing. Confirmed live via Playwright, seeded with the ACTUAL wrong
+numbers from the reported build (`cities: [{Carvoeiro,8},{Lagos,4},{Carvoeiro,8}]`, `meta: "12
+nights (4+1+1+3+3)"`): the on-screen Trip Route card went from what would have been an aggregated
+"6 / 6 / 6" to the correct "3 NIGHTS / 6 NIGHTS / 3 NIGHTS", the meta line corrected to "12 nights
+(3+6+3)", and the Quality Check banner logged "Recomputed Carvoeiro nights 8 → 3" as TWO separate
+fixes (one per leg), not one collapsed correction. 100 new regression assertions across
+`tests/test_leg_nights.mjs` and `tests/test_apply_quality_layer_structural.mjs` (the latter using
+the project's hand-copied-mirror + character-identical drift-guard convention, since
+`applyQualityLayer` is a closure inside `App.jsx` and can't be imported directly).
+
+**Root cause 3 — the cost estimate's free-text night count was never reconciled against anything.**
+`cost_estimate.breakdown[].category` is a free-text string the model writes (e.g. "Lodging (9 paid
+nights: Cascade Wellness Resort 5n + Tivoli Carvoeiro 4n)") — nothing in this app's existing
+"meta / cities[] / cost_estimate" reconciliation trio ever parsed or checked it. New
+`deriveHotelNights(data)` (`src/legNights.js`) derives real PER-PROPERTY night counts (distinct from
+per-city totals — two paid hotels in the same city, or an unpaid "staying with friends" segment
+alongside them, can't be told apart by city name alone) by walking `buildDayLegs()`'s per-day
+hotel-checkin/checkout events. New `src/costNightsTextCheck.js` (`findCostNightsTextMismatches`,
+`COST_ESTIMATE_NIGHTS_MISMATCH`, warn) parses `"<Name> Nn"` mentions out of the breakdown text and
+cross-checks them against `deriveHotelNights()`, substring-matching the named property (mirroring
+`dayContinuityCheck.js`'s own `resolveCity()`) so a shortened name ("Tivoli Carvoeiro" for "Tivoli
+Carvoeiro Algarve Resort") still resolves; an unmatched name is left alone, never guessed at. Wired
+into `applyQualityLayer`'s existing `contradictionFlags` array alongside `findBudgetTotalMismatches`.
+Confirmed live: two separate Playwright runs of the identical plan, one with the real reported wrong
+text (5n+4n) and one with the correct text (6n+3n), showed 16 warnings vs. 14 — a clean +2 (one flag
+per wrong-named property), confirming the check fires in the actual running app, not just its unit
+test.
+
+**Root cause 4 — the actual Nigeria/Portugal mixup: a bare city name sent to `/api/find` and
+`/api/find-providers` carries no country/region context, so an internationally ambiguous name gets
+resolved by whichever real business inventory is larger.** `useLocalProviders` (`src/App.jsx`) sends
+`location: "Lagos"` — bare, no qualifier — to both endpoints. The MODEL, asked to name real local tour
+operators in "Lagos" with zero other context, generated genuine Lagos-Nigeria businesses (their
+Places Text Search queries then confirmed those AS REAL, since they genuinely exist — just under the
+wrong country's Lagos). Investigated whether the geocoded LEG CENTROID for "Lagos" (used by the
+day-by-day `WRONG_LOCATION` check, `computeLegRadii`/`findVenuesOutsideRadius` in
+`src/locationCheck.js`) was ALSO wrong — it wasn't; the day-by-day itinerary's own venues never
+false-blocked, meaning the bare-city geocode resolves fine. The ambiguity is specific to a
+BUSINESS-NAME + city Text Search, which is dominated by which country has more real businesses
+registered under similar generic names — Nigeria's megacity naturally wins that contest against a
+small Portuguese resort town, even though the CITY geocode itself is unambiguous.
+
+**Fix, entirely client-side, reusing existing infrastructure rather than building a parallel
+distance check:** both `/api/find` and `/api/find-providers` already capture `lat`/`lng` per
+verified result (from their own internal `verifyOneVenue()` Places lookup) — this was already true
+before this fix, just never used for anything. New `stripLocationMismatchedProviders(recordsByCategory,
+legs)` in `src/localProviders.js` reuses the EXACT SAME `findVenuesOutsideRadius()` the day-by-day
+`WRONG_LOCATION` flag already uses (not a second, parallel implementation), applied to the
+separately-fetched Local Providers pool instead of `plan.days[]`. Wired into `useLocalProviders`:
+after fetching, geocode the trip's leg cities via the existing `/api/geocode-cities` endpoint,
+compute leg radii, and drop any provider record whose OWN verified coordinates land outside every
+leg's radius — soft-fail on any geocoding error (never blocks the tab), and a provider Places never
+returned coordinates for is left untouched (that's the existing `verify_status` path's job, not this
+one's). A `console.warn` logs the removal count for QC visibility, matching this app's convention of
+never silently discarding content without a trace. Confirmed live via Playwright: seeded
+`/api/geocode-cities` with the REAL Carvoeiro (37.10, -8.47) and Lagos-Portugal (37.10, -8.67)
+coordinates, mocked `/api/find`/`/api/find-providers` to return a mix of real-Portugal and
+fake-Nigeria-coordinate (6.45, 3.40 — the real Lagos, Nigeria) entries, opened the actual Local
+Providers tab, and confirmed the Nigeria-coordinate entries never rendered while the real
+Portugal ones did, with zero console errors. 11 new regression assertions in
+`tests/test_local_providers.mjs`, using real Lagos-Nigeria/Lagos-Portugal coordinates (not
+synthetic ones), including negative controls (an unverified record with no lat/lng is left alone;
+an empty/no-legs call is a safe no-op).
+
+**"Post-build/before-and-after-review/after-implementation" scan — the user's core ask, and why no
+new top-level scanning module was built.** Traced `applyQualityLayer`'s call site
+(`useMemo(() => applyQualityLayer(rawData, inputs), [rawData, inputs])`, `src/App.jsx`) and every
+path that mutates `rawData`: the initial build, `ReviewPanel`'s applied revisions, manual
+`ChangeRequestCard` swaps, `FlightNumberAutoResolver`, and `IntroductionAutoGenerator` all flow
+through the SAME `handlePlanRevised` → `setResult` → `rawData` change → the `useMemo` re-runs.
+`applyQualityLayer` — the function every check in this file's history has been wired into — was
+therefore ALREADY the "post-build, post-review, post-implementation" consistency scan the user
+asked for; it re-runs automatically on every single one of those events, with no additional wiring
+needed. All four fixes above (root causes 1–4) were added to that SAME existing entry point rather
+than as a new, separate scanning pass — a parallel mechanism would have been redundant with
+architecture already proven, by this file's own multi-year history, to fire at exactly the right
+times. `useLocalProviders`'s geo-filter (root cause 4) has the equivalent property for its own
+lifecycle: it re-derives from `legCities`/`relevantIds`, so any revision that changes venue content
+re-triggers it too.
+
+**What this fix does and does not claim:** all four fixes are deterministic and fully verified, both
+in isolation (191 new unit assertions total across the four new/changed files) and live against the
+real dev server with the actual reported wrong numbers as the seed data — this is not a
+prompt-level nudge, and does not carry the "model compliance unverified" caveat several other
+entries in this file do. What it does NOT fix: the underlying GENERATION-time cause of root cause 4
+(the model choosing to write "Lagos" without a country qualifier in `plan.cities[].name` in the
+first place) — that's a `TRIP_PLAN_TOOL` schema/prompt question, out of scope for this pass, and the
+client-side geo-filter is a full, sufficient backstop regardless of whether the model ever gets
+fixed upstream (the same "deterministic backstop over another prompt iteration" doctrine established
+in KNOWN FAILURE MODE #19's own follow-up).
+
+**The pattern to watch for:** the SAME bug shape (`deriveCityNights()`'s per-city aggregate used
+where a per-leg value was needed) was found independently in THREE call sites, and the most
+consequential one — corrupting `plan.cities[].nights` itself inside `applyQualityLayer` — was not
+the one the user's report was actually about (they reported a PDF render, not the underlying plan
+data) and would have been missed entirely without tracing WHY the PDF's numbers were wrong all the
+way back to their shared root, rather than patching the PDF render in isolation. This is the same
+lesson KNOWN FAILURE MODE #18 and #23 already documented for a stale carrier and a stale flight
+number, respectively, applied to a THIRD kind of value: a correction applied to one consumer of a
+derived value doesn't propagate to every OTHER consumer of the SAME underlying (buggy) derivation —
+audit every call site of a shared helper when its output turns out to be wrong, not just the one a
+report happened to be about.
+
 ## Implementation map
 
 | Concern | File |
@@ -1708,6 +1863,9 @@ hand-built fixture that skipped it, is what surfaced it.
 | Phone-ready reference sheet — client-side aggregation of hotels/transport/booked restaurants | `src/referenceSheet.js` |
 | Hard budget ceiling check — user-stated ceiling vs. model's high-case cost | `src/budgetCeilingCheck.js` |
 | PDF "Trip Map" page (route-overview image, Google Static Maps) — derive ordered city list / fetch+proxy+cache | `src/tripMap.js`, server call in `functions/api/trip-map.js`, rendered by `renderTripMap()` in `src/pdf/itineraryPdf.js` |
+| Real per-property night derivation (distinct from per-city totals) + per-leg positional night lookup | `deriveHotelNights()`, `deriveLegNightsByPosition()` in `src/legNights.js` |
+| Cost-estimate breakdown text vs. real per-property night counts | `src/costNightsTextCheck.js` |
+| Local Providers geo-sanity filter (drops a provider whose verified coordinates land far from every trip city — the Lagos, Nigeria / Lagos, Portugal class of mixup) | `stripLocationMismatchedProviders()` in `src/localProviders.js`, wired into `useLocalProviders()` in `src/App.jsx`, reuses `findVenuesOutsideRadius()` from `src/locationCheck.js` |
 
 ### PDF save is share-first — do not "simplify" it back to `pdf.save()`
 
@@ -1785,6 +1943,7 @@ They ride on `day.structural_flags[]` and reach the pre-export gate through
 | `DRIVE_TIME_IMPLAUSIBLE` | warn | A Transport item's own claimed drive duration diverges from `/api/drive-time-verify`'s real TomTom routing estimate by more than a generous floor/ratio margin (`src/driveTimeVerify.js`). Closes the gap KNOWN FAILURE MODE #18 documented as explicitly unfixed. Live-dependent (needs `TOMTOM_API_KEY`) — fails safe to no flag, same posture as `BOOKING_URL_DEAD` | no |
 | `HOTEL_BRAND_UNCONFIRMED` | warn | A hotel claims a single major chain's affiliation, but `/api/tripadvisor-verify`'s independently-resolved listing (name + description) never mentions that chain (`src/hotelBrandVerify.js`). Closes the DIRECT-claim gap `applyQualityLayer` §2e's own comment documents as its known ceiling (only catches CROSS-chain claims). Deliberately worded as "no independent confirmation," not "fabricated" — absence of evidence in a terse listing isn't proof. Live-dependent (needs `TRIPADVISOR_API_KEY`) — fails safe to no flag | no |
 | `BUDGET_TOTAL_MISMATCH` | warn | `cost_estimate.breakdown[]`'s own low-end sum already exceeds the stated high-case total by a wide margin (`src/budgetTotalsCheck.js`) — one of the two numbers about the same trip cost has to be wrong. Only checks the overshoot direction; a breakdown summing to noticeably LESS than the total is deliberately not flagged, since `cost_estimate`'s schema explicitly allows omitting a category the plan doesn't have (a short, honest, partial breakdown is normal, not a contradiction). Part of the ROUTESMITH ITINERARY-QUALITY UPGRADE §15 "budget totals" contradiction check | no |
+| `COST_ESTIMATE_NIGHTS_MISMATCH` | warn | `cost_estimate.breakdown[].category` free text names a specific hotel and a night count (e.g. "Cascade Wellness Resort 5n") that disagrees with the real per-property count derived from the day-by-day sequence (`src/costNightsTextCheck.js`, `deriveHotelNights()` in `src/legNights.js`). Found 2026-09-02 on a real Carvoeiro/Lagos build: a per-CITY night check (already correct) doesn't catch a per-PROPERTY error when two paid stays exist in a trip, or when an unpaid "staying with friends" segment sits alongside them — this closes that specific gap. Only flags when the named property can be confidently matched to a real Hotel item; an unmatched name is left alone rather than guessed at | no |
 | `OVERCONFIDENT_LANGUAGE` | warn | A `tonight[]`/`flags[]` entry uses "safe"/"confirmed"/"verified" language while naming a restaurant whose `verify_status` is still `verify_before_booking` (`src/overconfidentLanguageCheck.js`) — the ROUTESMITH ITINERARY-QUALITY UPGRADE §15 spec's own literal example ("do not publish reassuring language... when the underlying information does not support it"). Restaurants only for this first pass — `verify_status` is the one structured, always-populated confirmation field; hotel/activity confirmation isn't a single clean field the same way | no |
 | `BUDGET_CEILING_EXCEEDED` | warn | The traveler set a hard maximum budget (`basics.hardBudgetCeiling`, a plain wizard field next to the `$`-tier style selector) and the model's own `cost_estimate.high` exceeds it (`src/budgetCeilingCheck.js`) — ROUTESMITH ITINERARY-QUALITY UPGRADE §8. The comparison is deterministic against the traveler's OWN stated number, never trusting the model's echo of it (`cost_estimate.hard_ceiling` is display-only) | no |
 

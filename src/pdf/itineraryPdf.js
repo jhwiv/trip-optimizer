@@ -30,7 +30,7 @@
 import { groupItemsByCategory } from "../categoryGroups.js";
 import { bucketProviders, PROVIDER_PDF_CAP } from "../localProviders.js";
 import { parseClockToMinutes } from "../flightSelect.js";
-import { deriveLegNights, deriveCityNights, rewriteMetaNights } from "../legNights.js";
+import { deriveLegNights, deriveCityNights, deriveLegNightsByPosition, rewriteMetaNights } from "../legNights.js";
 import { normalizeCostEstimate, formatCostRange, formatBreakdownLine, formatCostAmount } from "../costEstimate.js";
 import { buildReferenceSheet } from "../referenceSheet.js";
 
@@ -660,15 +660,6 @@ export function normalizeRoomType(hotelName, roomType) {
   return out;
 }
 
-// Look up the derived nights for a display city name in the map returned by
-// deriveCityNights. Returns null (→ omit token) when the map is missing or the
-// city has no derived entry.
-function lookupCityNights(totals, name) {
-  if (!totals) return null;
-  const n = totals.get(safe(name).trim().toLowerCase());
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
@@ -949,12 +940,16 @@ function renderCover(cur, data, inputs, opts = {}) {
   }
 
   // Cities preview (multi-city) — one city per line so a long multi-leg route
-  // reads as a clean list instead of a single run-on sentence.
+  // reads as a clean list instead of a single run-on sentence. Uses the
+  // per-LEG breakdown, positionally paired — deriveCityNights()'s per-name
+  // total would show the SAME (combined) count on every leg of an A→B→A
+  // trip instead of each leg's own share (see deriveLegNightsByPosition's
+  // own header comment for the real build that shipped this bug).
   if (Array.isArray(data?.cities) && data.cities.length > 1) {
     cur.space(2);
-    const cityNights = deriveCityNights(data);
+    const legNightsByPos = deriveLegNightsByPosition(data, data.cities.map((c) => c?.name));
     data.cities.forEach((c, i) => {
-      const n = lookupCityNights(cityNights, c.name);
+      const n = legNightsByPos[i];
       const line = `${i + 1}. ${c.name}${n ? ` · ${n}n` : ""}${c.focus ? ` — ${c.focus}` : ""}`;
       cur.text(line, { font: FONT.sans, style: "italic", size: 10, color: COLOR.inkSoft, leading: 1.35 });
     });
@@ -981,10 +976,14 @@ function renderCover(cur, data, inputs, opts = {}) {
     const dn = inputs.dining || {};
     const it = inputs.interests || {};
 
-    const routeCityNights = deriveCityNights(data);
+    // Per-LEG, positionally paired — see deriveLegNightsByPosition's header
+    // comment for why a per-name aggregate total is the wrong shape here.
+    const routeLegNightsByPos = Array.isArray(b.cities)
+      ? deriveLegNightsByPosition(data, b.cities.map((c) => c?.name))
+      : [];
     const citiesLine = Array.isArray(b.cities) && b.cities.length > 1
       ? b.cities.map((c, i) => {
-          const n = lookupCityNights(routeCityNights, c.name);
+          const n = routeLegNightsByPos[i];
           return `${i + 1}) ${c.name}${n ? ` — ${n}n` : ""}${c.focus ? ` (${c.focus})` : ""}`;
         }).join("  ")
       : null;

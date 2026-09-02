@@ -22,6 +22,8 @@
 // tests/test_local_providers.mjs. The fetching lives in App.jsx.
 // =====================================================================
 
+import { findVenuesOutsideRadius } from "./locationCheck.js";
+
 // Ordered category metadata. Order is fixed; views render in this
 // sequence and skip any category that isn't relevant to the trip.
 //
@@ -259,4 +261,80 @@ export function bucketProviders(relevantIds, rawByCategory, options = {}) {
       total: normalized.length,
     };
   });
+}
+
+// Strips local-provider records whose OWN verified coordinates land far
+// from every trip-leg centroid — the Lagos, Nigeria / Lagos, Portugal
+// mixup (2026-09-02): a business named e.g. "Lagos City Tours" can resolve,
+// via Places Text Search, to a REAL business that genuinely exists —  just
+// under a same-named city on the other side of the world. Because the
+// business is real, it comes back "verified," and nothing about the
+// existing verify_status pipeline catches a wrong-COUNTRY match the way it
+// already catches a wrong-STATUS one (closed, not found). Root-caused: a
+// bare city name sent to /api/find and /api/find-providers as the search
+// `location` (see App.jsx's useLocalProviders) carries no country/region
+// context, so an ambiguous city name is resolved by whichever real
+// business inventory is larger — and a small resort town rarely wins that
+// contest against a same-named megacity.
+//
+// Reuses the EXACT same geo-radius machinery the day-by-day itinerary's
+// WRONG_LOCATION flag already uses (locationCheck.js) — not a second,
+// parallel distance check — applied here to the separately-fetched Local
+// Providers pool instead of plan.days[]. A provider is dropped only when
+// Places DID return coordinates for it (found + lat/lng) and those
+// coordinates are outside every trip leg's radius; a provider Places
+// couldn't confidently place at all is left untouched here (that's the
+// existing verify_status="verify_before_booking" path's job, not this
+// one's).
+//
+// `recordsByCategory` is { categoryId: providerRecord[] } — raw pipeline
+// records, each possibly carrying `.lat`/`.lng` when Places verification
+// found coordinates (see find.js / find-providers.js). `legs` is
+// computeLegRadii()'s output (the SAME leg centroids the build-time
+// WRONG_LOCATION check already geocoded via /api/geocode-cities — pass
+// that same array in rather than re-geocoding).
+//
+// Returns { recordsByCategory, removed } — a NEW object (categories not
+// touched are passed through by reference), plus how many records were
+// dropped, so the caller can log it for QC visibility the same way this
+// app logs every other auto-fix.
+export function stripLocationMismatchedProviders(recordsByCategory, legs) {
+  const input = recordsByCategory && typeof recordsByCategory === "object" ? recordsByCategory : {};
+  if (!Array.isArray(legs) || legs.length === 0) return { recordsByCategory: input, removed: 0 };
+
+  const verifications = [];
+  const keyToLoc = new Map();
+  for (const [cat, records] of Object.entries(input)) {
+    (Array.isArray(records) ? records : []).forEach((r, idx) => {
+      if (!r || typeof r !== "object") return;
+      if (typeof r.lat !== "number" || typeof r.lng !== "number") return;
+      const key = `${cat}${idx}`;
+      keyToLoc.set(key, { cat, idx });
+      verifications.push({ name: key, kind: "activity", found: true, lat: r.lat, lng: r.lng });
+    });
+  }
+  if (verifications.length === 0) return { recordsByCategory: input, removed: 0 };
+
+  const { flagsByName } = findVenuesOutsideRadius(verifications, legs, { kinds: ["activity"] });
+  if (flagsByName.size === 0) return { recordsByCategory: input, removed: 0 };
+
+  const dropIdxByCat = new Map();
+  for (const key of flagsByName.keys()) {
+    const loc = keyToLoc.get(key);
+    if (!loc) continue;
+    if (!dropIdxByCat.has(loc.cat)) dropIdxByCat.set(loc.cat, new Set());
+    dropIdxByCat.get(loc.cat).add(loc.idx);
+  }
+
+  const next = {};
+  let removed = 0;
+  for (const [cat, records] of Object.entries(input)) {
+    const dropSet = dropIdxByCat.get(cat);
+    if (!dropSet) { next[cat] = records; continue; }
+    next[cat] = (Array.isArray(records) ? records : []).filter((_, idx) => {
+      if (dropSet.has(idx)) { removed += 1; return false; }
+      return true;
+    });
+  }
+  return { recordsByCategory: next, removed };
 }

@@ -20,13 +20,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { findContinuityIssues, findStructuralBlockingIssues, dedupeChunkBoundaryArrivals } from "../src/dayContinuityCheck.js";
-import { deriveCityNights, reconcileMetaNights, parseMetaNightsBreakdown } from "../src/legNights.js";
+import { deriveLegNightsByPosition, reconcileMetaNights, parseMetaNightsBreakdown } from "../src/legNights.js";
 import { assertWeekdayClaims } from "../src/dateFacts.js";
 import { findFlightTimeMismatches } from "../src/flightTimeConsistency.js";
 import { findImplausibleBookingUrls } from "../src/bookingUrlCheck.js";
 import { findUnverifiedFlights } from "../src/flightResolver.js";
 import { findCarrierCodeMismatches } from "../src/carrierCodeCheck.js";
 import { findBudgetTotalMismatches } from "../src/budgetTotalsCheck.js";
+import { findCostNightsTextMismatches } from "../src/costNightsTextCheck.js";
 import { findOverconfidentLanguage } from "../src/overconfidentLanguageCheck.js";
 import { findBudgetCeilingExceeded } from "../src/budgetCeilingCheck.js";
 
@@ -104,10 +105,10 @@ function structuralQualityTail(input, inputs) {
       modelBreakdown.some((n, i) => n !== derivedBreakdown[i]);
   }
 
-  const cityNights = deriveCityNights(out);
-  if (cityNights && Array.isArray(out.cities)) {
-    out.cities = out.cities.map((c) => {
-      const derivedNights = cityNights.get(String(c?.name || "").trim().toLowerCase());
+  if (Array.isArray(out.cities)) {
+    const legNightsByPos = deriveLegNightsByPosition(out, out.cities.map((c) => c?.name));
+    out.cities = out.cities.map((c, i) => {
+      const derivedNights = legNightsByPos[i];
       if (!Number.isFinite(derivedNights) || derivedNights <= 0) return c;
       if (Number(c?.nights) === derivedNights) return c;
       nightsDrifted = true;
@@ -135,6 +136,7 @@ function structuralQualityTail(input, inputs) {
   // normalization, post city normalization, post activity-cap trim).
   const contradictionFlags = [
     ...findBudgetTotalMismatches(out),
+    ...findCostNightsTextMismatches(out),
     ...findOverconfidentLanguage(out),
     ...findBudgetCeilingExceeded(out, inputs),
   ];
@@ -279,6 +281,80 @@ console.log("\n=== failing plan: night counts overwritten in place ===");
     qc.fixes.some(f => /Recomputed meta night breakdown/.test(f)), JSON.stringify(qc.fixes));
   assert("each corrected city logged as a fix",
     qc.fixes.filter(f => /Recomputed \w+ nights/.test(f)).length === 2, JSON.stringify(qc.fixes));
+}
+
+console.log("\n=== A→B→A trip: cities[].nights reconciled per-LEG, not per-city aggregate (2026-09-02) ===");
+{
+  // Real reported bug, on the exact plan shape reported: a 3-leg
+  // Carvoeiro(friends)/Lagos(Cascade)/Carvoeiro(Tivoli) trip. The model's
+  // own cities[].nights was wrong (8, 4, 8 — summing to 20, not even the
+  // real 12-night total). Before the 2026-09-02 fix, the reconciliation
+  // step used deriveCityNights()'s PER-CITY AGGREGATE map (Carvoeiro's two
+  // legs combined = 6, Lagos = 6) and wrote that SAME "6" onto BOTH
+  // Carvoeiro entries — correcting the sum but destroying the real 3+3
+  // split into a wrong-but-plausible-looking 6+6. The fix uses
+  // deriveLegNightsByPosition() instead, which keeps each leg's own count.
+  const act = (text) => ({ type: "Activity", text });
+  const plan = {
+    meta: "12 nights (4+1+1+3+3)",
+    cities: [
+      { name: "Carvoeiro", nights: 8 },
+      { name: "Lagos", nights: 4 },
+      { name: "Carvoeiro", nights: 8 },
+    ],
+    days: [
+      { day: 1, city: "Carvoeiro", items: [act("Arrive at friends' home")] },
+      { day: 2, city: "Carvoeiro", items: [act("Beach day")] },
+      { day: 3, city: "Carvoeiro", items: [act("Benagil speedboat")] },
+      {
+        day: 4, city: "Carvoeiro", // mislabeled — real KNOWN FAILURE MODE shape
+        items: [
+          { type: "Transport", text: "Drive Carvoeiro to Lagos" },
+          { type: "Hotel", text: "Check in to Cascade Wellness Resort", hotel: { name: "Cascade Wellness Resort" } },
+        ],
+      },
+      { day: 5, city: "Lagos", items: [act("Old town")] },
+      {
+        day: 6, city: "Carvoeiro", // mislabeled day-trip — real KNOWN FAILURE MODE shape
+        items: [
+          { type: "Transport", text: "Drive Lagos -> Carvoeiro" },
+          act("Paddleboard to Benagil Cave"),
+          { type: "Transport", text: "Drive Carvoeiro -> Lagos to return to resort" },
+        ],
+      },
+      { day: 7, city: "Lagos", items: [act("Ponta da Piedade")] },
+      { day: 8, city: "Lagos", items: [act("Sagres")] },
+      { day: 9, city: "Lagos", items: [act("Spa morning")] },
+      {
+        day: 10, city: "Carvoeiro",
+        items: [
+          { type: "Transport", text: "Drive Lagos to Carvoeiro" },
+          { type: "Hotel", text: "Check in to Tivoli Carvoeiro Algarve Resort", hotel: { name: "Tivoli Carvoeiro Algarve Resort" } },
+        ],
+      },
+      { day: 11, city: "Carvoeiro", items: [act("Sagres & Cape St. Vincent")] },
+      { day: 12, city: "Carvoeiro", items: [act("Silves")] },
+      { day: 13, city: "Carvoeiro", items: [act("Departure")] },
+    ],
+  };
+  const { data, qc } = structuralQualityTail(plan);
+
+  assert("meta corrected to the real 3+6+3, not the model's nonsensical 4+1+1+3+3",
+    data.meta === "12 nights (3+6+3)", data.meta);
+
+  const nights = data.cities.map((c) => c.nights);
+  assert("three cities[] entries, one per leg", nights.length === 3, JSON.stringify(nights));
+  assert("first Carvoeiro leg corrected to its OWN 3 nights, not the combined 6",
+    nights[0] === 3, JSON.stringify(nights));
+  assert("Lagos leg corrected to 6", nights[1] === 6, JSON.stringify(nights));
+  assert("second Carvoeiro leg ALSO corrected to its own 3, not 6 — the two legs differ",
+    nights[2] === 3, JSON.stringify(nights));
+  assert("cities[].nights sum to the real 12, not the model's 20", nights.reduce((a, b) => a + b, 0) === 12);
+
+  assert("both corrections logged as separate fixes (one per leg, not collapsed)",
+    qc.fixes.filter(f => /Recomputed Carvoeiro nights/.test(f)).length === 2, JSON.stringify(qc.fixes));
+  assert("NIGHT_COUNT_MISMATCH raised at plan level",
+    (data.structural_flags || []).some(f => f.code === "NIGHT_COUNT_MISMATCH"));
 }
 
 console.log("\n=== clean plan is left alone ===");

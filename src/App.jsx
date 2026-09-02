@@ -4,18 +4,19 @@ import { collectPlanVenues, collectPlanLegCities, mergePlacesVerifications, find
 import { collectPacingPairs, applyPacingFlags } from "./pacingCheck.js";
 import { arrivalOrderExportError } from "./arrivalOrderCheck.js";
 import { findContinuityIssues, findStructuralBlockingIssues, dedupeChunkBoundaryArrivals } from "./dayContinuityCheck.js";
-import { deriveCityNights, reconcileMetaNights, parseMetaNightsBreakdown } from "./legNights.js";
+import { deriveLegNightsByPosition, reconcileMetaNights, parseMetaNightsBreakdown } from "./legNights.js";
 import { buildDateTable, assertWeekdayClaims, enforceDayLabelDates, enforceMetaDateRange } from "./dateFacts.js";
 import { pickScheduledFlight, parseClockToMinutes, resolveAirlineIata, normalizeAirportCode } from "./flightSelect.js";
 import { shouldChunk, planDayChunks, chunkMaxTokens, stitchPlan, collectRestaurantNames, classifyChunkResume } from "./chunkPlan.js";
 import { selectAlternatives, buildSwapItem, findRawItemIndex, resolveLegCity, activityHeadName, itemVenueName } from "./swapAlternatives.js";
 import { groupItemsByCategory } from "./categoryGroups.js";
-import { relevantProviderCategories, bucketProviders, providerCategoryMeta } from "./localProviders.js";
+import { relevantProviderCategories, bucketProviders, providerCategoryMeta, stripLocationMismatchedProviders } from "./localProviders.js";
 import { resolveOutputs } from "./outputsState.js";
 import { normalizeCostEstimate, formatCostRange, formatBreakdownLine, formatCostAmount } from "./costEstimate.js";
 import { collectDriveLegs, applyDriveTimeFlags } from "./driveTimeVerify.js";
 import { collectHotelBrandClaims, applyHotelBrandFlags } from "./hotelBrandVerify.js";
 import { findBudgetTotalMismatches } from "./budgetTotalsCheck.js";
+import { findCostNightsTextMismatches } from "./costNightsTextCheck.js";
 import { findOverconfidentLanguage } from "./overconfidentLanguageCheck.js";
 import { findBudgetCeilingExceeded } from "./budgetCeilingCheck.js";
 import { collectWazeLinks } from "./wazeLinks.js";
@@ -3939,10 +3940,20 @@ function applyQualityLayer(input, inputs) {
       modelBreakdown.some((n, i) => n !== derivedBreakdown[i]);
   }
 
-  const cityNights = deriveCityNights(out);
-  if (cityNights && Array.isArray(out.cities)) {
-    out.cities = out.cities.map((c) => {
-      const derivedNights = cityNights.get(String(c?.name || "").trim().toLowerCase());
+  // Per-LEG, positionally paired — a per-city AGGREGATE map (the old
+  // deriveCityNights-based approach) silently wrote the SAME combined total
+  // onto every leg of an A→B→A trip instead of each leg's own share. Found
+  // 2026-09-02 alongside the identical bug in the PDF cover's cities
+  // preview (deriveLegNightsByPosition's own header comment has the full
+  // real-build writeup) — this is the THIRD instance of the same shape,
+  // and the most consequential one: this block doesn't just render a
+  // number, it overwrites the PLAN's own out.cities[].nights, which every
+  // other consumer (the on-screen "Trip route" card, saved-trip
+  // persistence, web export) reads directly.
+  if (Array.isArray(out.cities)) {
+    const legNightsByPos = deriveLegNightsByPosition(out, out.cities.map((c) => c?.name));
+    out.cities = out.cities.map((c, i) => {
+      const derivedNights = legNightsByPos[i];
       if (!Number.isFinite(derivedNights) || derivedNights <= 0) return c;
       if (Number(c?.nights) === derivedNights) return c;
       nightsDrifted = true;
@@ -3970,6 +3981,7 @@ function applyQualityLayer(input, inputs) {
   // normalization, post city normalization, post activity-cap trim).
   const contradictionFlags = [
     ...findBudgetTotalMismatches(out),
+    ...findCostNightsTextMismatches(out),
     ...findOverconfidentLanguage(out),
     ...findBudgetCeilingExceeded(out, inputs),
   ];
@@ -5965,7 +5977,7 @@ function useLocalProviders(plan, inputs, legCities, active) {
         for (const city of cities) jobs.push({ cat, city });
       }
       const results = await Promise.all(jobs.map((j) => fetchOne(j.cat, j.city)));
-      const next = {};
+      let next = {};
       const erroredCat = {};
       for (const id of relevantIds) { next[id] = []; erroredCat[id] = false; }
       results.forEach((r, i) => {
@@ -5973,6 +5985,39 @@ function useLocalProviders(plan, inputs, legCities, active) {
         if (!r.ok) erroredCat[cat] = true;
         if (Array.isArray(r.records) && r.records.length) next[cat].push(...r.records);
       });
+
+      // Geo-sanity pass (2026-09-02): a provider's NAME can resolve, via
+      // Places, to a real business under a same-named city elsewhere in the
+      // world (the Lagos, Nigeria / Lagos, Portugal mixup) — existence
+      // verification alone can't catch a wrong-COUNTRY match, only a
+      // wrong-STATUS one. Reuses the SAME geocode-cities + leg-radius check
+      // the day-by-day itinerary's WRONG_LOCATION flag already runs. Soft-
+      // fail: if geocoding errors, this degrades to a no-op — never blocks
+      // the tab or throws away results because of a network hiccup.
+      try {
+        if (cities.length > 0) {
+          const geoRes = await fetch("/api/geocode-cities", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cities }),
+          });
+          if (geoRes.ok) {
+            const geoData = await geoRes.json();
+            const centers = (Array.isArray(geoData?.geocodes) ? geoData.geocodes : [])
+              .filter((g) => g.found && typeof g.lat === "number" && typeof g.lng === "number")
+              .map((g) => ({ name: g.name, lat: g.lat, lng: g.lng }));
+            if (centers.length > 0) {
+              const legs = computeLegRadii(centers);
+              const { recordsByCategory: geoFiltered, removed } = stripLocationMismatchedProviders(next, legs);
+              if (removed > 0) {
+                next = geoFiltered;
+                console.warn(`Local Providers: stripped ${removed} record(s) whose resolved coordinates were far from every trip city (likely a same-named-city mismatch, e.g. Lagos, Nigeria vs. Lagos, Portugal).`);
+              }
+            }
+          }
+        }
+      } catch { /* geocoding failure — keep the unfiltered results, don't block the tab */ }
+
       // A category "failed" only if it returned nothing AND a fetch errored —
       // otherwise an empty result is a genuine "nothing found".
       const failedIds = relevantIds.filter((id) => next[id].length === 0 && erroredCat[id]);

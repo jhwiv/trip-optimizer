@@ -14,7 +14,9 @@ import {
   bucketProviders,
   providerCategoryMeta,
   PROVIDER_UI_CAP,
+  stripLocationMismatchedProviders,
 } from "../src/localProviders.js";
+import { computeLegRadii } from "../src/locationCheck.js";
 import { activityVerifyName } from "../functions/api/find.js";
 
 let passed = 0, failed = 0;
@@ -138,6 +140,51 @@ assert("group carries label + noun for UI", typeof groups[0].label === "string" 
 const defaultCap = bucketProviders(["drivers"], raw);
 assert("default cap = PROVIDER_UI_CAP", defaultCap[0].items.length === Math.min(PROVIDER_UI_CAP, 4));
 assert("irrelevant ids excluded", bucketProviders([], raw).length === 0);
+
+console.log("\n=== stripLocationMismatchedProviders — the Lagos, Nigeria / Lagos, Portugal mixup (2026-09-02) ===");
+{
+  // Trip legs: Carvoeiro and Lagos, Portugal (real coordinates).
+  const legs = computeLegRadii([
+    { name: "Carvoeiro", lat: 37.1000, lng: -8.4700 },
+    { name: "Lagos", lat: 37.1020, lng: -8.6730 }, // Lagos, PORTUGAL (Algarve)
+  ]);
+  const recordsByCategory = {
+    guides: [
+      // Correctly resolved, near the trip — must survive.
+      { name: "ToursByLocals", lat: 37.1015, lng: -8.6725 },
+      // Resolved to Lagos, NIGERIA (~6.45, 3.40) — thousands of km away, must be dropped.
+      { name: "Lagos City Tours", lat: 6.4531, lng: 3.3958 },
+    ],
+    tours: [
+      { name: "Lekki Conservation Centre", lat: 6.4400, lng: 3.5500 }, // Nigeria — dropped
+      { name: "Seven Hanging Valleys Trail", lat: 37.0980, lng: -8.4650 }, // Carvoeiro — kept
+      { name: "No coordinates at all", lat: undefined, lng: undefined }, // never verified — left alone, not this check's job
+    ],
+  };
+  const { recordsByCategory: filtered, removed } = stripLocationMismatchedProviders(recordsByCategory, legs);
+  assert("two Nigeria-resolved records removed", removed === 2, String(removed));
+  assert("guides: the real, correctly-located provider survives",
+    filtered.guides.some((r) => r.name === "ToursByLocals"));
+  assert("guides: the Nigeria mismatch is gone",
+    !filtered.guides.some((r) => r.name === "Lagos City Tours"));
+  assert("tours: the real Carvoeiro trail survives",
+    filtered.tours.some((r) => r.name === "Seven Hanging Valleys Trail"));
+  assert("tours: the Nigeria mismatch is gone",
+    !filtered.tours.some((r) => r.name === "Lekki Conservation Centre"));
+  assert("tours: an unverified (no lat/lng) record is left alone, not dropped",
+    filtered.tours.some((r) => r.name === "No coordinates at all"));
+
+  assert("no legs → records unchanged, nothing removed",
+    stripLocationMismatchedProviders(recordsByCategory, []).removed === 0);
+  assert("no legs → records unchanged, nothing removed (null legs)",
+    stripLocationMismatchedProviders(recordsByCategory, null).removed === 0);
+  assert("empty recordsByCategory is safe", stripLocationMismatchedProviders({}, legs).removed === 0);
+  assert("null recordsByCategory is safe", stripLocationMismatchedProviders(null, legs).removed === 0);
+  assert("all-verified, all-near-trip records → nothing removed",
+    stripLocationMismatchedProviders(
+      { drivers: [{ name: "Elite Algarve Transfers", lat: 37.0990, lng: -8.4680 }] }, legs,
+    ).removed === 0);
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
