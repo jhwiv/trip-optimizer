@@ -10878,7 +10878,7 @@ const DAY_SCHEMA = {
   type: "object",
   properties: {
     label: { type: "string", description: "Day label using the EXACT stamp from the COMPUTED DATE TABLE, followed by the day's purpose. Format: 'Day N · <stamp from table> · <purpose>'. Example: 'Day 1 · Wed Aug 25 · Arrive Santa Fe'. Never compute the weekday yourself — always copy it from the table." },
-    city: { type: "string", description: "Which city this day belongs to on multi-city trips (e.g. 'Santa Fe, NM'). Match the spelling in the cities[] array. Transit days that span two cities use 'From→To' format (e.g. 'Santa Fe → Taos')." },
+    city: { type: "string", description: "Which city this day belongs to on multi-city trips (e.g. 'Santa Fe, NM'). Match the spelling in the cities[] array. Transit days that span two cities use 'From→To' format (e.g. 'Santa Fe → Taos'). If this city name is shared with a much more prominent, same-named city elsewhere in the world (e.g. 'Lagos' — Portugal's small Algarve town vs. Nigeria's megacity; also watch for Cambridge, Valencia, Birmingham, Manchester, Vienna, Naples, Nice, Richmond, Toledo, Columbus, Springfield, Georgetown, Alexandria, Sydney), ALWAYS include the disambiguating country/state (e.g. 'Lagos, Portugal', not bare 'Lagos') — a bare ambiguous name gets misresolved downstream against the wrong, more famous city." },
     headline: { type: "string", description: "REQUIRED. The one signature moment of the day, written as a vivid 6–10 word phrase. Examples: 'Sunset margaritas on the Anasazi rooftop' · 'Walk Canyon Road slowly before the galleries close' · 'Drive to Abiquiú for the Pedernal light'. Never leave blank." },
     weather: { type: "string", description: "REQUIRED. Seasonal expectation for this destination/date: high/low + sky + any caveat. e.g. 'High 82°F / low 52°F · sun w/ 30% PM thunderstorm risk'. Use seasonal norms; never fabricate live forecasts." },
     pace_note: { type: "string", description: "Optional 1-line pacing call: 'easy arrival', 'big driving day', 'spa & slow', etc." },
@@ -10906,7 +10906,7 @@ const TRIP_PLAN_TOOL = {
         items: {
           type: "object",
           properties: {
-            name: { type: "string", description: "City name as the user entered it (e.g. 'Santa Fe, NM')." },
+            name: { type: "string", description: "City name as the user entered it (e.g. 'Santa Fe, NM'). If this city shares its name with a much more prominent, same-named city elsewhere in the world (e.g. 'Lagos' — Portugal's small Algarve town vs. Nigeria's megacity; also watch for Cambridge, Valencia, Birmingham, Manchester, Vienna, Naples, Nice, Richmond, Toledo, Columbus, Springfield, Georgetown, Alexandria, Sydney), ALWAYS include the country/state even if the user didn't (e.g. 'Lagos, Portugal', not bare 'Lagos') — this name is used downstream to search for real local businesses, and a bare ambiguous name gets misresolved against the wrong, more famous city." },
             nights: { type: "integer", description: "Nights at this city." },
             days_range: { type: "string", description: "e.g. 'Day 1–Day 3' or 'Day 4–Day 5'." },
             focus: { type: "string", description: "What this leg is FOR — the why. e.g. 'Galleries + food on Canyon Road', 'Skiing & mountain lunches', 'Day trips to Bandelier'." },

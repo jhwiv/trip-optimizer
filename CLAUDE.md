@@ -1842,6 +1842,30 @@ derived value doesn't propagate to every OTHER consumer of the SAME underlying (
 audit every call site of a shared helper when its output turns out to be wrong, not just the one a
 report happened to be about.
 
+**SAME-DAY FOLLOW-UP (2026-09-02) — closed the generation-time half of root cause 4, deliberately
+left open above.** The original fix was explicit that it "does NOT fix the underlying
+GENERATION-time cause... the model choosing to write 'Lagos' without a country qualifier in
+`plan.cities[].name` in the first place." Asked directly whether that gap should be closed. Added
+an explicit disambiguation instruction to both `TRIP_PLAN_TOOL.cities[].name` and
+`DAY_SCHEMA.city`'s field descriptions (`src/App.jsx`, the schema sent to `submit_trip_plan`):
+when a city name is shared with a much more prominent same-named city elsewhere in the world
+(the real Lagos, Portugal vs. Lagos, Nigeria case, plus other well-known collisions — Cambridge,
+Valencia, Birmingham, Manchester, Vienna, Naples, Nice, Richmond, Toledo, Columbus, Springfield,
+Georgetown, Alexandria, Sydney), the model must write the country/state even if the user didn't
+(`'Lagos, Portugal'`, never bare `'Lagos'`), because this exact string is what feeds the Local
+Providers search downstream. This is a prompt-level nudge, not a guarantee — this sandbox has no
+live `ANTHROPIC_API_KEY`, so model COMPLIANCE can't be verified here, only prompt DELIVERY (the
+same limitation this file documents for every other prompt-only fix, e.g. KNOWN FAILURE MODE #19's
+own follow-up). Confirmed live via Playwright: captured the actual `tools[]` array from a real
+`/api/build` request (driving the real wizard UI to a real "Plan my trip" tap, not a hand-built
+fixture) and verified both field descriptions, the real Lagos/Portugal/Nigeria example, and the
+"used downstream to search for real local businesses" rationale all reach the request Anthropic's
+API actually receives. 11 new source-text regression assertions in
+`tests/test_ambiguous_city_disambiguation.mjs`. The deterministic backstop
+(`stripLocationMismatchedProviders`, root cause 4 above) is unchanged and remains the primary,
+fully-reliable defense regardless of whether the model follows this instruction — this addition is
+belt-and-suspenders, not a replacement.
+
 ## Implementation map
 
 | Concern | File |
