@@ -16,6 +16,7 @@ export default [
       globals: { window: "readonly", document: "readonly", navigator: "readonly",
                  fetch: "readonly", setTimeout: "readonly", clearTimeout: "readonly",
                  setInterval: "readonly", clearInterval: "readonly", localStorage: "readonly",
+                 sessionStorage: "readonly",
                  console: "readonly", AbortController: "readonly", TextDecoder: "readonly",
                  Promise: "readonly", JSON: "readonly", __BUILD_ID__: "readonly",
                  __API_BASE__: "readonly", encodeURIComponent: "readonly",

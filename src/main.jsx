@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App, { FindView } from './App.jsx'
+import LoginGate from './LoginGate.jsx'
 
 // Path-aware mount: /find renders the standalone restaurant + activity
 // search view as a SIBLING of the wizard — not inside it — so the
@@ -18,7 +19,9 @@ const Root = isFindRoute ? FindView : App
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <Root />
+    <LoginGate>
+      <Root />
+    </LoginGate>
   </React.StrictMode>,
 )
 
