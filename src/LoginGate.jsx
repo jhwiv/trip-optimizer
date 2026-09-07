@@ -158,7 +158,9 @@ function MegHomescreenCoach({ onDismiss }) {
 function LoginGateScreen({ onUnlocked }) {
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
+  const [visible, setVisible] = useState(false);
   const inputRef = useRef(null);
+  const canUnlock = value.trim().length > 0;
 
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -169,6 +171,7 @@ function LoginGateScreen({ onUnlocked }) {
 
   const submit = (e) => {
     if (e) e.preventDefault();
+    if (!canUnlock) return;
     const id = unlockGate(value);
     if (!id) {
       setError("That word isn’t recognized. Try again.");
@@ -255,39 +258,76 @@ function LoginGateScreen({ onUnlocked }) {
         >
           Passphrase
         </label>
-        <input
-          id="login-gate-input"
-          data-testid="login-gate-input"
-          ref={inputRef}
-          type="password"
-          name="passphrase"
-          autoComplete="current-password"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-          value={value}
-          aria-invalid={error ? "true" : "false"}
-          aria-describedby={error ? "login-gate-error" : undefined}
-          onChange={(e) => {
-            setValue(e.target.value);
-            if (error) setError("");
-          }}
+        <div
+          data-testid="login-gate-field"
           style={{
-            fontSize: "16px",
-            padding: "10px 0",
-            border: "none",
-            borderBottom: error
-              ? "0.5px solid var(--color-text-danger)"
-              : "0.5px solid var(--color-border-primary)",
-            background: "transparent",
-            color: "var(--color-text-primary)",
+            display: "flex",
+            alignItems: "center",
             width: "100%",
             boxSizing: "border-box",
-            outline: "none",
-            fontFamily: "inherit",
-            lineHeight: "1.4",
+            border: error
+              ? "0.5px solid var(--color-text-danger)"
+              : "0.5px solid var(--color-border-secondary)",
+            borderRadius: "var(--border-radius-md)",
+            background: "var(--color-background-primary)",
           }}
-        />
+        >
+          <input
+            id="login-gate-input"
+            data-testid="login-gate-input"
+            ref={inputRef}
+            type={visible ? "text" : "password"}
+            name="passphrase"
+            placeholder="Household word"
+            autoComplete="current-password"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            value={value}
+            aria-invalid={error ? "true" : "false"}
+            aria-describedby={error ? "login-gate-error" : undefined}
+            onChange={(e) => {
+              setValue(e.target.value);
+              if (error) setError("");
+            }}
+            style={{
+              fontSize: "16px",
+              padding: "11px 12px",
+              border: "none",
+              background: "transparent",
+              color: "var(--color-text-primary)",
+              flex: 1,
+              minWidth: 0,
+              width: "100%",
+              boxSizing: "border-box",
+              outline: "none",
+              fontFamily: "inherit",
+              lineHeight: "1.4",
+            }}
+          />
+          <button
+            type="button"
+            data-testid="login-gate-visibility"
+            aria-label={visible ? "Hide passphrase" : "Show passphrase"}
+            aria-pressed={visible}
+            onClick={() => setVisible((v) => !v)}
+            style={{
+              flexShrink: 0,
+              border: "none",
+              background: "transparent",
+              color: "var(--color-text-secondary)",
+              fontSize: "10px",
+              fontWeight: 600,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              padding: "11px 12px 11px 4px",
+            }}
+          >
+            {visible ? "Hide" : "Show"}
+          </button>
+        </div>
 
         {error ? (
           <p
@@ -308,6 +348,7 @@ function LoginGateScreen({ onUnlocked }) {
         <button
           type="submit"
           data-testid="login-gate-submit"
+          disabled={!canUnlock}
           style={{
             width: "100%",
             marginTop: "22px",
@@ -318,10 +359,11 @@ function LoginGateScreen({ onUnlocked }) {
             fontWeight: 700,
             letterSpacing: "0.12em",
             textTransform: "uppercase",
-            cursor: "pointer",
+            cursor: canUnlock ? "pointer" : "not-allowed",
             fontFamily: "inherit",
             background: "var(--color-text-primary)",
             color: "var(--color-background-primary)",
+            opacity: canUnlock ? 1 : 0.45,
           }}
         >
           Unlock
