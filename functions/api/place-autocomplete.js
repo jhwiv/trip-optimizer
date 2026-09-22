@@ -2,9 +2,9 @@
 // ------------------------------------------------------------------
 // Live-typing place suggestions for the /find LOCATION field. Proxies
 // Google's Places Autocomplete (New) API so GOOGLE_PLACES_API_KEY never
-// reaches the browser. Restricted to cities/regions/localities — the
-// Find flow searches "a location" (city, neighborhood, or landmark),
-// not individual addresses.
+// reaches the browser. The Find flow searches "a location" — a city,
+// region, or landmark — so the type filter is applied in widening tiers
+// (see TIERS below) rather than as one narrow allow-list.
 //
 // Why this exists: the LOCATION field was a plain text input with zero
 // disambiguation. Ambiguous or lesser-known place names (e.g. "Bolton"
@@ -18,7 +18,8 @@
 //   { input: string }        // required, 2-200 chars after trim
 //
 // Response (200 unless input malformed):
-//   { suggestions: [ { description, place_id, main_text, secondary_text } ] }
+//   { suggestions: [ { description, place_id, main_text, secondary_text } ],
+//     tier }                 // tier = which TIERS entry produced the hits
 //   400 { error: { message } }   — missing/too-short input
 //
 // Soft-fail: missing GOOGLE_PLACES_API_KEY or upstream error returns
@@ -34,6 +35,37 @@
 const AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete";
 const HTTP_TIMEOUT_MS = 5000;
 const MAX_SUGGESTIONS = 6;
+
+// Type filters tried in order until one yields suggestions.
+//
+// Tier 1 is the common case — a town or city. It deliberately omits
+// `sublocality` and `neighborhood`: including them is what made a query like
+// "cape cod" return a list of small obscure localities whose names merely
+// contain the substring, while the region itself stayed unreachable because no
+// `administrative_area` or `colloquial_area` type was allowed through.
+//
+// Tier 2 widens to Google's `(regions)` collection, which MUST be the sole
+// value — the API rejects it combined with individual types — hence a separate
+// tier rather than extra entries in tier 1.
+//
+// Tier 3 drops the filter so landmarks, natural features (Cape Cod is a
+// peninsula) and other POIs can resolve. The field hint has always promised
+// landmark support; the old single-tier filter silently excluded it.
+//
+// Google caps `includedPrimaryTypes` at 5 values, so tier 1 sits at exactly 5.
+const TIERS = [
+  {
+    includedPrimaryTypes: [
+      "locality",
+      "postal_town",
+      "administrative_area_level_3",
+      "administrative_area_level_2",
+      "colloquial_area",
+    ],
+  },
+  { includedPrimaryTypes: ["(regions)"] },
+  {},
+];
 
 function corsHeaders() {
   return {
@@ -68,6 +100,21 @@ async function fetchWithTimeout(url, opts) {
   }
 }
 
+function shapeSuggestions(data) {
+  const raw = Array.isArray(data?.suggestions) ? data.suggestions : [];
+  return raw
+    .map((s) => s?.placePrediction)
+    .filter(Boolean)
+    .slice(0, MAX_SUGGESTIONS)
+    .map((p) => ({
+      description: p?.text?.text || "",
+      place_id: p?.placeId || "",
+      main_text: p?.structuredFormat?.mainText?.text || p?.text?.text || "",
+      secondary_text: p?.structuredFormat?.secondaryText?.text || "",
+    }))
+    .filter((s) => s.description);
+}
+
 export async function onRequestPost({ request, env }) {
   let body;
   try {
@@ -91,44 +138,35 @@ export async function onRequestPost({ request, env }) {
   }
 
   try {
-    const upstream = await fetchWithTimeout(AUTOCOMPLETE_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": env.GOOGLE_PLACES_API_KEY,
-      },
-      body: JSON.stringify({
-        input,
-        // (regions) covers locality/sublocality/neighborhood/postal_code/
-        // administrative_area — the right shape for "city, neighborhood,
-        // or landmark" per the field's own hint text. We deliberately do
-        // NOT restrict further (e.g. to cities only) because landmarks
-        // like "Times Square" are legitimate Find-page queries too, and
-        // Google doesn't offer a single type covering both cleanly.
-        includedPrimaryTypes: ["locality", "sublocality", "neighborhood", "administrative_area_level_3"],
-      }),
-    });
+    let suggestions = [];
+    let tierUsed = -1;
 
-    if (!upstream.ok) {
-      // Soft-fail — don't surface upstream errors to the typing field.
-      return json({ suggestions: [], note: "autocomplete-upstream-error" });
+    for (let i = 0; i < TIERS.length; i++) {
+      const upstream = await fetchWithTimeout(AUTOCOMPLETE_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": env.GOOGLE_PLACES_API_KEY,
+        },
+        body: JSON.stringify({ input, languageCode: "en", ...TIERS[i] }),
+      });
+
+      // Soft-fail this tier and try the next — a rejected type filter or a
+      // transient upstream error shouldn't cost the user the whole dropdown.
+      if (!upstream.ok) continue;
+
+      const data = await upstream.json().catch(() => ({}));
+      suggestions = shapeSuggestions(data);
+      if (suggestions.length > 0) {
+        tierUsed = i;
+        break;
+      }
     }
 
-    const data = await upstream.json().catch(() => ({}));
-    const raw = Array.isArray(data?.suggestions) ? data.suggestions : [];
-    const suggestions = raw
-      .map((s) => s?.placePrediction)
-      .filter(Boolean)
-      .slice(0, MAX_SUGGESTIONS)
-      .map((p) => ({
-        description: p?.text?.text || "",
-        place_id: p?.placeId || "",
-        main_text: p?.structuredFormat?.mainText?.text || p?.text?.text || "",
-        secondary_text: p?.structuredFormat?.secondaryText?.text || "",
-      }))
-      .filter((s) => s.description);
-
-    return json({ suggestions });
+    if (suggestions.length === 0) {
+      return json({ suggestions: [], note: "autocomplete-no-matches" });
+    }
+    return json({ suggestions, tier: tierUsed });
   } catch {
     // Timeout or network failure — soft-fail to empty suggestions.
     return json({ suggestions: [], note: "autocomplete-network-error" });

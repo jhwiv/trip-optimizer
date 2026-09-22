@@ -2,7 +2,7 @@
 // FindView client-side helpers. No real Anthropic call — we mock the
 // upstream fetch and exercise every code path.
 
-import { onRequestPost, activityVerifyName } from "../functions/api/find.js";
+import { onRequestPost, activityVerifyName, locationCandidates } from "../functions/api/find.js";
 
 let passed = 0;
 let failed = 0;
@@ -555,6 +555,233 @@ console.log("\n=== /api/find activity verification: opt-in vs default ===");
   assert("default: nothing dropped (closed NOT caught — old no-op)", acts.length === 2);
   assert("default: summary.blocked === 0", json?.verification?.blocked === 0);
   assert("default: no activity tagged _verified", acts.every(a => a._verified !== true));
+}
+
+// ---------- Location resolution (the "Chatham cape cod mass" bug) ----------
+//
+// /api/find used to hand the raw typed string straight to Places as the city
+// term. When that string didn't name a real locality, every per-venue Text
+// Search missed and the whole response came back NOT_FOUND. The endpoint now
+// walks locationCandidates() through geocodeCity first and searches with the
+// resolved locality plus its coordinates.
+
+// Build a fetch impl that separates geocode lookups from venue lookups. Any
+// Text Search whose textQuery is exactly one of the location candidates is a
+// geocode attempt; anything else is a per-venue lookup ("Venue, City").
+function mockFindResolve({ rawLocation, venues, geocodable, placesByName, placeIdCoords }) {
+  const candidates = new Set(locationCandidates(rawLocation));
+  const calls = { geocode: [], venue: [], details: [] };
+  let pendingDetailsName = null;
+  const fetchImpl = async (url, opts) => {
+    if (url === "https://api.anthropic.com/v1/messages") {
+      return new Response(JSON.stringify({
+        content: [{ type: "tool_use", name: "submit_find_results", input: venues }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url === PLACES_TS) {
+      const body = JSON.parse(opts.body);
+      const q = body.textQuery;
+      if (candidates.has(q)) {
+        calls.geocode.push(q);
+        const hit = geocodable?.[q];
+        if (!hit) return new Response(JSON.stringify({ places: [] }), { status: 200 });
+        return new Response(JSON.stringify({
+          places: [{
+            id: `id_geo_${q}`,
+            displayName: { text: q },
+            location: { latitude: hit.lat, longitude: hit.lng },
+          }],
+        }), { status: 200 });
+      }
+      calls.venue.push({ textQuery: q, locationBias: body.locationBias });
+      const name = q.split(",")[0].trim();
+      const spec = placesByName?.[name];
+      if (!spec || spec.notFound) {
+        return new Response(JSON.stringify({ places: [] }), { status: 200 });
+      }
+      pendingDetailsName = name;
+      return new Response(JSON.stringify({
+        places: [{ id: `id_${name.replace(/\s+/g, "_")}`, displayName: { text: name } }],
+      }), { status: 200 });
+    }
+    if (url.startsWith(PLACES_DETAILS_PREFIX)) {
+      const placeId = decodeURIComponent(url.slice(PLACES_DETAILS_PREFIX.length).split("?")[0]);
+      calls.details.push(placeId);
+      if (placeIdCoords && placeId === placeIdCoords.place_id) {
+        return new Response(JSON.stringify({
+          id: placeId,
+          displayName: { text: placeIdCoords.name },
+          location: { latitude: placeIdCoords.lat, longitude: placeIdCoords.lng },
+        }), { status: 200 });
+      }
+      const spec = placesByName?.[pendingDetailsName] || {};
+      const obj = { id: "id_x", displayName: { text: pendingDetailsName } };
+      if (spec.closed) obj.businessStatus = spec.closed;
+      if (spec.address) obj.formattedAddress = spec.address;
+      return new Response(JSON.stringify(obj), { status: 200 });
+    }
+    throw new Error("Unexpected fetch URL: " + url);
+  };
+  return { fetchImpl, calls };
+}
+
+const PLACES_ENV = () => ({
+  ANTHROPIC_API_KEY: "k",
+  GOOGLE_PLACES_API_KEY: "pk",
+  PLACES: makeKV(),
+});
+
+// 25. The reported failure: raw string geocodes to nothing, a laddered
+//     candidate resolves, and the resolved locality + coords drive verification.
+{
+  const raw = "Chatham cape cod mass";
+  const { fetchImpl, calls } = mockFindResolve({
+    rawLocation: raw,
+    venues: { restaurants: [{ name: "Impudent Oyster", why: "x", type: "Restaurant" }], activities: [] },
+    geocodable: { "Chatham, MA": { lat: 41.6821, lng: -69.96 } },
+    placesByName: { "Impudent Oyster": { open: true, address: "15 Chatham Bars Ave" } },
+  });
+  const { status, json } = await callFindFull({ location: raw }, PLACES_ENV(), fetchImpl);
+
+  assert("resolution: reported query now returns 200", status === 200, JSON.stringify(json?.error || ""));
+  assert("resolution: raw string was tried first", calls.geocode[0] === raw, JSON.stringify(calls.geocode));
+  assert("resolution: ladder reached 'Chatham, MA'", calls.geocode.includes("Chatham, MA"), JSON.stringify(calls.geocode));
+  assert("resolution: venue survived verification", json?.results?.restaurants?.length === 1, JSON.stringify(json?.results));
+
+  const meta = json?.location_resolution;
+  assert("resolution: 200 body carries location_resolution", !!meta, JSON.stringify(json));
+  assert("resolution: resolved is the normalized locality", meta?.resolved === "Chatham, MA", JSON.stringify(meta));
+  assert("resolution: query_used records the winning candidate", meta?.query_used === "Chatham, MA", JSON.stringify(meta));
+  assert("resolution: fallback_used is true", meta?.fallback_used === true, JSON.stringify(meta));
+  assert("resolution: raw is preserved for the UI", meta?.raw === raw, JSON.stringify(meta));
+
+  // The whole point: the venue lookup no longer uses the unresolvable string.
+  const venueCall = calls.venue[0];
+  assert("resolution: venue search uses the resolved city", venueCall?.textQuery === "Impudent Oyster, Chatham, MA", JSON.stringify(venueCall));
+  assert(
+    "resolution: lat/lng reach verifyOneVenue as a locationBias circle",
+    venueCall?.locationBias?.circle?.center?.latitude === 41.6821 &&
+      venueCall?.locationBias?.circle?.center?.longitude === -69.96,
+    JSON.stringify(venueCall?.locationBias),
+  );
+}
+
+// 26. Well-formed input resolves on the first candidate — no fallback reported.
+{
+  const raw = "Santa Fe, NM";
+  const { fetchImpl, calls } = mockFindResolve({
+    rawLocation: raw,
+    venues: { restaurants: [{ name: "Cafe Pasqual's", why: "x", type: "Restaurant" }], activities: [] },
+    geocodable: { "Santa Fe, NM": { lat: 35.687, lng: -105.938 } },
+    placesByName: { "Cafe Pasqual's": { open: true } },
+  });
+  const { status, json } = await callFindFull({ location: raw }, PLACES_ENV(), fetchImpl);
+  const meta = json?.location_resolution;
+  assert("resolution: well-formed input returns 200", status === 200);
+  assert("resolution: well-formed input geocodes once", calls.geocode.length === 1, JSON.stringify(calls.geocode));
+  assert("resolution: well-formed input reports no fallback", meta?.fallback_used === false, JSON.stringify(meta));
+  assert("resolution: well-formed input resolves to itself", meta?.resolved === raw, JSON.stringify(meta));
+}
+
+// 27. Nothing in the ladder resolves → behavior is exactly what it was before
+//     the fix (raw string used as the city, no coordinate bias), and the
+//     metadata says so instead of silently pretending.
+{
+  const raw = "Chatham cape cod mass";
+  const { fetchImpl, calls } = mockFindResolve({
+    rawLocation: raw,
+    venues: { restaurants: [{ name: "Impudent Oyster", why: "x", type: "Restaurant" }], activities: [] },
+    geocodable: {},
+    placesByName: { "Impudent Oyster": { open: true } },
+  });
+  const { status, json } = await callFindFull({ location: raw }, PLACES_ENV(), fetchImpl);
+  const meta = json?.location_resolution;
+  assert("resolution: unresolvable location still returns 200", status === 200);
+  assert("resolution: unresolvable location tries every candidate", calls.geocode.length === locationCandidates(raw).length, JSON.stringify(calls.geocode));
+  assert("resolution: unresolvable location falls back to the raw string", meta?.resolved === raw, JSON.stringify(meta));
+  assert("resolution: unresolvable location claims no fallback win", meta?.fallback_used === false, JSON.stringify(meta));
+  assert(
+    "resolution: no locationBias without coordinates",
+    calls.venue[0]?.locationBias === undefined,
+    JSON.stringify(calls.venue[0]),
+  );
+}
+
+// 28. A place_id from the autocomplete pick skips the ladder entirely — it is
+//     already disambiguated, so guessing would only lose information.
+{
+  const raw = "Chatham";
+  const { fetchImpl, calls } = mockFindResolve({
+    rawLocation: raw,
+    venues: { restaurants: [{ name: "Impudent Oyster", why: "x", type: "Restaurant" }], activities: [] },
+    geocodable: { Chatham: { lat: 1, lng: 2 } },
+    placesByName: { "Impudent Oyster": { open: true } },
+    placeIdCoords: { place_id: "place_chatham_ma", name: "Chatham, MA, USA", lat: 41.6821, lng: -69.96 },
+  });
+  const { status, json } = await callFindFull(
+    { location: raw, location_place_id: "place_chatham_ma" },
+    PLACES_ENV(),
+    fetchImpl,
+  );
+  const meta = json?.location_resolution;
+  assert("resolution: place_id path returns 200", status === 200);
+  assert("resolution: place_id skips geocode candidates entirely", calls.geocode.length === 0, JSON.stringify(calls.geocode));
+  assert("resolution: place_id was looked up via Place Details", calls.details.includes("place_chatham_ma"), JSON.stringify(calls.details));
+  assert("resolution: place_id reports no fallback guessing", meta?.fallback_used === false, JSON.stringify(meta));
+  assert(
+    "resolution: place_id coordinates bias the venue search",
+    calls.venue[0]?.locationBias?.circle?.center?.latitude === 41.6821,
+    JSON.stringify(calls.venue[0]?.locationBias),
+  );
+}
+
+// 29. The "no results at all" 422 carries resolution metadata, so a support
+//     report can distinguish "bad location string" from "genuinely nothing here".
+{
+  const raw = "Chatham cape cod mass";
+  const { fetchImpl } = mockFindResolve({
+    rawLocation: raw,
+    venues: { restaurants: [{ name: "The Grand Hotel", why: "x", type: "Hotel" }], activities: [] },
+    geocodable: { "Chatham, MA": { lat: 41.6821, lng: -69.96 } },
+    placesByName: {},
+  });
+  const { status, json } = await callFindFull({ location: raw }, PLACES_ENV(), fetchImpl);
+  assert("resolution: empty-results path is 422", status === 422, String(status));
+  assert("resolution: empty-results 422 carries location_resolution", !!json?.location_resolution, JSON.stringify(json));
+  assert("resolution: empty-results 422 reports the resolved locality", json?.location_resolution?.resolved === "Chatham, MA", JSON.stringify(json?.location_resolution));
+  assert("resolution: empty-results 422 preserves the raw string", json?.location_resolution?.raw === raw, JSON.stringify(json?.location_resolution));
+}
+
+// 30. Same for the "everything was closed / unfindable" 422.
+{
+  const raw = "Chatham cape cod mass";
+  const { fetchImpl } = mockFindResolve({
+    rawLocation: raw,
+    venues: { restaurants: [{ name: "ClosedSpot", why: "x", type: "Restaurant" }], activities: [] },
+    geocodable: { "Chatham, MA": { lat: 41.6821, lng: -69.96 } },
+    placesByName: { ClosedSpot: { closed: "CLOSED_PERMANENTLY" } },
+  });
+  const { status, json } = await callFindFull({ location: raw }, PLACES_ENV(), fetchImpl);
+  assert("resolution: all-blocked path is 422", status === 422, String(status));
+  assert("resolution: all-blocked 422 carries location_resolution", !!json?.location_resolution, JSON.stringify(json));
+  assert("resolution: all-blocked 422 reports the fallback", json?.location_resolution?.fallback_used === true, JSON.stringify(json?.location_resolution));
+}
+
+// 31. Missing Places key: resolution degrades to the raw string rather than
+//     throwing, and the venue path stays on its existing UNVERIFIED behavior.
+{
+  const raw = "Chatham cape cod mass";
+  const { fetchImpl, calls } = mockFindResolve({
+    rawLocation: raw,
+    venues: { restaurants: [{ name: "Impudent Oyster", why: "x", type: "Restaurant" }], activities: [] },
+    geocodable: { "Chatham, MA": { lat: 41.6821, lng: -69.96 } },
+    placesByName: { "Impudent Oyster": { open: true } },
+  });
+  const { status, json } = await callFindFull({ location: raw }, { ANTHROPIC_API_KEY: "k" }, fetchImpl);
+  assert("resolution: no Places key still returns 200", status === 200);
+  assert("resolution: no Places key makes no geocode calls", calls.geocode.length === 0, JSON.stringify(calls.geocode));
+  assert("resolution: no Places key resolves to the raw string", json?.location_resolution?.resolved === raw, JSON.stringify(json?.location_resolution));
+  assert("resolution: no Places key keeps the venue, flagged UNVERIFIED", json?.results?.restaurants?.length === 1, JSON.stringify(json?.results));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
